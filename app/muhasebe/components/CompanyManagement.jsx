@@ -173,6 +173,7 @@ export default function CompanyManagement() {
   
     if (error) {
       console.error(error);
+      alert(JSON.stringify(error));
       alert("Firma kaydedilemedi");
       return;
     }
