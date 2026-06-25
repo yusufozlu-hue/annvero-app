@@ -160,34 +160,50 @@ export default function CompanyManagement() {
 
   const saveCompany = async () => {
     const normalized = normalizeCompany(company);
-  
-    const { error } = await supabase
-      .from("companies")
-      .upsert([
-        {
-          id: normalized.id,
-          company_name: normalized.companyName,
-          data: normalized,
-        },
-      ]);
-  
+
+    if (!normalized.id) {
+      normalized.id = crypto.randomUUID();
+    }
+
+    if (!normalized.companyName?.trim()) {
+      normalized.companyName = company.companyName?.trim() || "Yeni Firma";
+    }
+
+    const { error } = await supabase.from("companies").upsert([
+      {
+        id: normalized.id,
+        company_name: normalized.companyName,
+        data: normalized,
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+
     if (error) {
       console.error(error);
-      alert(JSON.stringify(error));
-      alert("Firma kaydedilemedi");
+      const errorLines = [
+        error.message && `Mesaj: ${error.message}`,
+        error.details && `Detay: ${error.details}`,
+        error.hint && `İpucu: ${error.hint}`,
+        error.code && `Kod: ${error.code}`,
+      ].filter(Boolean);
+      alert(
+        errorLines.length > 0
+          ? `Firma kaydedilemedi:\n\n${errorLines.join("\n")}`
+          : `Firma kaydedilemedi:\n\n${JSON.stringify(error)}`
+      );
       return;
     }
-  
+
     const exists = companies.some((c) => c.id === normalized.id);
-  
+
     const updated = exists
-      ? companies.map((c) =>
-          c.id === normalized.id ? normalized : c
-        )
+      ? companies.map((c) => (c.id === normalized.id ? normalized : c))
       : [...companies, normalized];
-  
+
     setCompanies(updated);
-  
+    setCompany(normalized);
+    setSelectedId(normalized.id);
+
     alert("Firma kaydedildi");
   };
 
