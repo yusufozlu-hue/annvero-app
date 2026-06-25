@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 
+type BelgelerRegistry = Record<string, boolean>;
+
+declare global {
+  var __belgeler: BelgelerRegistry | undefined;
+}
+
 function excelDateToText(value: any) {
   if (!value) return "";
 
@@ -137,13 +143,14 @@ function satirRiskAnaliz(row: any, belgeTuru: string) {
     belgeNo.toString().trim() !== "" &&
     belgeNo.toString().length > 5
   ) {
-    const ayniBelge = globalThis.__belgeler || {};
+    const belgeKey = String(belgeNo);
+    const ayniBelge: BelgelerRegistry = globalThis.__belgeler ?? {};
 
-    if (ayniBelge[belgeNo]) {
+    if (ayniBelge[belgeKey]) {
       riskler.push("Mükerrer belge no");
       riskPuani += 45;
     } else {
-      ayniBelge[belgeNo] = true;
+      ayniBelge[belgeKey] = true;
     }
 
     globalThis.__belgeler = ayniBelge;
