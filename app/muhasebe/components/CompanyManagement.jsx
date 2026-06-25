@@ -1,13 +1,18 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
+const rawSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const supabaseUrl = rawSupabaseUrl.startsWith("http")
+  ? rawSupabaseUrl
+  : `https://${rawSupabaseUrl}`;
 
+const supabase = createClient(
+  supabaseUrl,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+);
+console.log(process.env.NEXT_PUBLIC_SUPABASE_URL);
+console.log(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 const STORAGE_KEY = "annvero_companies_v24";
 
 const emptyCompany = {
