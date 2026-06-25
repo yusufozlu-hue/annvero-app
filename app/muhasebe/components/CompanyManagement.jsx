@@ -1,6 +1,12 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+);
 
 const STORAGE_KEY = "annvero_companies_v24";
 
@@ -79,25 +85,32 @@ export default function CompanyManagement() {
   const [companySearchQuery, setCompanySearchQuery] = useState("");
 
   useEffect(() => {
-    const saved =
-  localStorage.getItem("annvero_companies_v24") ||
-  localStorage.getItem("annvero_companies_v23") ||
-  localStorage.getItem("annvero_companies_v22");
-
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      console.log(parsed);
-
-      setCompanies(parsed);
+    const loadCompanies = async () => {
+      const { data, error } = await supabase
+        .from("companies")
+        .select("*")
+        .order("created_at", { ascending: true });
+  
+      if (error) {
+        console.error(error);
+        setIsLoaded(true);
+        return;
+      }
+  
+      const formatted =
+        data?.map((item) => ({
+          id: item.id,
+          ...item.data,
+        })) || [];
+  
+      setCompanies(formatted);
       setIsLoaded(true);
-    }
+    };
+  
+    loadCompanies();
   }, []);
 
-  useEffect(() => {
-    if (!isLoaded) return;
-  
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(companies));
-  }, [companies, isLoaded]);;
+ 
 
   const createNewCompany = () => {
     const newCompany = {
@@ -145,20 +158,36 @@ export default function CompanyManagement() {
     }));
   };
 
-  const saveCompany = () => {
+  const saveCompany = async () => {
     const normalized = normalizeCompany(company);
-
+  
+    const { error } = await supabase
+      .from("companies")
+      .upsert([
+        {
+          id: normalized.id,
+          company_name: normalized.companyName,
+          data: normalized,
+        },
+      ]);
+  
+    if (error) {
+      console.error(error);
+      alert("Firma kaydedilemedi");
+      return;
+    }
+  
     const exists = companies.some((c) => c.id === normalized.id);
-
+  
     const updated = exists
       ? companies.map((c) =>
           c.id === normalized.id ? normalized : c
         )
       : [...companies, normalized];
-
+  
     setCompanies(updated);
-
-    alert("Firma kaydedildi.");
+  
+    alert("Firma kaydedildi");
   };
 
   const closeCompanyPanel = () => {
