@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
+import RowSearchToolbar from "../components/RowSearchToolbar";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
@@ -25,6 +26,10 @@ import {
   getCreditCardAccount,
 } from "@/src/utils/creditCardAccountResolver";
 import { findCariAccountInPlan } from "@/src/utils/bankMovementMapper";
+import {
+  filterLucaFisRows,
+  isMissingLucaAccountCode,
+} from "@/src/utils/tableSearch";
 
 const LUCA_EXPORT_HEADERS = [
   "Fiş No",
@@ -43,10 +48,21 @@ const LUCA_EXPORT_HEADERS = [
   "Döviz Tutar",
 ];
 
+const LUCA_PREVIEW_FILTERS = [
+  { id: "all", label: "Tümü" },
+  { id: "errors", label: "Hatalılar" },
+  { id: "missingAccount", label: "Eksik Hesap" },
+  { id: "unbalanced", label: "Dengesiz Fişler" },
+  { id: "overFifty", label: "50 Fiş Sınırı" },
+  { id: "learningMemory", label: "Öğrenen Hafıza" },
+];
+
 export default function LucaDonusturucuPage() {
   const [hareketFileName, setHareketFileName] = useState("");
   const [rawRows, setRawRows] = useState([]);
   const [fisler, setFisler] = useState([]);
+  const [previewSearch, setPreviewSearch] = useState("");
+  const [previewQuickFilter, setPreviewQuickFilter] = useState("all");
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
 
@@ -140,6 +156,13 @@ export default function LucaDonusturucuPage() {
     () => countPendingLucaRowsForCompany(selectedCompanyId),
     [selectedCompanyId, accountPlans, rawRows]
   );
+
+  const filteredFisler = useMemo(
+    () => filterLucaFisRows(fisler, previewSearch, previewQuickFilter),
+    [fisler, previewSearch, previewQuickFilter]
+  );
+
+  const displayedFisler = filteredFisler.slice(0, 50);
 
   const normalizeText = (value) =>
     String(value || "")
@@ -456,7 +479,7 @@ export default function LucaDonusturucuPage() {
           let alacakliHesap = String(getValue(row, "AlacakliHesap") || "");
           let customAciklama = null;
 
-          let satirUyari = "";
+          let satirUyari = String(getValue(row, "Uyari") || "");
           const isCreditCard =
             isCreditCardIslem(type) ||
             !!matchedCreditCard ||
@@ -811,7 +834,23 @@ export default function LucaDonusturucuPage() {
             <p className="text-gray-400">Henüz fiş oluşturulmadı.</p>
           ) : (
             <div className="space-y-8">
-              {fisler.slice(0, 50).map((fis) => (
+              <RowSearchToolbar
+                search={previewSearch}
+                onSearchChange={setPreviewSearch}
+                placeholder="Fiş no, hesap, açıklama, belge türü veya tutar ara..."
+                filters={LUCA_PREVIEW_FILTERS}
+                activeFilter={previewQuickFilter}
+                onFilterChange={setPreviewQuickFilter}
+                shownCount={filteredFisler.length}
+                totalCount={fisler.length}
+              />
+
+              {displayedFisler.length === 0 ? (
+                <p className="text-gray-400">
+                  Arama veya filtreye uygun fiş bulunamadı.
+                </p>
+              ) : (
+                displayedFisler.map((fis) => (
                 <div
                   key={`fis-${fis.fisNo}`}
                   className="rounded-xl border border-gray-700 p-4"
@@ -848,17 +887,7 @@ export default function LucaDonusturucuPage() {
 
                     <tbody>
                       {fis.satirlar.map((satir, index) => {
-                        const hesapEksik =
-                          !satir.hesapKodu ||
-                          normalizeText(satir.hesapKodu).includes(
-                            "BULUNAMADI"
-                          ) ||
-                          normalizeText(satir.hesapKodu).includes(
-                            "HESAP PLANINDAN"
-                          ) ||
-                          normalizeText(satir.hesapKodu).includes(
-                            "ESLESTIRME"
-                          );
+                        const hesapEksik = isMissingLucaAccountCode(satir.hesapKodu);
 
                         return (
                           <tr
@@ -877,10 +906,18 @@ export default function LucaDonusturucuPage() {
                     </tbody>
                   </table>
                 </div>
-              ))}
+              ))
+              )}
 
               <p className="text-sm text-gray-400">
-                Toplam {fisler.length} fiş oluşturuldu. İlk 50 fiş gösteriliyor.
+                Toplam {fisler.length} fiş oluşturuldu.
+                {filteredFisler.length !== fisler.length ||
+                previewSearch.trim() ||
+                previewQuickFilter !== "all"
+                  ? ` Filtre sonucu ${filteredFisler.length} fiş.`
+                  : ""}{" "}
+                Listede {displayedFisler.length} fiş gösteriliyor
+                {filteredFisler.length > 50 ? " (ilk 50)" : ""}.
               </p>
             </div>
           )}

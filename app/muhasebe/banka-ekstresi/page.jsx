@@ -5,6 +5,7 @@ import Link from "next/link";
 import * as XLSX from "xlsx";
 import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
+import RowSearchToolbar from "../components/RowSearchToolbar";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
@@ -30,6 +31,7 @@ import {
   fetchLearningMemoryForCompany,
   recordLearningMemoryUsage,
 } from "@/src/utils/learningMemory";
+import { filterBankMovementRows } from "@/src/utils/tableSearch";
 import { parseGarantiEkstre } from "../../../parsers/garantiParser";
 import { parseVakifbankEkstre } from "../../../parsers/vakifbankParser";
 import { bankaKurallari } from "../../../parsers/bankaKurallari";
@@ -51,6 +53,16 @@ const LUCA_HEADERS = [
   "Döviz Tutar",
 ];
 
+const BANK_PREVIEW_FILTERS = [
+  { id: "all", label: "Tümü" },
+  { id: "errors", label: "Hatalılar" },
+  { id: "accountNotFound", label: "Hesap Bulunamadı" },
+  { id: "ruleNotFound", label: "Kural Bulunamadı" },
+  { id: "learningMemory", label: "Öğrenen Hafıza" },
+  { id: "creditCard", label: "Kredi Kartı" },
+  { id: "taxSgk", label: "Vergi/SGK" },
+];
+
 export default function BankaParserPage() {
   const [fileName, setFileName] = useState("");
   const [rawCount, setRawCount] = useState(0);
@@ -59,6 +71,8 @@ export default function BankaParserPage() {
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
   const [learningMemory, setLearningMemory] = useState([]);
+  const [previewSearch, setPreviewSearch] = useState("");
+  const [previewQuickFilter, setPreviewQuickFilter] = useState("all");
 
   const {
     companies,
@@ -147,6 +161,26 @@ export default function BankaParserPage() {
     () => countPendingLucaRowsForCompany(selectedCompanyId),
     [selectedCompanyId, accountPlans, movementRows]
   );
+
+  const formatAmount = (value) =>
+    Number(value || 0).toLocaleString("tr-TR", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+
+  const filteredMovementRows = useMemo(
+    () =>
+      filterBankMovementRows(
+        movementRows,
+        previewSearch,
+        previewQuickFilter,
+        formatParserDate,
+        formatAmount
+      ),
+    [movementRows, previewSearch, previewQuickFilter]
+  );
+
+  const displayedMovementRows = filteredMovementRows.slice(0, 100);
 
   const parseMoney = (value) => {
     if (typeof value === "number") return value;
@@ -529,12 +563,6 @@ export default function BankaParserPage() {
     });
   };
 
-  const formatAmount = (value) =>
-    Number(value || 0).toLocaleString("tr-TR", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
-
   return (
     <main className="min-h-screen bg-gray-950 p-8 text-white">
       <MuhasebeMenu />
@@ -689,7 +717,19 @@ export default function BankaParserPage() {
           {movementRows.length === 0 ? (
             <p className="text-gray-400">Henüz standart hareket oluşturulmadı.</p>
           ) : (
-            <div className="overflow-auto">
+            <>
+              <RowSearchToolbar
+                search={previewSearch}
+                onSearchChange={setPreviewSearch}
+                placeholder="Hesap kodu, açıklama, cari, tutar veya uyarı ara..."
+                filters={BANK_PREVIEW_FILTERS}
+                activeFilter={previewQuickFilter}
+                onFilterChange={setPreviewQuickFilter}
+                shownCount={filteredMovementRows.length}
+                totalCount={movementRows.length}
+              />
+
+              <div className="overflow-auto">
               <table className="w-full min-w-[1600px] text-sm">
                 <thead className="bg-gray-800">
                   <tr>
@@ -706,39 +746,57 @@ export default function BankaParserPage() {
                 </thead>
 
                 <tbody>
-                  {movementRows.slice(0, 100).map((row) => (
-                    <tr key={row.id} className="border-t border-gray-800">
-                      <td className="p-3">{formatParserDate(row.date)}</td>
-                      <td className="p-3">{row.description}</td>
-                      <td className="p-3 text-right">{formatAmount(row.amount)}</td>
-                      <td className="p-3">
-                        {row.direction === "GIRIS" ? "Giriş" : "Çıkış"}
-                      </td>
-                      <td className="p-3">{row.accountCode}</td>
-                      <td className="p-3">{row.counterAccountCode}</td>
-                      <td className="p-3">{row.documentType}</td>
-                      <td className="p-3">{row.lucaDescription}</td>
+                  {displayedMovementRows.length === 0 ? (
+                    <tr>
                       <td
-                        className={`p-3 ${
-                          row.warning?.includes("Öğrenen hafızadan eşleşti")
-                            ? "bg-emerald-900/50 font-medium text-emerald-200"
-                            : row.warning
-                              ? "bg-red-900/50 font-medium text-red-200"
-                              : ""
-                        }`}
+                        colSpan={9}
+                        className="p-6 text-center text-gray-400"
                       >
-                        {row.warning || "—"}
+                        Arama veya filtreye uygun satır bulunamadı.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    displayedMovementRows.map((row) => (
+                      <tr key={row.id} className="border-t border-gray-800">
+                        <td className="p-3">{formatParserDate(row.date)}</td>
+                        <td className="p-3">{row.description}</td>
+                        <td className="p-3 text-right">{formatAmount(row.amount)}</td>
+                        <td className="p-3">
+                          {row.direction === "GIRIS" ? "Giriş" : "Çıkış"}
+                        </td>
+                        <td className="p-3">{row.accountCode}</td>
+                        <td className="p-3">{row.counterAccountCode}</td>
+                        <td className="p-3">{row.documentType}</td>
+                        <td className="p-3">{row.lucaDescription}</td>
+                        <td
+                          className={`p-3 ${
+                            row.warning?.includes("Öğrenen hafızadan eşleşti")
+                              ? "bg-emerald-900/50 font-medium text-emerald-200"
+                              : row.warning
+                                ? "bg-red-900/50 font-medium text-red-200"
+                                : ""
+                          }`}
+                        >
+                          {row.warning || "—"}
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
 
               <p className="mt-4 text-sm text-gray-400">
-                Toplam {movementRows.length} satır oluşturuldu. İlk 100 satır
-                gösteriliyor.
+                Toplam {movementRows.length} satır oluşturuldu.
+                {filteredMovementRows.length !== movementRows.length ||
+                previewSearch.trim() ||
+                previewQuickFilter !== "all"
+                  ? ` Filtre sonucu ${filteredMovementRows.length} satır.`
+                  : ""}{" "}
+                Tabloda {displayedMovementRows.length} satır gösteriliyor
+                {filteredMovementRows.length > 100 ? " (ilk 100)" : ""}.
               </p>
             </div>
+            </>
           )}
         </div>
       </div>
