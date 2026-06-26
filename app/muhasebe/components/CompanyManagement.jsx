@@ -90,6 +90,8 @@ export default function CompanyManagement() {
   const [companySearchQuery, setCompanySearchQuery] = useState("");
   const [toast, setToast] = useState(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const showToast = (message, type) => {
     setToast({ message, type });
@@ -177,42 +179,66 @@ export default function CompanyManagement() {
   };
 
   const saveCompany = async () => {
+    if (isSaving) return;
+
     const normalized = normalizeCompany(company);
 
     if (!normalized.id) {
       normalized.id = crypto.randomUUID();
     }
 
-    if (!normalized.companyName?.trim()) {
-      normalized.companyName = company.companyName?.trim() || "Yeni Firma";
-    }
-
-    const { error } = await supabase.from("companies").upsert([
-      {
-        id: normalized.id,
-        company_name: normalized.companyName,
-        data: normalized,
-        updated_at: new Date().toISOString(),
-      },
-    ]);
-
-    if (error) {
-      console.error(error);
-      showToast("Firma kaydedilemedi", "error");
+    const trimmedName = (normalized.companyName || "").trim();
+    if (!trimmedName) {
+      showToast("Firma adı zorunludur", "error");
       return;
     }
 
-    const exists = companies.some((c) => c.id === normalized.id);
+    const normalizedName = trimmedName.toLowerCase();
+    const isDuplicate = companies.some(
+      (c) =>
+        c.id !== normalized.id &&
+        (c.companyName || "").trim().toLowerCase() === normalizedName
+    );
 
-    const updated = exists
-      ? companies.map((c) => (c.id === normalized.id ? normalized : c))
-      : [...companies, normalized];
+    if (isDuplicate) {
+      showToast("Bu firma zaten kayıtlı", "error");
+      return;
+    }
 
-    setCompanies(updated);
-    setCompany(normalized);
-    setSelectedId(normalized.id);
+    normalized.companyName = trimmedName;
 
-    showToast("Firma kaydedildi", "success");
+    setIsSaving(true);
+
+    try {
+      const { error } = await supabase.from("companies").upsert([
+        {
+          id: normalized.id,
+          company_name: normalized.companyName,
+          data: normalized,
+          updated_at: new Date().toISOString(),
+        },
+      ]);
+
+      if (error) {
+        console.error(error);
+        showToast("İşlem yapılamadı. Lütfen tekrar deneyin.", "error");
+        return;
+      }
+
+      const exists = companies.some((c) => c.id === normalized.id);
+
+      const updated = exists
+        ? companies.map((c) => (c.id === normalized.id ? normalized : c))
+        : [...companies, normalized];
+
+      setCompanies(updated);
+      setCompany(normalized);
+      setSelectedId(normalized.id);
+
+      showToast("Firma kaydedildi", "success");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const closeCompanyPanel = () => {
@@ -229,35 +255,51 @@ export default function CompanyManagement() {
   };
 
   const deleteCompany = async (id) => {
-    const { error } = await supabase.from("companies").delete().eq("id", id);
+    if (isDeleting) return false;
 
-    if (error) {
-      console.error(error);
-      showToast("Firma silinemedi", "error");
-      return;
-    }
+    setIsDeleting(true);
 
-    setCompanies(companies.filter((c) => c.id !== id));
+    try {
+      const { error } = await supabase.from("companies").delete().eq("id", id);
 
-    if (selectedId === id) {
-      closeCompanyPanel();
+      if (error) {
+        console.error(error);
+        showToast("İşlem yapılamadı. Lütfen tekrar deneyin.", "error");
+        return false;
+      }
+
+      setCompanies(companies.filter((c) => c.id !== id));
+
+      if (selectedId === id) {
+        closeCompanyPanel();
+      }
+
+      showToast("Firma silindi", "success");
+      return true;
+    } finally {
+      setIsDeleting(false);
     }
   };
 
   const requestDeleteCompany = (id) => {
+    if (isDeleting) return;
     setDeleteConfirmId(id);
   };
 
   const cancelDeleteCompany = () => {
+    if (isDeleting) return;
     setDeleteConfirmId(null);
   };
 
   const confirmDeleteCompany = async () => {
-    if (!deleteConfirmId) return;
+    if (!deleteConfirmId || isDeleting) return;
 
     const id = deleteConfirmId;
-    setDeleteConfirmId(null);
-    await deleteCompany(id);
+    const success = await deleteCompany(id);
+
+    if (success) {
+      setDeleteConfirmId(null);
+    }
   };
 
   const updateField = (field, value) => {
@@ -599,7 +641,8 @@ export default function CompanyManagement() {
         <button
           type="button"
           onClick={() => requestDeleteCompany(c.id)}
-          className="shrink-0 rounded-lg bg-red-600/80 px-2.5 py-2 text-xs font-medium hover:bg-red-600"
+          disabled={isDeleting}
+          className="shrink-0 rounded-lg bg-red-600/80 px-2.5 py-2 text-xs font-medium hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
         >
           Sil
         </button>
@@ -633,7 +676,8 @@ export default function CompanyManagement() {
             type="button"
             aria-label="Kapat"
             onClick={cancelDeleteCompany}
-            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+            disabled={isDeleting}
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm disabled:cursor-not-allowed"
           />
           <div
             role="dialog"
@@ -655,16 +699,18 @@ export default function CompanyManagement() {
               <button
                 type="button"
                 onClick={cancelDeleteCompany}
-                className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                disabled={isDeleting}
+                className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Vazgeç
               </button>
               <button
                 type="button"
                 onClick={confirmDeleteCompany}
-                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500"
+                disabled={isDeleting}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Firmayı Sil
+                {isDeleting ? "Siliniyor..." : "Firmayı Sil"}
               </button>
             </div>
           </div>
@@ -1430,10 +1476,12 @@ export default function CompanyManagement() {
 
             <div className="mt-8 flex justify-end">
               <button
+                type="button"
                 onClick={saveCompany}
-                className="rounded-lg bg-indigo-600 px-6 py-3 font-semibold hover:bg-indigo-700"
+                disabled={isSaving}
+                className="rounded-lg bg-indigo-600 px-6 py-3 font-semibold hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Kaydet
+                {isSaving ? "Kaydediliyor..." : "Kaydet"}
               </button>
             </div>
               </>
