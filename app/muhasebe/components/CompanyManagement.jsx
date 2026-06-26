@@ -88,6 +88,19 @@ export default function CompanyManagement() {
   const [expandedBankDetails, setExpandedBankDetails] = useState({});
   const [expandedCreditCardDetails, setExpandedCreditCardDetails] = useState({});
   const [companySearchQuery, setCompanySearchQuery] = useState("");
+  const [toast, setToast] = useState(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+
+  const showToast = (message, type) => {
+    setToast({ message, type });
+  };
+
+  useEffect(() => {
+    if (!toast) return;
+
+    const timer = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   useEffect(() => {
     const loadCompanies = async () => {
@@ -185,17 +198,7 @@ export default function CompanyManagement() {
 
     if (error) {
       console.error(error);
-      const errorLines = [
-        error.message && `Mesaj: ${error.message}`,
-        error.details && `Detay: ${error.details}`,
-        error.hint && `İpucu: ${error.hint}`,
-        error.code && `Kod: ${error.code}`,
-      ].filter(Boolean);
-      alert(
-        errorLines.length > 0
-          ? `Firma kaydedilemedi:\n\n${errorLines.join("\n")}`
-          : `Firma kaydedilemedi:\n\n${JSON.stringify(error)}`
-      );
+      showToast("Firma kaydedilemedi", "error");
       return;
     }
 
@@ -209,7 +212,7 @@ export default function CompanyManagement() {
     setCompany(normalized);
     setSelectedId(normalized.id);
 
-    alert("Firma kaydedildi");
+    showToast("Firma kaydedildi", "success");
   };
 
   const closeCompanyPanel = () => {
@@ -226,13 +229,26 @@ export default function CompanyManagement() {
   };
 
   const deleteCompany = (id) => {
-    if (!confirm("Bu firmayı silmek istediğine emin misin?")) return;
-
     setCompanies(companies.filter((c) => c.id !== id));
 
     if (selectedId === id) {
       closeCompanyPanel();
     }
+  };
+
+  const requestDeleteCompany = (id) => {
+    setDeleteConfirmId(id);
+  };
+
+  const cancelDeleteCompany = () => {
+    setDeleteConfirmId(null);
+  };
+
+  const confirmDeleteCompany = () => {
+    if (!deleteConfirmId) return;
+
+    deleteCompany(deleteConfirmId);
+    setDeleteConfirmId(null);
   };
 
   const updateField = (field, value) => {
@@ -573,7 +589,7 @@ export default function CompanyManagement() {
         </button>
         <button
           type="button"
-          onClick={() => deleteCompany(c.id)}
+          onClick={() => requestDeleteCompany(c.id)}
           className="shrink-0 rounded-lg bg-red-600/80 px-2.5 py-2 text-xs font-medium hover:bg-red-600"
         >
           Sil
@@ -584,6 +600,67 @@ export default function CompanyManagement() {
 
   return (
     <div className="min-h-screen bg-[#050816] p-6 text-white">
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed top-4 right-4 z-50 flex max-w-sm items-center gap-3 rounded-lg border px-4 py-3 text-sm font-medium shadow-xl backdrop-blur-sm ${
+            toast.type === "success"
+              ? "border-emerald-500/40 bg-emerald-950/95 text-emerald-100"
+              : "border-red-500/40 bg-red-950/95 text-red-100"
+          }`}
+        >
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ${
+              toast.type === "success" ? "bg-emerald-400" : "bg-red-400"
+            }`}
+          />
+          {toast.message}
+        </div>
+      )}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Kapat"
+            onClick={cancelDeleteCompany}
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-company-title"
+            className="relative w-full max-w-md rounded-2xl border border-slate-700/80 bg-slate-950 p-6 shadow-2xl shadow-indigo-500/10 ring-1 ring-white/5"
+          >
+            <div className="pointer-events-none absolute -inset-px rounded-2xl bg-gradient-to-b from-indigo-500/10 via-transparent to-transparent" />
+            <h2
+              id="delete-company-title"
+              className="relative text-lg font-semibold text-white"
+            >
+              Firmayı Sil
+            </h2>
+            <p className="relative mt-3 text-sm leading-relaxed text-slate-400">
+              Bu firmayı silmek istediğinize emin misiniz? Bu işlem geri alınamaz.
+            </p>
+            <div className="relative mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={cancelDeleteCompany}
+                className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteCompany}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500"
+              >
+                Firmayı Sil
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="mx-auto max-w-screen-2xl space-y-6">
         <div className="flex items-start justify-between">
           <div>
