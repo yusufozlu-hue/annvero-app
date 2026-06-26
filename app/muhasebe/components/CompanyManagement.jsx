@@ -118,10 +118,13 @@ export default function CompanyManagement() {
       }
   
       const formatted =
-        data?.map((item) => ({
-          id: item.id,
-          ...item.data,
-        })) || [];
+        data?.map((item) =>
+          normalizeCompany({
+            ...(item.data || {}),
+            id: item.id,
+            companyName: item.data?.companyName || item.company_name || "",
+          })
+        ) || [];
   
       setCompanies(formatted);
       setIsLoaded(true);
@@ -133,11 +136,11 @@ export default function CompanyManagement() {
  
 
   const createNewCompany = () => {
-    const newCompany = {
+    const newCompany = normalizeCompany({
       ...emptyCompany,
       id: crypto.randomUUID(),
       companyName: "Yeni Firma",
-    };
+    });
 
     setCompanies([...companies, newCompany]);
 
@@ -181,16 +184,19 @@ export default function CompanyManagement() {
   const saveCompany = async () => {
     if (isSaving) return;
 
-    const normalized = normalizeCompany(company);
-
-    if (!normalized.id) {
-      normalized.id = crypto.randomUUID();
-    }
-
-    const trimmedName = (normalized.companyName || "").trim();
+    const trimmedName = (company.companyName || "").trim();
     if (!trimmedName) {
       showToast("Firma adı zorunludur", "error");
       return;
+    }
+
+    let normalized = normalizeCompany({
+      ...company,
+      companyName: trimmedName,
+    });
+
+    if (!normalized.id) {
+      normalized.id = crypto.randomUUID();
     }
 
     const normalizedName = trimmedName.toLowerCase();
@@ -204,8 +210,6 @@ export default function CompanyManagement() {
       showToast("Bu firma zaten kayıtlı", "error");
       return;
     }
-
-    normalized.companyName = trimmedName;
 
     setIsSaving(true);
 
@@ -1493,41 +1497,84 @@ export default function CompanyManagement() {
   );
 }
 function normalizeCompany(c) {
-    return {
-      ...emptyCompany,
-      ...c,
-  
-      enabledModules: {
-        ...emptyCompany.enabledModules,
-        ...(c.enabledModules || {}),
-      },
-  
-      accountingRules: {
-        ...emptyCompany.accountingRules,
-        ...(c.accountingRules || {}),
-      },
-  
-      bankAccounts: c.bankAccounts || [],
-  
-      creditCards: (c.creditCards || []).map((card) => ({
-        id: card.id || crypto.randomUUID(),
-        bankName: card.bankName || "",
-        cardName: card.cardName || "",
-        lastFourDigits: card.lastFourDigits || "",
-        currency: card.currency || "TL",
-        trackingMethod: card.trackingMethod || "TEK_HESAP",
-        statementPeriodRule: card.statementPeriodRule || "ONCEKI_AY",
-        singleLucaAccountCode: card.singleLucaAccountCode || "",
-        monthly309BaseAccount: card.monthly309BaseAccount || "",
-        monthly409BaseAccount: card.monthly409BaseAccount || "",
-        isActive: card.isActive ?? true,
-      })),
-  
-      documentSeriesRules: c.documentSeriesRules || [],
-      vehicles: c.vehicles || [],
-      employees: c.employees || [],
-    };
-  }
+  const source = c || {};
+
+  return {
+    ...emptyCompany,
+    ...source,
+
+    id: source.id || "",
+    companyName: source.companyName || "",
+
+    enabledModules: {
+      ...emptyCompany.enabledModules,
+      ...(source.enabledModules || {}),
+    },
+
+    accountingRules: {
+      ...emptyCompany.accountingRules,
+      ...(source.accountingRules || {}),
+      transferToleranceDays: Number(
+        (source.accountingRules || {}).transferToleranceDays ??
+          emptyCompany.accountingRules.transferToleranceDays
+      ),
+    },
+
+    bankAccounts: (source.bankAccounts || []).map((account) => ({
+      id: account.id || crypto.randomUUID(),
+      bankName: account.bankName || "",
+      accountName: account.accountName || "",
+      iban: account.iban || "",
+      currency: account.currency || "TL",
+      accountType: account.accountType || "VADESIZ",
+      lucaAccountCode: account.lucaAccountCode || "",
+      isPosAccount: account.isPosAccount ?? false,
+      isActive: account.isActive ?? true,
+    })),
+
+    creditCards: (source.creditCards || []).map((card) => ({
+      id: card.id || crypto.randomUUID(),
+      bankName: card.bankName || "",
+      cardName: card.cardName || "",
+      lastFourDigits: card.lastFourDigits || "",
+      currency: card.currency || "TL",
+      trackingMethod: card.trackingMethod || "TEK_HESAP",
+      statementPeriodRule: card.statementPeriodRule || "ONCEKI_AY",
+      singleLucaAccountCode: card.singleLucaAccountCode || "",
+      monthly309BaseAccount: card.monthly309BaseAccount || "",
+      monthly409BaseAccount: card.monthly409BaseAccount || "",
+      isActive: card.isActive ?? true,
+    })),
+
+    documentSeriesRules: (source.documentSeriesRules || []).map((rule) => ({
+      id: rule.id || crypto.randomUUID(),
+      prefix: rule.prefix || "",
+      documentType: rule.documentType || "EA",
+      description: rule.description || "",
+    })),
+
+    vehicles: (source.vehicles || []).map((vehicle) => ({
+      id: vehicle.id || crypto.randomUUID(),
+      plate: vehicle.plate || "",
+      brand: vehicle.brand || "",
+      model: vehicle.model || "",
+      vehicleType: vehicle.vehicleType || "BINEK",
+      policyExpenseMethod: vehicle.policyExpenseMethod || "AYLIK",
+      lucaExpenseAccount: vehicle.lucaExpenseAccount || "",
+      isActive: vehicle.isActive ?? true,
+    })),
+
+    employees: (source.employees || []).map((employee) => ({
+      id: employee.id || crypto.randomUUID(),
+      fullName: employee.fullName || "",
+      tcNo: employee.tcNo || "",
+      position: employee.position || "",
+      salaryAccountCode: employee.salaryAccountCode || "335",
+      advanceAccountCode: employee.advanceAccountCode || "196",
+      isActive: employee.isActive ?? true,
+    })),
+  };
+}
   
   function WelcomeScreen() {
     return (
