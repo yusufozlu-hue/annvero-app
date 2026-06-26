@@ -228,7 +228,15 @@ export default function CompanyManagement() {
     setExpandedCreditCardDetails({});
   };
 
-  const deleteCompany = (id) => {
+  const deleteCompany = async (id) => {
+    const { error } = await supabase.from("companies").delete().eq("id", id);
+
+    if (error) {
+      console.error(error);
+      showToast("Firma silinemedi", "error");
+      return;
+    }
+
     setCompanies(companies.filter((c) => c.id !== id));
 
     if (selectedId === id) {
@@ -244,11 +252,12 @@ export default function CompanyManagement() {
     setDeleteConfirmId(null);
   };
 
-  const confirmDeleteCompany = () => {
+  const confirmDeleteCompany = async () => {
     if (!deleteConfirmId) return;
 
-    deleteCompany(deleteConfirmId);
+    const id = deleteConfirmId;
     setDeleteConfirmId(null);
+    await deleteCompany(id);
   };
 
   const updateField = (field, value) => {
