@@ -26,6 +26,10 @@ import {
   normalizeParserText,
   standardMovementToLucaPendingRow,
 } from "@/src/utils/bankMovementMapper";
+import {
+  fetchLearningMemoryForCompany,
+  recordLearningMemoryUsage,
+} from "@/src/utils/learningMemory";
 import { parseGarantiEkstre } from "../../../parsers/garantiParser";
 import { parseVakifbankEkstre } from "../../../parsers/vakifbankParser";
 import { bankaKurallari } from "../../../parsers/bankaKurallari";
@@ -54,6 +58,7 @@ export default function BankaParserPage() {
   const [movementRows, setMovementRows] = useState([]);
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
+  const [learningMemory, setLearningMemory] = useState([]);
 
   const {
     companies,
@@ -85,6 +90,15 @@ export default function BankaParserPage() {
       window.removeEventListener("focus", refreshCompanyData);
     };
   }, [refreshCompanies]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) {
+      setLearningMemory([]);
+      return;
+    }
+
+    fetchLearningMemoryForCompany(selectedCompanyId).then(setLearningMemory);
+  }, [selectedCompanyId]);
 
   const companyPlans = useMemo(
     () => getAccountPlanForCompany(accountPlans, selectedCompanyId),
@@ -261,7 +275,14 @@ export default function BankaParserPage() {
       companyRules,
       selectedBank,
       legacyRules: bankaKurallari,
+      learningMemory,
     });
+
+  const applyPreviewRows = async (parsedRows) => {
+    const rows = enrichParsedRows(parsedRows);
+    setMovementRows(rows);
+    await recordLearningMemoryUsage(rows);
+  };
 
   const createLucaRow = ({
     fisNo,
@@ -429,10 +450,10 @@ export default function BankaParserPage() {
 
     const normalizedRows = parsedRows.map(normalizeStandardRow);
     setParsedNormalizedRows(normalizedRows);
-    setMovementRows(enrichParsedRows(normalizedRows));
+    await applyPreviewRows(normalizedRows);
   };
 
-  const handleCreatePreview = () => {
+  const handleCreatePreview = async () => {
     if (!selectedCompanyId) {
       alert("Önce firma seçmelisin.");
       return;
@@ -443,7 +464,7 @@ export default function BankaParserPage() {
       return;
     }
 
-    setMovementRows(enrichParsedRows(parsedNormalizedRows));
+    await applyPreviewRows(parsedNormalizedRows);
   };
 
   const exportExcel = () => {
@@ -699,7 +720,11 @@ export default function BankaParserPage() {
                       <td className="p-3">{row.lucaDescription}</td>
                       <td
                         className={`p-3 ${
-                          row.warning ? "bg-red-900/50 font-medium text-red-200" : ""
+                          row.warning?.includes("Öğrenen hafızadan eşleşti")
+                            ? "bg-emerald-900/50 font-medium text-emerald-200"
+                            : row.warning
+                              ? "bg-red-900/50 font-medium text-red-200"
+                              : ""
                         }`}
                       >
                         {row.warning || "—"}

@@ -82,6 +82,69 @@ function findLegacyRule(legacyRules, description) {
   );
 }
 
+function findLearningMemoryMatch(learningMemory, description) {
+  const text = normalizeParserText(description);
+  const records = (learningMemory || []).filter(
+    (record) => record?.is_active !== false
+  );
+
+  let best = null;
+  let bestKeywordLength = 0;
+
+  for (const record of records) {
+    const keyword = normalizeParserText(record.keyword);
+
+    if (!keyword || !text.includes(keyword)) continue;
+
+    if (!best || keyword.length > bestKeywordLength) {
+      best = record;
+      bestKeywordLength = keyword.length;
+    }
+  }
+
+  return best;
+}
+
+function applyLearningMemoryAccounts(memory, direction, bankLucaBase, bankAccounts) {
+  const debitAccount = memory.account_code || "";
+  const creditAccount = memory.counter_account_code || "";
+
+  let accountCode = bankLucaBase;
+  let counterAccountCode = "";
+
+  if (direction === "GIRIS") {
+    counterAccountCode = creditAccount || debitAccount;
+  } else {
+    counterAccountCode = debitAccount || creditAccount;
+  }
+
+  if (compactAccount(creditAccount).startsWith("102")) {
+    accountCode = resolve102BankAccount(bankAccounts, creditAccount, creditAccount);
+  } else if (compactAccount(debitAccount).startsWith("102")) {
+    accountCode = resolve102BankAccount(bankAccounts, debitAccount, debitAccount);
+  } else {
+    accountCode = resolve102BankAccount(bankAccounts, accountCode, bankLucaBase);
+  }
+
+  return { accountCode, counterAccountCode };
+}
+
+function formatMemoryDescription(memory, description, direction) {
+  const template = memory?.description_format || "";
+
+  if (!template) {
+    return buildFallbackLucaDescription({
+      aciklama: description,
+      description,
+      yon: direction,
+    });
+  }
+
+  return template
+    .replaceAll("{ACIKLAMA}", description)
+    .replaceAll("{aciklama}", description);
+}
+
 function isCreditCardPaymentText(description) {
   const text = normalizeParserText(description);
 
@@ -235,6 +298,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     companyRules = {},
     selectedBank,
     legacyRules = [],
+    learningMemory = [],
   } = context;
 
   const description = String(rawRow.aciklama || rawRow.description || "").trim();
@@ -244,6 +308,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   const warnings = [];
 
   let matchedRule = null;
+  let matchedMemoryId = null;
   let accountCode = "";
   let counterAccountCode = "";
   let lucaDescription = "";
@@ -317,20 +382,52 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       });
       counterAccountCode = legacyRule.hesap || "";
     } else {
-      appendWarning(warnings, "Kural bulunamadı");
-      lucaDescription = buildFallbackLucaDescription({
-        ...rawRow,
-        yon: direction,
-        aciklama: description,
-      });
+      const memoryMatch = findLearningMemoryMatch(learningMemory, description);
 
-      const cariCode = findCariAccountInPlan(companyPlans, description);
+      if (memoryMatch) {
+        matchedRule = {
+          source: "learningMemory",
+          islem: "HAFIZA",
+          anahtar: memoryMatch.keyword || "",
+        };
+        matchedMemoryId = memoryMatch.id || null;
 
-      if (cariCode) {
-        counterAccountCode = cariCode;
+        const memoryAccounts = applyLearningMemoryAccounts(
+          memoryMatch,
+          direction,
+          bankLucaBase,
+          selectedCompany?.bankAccounts || []
+        );
+
+        accountCode = memoryAccounts.accountCode;
+        counterAccountCode = memoryAccounts.counterAccountCode;
+        lucaDescription = formatMemoryDescription(
+          memoryMatch,
+          description,
+          direction
+        );
+
+        if (memoryMatch.document_type) {
+          documentType = memoryMatch.document_type;
+        }
+
+        appendWarning(warnings, "Öğrenen hafızadan eşleşti");
       } else {
-        counterAccountCode = "";
-        appendWarning(warnings, "Cari hesap bulunamadı");
+        appendWarning(warnings, "Kural bulunamadı");
+        lucaDescription = buildFallbackLucaDescription({
+          ...rawRow,
+          yon: direction,
+          aciklama: description,
+        });
+
+        const cariCode = findCariAccountInPlan(companyPlans, description);
+
+        if (cariCode) {
+          counterAccountCode = cariCode;
+        } else {
+          counterAccountCode = "";
+          appendWarning(warnings, "Cari hesap bulunamadı");
+        }
       }
     }
 
@@ -352,15 +449,17 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 
   const faturaRule = findFaturaRule(companyRules, description);
 
-  if (!isCardPaymentRow && faturaRule?.belgeTuru) {
+  if (!isCardPaymentRow && faturaRule?.belgeTuru && matchedRule?.source !== "learningMemory") {
     documentType = faturaRule.belgeTuru;
   }
 
-  accountCode = resolve102BankAccount(
-    selectedCompany?.bankAccounts || [],
-    accountCode,
-    getDefaultBankLucaCode(selectedCompany?.bankAccounts)
-  );
+  if (matchedRule?.source !== "learningMemory") {
+    accountCode = resolve102BankAccount(
+      selectedCompany?.bankAccounts || [],
+      accountCode,
+      getDefaultBankLucaCode(selectedCompany?.bankAccounts)
+    );
+  }
 
   if (accountCode && !accountExistsInPlan(companyPlans, accountCode)) {
     appendWarning(warnings, "Hesap planında bulunamadı");
@@ -386,6 +485,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     documentType,
     lucaDescription,
     warning: warnings.join(" | "),
+    matchedMemoryId,
   };
 }
 
