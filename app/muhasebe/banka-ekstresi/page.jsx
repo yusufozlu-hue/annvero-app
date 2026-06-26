@@ -6,6 +6,8 @@ import * as XLSX from "xlsx";
 import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
+import AccountSuggestionBadges from "../components/AccountSuggestionBadges";
+import { parseSuggestionsFromWarning } from "@/src/utils/accountPlanSuggestions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
@@ -777,7 +779,14 @@ export default function BankaParserPage() {
                                 : ""
                           }`}
                         >
-                          {row.warning || "—"}
+                          <div>{row.warning || "—"}</div>
+                          <AccountSuggestionBadges
+                            suggestions={
+                              row.accountSuggestions?.length
+                                ? row.accountSuggestions
+                                : parseSuggestionsFromWarning(row.warning)
+                            }
+                          />
                         </td>
                       </tr>
                     ))

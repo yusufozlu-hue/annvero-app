@@ -1,5 +1,10 @@
 import { resolve102BankAccount } from "@/src/utils/companyCenter";
 import {
+  accountExistsInCompanyPlan,
+  buildAccountPlanNotFoundWarning,
+  collectAccountSuggestions,
+} from "@/src/utils/accountPlanSuggestions";
+import {
   buildCreditCardPaymentDescription,
   findCreditCardByText,
   getCreditCardAccount,
@@ -158,14 +163,7 @@ function isCreditCardPaymentText(description) {
 }
 
 function accountExistsInPlan(companyPlans, accountCode) {
-  if (!accountCode) return false;
-
-  const wanted = compactAccount(accountCode);
-
-  return companyPlans.some((account) => {
-    const code = account.accountCode || account.hesapKodu || "";
-    return compactAccount(code) === wanted;
-  });
+  return accountExistsInCompanyPlan(companyPlans, accountCode);
 }
 
 function isGenericCariAccount(accountCode) {
@@ -461,14 +459,37 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     );
   }
 
+  const missingPlanAccounts = [];
+
   if (accountCode && !accountExistsInPlan(companyPlans, accountCode)) {
-    appendWarning(warnings, "Hesap planında bulunamadı");
+    missingPlanAccounts.push(accountCode);
   }
 
-  if (counterAccountCode && !accountExistsInPlan(companyPlans, counterAccountCode)) {
-    if (!warnings.includes("Hesap planında bulunamadı")) {
-      appendWarning(warnings, "Hesap planında bulunamadı");
-    }
+  if (
+    counterAccountCode &&
+    !accountExistsInPlan(companyPlans, counterAccountCode) &&
+    !missingPlanAccounts.includes(counterAccountCode)
+  ) {
+    missingPlanAccounts.push(counterAccountCode);
+  }
+
+  let accountSuggestions = [];
+
+  if (missingPlanAccounts.length > 0) {
+    const contextText = [description, lucaDescription].join(" ");
+    accountSuggestions = collectAccountSuggestions(
+      companyPlans,
+      missingPlanAccounts,
+      contextText
+    );
+    appendWarning(
+      warnings,
+      buildAccountPlanNotFoundWarning(
+        companyPlans,
+        missingPlanAccounts,
+        contextText
+      )
+    );
   }
 
   return {
@@ -486,6 +507,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     lucaDescription,
     warning: warnings.join(" | "),
     matchedMemoryId,
+    accountSuggestions,
   };
 }
 

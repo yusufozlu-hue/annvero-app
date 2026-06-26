@@ -43,6 +43,7 @@ export function getBankMovementSearchParts(row, formatDate, formatAmount) {
     formatAmount ? formatAmount(row.amount) : "",
     row.direction,
     row.direction === "GIRIS" ? "Giris" : "Cikis",
+    ...(row.accountSuggestions || []).map((item) => item.label),
   ];
 }
 
@@ -169,6 +170,10 @@ export function getLucaFisSearchParts(fis) {
       satir.alacak,
       satir.uyari
     );
+  }
+
+  for (const suggestion of fis.accountSuggestions || []) {
+    parts.push(suggestion.label);
   }
 
   return parts;

@@ -30,6 +30,12 @@ import {
   filterLucaFisRows,
   isMissingLucaAccountCode,
 } from "@/src/utils/tableSearch";
+import {
+  buildAccountPlanNotFoundWarning,
+  collectAccountSuggestions,
+  parseSuggestionsFromWarning,
+} from "@/src/utils/accountPlanSuggestions";
+import AccountSuggestionBadges from "../components/AccountSuggestionBadges";
 
 const LUCA_EXPORT_HEADERS = [
   "Fiş No",
@@ -579,19 +585,58 @@ export default function LucaDonusturucuPage() {
             isCreditCard,
           });
 
+          const missingPlanAccounts = [];
+
+          if (borcluHesap && !accountExistsInPlan(borcluHesap)) {
+            missingPlanAccounts.push(borcluHesap);
+          }
+
+          if (
+            alacakliHesap &&
+            !accountExistsInPlan(alacakliHesap) &&
+            !missingPlanAccounts.includes(alacakliHesap)
+          ) {
+            missingPlanAccounts.push(alacakliHesap);
+          }
+
+          let accountSuggestions = [];
+          let finalUyari = satirUyari;
+
+          if (
+            missingPlanAccounts.length > 0 &&
+            !String(satirUyari).includes("Öneriler:")
+          ) {
+            const contextText = [rawDescription, fisAciklama].join(" ");
+            accountSuggestions = collectAccountSuggestions(
+              companyPlans,
+              missingPlanAccounts,
+              contextText
+            );
+            const planWarning = buildAccountPlanNotFoundWarning(
+              companyPlans,
+              missingPlanAccounts,
+              contextText
+            );
+
+            finalUyari = finalUyari
+              ? `${finalUyari} | ${planWarning}`
+              : planWarning;
+          }
+
           createdFisler.push({
             fisNo: createdFisler.length + 1,
             tarih,
             aciklama: fisAciklama,
             belgeTuru,
-            uyari: satirUyari,
+            uyari: finalUyari,
+            accountSuggestions,
             satirlar: [
               {
                 hesapKodu: borcluHesap,
                 aciklama: fisAciklama,
                 borc: tutar,
                 alacak: "",
-                uyari: satirUyari,
+                uyari: finalUyari,
               },
               {
                 hesapKodu: alacakliHesap,
@@ -867,9 +912,18 @@ export default function LucaDonusturucuPage() {
                     </div>
 
                     {fis.uyari ? (
-                      <span className="rounded-lg border border-yellow-700/60 bg-yellow-900/40 px-3 py-1 text-xs font-semibold text-yellow-300">
-                        {fis.uyari}
-                      </span>
+                      <div className="max-w-xl text-right">
+                        <span className="rounded-lg border border-yellow-700/60 bg-yellow-900/40 px-3 py-1 text-xs font-semibold text-yellow-300">
+                          {fis.uyari}
+                        </span>
+                        <AccountSuggestionBadges
+                          suggestions={
+                            fis.accountSuggestions?.length
+                              ? fis.accountSuggestions
+                              : parseSuggestionsFromWarning(fis.uyari)
+                          }
+                        />
+                      </div>
                     ) : (
                       <span className="text-sm text-gray-400">Belge No: boş</span>
                     )}
