@@ -6,24 +6,18 @@ import {
 } from "@/src/utils/accountPlanSuggestions";
 import { enhanceHgsOgsLucaDescription } from "@/src/utils/plateParser";
 import {
+  buildCariNotFoundWarning,
+  resolveCariAccountMatch,
+} from "@/src/utils/cariAccountMatcher";
+import {
   buildCreditCardPaymentDescription,
   findCreditCardByText,
   getCreditCardAccount,
 } from "@/src/utils/creditCardAccountResolver";
 
-export function normalizeParserText(value) {
-  return String(value || "")
-    .toUpperCase()
-    .replaceAll("İ", "I")
-    .replaceAll("Ğ", "G")
-    .replaceAll("Ü", "U")
-    .replaceAll("Ş", "S")
-    .replaceAll("Ö", "O")
-    .replaceAll("Ç", "C")
-    .replace(/[.,/()\-_*:;]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+import { normalizeParserText } from "@/src/utils/textNormalize";
+
+export { normalizeParserText };
 
 function compactAccount(value) {
   return normalizeParserText(value).replace(/\s+/g, "");
@@ -167,81 +161,63 @@ function accountExistsInPlan(companyPlans, accountCode) {
   return accountExistsInCompanyPlan(companyPlans, accountCode);
 }
 
+export { findCariAccountInPlan } from "@/src/utils/cariAccountMatcher";
+
 function isGenericCariAccount(accountCode) {
   const compact = compactAccount(accountCode);
   return compact.startsWith("320") || compact.startsWith("120");
 }
 
-function extractCariNames(description) {
-  const raw = String(description || "");
-  const names = [];
-
-  const pushPart = (part) => {
-    const cleaned = normalizeParserText(part);
-    if (cleaned) names.push(cleaned);
-  };
-
-  // "-" sonrası bölüm (kişi/cari adı genelde sonda olur)
-  if (raw.includes("-")) {
-    const parts = raw.split("-");
-    pushPart(parts[parts.length - 1]);
-  }
-
-  // "/" sonrası bölüm
-  if (raw.includes("/")) {
-    const parts = raw.split("/");
-    pushPart(parts[parts.length - 1]);
-  }
-
-  // Son kelime grupları (son 2 ve son 3 kelime) ayrıca cari adı adayı
-  const words = normalizeParserText(raw).split(" ").filter(Boolean);
-
-  if (words.length >= 2) {
-    pushPart(words.slice(-2).join(" "));
-  }
-
-  if (words.length >= 3) {
-    pushPart(words.slice(-3).join(" "));
-  }
-
-  pushPart(raw);
-
-  return [...new Set(names)];
+function appendWarning(warnings, message) {
+  if (!message) return;
+  if (!warnings.includes(message)) warnings.push(message);
 }
 
-export function findCariAccountInPlan(companyPlans, description) {
-  if (!companyPlans?.length) return "";
-
-  const fullText = normalizeParserText(description);
-  const haystacks = [fullText, ...extractCariNames(description)].filter(Boolean);
-
-  let best = null;
-
-  for (const account of companyPlans) {
-    const rawName = account.accountName || account.hesapAdi || "";
-    const name = normalizeParserText(rawName);
-
-    if (!name || name.length < 3) continue;
-
-    const nameWords = name.split(" ").filter((word) => word.length >= 2);
-
-    const matched = haystacks.some((hay) => {
-      if (!hay) return false;
-      if (hay.includes(name)) return true;
-      return nameWords.length >= 2 && nameWords.every((word) => hay.includes(word));
-    });
-
-    if (!matched) continue;
-
-    const code = account.accountCode || account.hesapKodu || "";
-    if (!code) continue;
-
-    if (!best || name.length > best.nameLength) {
-      best = { code, nameLength: name.length };
+function removeWarningsMatching(warnings, predicate) {
+  for (let index = warnings.length - 1; index >= 0; index -= 1) {
+    if (predicate(warnings[index])) {
+      warnings.splice(index, 1);
     }
   }
+}
 
-  return best?.code || "";
+function applyCariResolution(
+  companyPlans,
+  description,
+  lucaDescription,
+  ruleAciklama,
+  counterAccountCode,
+  warnings
+) {
+  const needsResolve =
+    !counterAccountCode ||
+    (isGenericCariAccount(counterAccountCode) &&
+      !accountExistsInPlan(companyPlans, counterAccountCode));
+
+  if (!needsResolve) {
+    return { counterAccountCode, cariSuggestions: [] };
+  }
+
+  const result = resolveCariAccountMatch(companyPlans, {
+    description,
+    lucaDescription,
+    ruleAciklama,
+  });
+
+  removeWarningsMatching(
+    warnings,
+    (message) =>
+      message === "Cari hesap bulunamadı" ||
+      message.startsWith("Cari hesap bulunamadı.")
+  );
+
+  if (result.code) {
+    appendWarning(warnings, "Cari hesap eşleşti");
+    return { counterAccountCode: result.code, cariSuggestions: [] };
+  }
+
+  appendWarning(warnings, buildCariNotFoundWarning(result.suggestions));
+  return { counterAccountCode: "", cariSuggestions: result.suggestions };
 }
 
 export function buildFallbackLucaDescription(row) {
@@ -285,11 +261,6 @@ function formatRuleDescription(rule, description) {
   return template.replaceAll("{ACIKLAMA}", description).replaceAll("{aciklama}", description);
 }
 
-function appendWarning(warnings, message) {
-  if (!message) return;
-  if (!warnings.includes(message)) warnings.push(message);
-}
-
 export function mapParsedRowToStandardMovement(rawRow, context) {
   const {
     selectedCompany,
@@ -312,6 +283,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   let counterAccountCode = "";
   let lucaDescription = "";
   let documentType = "DK";
+  let ruleAciklama = "";
+  let cariSuggestions = [];
 
   const bankLucaBase = resolve102BankAccount(
     selectedCompany?.bankAccounts || [],
@@ -364,8 +337,13 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     matchedRule = engineRule || legacyRule || null;
 
     if (engineRule) {
-      lucaDescription =
+      ruleAciklama =
         formatRuleDescription(engineRule, description) ||
+        engineRule.aciklama ||
+        engineRule.description ||
+        "";
+      lucaDescription =
+        ruleAciklama ||
         buildFallbackLucaDescription({ ...rawRow, yon: direction, aciklama: description });
 
       if (direction === "GIRIS") {
@@ -374,11 +352,14 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         counterAccountCode = engineRule.borcHesabi || engineRule.alacakHesabi || "";
       }
     } else if (legacyRule) {
-      lucaDescription = legacyRule.aciklama || buildFallbackLucaDescription({
-        ...rawRow,
-        yon: direction,
-        aciklama: description,
-      });
+      ruleAciklama = legacyRule.aciklama || "";
+      lucaDescription =
+        ruleAciklama ||
+        buildFallbackLucaDescription({
+          ...rawRow,
+          yon: direction,
+          aciklama: description,
+        });
       counterAccountCode = legacyRule.hesap || "";
     } else {
       const memoryMatch = findLearningMemoryMatch(learningMemory, description);
@@ -418,32 +399,20 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
           yon: direction,
           aciklama: description,
         });
-
-        const cariCode = findCariAccountInPlan(companyPlans, description);
-
-        if (cariCode) {
-          counterAccountCode = cariCode;
-        } else {
-          counterAccountCode = "";
-          appendWarning(warnings, "Cari hesap bulunamadı");
-        }
       }
     }
 
-    if (
-      counterAccountCode &&
-      isGenericCariAccount(counterAccountCode) &&
-      !accountExistsInPlan(companyPlans, counterAccountCode)
-    ) {
-      const cariCode = findCariAccountInPlan(companyPlans, description);
+    const cariResolution = applyCariResolution(
+      companyPlans,
+      description,
+      lucaDescription,
+      ruleAciklama,
+      counterAccountCode,
+      warnings
+    );
 
-      if (cariCode) {
-        counterAccountCode = cariCode;
-      } else {
-        counterAccountCode = "";
-        appendWarning(warnings, "Cari hesap bulunamadı");
-      }
-    }
+    counterAccountCode = cariResolution.counterAccountCode;
+    cariSuggestions = cariResolution.cariSuggestions;
   }
 
   const faturaRule = findFaturaRule(companyRules, description);
@@ -519,6 +488,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       Object.keys(accountPlanMissing).length > 0 ? accountPlanMissing : null,
     normalizedPlate: hgsOgsEnhancement.normalizedPlate,
     displayPlate: hgsOgsEnhancement.displayPlate,
+    cariSuggestions,
   };
 }
 

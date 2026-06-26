@@ -1,4 +1,4 @@
-import { normalizeParserText } from "@/src/utils/bankMovementMapper";
+import { normalizeParserText } from "@/src/utils/textNormalize";
 
 export function normalizeSearchText(value) {
   return normalizeParserText(value);
@@ -44,6 +44,7 @@ export function getBankMovementSearchParts(row, formatDate, formatAmount) {
     row.direction,
     row.direction === "GIRIS" ? "Giris" : "Cikis",
     ...(row.accountSuggestions || []).map((item) => item.label),
+    ...(row.cariSuggestions || []).map((item) => item.label),
   ];
 }
 
@@ -58,6 +59,7 @@ export function hasBankMovementError(row) {
   const nonErrorParts = new Set([
     normalizeSearchText("Öğrenen hafızadan eşleşti"),
     normalizeSearchText("Önerilen hesap uygulandı"),
+    normalizeSearchText("Cari hesap eşleşti"),
   ]);
 
   const parts = warning

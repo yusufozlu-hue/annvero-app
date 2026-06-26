@@ -526,10 +526,15 @@ export default function LucaDonusturucuPage() {
             if (needsCariResolve(alacakliHesap)) {
               const cariKod =
                 getAccountCode(matchedAccount) ||
-                findCariAccountInPlan(companyPlans, rawDescription);
+                findCariAccountInPlan(companyPlans, rawDescription, {
+                  lucaDescription: pendingLucaAciklama,
+                });
 
               if (cariKod) {
                 alacakliHesap = cariKod;
+                satirUyari = satirUyari
+                  ? `${satirUyari} | Cari hesap eşleşti`
+                  : "Cari hesap eşleşti";
               } else {
                 alacakliHesap = "";
                 satirUyari = satirUyari || "Cari hesap bulunamadı";
@@ -543,10 +548,15 @@ export default function LucaDonusturucuPage() {
             if (needsCariResolve(borcluHesap)) {
               const cariKod =
                 getAccountCode(matchedAccount) ||
-                findCariAccountInPlan(companyPlans, rawDescription);
+                findCariAccountInPlan(companyPlans, rawDescription, {
+                  lucaDescription: pendingLucaAciklama,
+                });
 
               if (cariKod) {
                 borcluHesap = cariKod;
+                satirUyari = satirUyari
+                  ? `${satirUyari} | Cari hesap eşleşti`
+                  : "Cari hesap eşleşti";
               } else {
                 borcluHesap = "";
                 satirUyari = satirUyari || "Cari hesap bulunamadı";

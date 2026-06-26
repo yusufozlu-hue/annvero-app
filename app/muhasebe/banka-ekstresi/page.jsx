@@ -860,6 +860,9 @@ export default function BankaParserPage() {
                               handleApplyAccountSuggestion(row, suggestion)
                             }
                           />
+                          <AccountSuggestionBadges
+                            suggestions={row.cariSuggestions || []}
+                          />
                         </td>
                       </tr>
                     ))
@@ -895,6 +898,10 @@ function getMovementWarningClass(warning) {
 
   if (warning.includes("Önerilen hesap uygulandı")) {
     return "bg-sky-900/50 font-medium text-sky-200";
+  }
+
+  if (warning.includes("Cari hesap eşleşti")) {
+    return "bg-teal-900/50 font-medium text-teal-200";
   }
 
   if (warning.includes("Öğrenen hafızadan eşleşti")) {
