@@ -4,6 +4,7 @@ import {
   buildAccountPlanNotFoundWarning,
   collectAccountSuggestions,
 } from "@/src/utils/accountPlanSuggestions";
+import { enhanceHgsOgsLucaDescription } from "@/src/utils/plateParser";
 import {
   buildCreditCardPaymentDescription,
   findCreditCardByText,
@@ -460,9 +461,11 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   }
 
   const missingPlanAccounts = [];
+  const accountPlanMissing = {};
 
   if (accountCode && !accountExistsInPlan(companyPlans, accountCode)) {
     missingPlanAccounts.push(accountCode);
+    accountPlanMissing.accountCode = accountCode;
   }
 
   if (
@@ -471,6 +474,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     !missingPlanAccounts.includes(counterAccountCode)
   ) {
     missingPlanAccounts.push(counterAccountCode);
+    accountPlanMissing.counterAccountCode = counterAccountCode;
   }
 
   let accountSuggestions = [];
@@ -492,6 +496,9 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     );
   }
 
+  const hgsOgsEnhancement = enhanceHgsOgsLucaDescription(description, lucaDescription);
+  lucaDescription = hgsOgsEnhancement.lucaDescription;
+
   return {
     id: crypto.randomUUID(),
     date,
@@ -508,6 +515,10 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     warning: warnings.join(" | "),
     matchedMemoryId,
     accountSuggestions,
+    accountPlanMissing:
+      Object.keys(accountPlanMissing).length > 0 ? accountPlanMissing : null,
+    normalizedPlate: hgsOgsEnhancement.normalizedPlate,
+    displayPlate: hgsOgsEnhancement.displayPlate,
   };
 }
 

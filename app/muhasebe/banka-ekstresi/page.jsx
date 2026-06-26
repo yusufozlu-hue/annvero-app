@@ -7,7 +7,12 @@ import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import AccountSuggestionBadges from "../components/AccountSuggestionBadges";
-import { parseSuggestionsFromWarning } from "@/src/utils/accountPlanSuggestions";
+import {
+  applySuggestionToMovement,
+  buildLearningMemoryAccountUpdate,
+  parseSuggestionsFromWarning,
+  resolveSuggestionTargetField,
+} from "@/src/utils/accountPlanSuggestions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
@@ -32,8 +37,9 @@ import {
 import {
   fetchLearningMemoryForCompany,
   recordLearningMemoryUsage,
+  updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
-import { filterBankMovementRows } from "@/src/utils/tableSearch";
+import { filterBankMovementRows, hasBankMovementError } from "@/src/utils/tableSearch";
 import { parseGarantiEkstre } from "../../../parsers/garantiParser";
 import { parseVakifbankEkstre } from "../../../parsers/vakifbankParser";
 import { bankaKurallari } from "../../../parsers/bankaKurallari";
@@ -75,6 +81,8 @@ export default function BankaParserPage() {
   const [learningMemory, setLearningMemory] = useState([]);
   const [previewSearch, setPreviewSearch] = useState("");
   const [previewQuickFilter, setPreviewQuickFilter] = useState("all");
+  const [toast, setToast] = useState(null);
+  const [applyingSuggestionRowId, setApplyingSuggestionRowId] = useState(null);
 
   const {
     companies,
@@ -90,6 +98,17 @@ export default function BankaParserPage() {
   );
 
   const [selectedBank, setSelectedBank] = useState("GARANTI");
+
+  const showToast = (message, type) => {
+    setToast({ message, type });
+  };
+
+  useEffect(() => {
+    if (!toast) return;
+
+    const timer = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   useEffect(() => {
     const refreshCompanyData = () => {
@@ -318,6 +337,44 @@ export default function BankaParserPage() {
     const rows = enrichParsedRows(parsedRows);
     setMovementRows(rows);
     await recordLearningMemoryUsage(rows);
+  };
+
+  const handleApplyAccountSuggestion = async (row, suggestion) => {
+    const updatedRow = applySuggestionToMovement(
+      row,
+      suggestion,
+      selectedCompany?.bankAccounts || []
+    );
+
+    setMovementRows((prev) =>
+      prev.map((item) => (item.id === row.id ? updatedRow : item))
+    );
+
+    if (!row.matchedMemoryId) return;
+
+    setApplyingSuggestionRowId(row.id);
+
+    const targetField = resolveSuggestionTargetField(row, suggestion);
+    const memoryFields = buildLearningMemoryAccountUpdate(
+      row,
+      targetField,
+      suggestion
+    );
+
+    const ok = await updateLearningMemoryRecord(row.matchedMemoryId, memoryFields);
+
+    setApplyingSuggestionRowId(null);
+
+    if (ok) {
+      showToast("Hafıza güncellendi", "success");
+      setLearningMemory((prev) =>
+        prev.map((record) =>
+          record.id === row.matchedMemoryId ? { ...record, ...memoryFields } : record
+        )
+      );
+    } else {
+      showToast("Hafıza güncellenemedi", "error");
+    }
   };
 
   const createLucaRow = ({
@@ -567,6 +624,24 @@ export default function BankaParserPage() {
 
   return (
     <main className="min-h-screen bg-gray-950 p-8 text-white">
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed top-4 right-4 z-50 flex max-w-sm items-center gap-3 rounded-lg border px-4 py-3 text-sm font-medium shadow-xl backdrop-blur-sm ${
+            toast.type === "success"
+              ? "border-emerald-500/40 bg-emerald-950/95 text-emerald-100"
+              : "border-red-500/40 bg-red-950/95 text-red-100"
+          }`}
+        >
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ${
+              toast.type === "success" ? "bg-emerald-400" : "bg-red-400"
+            }`}
+          />
+          {toast.message}
+        </div>
+      )}
       <MuhasebeMenu />
 
       <h1 className="mb-10 text-4xl font-bold">Banka Parser Merkezi</h1>
@@ -771,13 +846,7 @@ export default function BankaParserPage() {
                         <td className="p-3">{row.documentType}</td>
                         <td className="p-3">{row.lucaDescription}</td>
                         <td
-                          className={`p-3 ${
-                            row.warning?.includes("Öğrenen hafızadan eşleşti")
-                              ? "bg-emerald-900/50 font-medium text-emerald-200"
-                              : row.warning
-                                ? "bg-red-900/50 font-medium text-red-200"
-                                : ""
-                          }`}
+                          className={`p-3 ${getMovementWarningClass(row.warning)}`}
                         >
                           <div>{row.warning || "—"}</div>
                           <AccountSuggestionBadges
@@ -785,6 +854,10 @@ export default function BankaParserPage() {
                               row.accountSuggestions?.length
                                 ? row.accountSuggestions
                                 : parseSuggestionsFromWarning(row.warning)
+                            }
+                            disabled={applyingSuggestionRowId === row.id}
+                            onSelect={(suggestion) =>
+                              handleApplyAccountSuggestion(row, suggestion)
                             }
                           />
                         </td>
@@ -811,6 +884,24 @@ export default function BankaParserPage() {
       </div>
     </main>
   );
+}
+
+function getMovementWarningClass(warning) {
+  if (!warning) return "";
+
+  if (hasBankMovementError({ warning })) {
+    return "bg-red-900/50 font-medium text-red-200";
+  }
+
+  if (warning.includes("Önerilen hesap uygulandı")) {
+    return "bg-sky-900/50 font-medium text-sky-200";
+  }
+
+  if (warning.includes("Öğrenen hafızadan eşleşti")) {
+    return "bg-emerald-900/50 font-medium text-emerald-200";
+  }
+
+  return "";
 }
 
 function InfoStat({ label, value }) {

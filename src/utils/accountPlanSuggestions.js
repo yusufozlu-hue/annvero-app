@@ -1,4 +1,5 @@
 import { normalizeParserText } from "@/src/utils/bankMovementMapper";
+import { resolve102BankAccount } from "@/src/utils/companyCenter";
 
 function compactAccount(code) {
   return normalizeParserText(code).replace(/\s+/g, "");
@@ -206,4 +207,92 @@ export function buildAccountPlanNotFoundWarning(
   return `Hesap planında bulunamadı. Öneriler: ${suggestions
     .map((item) => item.label)
     .join(", ")}`;
+}
+
+export function resolveSuggestionTargetField(row, suggestion) {
+  const missing = row.accountPlanMissing || {};
+  const suggestionMain = getMainAccount(suggestion.code);
+
+  if (missing.counterAccountCode && suggestionMain !== "102") {
+    return "counterAccountCode";
+  }
+
+  if (missing.accountCode) {
+    return "accountCode";
+  }
+
+  if (missing.counterAccountCode) {
+    return "counterAccountCode";
+  }
+
+  return "counterAccountCode";
+}
+
+export function buildLearningMemoryAccountUpdate(row, targetField, suggestion) {
+  const code = suggestion.code;
+  const name = suggestion.name || "";
+
+  if (targetField === "counterAccountCode") {
+    if (row.direction === "GIRIS") {
+      return {
+        counter_account_code: code,
+        counter_account_name: name,
+      };
+    }
+
+    return {
+      account_code: code,
+      account_name: name,
+    };
+  }
+
+  if (targetField === "accountCode") {
+    if (row.direction === "GIRIS") {
+      return {
+        account_code: code,
+        account_name: name,
+      };
+    }
+
+    return {
+      counter_account_code: code,
+      counter_account_name: name,
+    };
+  }
+
+  return {};
+}
+
+export function applySuggestionToMovement(row, suggestion, bankAccounts = []) {
+  const targetField = resolveSuggestionTargetField(row, suggestion);
+
+  const updated = {
+    ...row,
+    accountSuggestions: [],
+    accountPlanMissing: null,
+  };
+
+  if (targetField === "accountCode") {
+    updated.accountCode = resolve102BankAccount(
+      bankAccounts,
+      suggestion.code,
+      suggestion.code
+    );
+  } else {
+    updated.counterAccountCode = suggestion.code;
+  }
+
+  const warnings = [];
+
+  if (
+    row.matchedMemoryId ||
+    row.warning?.includes("Öğrenen hafızadan eşleşti")
+  ) {
+    warnings.push("Öğrenen hafızadan eşleşti");
+  }
+
+  warnings.push("Önerilen hesap uygulandı");
+  updated.warning = warnings.join(" | ");
+
+  return updated;
 }

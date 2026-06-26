@@ -50,6 +50,36 @@ export async function PATCH(request) {
   }
 
   const updates = Array.isArray(body?.updates) ? body.updates : [];
+  const record = body?.record;
+
+  if (record?.id) {
+    const payload = { updated_at: new Date().toISOString() };
+
+    if (record.account_code !== undefined) {
+      payload.account_code = record.account_code;
+    }
+    if (record.account_name !== undefined) {
+      payload.account_name = record.account_name;
+    }
+    if (record.counter_account_code !== undefined) {
+      payload.counter_account_code = record.counter_account_code;
+    }
+    if (record.counter_account_name !== undefined) {
+      payload.counter_account_name = record.counter_account_name;
+    }
+
+    const { error } = await supabase
+      .from("learning_memory")
+      .update(payload)
+      .eq("id", record.id);
+
+    if (error) {
+      console.error(error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ record: { id: record.id } });
+  }
 
   if (updates.length === 0) {
     return NextResponse.json({ error: "Güncellenecek kayıt yok." }, { status: 400 });

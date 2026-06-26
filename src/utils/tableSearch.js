@@ -55,13 +55,19 @@ export function hasBankMovementError(row) {
   const warning = String(row.warning || "").trim();
   if (!warning) return false;
 
-  if (
-    normalizeSearchText(warning) === normalizeSearchText("Öğrenen hafızadan eşleşti")
-  ) {
-    return false;
-  }
+  const nonErrorParts = new Set([
+    normalizeSearchText("Öğrenen hafızadan eşleşti"),
+    normalizeSearchText("Önerilen hesap uygulandı"),
+  ]);
 
-  return true;
+  const parts = warning
+    .split("|")
+    .map((part) => normalizeSearchText(part.trim()))
+    .filter(Boolean);
+
+  if (parts.length === 0) return false;
+
+  return parts.some((part) => !nonErrorParts.has(part));
 }
 
 export function matchesBankMovementQuickFilter(row, filterId) {

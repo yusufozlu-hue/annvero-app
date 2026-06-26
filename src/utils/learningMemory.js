@@ -19,6 +19,28 @@ export async function fetchLearningMemoryForCompany(companyId) {
   }
 }
 
+export async function updateLearningMemoryRecord(id, fields) {
+  if (!id) return false;
+
+  try {
+    const response = await fetch("/api/learning-memory", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ record: { id, ...fields } }),
+    });
+
+    if (!response.ok) {
+      console.error("learning_memory record update failed", await response.text());
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("learning_memory record update failed", error);
+    return false;
+  }
+}
+
 export async function recordLearningMemoryUsage(rows = []) {
   const counts = {};
 
