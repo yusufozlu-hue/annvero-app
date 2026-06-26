@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
+import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import {
   countCompanyRules,
   getCompanyRules,
@@ -11,8 +12,7 @@ import {
   saveRuleEngineToStorage,
 } from "@/src/utils/companyCenter";
 
-const tabs = {
-  banka: {
+const editableTabs = {  banka: {
     label: "Banka Kuralları",
     columns: [
       ["islem", "İşlem"],
@@ -63,24 +63,67 @@ const tabs = {
       aciklama: "",
     },
   },
+};
 
+const tabs = {
+  ...editableTabs,
   hafiza: {
     label: "Öğrenen Hesap Hafızası",
-    columns: [
-      ["anahtar", "Anahtar"],
-      ["hesapKodu", "Hesap Kodu"],
-      ["aciklama", "Açıklama"],
-    ],
-    empty: {
-      anahtar: "",
-      hesapKodu: "",
-      aciklama: "",
-    },
   },
 };
 
-export default function KurallarPage() {
-  const {
+const learningMemoryColumns = [
+  {
+    label: "Anahtar Kelime",
+    getValue: (row) =>
+      row.keyword || row.anahtar_kelime || row.anahtar || row.key || "",
+  },
+  {
+    label: "Borç Hesabı",
+    getValue: (row) =>
+      row.borc_hesabi || row.debit_account || row.borcHesabi || "",
+  },
+  {
+    label: "Alacak Hesabı",
+    getValue: (row) =>
+      row.alacak_hesabi || row.credit_account || row.alacakHesabi || "",
+  },
+  {
+    label: "Belge Türü",
+    getValue: (row) =>
+      row.belge_turu || row.document_type || row.belgeTuru || "",
+  },
+  {
+    label: "İşlem Tipi",
+    getValue: (row) =>
+      row.islem_tipi || row.transaction_type || row.islemTipi || "",
+  },
+  {
+    label: "Kullanım",
+    getValue: (row) => row.usage_count ?? row.kullanim ?? "",
+  },
+  {
+    label: "Son Kullanım",
+    getValue: (row) =>
+      formatLearningMemoryDate(
+        row.last_used_at || row.son_kullanim || row.lastUsedAt
+      ),
+  },
+];
+
+function formatLearningMemoryDate(value) {
+  if (!value) return "-";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return date.toLocaleString("tr-TR");
+}
+
+export default function KurallarPage() {  const {
     companies,
     selectedCompanyId,
     setSelectedCompanyId,
@@ -91,12 +134,54 @@ export default function KurallarPage() {
   const [rules, setRules] = useState({});
   const [isLoaded, setIsLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState("banka");
+  const [learningMemory, setLearningMemory] = useState([]);
+  const [isLearningMemoryLoading, setIsLearningMemoryLoading] = useState(false);
 
   useEffect(() => {
     setRules(loadRuleEngineFromStorage());
     setIsLoaded(true);
   }, []);
 
+  useEffect(() => {
+    if (activeTab !== "hafiza" || !selectedCompanyId) {
+      if (activeTab !== "hafiza") {
+        setLearningMemory([]);
+      }
+      return;
+    }
+
+    const loadLearningMemory = async () => {
+      const supabase = getSupabaseClient();
+
+      if (!supabase) {
+        console.error("Supabase istemcisi yapılandırılmamış.");
+        setLearningMemory([]);
+        return;
+      }
+
+      setIsLearningMemoryLoading(true);
+
+      try {
+        const { data, error } = await supabase
+          .from("learning_memory")
+          .select("*")
+          .eq("company_id", selectedCompanyId)
+          .order("usage_count", { ascending: false });
+
+        if (error) {
+          console.error(error);
+          setLearningMemory([]);
+          return;
+        }
+
+        setLearningMemory(data || []);
+      } finally {
+        setIsLearningMemoryLoading(false);
+      }
+    };
+
+    loadLearningMemory();
+  }, [activeTab, selectedCompanyId]);
   useEffect(() => {
     if (!isLoaded) return;
 
@@ -110,8 +195,9 @@ export default function KurallarPage() {
 
   const activeRows = companyRules[activeTab] || [];
   const activeConfig = tabs[activeTab];
+  const editableConfig = editableTabs[activeTab];
   const ruleCount = countCompanyRules(rules, selectedCompanyId);
-
+  const isMemoryTab = activeTab === "hafiza";
   const updateCell = (rowIndex, key, value) => {
     if (!selectedCompanyId) return;
 
@@ -136,6 +222,8 @@ export default function KurallarPage() {
   };
 
   const addRow = () => {
+    if (isMemoryTab) return;
+
     if (!selectedCompanyId) {
       alert("Önce firma seçmelisin.");
       return;
@@ -149,13 +237,12 @@ export default function KurallarPage() {
         ...prev,
         [selectedCompanyId]: {
           ...current,
-          [activeTab]: [...rows, { ...activeConfig.empty }],
+          [activeTab]: [...rows, { ...editableConfig.empty }],
           updatedAt: Date.now(),
         },
       };
     });
   };
-
   const deleteRow = (rowIndex) => {
     if (!selectedCompanyId) return;
 
@@ -230,79 +317,144 @@ export default function KurallarPage() {
         ))}
       </div>
 
-      <div className="mb-5">
-        <button
-          onClick={addRow}
-          className="rounded-xl bg-green-600 px-5 py-3 font-semibold hover:bg-green-700"
-        >
-          Yeni Kural Ekle
-        </button>
-      </div>
+      {!isMemoryTab && (
+        <div className="mb-5">
+          <button
+            onClick={addRow}
+            className="rounded-xl bg-green-600 px-5 py-3 font-semibold hover:bg-green-700"
+          >
+            Yeni Kural Ekle
+          </button>
+        </div>
+      )}
 
-      <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-lg shadow-indigo-500/5">
         <h2 className="mb-2 text-2xl font-bold">{activeConfig.label}</h2>
 
-        <p className="mb-6 text-sm text-gray-400">
-          Bu kurallar sadece seçili firma için geçerlidir.
+        <p className="mb-6 text-sm text-slate-400">
+          {isMemoryTab
+            ? "Bu kayıtlar seçili firma için Supabase öğrenen hafızadan okunur."
+            : "Bu kurallar sadece seçili firma için geçerlidir."}
         </p>
 
-        <div className="overflow-auto">
-          <table className="w-full min-w-[1000px] text-sm">
-            <thead className="bg-gray-800">
-              <tr>
-                {activeConfig.columns.map(([key, label]) => (
-                  <th key={key} className="p-3 text-left">
-                    {label}
-                  </th>
-                ))}
-                <th className="p-3 text-left">İşlem</th>
-              </tr>
-            </thead>
+        {isMemoryTab ? (
+          <div className="overflow-auto rounded-xl border border-slate-800">
+            <table className="w-full min-w-[1100px] text-sm">
+              <thead className="bg-slate-800/90">
+                <tr>
+                  {learningMemoryColumns.map((column) => (
+                    <th
+                      key={column.label}
+                      className="p-3 text-left font-semibold text-slate-200"
+                    >
+                      {column.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
 
-            <tbody>
-              {activeRows.map((row, rowIndex) => (
-                <tr key={rowIndex} className="border-t border-gray-800">
-                  {activeConfig.columns.map(([key]) => (
-                    <td key={key} className="p-3">
-                      <input
-                        value={row[key] || ""}
-                        onChange={(e) =>
-                          updateCell(rowIndex, key, e.target.value)
-                        }
-                        className="w-full rounded-lg border border-gray-700 bg-gray-950 p-2 text-white"
-                      />
+              <tbody>
+                {isLearningMemoryLoading && (
+                  <tr>
+                    <td
+                      colSpan={learningMemoryColumns.length}
+                      className="p-6 text-center text-slate-400"
+                    >
+                      Öğrenen hafıza yükleniyor...
                     </td>
+                  </tr>
+                )}
+
+                {!isLearningMemoryLoading &&
+                  learningMemory.map((row) => (
+                    <tr
+                      key={row.id || `${row.keyword}-${row.usage_count}`}
+                      className="border-t border-slate-800 hover:bg-slate-950/60"
+                    >
+                      {learningMemoryColumns.map((column) => (
+                        <td
+                          key={column.label}
+                          className="p-3 text-slate-200"
+                        >
+                          {column.getValue(row) || "-"}
+                        </td>
+                      ))}
+                    </tr>
                   ))}
 
-                  <td className="p-3">
-                    <button
-                      onClick={() => deleteRow(rowIndex)}
-                      className="rounded-lg bg-red-600 px-4 py-2 font-semibold hover:bg-red-700"
+                {!isLearningMemoryLoading && learningMemory.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={learningMemoryColumns.length}
+                      className="p-6 text-center text-slate-400"
                     >
-                      Sil
-                    </button>
-                  </td>
-                </tr>
-              ))}
-
-              {activeRows.length === 0 && (
+                      Henüz öğrenen hafıza kaydı yok.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="overflow-auto">
+            <table className="w-full min-w-[1000px] text-sm">
+              <thead className="bg-slate-800">
                 <tr>
-                  <td
-                    colSpan={activeConfig.columns.length + 1}
-                    className="p-6 text-center text-gray-400"
-                  >
-                    Henüz kural yok. Yeni kural ekleyebilirsin.
-                  </td>
+                  {editableConfig.columns.map(([key, label]) => (
+                    <th key={key} className="p-3 text-left">
+                      {label}
+                    </th>
+                  ))}
+                  <th className="p-3 text-left">İşlem</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
 
-        <p className="mt-5 text-sm text-gray-400">
-          Değişiklikler otomatik kaydedilir.
-        </p>
-      </div>
-    </main>
+              <tbody>
+                {activeRows.map((row, rowIndex) => (
+                  <tr key={rowIndex} className="border-t border-slate-800">
+                    {editableConfig.columns.map(([key]) => (
+                      <td key={key} className="p-3">
+                        <input
+                          value={row[key] || ""}
+                          onChange={(e) =>
+                            updateCell(rowIndex, key, e.target.value)
+                          }
+                          className="w-full rounded-lg border border-slate-700 bg-slate-950 p-2 text-white"
+                        />
+                      </td>
+                    ))}
+
+                    <td className="p-3">
+                      <button
+                        onClick={() => deleteRow(rowIndex)}
+                        className="rounded-lg bg-red-600 px-4 py-2 font-semibold hover:bg-red-700"
+                      >
+                        Sil
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+
+                {activeRows.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={editableConfig.columns.length + 1}
+                      className="p-6 text-center text-slate-400"
+                    >
+                      Henüz kural yok. Yeni kural ekleyebilirsin.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!isMemoryTab && (
+          <p className="mt-5 text-sm text-slate-400">
+            Değişiklikler otomatik kaydedilir.
+          </p>
+        )}
+      </div>    </main>
   );
 }
