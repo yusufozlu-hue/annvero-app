@@ -1,61 +1,8 @@
 "use client";
 import React, { useEffect, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
-
-const rawSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const supabaseUrl = rawSupabaseUrl.startsWith("http")
-  ? rawSupabaseUrl
-  : `https://${rawSupabaseUrl}`;
-
-const supabase = createClient(
-  supabaseUrl,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
-);
-console.log(process.env.NEXT_PUBLIC_SUPABASE_URL);
-console.log(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
-const STORAGE_KEY = "annvero_companies_v24";
-
-const emptyCompany = {
-  id: "",
-  companyName: "",
-  taxNumber: "",
-  taxOffice: "",
-
-  accountingSoftware: "LUCA",
-  hotelSoftware: "YOK",
-
-  hasForeignCurrency: false,
-  isActive: true,
-
-  enabledModules: {
-    lucaExport: true,
-    bankaParser: true,
-    elektraweb: false,
-    fifoFunds: false,
-    payroll: false,
-    taxControl: true,
-    audit: true,
-    officeManagement: true,
-    policyExpense: true,
-  },
-
-  bankAccounts: [],
-  creditCards: [],
-  documentSeriesRules: [],
-  vehicles: [],
-  employees: [],
-
-  accountingRules: {
-    mtvExpenseAccount: "",
-    posAccountCode: "",
-    salaryAccountCode: "",
-    advanceAccountCode: "",
-    businessAdvanceAccountCode: "",
-    policyExpenseMethod: "AYLIK",
-    exchangeDifferenceMethod: "DONEM_SONU",
-    transferToleranceDays: 1,
-  },
-};
+import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import { fetchCompanies } from "@/src/utils/companies";
+import { emptyCompany, normalizeCompany } from "@/src/utils/companyNormalize";
 
 const moduleLabels = {
   lucaExport: "Luca Export",
@@ -106,30 +53,12 @@ export default function CompanyManagement() {
 
   useEffect(() => {
     const loadCompanies = async () => {
-      const { data, error } = await supabase
-        .from("companies")
-        .select("*")
-        .order("created_at", { ascending: true });
-  
-      if (error) {
-        console.error(error);
-        setIsLoaded(true);
-        return;
-      }
-  
-      const formatted =
-        data?.map((item) =>
-          normalizeCompany({
-            ...(item.data || {}),
-            id: item.id,
-            companyName: item.data?.companyName || item.company_name || "",
-          })
-        ) || [];
-  
+      const formatted = await fetchCompanies();
+
       setCompanies(formatted);
       setIsLoaded(true);
     };
-  
+
     loadCompanies();
   }, []);
 
@@ -213,6 +142,13 @@ export default function CompanyManagement() {
 
     setIsSaving(true);
 
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      showToast("İşlem yapılamadı. Lütfen tekrar deneyin.", "error");
+      setIsSaving(false);
+      return;
+    }
+
     try {
       const { error } = await supabase.from("companies").upsert([
         {
@@ -262,6 +198,14 @@ export default function CompanyManagement() {
     if (isDeleting) return false;
 
     setIsDeleting(true);
+
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      console.error("Supabase istemcisi yapılandırılmamış.");
+      showToast("İşlem yapılamadı. Lütfen tekrar deneyin.", "error");
+      setIsDeleting(false);
+      return false;
+    }
 
     try {
       const { error } = await supabase.from("companies").delete().eq("id", id);
@@ -1496,86 +1440,7 @@ export default function CompanyManagement() {
     </div>
   );
 }
-function normalizeCompany(c) {
-  const source = c || {};
 
-  return {
-    ...emptyCompany,
-    ...source,
-
-    id: source.id || "",
-    companyName: source.companyName || "",
-
-    enabledModules: {
-      ...emptyCompany.enabledModules,
-      ...(source.enabledModules || {}),
-    },
-
-    accountingRules: {
-      ...emptyCompany.accountingRules,
-      ...(source.accountingRules || {}),
-      transferToleranceDays: Number(
-        (source.accountingRules || {}).transferToleranceDays ??
-          emptyCompany.accountingRules.transferToleranceDays
-      ),
-    },
-
-    bankAccounts: (source.bankAccounts || []).map((account) => ({
-      id: account.id || crypto.randomUUID(),
-      bankName: account.bankName || "",
-      accountName: account.accountName || "",
-      iban: account.iban || "",
-      currency: account.currency || "TL",
-      accountType: account.accountType || "VADESIZ",
-      lucaAccountCode: account.lucaAccountCode || "",
-      isPosAccount: account.isPosAccount ?? false,
-      isActive: account.isActive ?? true,
-    })),
-
-    creditCards: (source.creditCards || []).map((card) => ({
-      id: card.id || crypto.randomUUID(),
-      bankName: card.bankName || "",
-      cardName: card.cardName || "",
-      lastFourDigits: card.lastFourDigits || "",
-      currency: card.currency || "TL",
-      trackingMethod: card.trackingMethod || "TEK_HESAP",
-      statementPeriodRule: card.statementPeriodRule || "ONCEKI_AY",
-      singleLucaAccountCode: card.singleLucaAccountCode || "",
-      monthly309BaseAccount: card.monthly309BaseAccount || "",
-      monthly409BaseAccount: card.monthly409BaseAccount || "",
-      isActive: card.isActive ?? true,
-    })),
-
-    documentSeriesRules: (source.documentSeriesRules || []).map((rule) => ({
-      id: rule.id || crypto.randomUUID(),
-      prefix: rule.prefix || "",
-      documentType: rule.documentType || "EA",
-      description: rule.description || "",
-    })),
-
-    vehicles: (source.vehicles || []).map((vehicle) => ({
-      id: vehicle.id || crypto.randomUUID(),
-      plate: vehicle.plate || "",
-      brand: vehicle.brand || "",
-      model: vehicle.model || "",
-      vehicleType: vehicle.vehicleType || "BINEK",
-      policyExpenseMethod: vehicle.policyExpenseMethod || "AYLIK",
-      lucaExpenseAccount: vehicle.lucaExpenseAccount || "",
-      isActive: vehicle.isActive ?? true,
-    })),
-
-    employees: (source.employees || []).map((employee) => ({
-      id: employee.id || crypto.randomUUID(),
-      fullName: employee.fullName || "",
-      tcNo: employee.tcNo || "",
-      position: employee.position || "",
-      salaryAccountCode: employee.salaryAccountCode || "335",
-      advanceAccountCode: employee.advanceAccountCode || "196",
-      isActive: employee.isActive ?? true,
-    })),
-  };
-}
-  
   function WelcomeScreen() {
     return (
       <div className="flex min-h-[480px] flex-col items-center justify-center px-6 py-16 text-center lg:min-h-[calc(100vh-10rem)]">

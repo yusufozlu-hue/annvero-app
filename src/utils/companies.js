@@ -1,3 +1,6 @@
+import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import { formatCompanyFromSupabaseRow } from "@/src/utils/companyNormalize";
+
 export const COMPANY_STORAGE_KEYS = [
   "annvero_companies_v24",
   "annvero_companies_v23",
@@ -103,10 +106,41 @@ function readRawCompaniesFromStorage() {
   return [];
 }
 
-export function loadCompanies() {
-  return sortCompaniesForDisplay(readRawCompaniesFromStorage());
+export async function fetchCompanies() {
+  const supabase = getSupabaseClient();
+
+  if (!supabase) {
+    console.error("Supabase istemcisi yapılandırılmamış.");
+    return sortCompaniesForDisplay(readRawCompaniesFromStorage());
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("companies")
+      .select("*")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      throw error;
+    }
+
+    const companies = (data || [])
+      .map(formatCompanyFromSupabaseRow)
+      .filter(Boolean);
+
+    return sortCompaniesForDisplay(companies);
+  } catch (error) {
+    console.error("Firma listesi Supabase'den alınamadı:", error);
+    return sortCompaniesForDisplay(readRawCompaniesFromStorage());
+  }
 }
 
+/** @deprecated Use fetchCompanies() instead. */
+export function loadCompanies() {
+  return [];
+}
+
+/** @deprecated Use fetchCompanies() instead. */
 export function loadCompaniesFromStorage() {
   return loadCompanies();
 }

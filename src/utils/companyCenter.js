@@ -1,4 +1,5 @@
 import { getCompanyDisplayName } from "@/src/utils/companies";
+import { normalizeCompany } from "@/src/utils/companyNormalize";
 
 export const ACCOUNT_PLAN_STORAGE_KEY = "annvero_account_plans_v1";
 export const LEGACY_ACCOUNT_PLAN_STORAGE_KEY = "annvero_hesap_planlari_v1";
@@ -31,36 +32,7 @@ export function emptyUiCompanyRules() {
 export function normalizeCompanyRecord(company) {
   if (!company) return null;
 
-  return {
-    ...company,
-    bankAccounts: company.bankAccounts || [],
-    creditCards: (company.creditCards || []).map((card) => ({
-      id: card.id || "",
-      bankName: card.bankName || "",
-      cardName: card.cardName || "",
-      lastFourDigits: card.lastFourDigits || "",
-      currency: card.currency || "TL",
-      trackingMethod: card.trackingMethod || "TEK_HESAP",
-      statementPeriodRule: card.statementPeriodRule || "ONCEKI_AY",
-      singleLucaAccountCode:
-        card.singleLucaAccountCode || card.lucaAccountCode || "",
-      lucaAccountCode: card.lucaAccountCode || card.singleLucaAccountCode || "",
-      monthly309BaseAccount:
-        card.monthly309BaseAccount || card.monthly309BaseAccountCode || "",
-      monthly309BaseAccountCode:
-        card.monthly309BaseAccountCode || card.monthly309BaseAccount || "",
-      monthly409BaseAccount:
-        card.monthly409BaseAccount || card.monthly409BaseAccountCode || "",
-      monthly409BaseAccountCode:
-        card.monthly409BaseAccountCode || card.monthly409BaseAccount || "",
-      isActive: card.isActive ?? true,
-    })),
-    documentSeriesRules: company.documentSeriesRules || [],
-    vehicles: company.vehicles || [],
-    employees: company.employees || [],
-    accountingRules: company.accountingRules || {},
-    enabledModules: company.enabledModules || {},
-  };
+  return normalizeCompany(company);
 }
 
 function normalizeAccountPlanRow(row) {
