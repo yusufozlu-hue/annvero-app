@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 let browserClient = null;
 let serverClient = null;
 
-function getSupabaseConfig() {
+export function getSupabaseConfig() {
   const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
@@ -14,7 +14,13 @@ function getSupabaseConfig() {
 
   const supabaseUrl = rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`;
 
-  return { supabaseUrl, anonKey };
+  return { supabaseUrl, anonKey, rawUrl };
+}
+
+export function isSupabaseConfigured() {
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  return Boolean(rawUrl && anonKey);
 }
 
 export function getSupabaseClient() {

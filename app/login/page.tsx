@@ -4,7 +4,17 @@ import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import AuthLoadingScreen from "@/src/components/AuthLoadingScreen";
 import { getSafeNextPath } from "@/src/utils/authRedirect";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import {
+  getSupabaseClient,
+  getSupabaseConfig,
+} from "@/src/lib/supabaseClient";
+
+const CONFIG_MISSING_MESSAGE = "Supabase bağlantı bilgileri eksik";
+
+function logLoginError(message: string, supabaseUrl: string) {
+  console.log("[login] Supabase auth error:", message);
+  console.log("[login] supabaseUrl:", supabaseUrl);
+}
 
 function LoginForm() {
   const router = useRouter();
@@ -14,24 +24,52 @@ function LoginForm() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
+  const [isConfigMissing, setIsConfigMissing] = useState(false);
 
   useEffect(() => {
-    const supabase = getSupabaseClient();
+    const config = getSupabaseConfig();
 
+    if (!config) {
+      setIsConfigMissing(true);
+      setError(CONFIG_MISSING_MESSAGE);
+      setIsCheckingSession(false);
+      return;
+    }
+
+    const supabase = getSupabaseClient();
     if (!supabase) {
+      setIsConfigMissing(true);
+      setError(CONFIG_MISSING_MESSAGE);
       setIsCheckingSession(false);
       return;
     }
 
     void (async () => {
-      const { data } = await supabase.auth.getSession();
+      try {
+        const { data, error: sessionError } = await supabase.auth.getSession();
 
-      if (data.session) {
-        router.replace(getSafeNextPath(searchParams.get("next")));
-        return;
+        if (sessionError) {
+          logLoginError(sessionError.message, config.supabaseUrl);
+          setError(sessionError.message);
+          setIsCheckingSession(false);
+          return;
+        }
+
+        if (data.session) {
+          router.replace(getSafeNextPath(searchParams.get("next")));
+          return;
+        }
+
+        setIsCheckingSession(false);
+      } catch (caughtError) {
+        const message =
+          caughtError instanceof Error
+            ? caughtError.message
+            : "Oturum kontrol edilemedi.";
+        logLoginError(message, config.supabaseUrl);
+        setError(message);
+        setIsCheckingSession(false);
       }
-
-      setIsCheckingSession(false);
     })();
   }, [router, searchParams]);
 
@@ -40,27 +78,46 @@ function LoginForm() {
     setError("");
     setIsLoading(true);
 
+    const config = getSupabaseConfig();
+
+    if (!config) {
+      setIsConfigMissing(true);
+      setError(CONFIG_MISSING_MESSAGE);
+      setIsLoading(false);
+      return;
+    }
+
     const supabase = getSupabaseClient();
 
     if (!supabase) {
-      setError("Supabase yapılandırması bulunamadı.");
+      setIsConfigMissing(true);
+      setError(CONFIG_MISSING_MESSAGE);
       setIsLoading(false);
       return;
     }
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
+    try {
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
-    if (signInError) {
-      setError(signInError.message);
+      if (signInError) {
+        logLoginError(signInError.message, config.supabaseUrl);
+        setError(signInError.message);
+        setIsLoading(false);
+        return;
+      }
+
+      router.push(getSafeNextPath(searchParams.get("next")));
+      router.refresh();
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error ? caughtError.message : "Giriş başarısız.";
+      logLoginError(message, config.supabaseUrl);
+      setError(message);
       setIsLoading(false);
-      return;
     }
-
-    router.push(getSafeNextPath(searchParams.get("next")));
-    router.refresh();
   };
 
   if (isCheckingSession) {
@@ -81,8 +138,9 @@ function LoginForm() {
             value={email}
             autoComplete="email"
             required
+            disabled={isConfigMissing}
             onChange={(event) => setEmail(event.target.value)}
-            className="rounded-xl border border-gray-700 bg-black px-4 py-3 outline-none focus:border-gray-500"
+            className="rounded-xl border border-gray-700 bg-black px-4 py-3 outline-none focus:border-gray-500 disabled:cursor-not-allowed disabled:opacity-60"
           />
 
           <input
@@ -91,8 +149,9 @@ function LoginForm() {
             value={password}
             autoComplete="current-password"
             required
+            disabled={isConfigMissing}
             onChange={(event) => setPassword(event.target.value)}
-            className="rounded-xl border border-gray-700 bg-black px-4 py-3 outline-none focus:border-gray-500"
+            className="rounded-xl border border-gray-700 bg-black px-4 py-3 outline-none focus:border-gray-500 disabled:cursor-not-allowed disabled:opacity-60"
           />
 
           {error ? (
@@ -103,7 +162,7 @@ function LoginForm() {
 
           <button
             type="submit"
-            disabled={isLoading}
+            disabled={isLoading || isConfigMissing}
             className="mt-2 rounded-xl bg-white py-3 text-center font-semibold text-black transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isLoading ? "Giriş yapılıyor..." : "Giriş Yap"}

@@ -1,5 +1,5 @@
-import Link from "next/link";
-import CompanyManagement from "./muhasebe/components/CompanyManagement";
+import LandingPage from "./components/landing/LandingPage";
+
 export default function Home() {
-  return <CompanyManagement />;
+  return <LandingPage />;
 }
