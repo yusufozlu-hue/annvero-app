@@ -10,10 +10,40 @@ import {
 } from "@/src/lib/supabaseClient";
 
 const CONFIG_MISSING_MESSAGE = "Supabase bağlantı bilgileri eksik";
+const CONFIG_MISSING_PRODUCTION_MESSAGE =
+  "Supabase bağlantı bilgileri production ortamında eksik.";
 
-function logLoginError(message: string, supabaseUrl: string) {
-  console.log("[login] Supabase auth error:", message);
-  console.log("[login] supabaseUrl:", supabaseUrl);
+function getConfigMissingMessage() {
+  if (process.env.NODE_ENV === "production") {
+    return CONFIG_MISSING_PRODUCTION_MESSAGE;
+  }
+
+  return CONFIG_MISSING_MESSAGE;
+}
+
+function logLoginError(error: unknown) {
+  console.error("LOGIN ERROR:", error);
+}
+
+function LoginDebugPanel({
+  hasSupabaseUrl,
+  hasAnonKey,
+  pageOrigin,
+}: {
+  hasSupabaseUrl: boolean;
+  hasAnonKey: boolean;
+  pageOrigin: string;
+}) {
+  return (
+    <div className="mt-4 rounded-xl border border-amber-800/60 bg-amber-950/40 px-4 py-3 text-xs text-amber-100">
+      <p className="font-semibold text-amber-200">Debug</p>
+      <ul className="mt-2 space-y-1">
+        <li>Supabase URL mevcut mu? {hasSupabaseUrl ? "Evet" : "Hayır"}</li>
+        <li>Anon key mevcut mu? {hasAnonKey ? "Evet" : "Hayır"}</li>
+        <li>window.location.origin: {pageOrigin || "-"}</li>
+      </ul>
+    </div>
+  );
 }
 
 function LoginForm() {
@@ -25,13 +55,33 @@ function LoginForm() {
   const [isLoading, setIsLoading] = useState(false);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
   const [isConfigMissing, setIsConfigMissing] = useState(false);
+  const [pageOrigin, setPageOrigin] = useState("");
+
+  const showDebug =
+    process.env.NODE_ENV === "development" ||
+    searchParams.get("debug") === "1";
+  const hasSupabaseUrl = Boolean(
+    (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim()
+  );
+  const hasAnonKey = Boolean(
+    (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim()
+  );
+
+  useEffect(() => {
+    console.log("SUPABASE URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
+    console.log(
+      "SUPABASE KEY EXISTS:",
+      !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    );
+    setPageOrigin(window.location.origin);
+  }, []);
 
   useEffect(() => {
     const config = getSupabaseConfig();
 
     if (!config) {
       setIsConfigMissing(true);
-      setError(CONFIG_MISSING_MESSAGE);
+      setError(getConfigMissingMessage());
       setIsCheckingSession(false);
       return;
     }
@@ -39,7 +89,7 @@ function LoginForm() {
     const supabase = getSupabaseClient();
     if (!supabase) {
       setIsConfigMissing(true);
-      setError(CONFIG_MISSING_MESSAGE);
+      setError(getConfigMissingMessage());
       setIsCheckingSession(false);
       return;
     }
@@ -49,7 +99,7 @@ function LoginForm() {
         const { data, error: sessionError } = await supabase.auth.getSession();
 
         if (sessionError) {
-          logLoginError(sessionError.message, config.supabaseUrl);
+          logLoginError(sessionError);
           setError(sessionError.message);
           setIsCheckingSession(false);
           return;
@@ -66,7 +116,7 @@ function LoginForm() {
           caughtError instanceof Error
             ? caughtError.message
             : "Oturum kontrol edilemedi.";
-        logLoginError(message, config.supabaseUrl);
+        logLoginError(caughtError);
         setError(message);
         setIsCheckingSession(false);
       }
@@ -82,7 +132,7 @@ function LoginForm() {
 
     if (!config) {
       setIsConfigMissing(true);
-      setError(CONFIG_MISSING_MESSAGE);
+      setError(getConfigMissingMessage());
       setIsLoading(false);
       return;
     }
@@ -91,7 +141,7 @@ function LoginForm() {
 
     if (!supabase) {
       setIsConfigMissing(true);
-      setError(CONFIG_MISSING_MESSAGE);
+      setError(getConfigMissingMessage());
       setIsLoading(false);
       return;
     }
@@ -103,7 +153,7 @@ function LoginForm() {
       });
 
       if (signInError) {
-        logLoginError(signInError.message, config.supabaseUrl);
+        logLoginError(signInError);
         setError(signInError.message);
         setIsLoading(false);
         return;
@@ -114,7 +164,7 @@ function LoginForm() {
     } catch (caughtError) {
       const message =
         caughtError instanceof Error ? caughtError.message : "Giriş başarısız.";
-      logLoginError(message, config.supabaseUrl);
+      logLoginError(caughtError);
       setError(message);
       setIsLoading(false);
     }
@@ -130,6 +180,14 @@ function LoginForm() {
         <h1 className="text-center text-3xl font-bold">ANNVERO</h1>
 
         <p className="mt-2 text-center text-gray-400">Platform Girişi</p>
+
+        {showDebug ? (
+          <LoginDebugPanel
+            hasSupabaseUrl={hasSupabaseUrl}
+            hasAnonKey={hasAnonKey}
+            pageOrigin={pageOrigin}
+          />
+        ) : null}
 
         <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-4">
           <input

@@ -4,23 +4,50 @@ import { createClient } from "@supabase/supabase-js";
 let browserClient = null;
 let serverClient = null;
 
+function normalizeSupabaseUrl(rawUrl) {
+  if (!rawUrl) return "";
+  return rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`;
+}
+
+function isValidSupabaseUrl(supabaseUrl) {
+  try {
+    const parsed = new URL(supabaseUrl);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export function getSupabaseEnvDebugInfo() {
+  const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+  const anonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
+  const supabaseUrl = normalizeSupabaseUrl(rawUrl);
+
+  return {
+    supabaseUrl,
+    hasAnonKey: Boolean(anonKey),
+  };
+}
+
 export function getSupabaseConfig() {
-  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+  const anonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
 
   if (!rawUrl || !anonKey) {
     return null;
   }
 
-  const supabaseUrl = rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`;
+  const supabaseUrl = normalizeSupabaseUrl(rawUrl);
+
+  if (!isValidSupabaseUrl(supabaseUrl)) {
+    return null;
+  }
 
   return { supabaseUrl, anonKey, rawUrl };
 }
 
 export function isSupabaseConfigured() {
-  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-  return Boolean(rawUrl && anonKey);
+  return getSupabaseConfig() !== null;
 }
 
 export function getSupabaseClient() {
