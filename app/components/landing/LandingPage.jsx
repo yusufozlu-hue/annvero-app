@@ -1,3 +1,4 @@
+import Link from "next/link";
 import PublicHeader from "./PublicHeader";
 
 const services = [
@@ -103,12 +104,12 @@ export default function LandingPage() {
                 >
                   Hizmetlerimizi İncele
                 </a>
-                <a
-                  href="#hesaplama-araclari"
+                <Link
+                  href="/hesaplama-araclari"
                   className="inline-flex items-center justify-center rounded-full border border-violet-200 bg-white px-6 py-3 text-sm font-semibold text-violet-700 transition hover:bg-violet-50"
                 >
                   Hesaplama Araçları
-                </a>
+                </Link>
               </div>
             </div>
 
@@ -199,6 +200,15 @@ export default function LandingPage() {
                   </p>
                 </div>
               ))}
+            </div>
+
+            <div className="mt-10">
+              <Link
+                href="/hesaplama-araclari"
+                className="inline-flex items-center justify-center rounded-full bg-violet-700 px-6 py-3 text-sm font-semibold text-white transition hover:bg-violet-800"
+              >
+                Hesaplama Araçları Merkezi
+              </Link>
             </div>
           </div>
         </section>

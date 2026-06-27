@@ -5,11 +5,11 @@ import { useState } from "react";
 
 const navLinks = [
   { label: "Ana Sayfa", href: "/" },
-  { label: "Hizmetler", href: "#hizmetler" },
-  { label: "Vergi Rehberi", href: "#vergi-rehberi" },
-  { label: "Hesaplama Araçları", href: "#hesaplama-araclari" },
-  { label: "Hakkımızda", href: "#hakkimizda" },
-  { label: "İletişim", href: "#iletisim" },
+  { label: "Hizmetler", href: "/#hizmetler" },
+  { label: "Vergi Rehberi", href: "/#vergi-rehberi" },
+  { label: "Hesaplama Araçları", href: "/hesaplama-araclari" },
+  { label: "Hakkımızda", href: "/#hakkimizda" },
+  { label: "İletişim", href: "/#iletisim" },
 ];
 
 export default function PublicHeader() {
@@ -29,13 +29,13 @@ export default function PublicHeader() {
 
         <nav className="hidden items-center gap-6 lg:flex">
           {navLinks.map((link) => (
-            <a
+            <Link
               key={link.href}
               href={link.href}
               className="text-sm font-medium text-slate-600 transition hover:text-violet-700"
             >
               {link.label}
-            </a>
+            </Link>
           ))}
           <Link
             href="/login"
@@ -90,14 +90,14 @@ export default function PublicHeader() {
         <nav className="border-t border-violet-100 bg-white px-4 py-4 lg:hidden">
           <div className="flex flex-col gap-3">
             {navLinks.map((link) => (
-              <a
+              <Link
                 key={link.href}
                 href={link.href}
                 onClick={() => setMenuOpen(false)}
                 className="rounded-lg px-3 py-2 text-sm font-medium text-slate-700 hover:bg-violet-50 hover:text-violet-700"
               >
                 {link.label}
-              </a>
+              </Link>
             ))}
           </div>
         </nav>
