@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
+import { getSafeNextPath } from "@/src/utils/authRedirect";
 
 function getSupabaseConfig() {
   const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
@@ -61,7 +62,9 @@ export async function updateSession(request) {
 
   if (pathname === "/login" && user) {
     const redirectUrl = request.nextUrl.clone();
-    redirectUrl.pathname = "/muhasebe";
+    redirectUrl.pathname = getSafeNextPath(
+      redirectUrl.searchParams.get("next")
+    );
     redirectUrl.search = "";
     return NextResponse.redirect(redirectUrl);
   }

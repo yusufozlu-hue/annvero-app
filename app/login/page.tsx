@@ -1,15 +1,39 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import AuthLoadingScreen from "@/src/components/AuthLoadingScreen";
+import { getSafeNextPath } from "@/src/utils/authRedirect";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isCheckingSession, setIsCheckingSession] = useState(true);
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+
+    if (!supabase) {
+      setIsCheckingSession(false);
+      return;
+    }
+
+    void (async () => {
+      const { data } = await supabase.auth.getSession();
+
+      if (data.session) {
+        router.replace(getSafeNextPath(searchParams.get("next")));
+        return;
+      }
+
+      setIsCheckingSession(false);
+    })();
+  }, [router, searchParams]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -35,9 +59,13 @@ export default function LoginPage() {
       return;
     }
 
-    router.push("/muhasebe");
+    router.push(getSafeNextPath(searchParams.get("next")));
     router.refresh();
   };
+
+  if (isCheckingSession) {
+    return <AuthLoadingScreen message="Oturum kontrol ediliyor..." />;
+  }
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-black text-white">
@@ -83,5 +111,13 @@ export default function LoginPage() {
         </form>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<AuthLoadingScreen message="Oturum kontrol ediliyor..." />}>
+      <LoginForm />
+    </Suspense>
   );
 }

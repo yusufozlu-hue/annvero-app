@@ -1,5 +1,6 @@
 "use client";
 import React, { useEffect, useState } from "react";
+import Link from "next/link";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { fetchCompanies } from "@/src/utils/companies";
 import { emptyCompany, normalizeCompany } from "@/src/utils/companyNormalize";
@@ -667,12 +668,12 @@ export default function CompanyManagement() {
       <div className="mx-auto max-w-screen-2xl space-y-6">
         <div className="flex items-start justify-between">
           <div>
-            <button
-              onClick={() => (window.location.href = "/muhasebe")}
-              className="mb-4 rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold hover:bg-slate-700"
+            <Link
+              href="/muhasebe"
+              className="mb-4 inline-block rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold hover:bg-slate-700"
             >
               ← Muhasebe Paneline Dön
-            </button>
+            </Link>
 
             <h1 className="text-3xl font-bold">
               Firma Yönetim Merkezi v2.4
@@ -715,7 +716,11 @@ export default function CompanyManagement() {
             />
 
             <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-              {activeCompanies.length === 0 && passiveCompanies.length === 0 ? (
+              {!isLoaded ? (
+                <p className="px-1 py-2 text-sm text-slate-400">
+                  Firmalar yükleniyor...
+                </p>
+              ) : activeCompanies.length === 0 && passiveCompanies.length === 0 ? (
                 <p className="px-1 py-2 text-sm text-slate-500">
                   Sonuç bulunamadı.
                 </p>

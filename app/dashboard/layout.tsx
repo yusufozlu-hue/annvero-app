@@ -1,3 +1,4 @@
+import AuthGate from "@/src/components/AuthGate";
 import AuthUserBar from "@/src/components/AuthUserBar";
 
 export default function DashboardLayout({
@@ -6,9 +7,9 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <>
+    <AuthGate>
       <AuthUserBar />
       {children}
-    </>
+    </AuthGate>
   );
 }
