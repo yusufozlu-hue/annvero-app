@@ -39,11 +39,15 @@ function LoginDebugPanel({
   hasSupabaseUrl,
   hasAnonKey,
   pageOrigin,
+  supabaseUrl,
+  anonKeyType,
   authSettingsIssues,
 }: {
   hasSupabaseUrl: boolean;
   hasAnonKey: boolean;
   pageOrigin: string;
+  supabaseUrl: string;
+  anonKeyType: string;
   authSettingsIssues: string[];
 }) {
   return (
@@ -51,7 +55,9 @@ function LoginDebugPanel({
       <p className="font-semibold text-amber-200">Debug</p>
       <ul className="mt-2 space-y-1">
         <li>Supabase URL mevcut mu? {hasSupabaseUrl ? "Evet" : "Hayır"}</li>
+        <li>Supabase URL: {supabaseUrl || "-"}</li>
         <li>Anon key mevcut mu? {hasAnonKey ? "Evet" : "Hayır"}</li>
+        <li>Anon key tipi: {anonKeyType}</li>
         <li>window.location.origin: {pageOrigin || "-"}</li>
         {authSettingsIssues.length > 0 ? (
           <li>Auth ayar uyarıları: {authSettingsIssues.join(" | ")}</li>
@@ -74,6 +80,8 @@ function LoginForm() {
   const [isConfigMissing, setIsConfigMissing] = useState(false);
   const [pageOrigin, setPageOrigin] = useState("");
   const [authSettingsIssues, setAuthSettingsIssues] = useState<string[]>([]);
+  const [debugSupabaseUrl, setDebugSupabaseUrl] = useState("");
+  const [debugAnonKeyType, setDebugAnonKeyType] = useState("unknown");
 
   const showDebug =
     process.env.NODE_ENV === "development" ||
@@ -95,6 +103,8 @@ function LoginForm() {
 
     const authSettings = checkSupabaseAuthSettings();
     setAuthSettingsIssues(authSettings.issues);
+    setDebugSupabaseUrl(authSettings.supabaseUrl);
+    setDebugAnonKeyType(authSettings.anonKeyType);
 
     if (!authSettings.ok) {
       console.warn("[login] Supabase auth settings:", authSettings);
@@ -255,6 +265,8 @@ function LoginForm() {
             hasSupabaseUrl={hasSupabaseUrl}
             hasAnonKey={hasAnonKey}
             pageOrigin={pageOrigin}
+            supabaseUrl={debugSupabaseUrl}
+            anonKeyType={debugAnonKeyType}
             authSettingsIssues={authSettingsIssues}
           />
         ) : null}

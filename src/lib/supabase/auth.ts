@@ -1,5 +1,5 @@
 import type { AuthError, Session, SupabaseClient } from "@supabase/supabase-js";
-import { getSupabaseConfig } from "./config";
+import { getSupabaseAnonKeyType, getSupabaseConfig } from "./config";
 
 export const SUPABASE_NETWORK_ERROR_MESSAGE =
   "Supabase bağlantısı kurulamadı.";
@@ -9,6 +9,7 @@ export type SupabaseAuthSettingsCheck = {
   issues: string[];
   supabaseUrl: string;
   hasAnonKey: boolean;
+  anonKeyType: ReturnType<typeof getSupabaseAnonKeyType>;
   isBrowser: boolean;
   origin: string | null;
 };
@@ -104,6 +105,7 @@ export function checkSupabaseAuthSettings(): SupabaseAuthSettingsCheck {
       issues,
       supabaseUrl: "",
       hasAnonKey: false,
+      anonKeyType: "unknown",
       isBrowser: typeof window !== "undefined",
       origin,
     };
@@ -114,13 +116,13 @@ export function checkSupabaseAuthSettings(): SupabaseAuthSettingsCheck {
       issues.push("Production ortamında Supabase URL https olmalı.");
     }
 
+    if (!config.supabaseUrl.includes(".supabase.co")) {
+      issues.push("Supabase URL .supabase.co domain kullanmalı.");
+    }
+
     if (origin && !origin.startsWith("https://")) {
       issues.push("Production site origin https olmalı.");
     }
-  }
-
-  if (!config.anonKey.startsWith("eyJ")) {
-    issues.push("Anon key formatı geçersiz görünüyor.");
   }
 
   return {
@@ -128,6 +130,7 @@ export function checkSupabaseAuthSettings(): SupabaseAuthSettingsCheck {
     issues,
     supabaseUrl: config.supabaseUrl,
     hasAnonKey: Boolean(config.anonKey),
+    anonKeyType: getSupabaseAnonKeyType(config.anonKey),
     isBrowser: typeof window !== "undefined",
     origin,
   };

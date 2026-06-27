@@ -4,6 +4,12 @@ export type SupabaseConfig = {
   rawUrl: string;
 };
 
+export type SupabaseAnonKeyType = "jwt" | "publishable" | "unknown";
+
+function normalizeEnvValue(value: string): string {
+  return value.trim().replace(/^['"]|['"]$/g, "");
+}
+
 function normalizeSupabaseUrl(rawUrl: string): string {
   if (!rawUrl) return "";
 
@@ -12,6 +18,18 @@ function normalizeSupabaseUrl(rawUrl: string): string {
     : `https://${rawUrl}`;
 
   return withProtocol.replace(/\/+$/, "");
+}
+
+export function getSupabaseAnonKeyType(anonKey: string): SupabaseAnonKeyType {
+  if (anonKey.startsWith("eyJ")) {
+    return "jwt";
+  }
+
+  if (anonKey.startsWith("sb_publishable_")) {
+    return "publishable";
+  }
+
+  return "unknown";
 }
 
 function isValidSupabaseUrl(supabaseUrl: string): boolean {
@@ -24,19 +42,20 @@ function isValidSupabaseUrl(supabaseUrl: string): boolean {
 }
 
 export function getSupabaseEnvDebugInfo() {
-  const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
-  const anonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
+  const rawUrl = normalizeEnvValue(process.env.NEXT_PUBLIC_SUPABASE_URL || "");
+  const anonKey = normalizeEnvValue(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "");
   const supabaseUrl = normalizeSupabaseUrl(rawUrl);
 
   return {
     supabaseUrl,
     hasAnonKey: Boolean(anonKey),
+    anonKeyType: getSupabaseAnonKeyType(anonKey),
   };
 }
 
 export function getSupabaseConfig(): SupabaseConfig | null {
-  const rawUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
-  const anonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
+  const rawUrl = normalizeEnvValue(process.env.NEXT_PUBLIC_SUPABASE_URL || "");
+  const anonKey = normalizeEnvValue(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "");
 
   if (!rawUrl || !anonKey) {
     return null;
