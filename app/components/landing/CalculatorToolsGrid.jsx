@@ -1,10 +1,24 @@
 "use client";
 
 import KdvCalculator from "./KdvCalculator";
+import KdvDahilHaricCalculator from "./KdvDahilHaricCalculator";
 
 const tools = [
-  { id: "kdv", title: "KDV Hesaplama", active: true },
-  { id: "kdv-dahil", title: "KDV Dahil / Hariç" },
+  {
+    id: "kdv",
+    title: "KDV Hesaplama",
+    active: true,
+    component: KdvCalculator,
+    description: "Matrah ve KDV oranına göre anlık hesaplama yapın.",
+  },
+  {
+    id: "kdv-dahil",
+    title: "KDV Dahil / Hariç",
+    active: true,
+    component: KdvDahilHaricCalculator,
+    description:
+      "KDV hariç tutardan dahile veya KDV dahil tutardan hariç tutarı hesaplayın.",
+  },
   { id: "kidem", title: "Kıdem Tazminatı" },
   { id: "ihbar", title: "İhbar Tazminatı" },
   { id: "sgk", title: "SGK İşveren Maliyeti" },
@@ -22,7 +36,9 @@ export default function CalculatorToolsGrid() {
   return (
     <div className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-3">
       {tools.map((tool) => {
-        if (tool.active) {
+        if (tool.active && tool.component) {
+          const Calculator = tool.component;
+
           return (
             <article
               key={tool.id}
@@ -31,10 +47,8 @@ export default function CalculatorToolsGrid() {
               <h3 className="text-lg font-semibold text-slate-900">
                 {tool.title}
               </h3>
-              <p className="mt-1 text-sm text-slate-600">
-                Matrah ve KDV oranına göre anlık hesaplama yapın.
-              </p>
-              <KdvCalculator />
+              <p className="mt-1 text-sm text-slate-600">{tool.description}</p>
+              <Calculator />
             </article>
           );
         }
