@@ -1,19 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import { getSafeNextPath } from "@/src/utils/authRedirect";
-
-function getSupabaseConfig() {
-  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-
-  if (!rawUrl || !anonKey) {
-    return null;
-  }
-
-  const supabaseUrl = rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`;
-
-  return { supabaseUrl, anonKey };
-}
+import { getSupabaseConfig } from "@/src/lib/supabase/config";
 
 function isProtectedPath(pathname) {
   return pathname.startsWith("/muhasebe") || pathname.startsWith("/dashboard");

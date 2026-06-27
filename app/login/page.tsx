@@ -5,9 +5,15 @@ import { useRouter, useSearchParams } from "next/navigation";
 import AuthLoadingScreen from "@/src/components/AuthLoadingScreen";
 import { getSafeNextPath } from "@/src/utils/authRedirect";
 import {
-  getSupabaseClient,
-  getSupabaseConfig,
-} from "@/src/lib/supabaseClient";
+  checkSupabaseAuthSettings,
+  getLoginErrorMessage,
+  isNetworkError,
+  logNetworkError,
+  SUPABASE_NETWORK_ERROR_MESSAGE,
+  testSupabaseAuthConnection,
+} from "@/src/lib/supabase/auth";
+import { getSupabaseConfig } from "@/src/lib/supabase/config";
+import { getSupabaseBrowserClient } from "@/src/lib/supabase/client";
 
 const CONFIG_MISSING_MESSAGE = "Supabase bağlantı bilgileri eksik";
 const CONFIG_MISSING_PRODUCTION_MESSAGE =
@@ -23,16 +29,22 @@ function getConfigMissingMessage() {
 
 function logLoginError(error: unknown) {
   console.error("LOGIN ERROR:", error);
+
+  if (isNetworkError(error)) {
+    logNetworkError("login", error);
+  }
 }
 
 function LoginDebugPanel({
   hasSupabaseUrl,
   hasAnonKey,
   pageOrigin,
+  authSettingsIssues,
 }: {
   hasSupabaseUrl: boolean;
   hasAnonKey: boolean;
   pageOrigin: string;
+  authSettingsIssues: string[];
 }) {
   return (
     <div className="mt-4 rounded-xl border border-amber-800/60 bg-amber-950/40 px-4 py-3 text-xs text-amber-100">
@@ -41,6 +53,11 @@ function LoginDebugPanel({
         <li>Supabase URL mevcut mu? {hasSupabaseUrl ? "Evet" : "Hayır"}</li>
         <li>Anon key mevcut mu? {hasAnonKey ? "Evet" : "Hayır"}</li>
         <li>window.location.origin: {pageOrigin || "-"}</li>
+        {authSettingsIssues.length > 0 ? (
+          <li>Auth ayar uyarıları: {authSettingsIssues.join(" | ")}</li>
+        ) : (
+          <li>Auth ayarları: OK</li>
+        )}
       </ul>
     </div>
   );
@@ -56,6 +73,7 @@ function LoginForm() {
   const [isCheckingSession, setIsCheckingSession] = useState(true);
   const [isConfigMissing, setIsConfigMissing] = useState(false);
   const [pageOrigin, setPageOrigin] = useState("");
+  const [authSettingsIssues, setAuthSettingsIssues] = useState<string[]>([]);
 
   const showDebug =
     process.env.NODE_ENV === "development" ||
@@ -74,6 +92,13 @@ function LoginForm() {
       !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
     );
     setPageOrigin(window.location.origin);
+
+    const authSettings = checkSupabaseAuthSettings();
+    setAuthSettingsIssues(authSettings.issues);
+
+    if (!authSettings.ok) {
+      console.warn("[login] Supabase auth settings:", authSettings);
+    }
   }, []);
 
   useEffect(() => {
@@ -86,7 +111,7 @@ function LoginForm() {
       return;
     }
 
-    const supabase = getSupabaseClient();
+    const supabase = getSupabaseBrowserClient();
     if (!supabase) {
       setIsConfigMissing(true);
       setError(getConfigMissingMessage());
@@ -96,28 +121,44 @@ function LoginForm() {
 
     void (async () => {
       try {
-        const { data, error: sessionError } = await supabase.auth.getSession();
+        const connectionTest = await testSupabaseAuthConnection(supabase);
 
-        if (sessionError) {
-          logLoginError(sessionError);
-          setError(sessionError.message);
+        if (!connectionTest.ok) {
+          logLoginError(connectionTest.error);
+
+          if (connectionTest.networkError) {
+            logNetworkError("initial-getSession", connectionTest.error);
+            setError(SUPABASE_NETWORK_ERROR_MESSAGE);
+          } else if (connectionTest.error instanceof Error) {
+            setError(connectionTest.error.message);
+          } else if (
+            typeof connectionTest.error === "object" &&
+            connectionTest.error !== null &&
+            "message" in connectionTest.error
+          ) {
+            setError(String((connectionTest.error as { message: string }).message));
+          }
+
           setIsCheckingSession(false);
           return;
         }
 
-        if (data.session) {
+        if (connectionTest.session) {
           router.replace(getSafeNextPath(searchParams.get("next")));
           return;
         }
 
         setIsCheckingSession(false);
       } catch (caughtError) {
-        const message =
-          caughtError instanceof Error
-            ? caughtError.message
-            : "Oturum kontrol edilemedi.";
         logLoginError(caughtError);
-        setError(message);
+
+        if (isNetworkError(caughtError)) {
+          logNetworkError("initial-session-check", caughtError);
+          setError(SUPABASE_NETWORK_ERROR_MESSAGE);
+        } else {
+          setError(getLoginErrorMessage(caughtError));
+        }
+
         setIsCheckingSession(false);
       }
     })();
@@ -137,7 +178,7 @@ function LoginForm() {
       return;
     }
 
-    const supabase = getSupabaseClient();
+    const supabase = getSupabaseBrowserClient();
 
     if (!supabase) {
       setIsConfigMissing(true);
@@ -147,6 +188,18 @@ function LoginForm() {
     }
 
     try {
+      const connectionTest = await testSupabaseAuthConnection(supabase);
+
+      if (!connectionTest.ok && connectionTest.networkError) {
+        logLoginError(connectionTest.error);
+        logNetworkError("pre-signin-getSession", connectionTest.error, {
+          email: email.trim(),
+        });
+        setError(SUPABASE_NETWORK_ERROR_MESSAGE);
+        setIsLoading(false);
+        return;
+      }
+
       const { error: signInError } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
@@ -154,7 +207,16 @@ function LoginForm() {
 
       if (signInError) {
         logLoginError(signInError);
-        setError(signInError.message);
+
+        if (isNetworkError(signInError)) {
+          logNetworkError("signInWithPassword", signInError, {
+            email: email.trim(),
+          });
+          setError(SUPABASE_NETWORK_ERROR_MESSAGE);
+        } else {
+          setError(signInError.message);
+        }
+
         setIsLoading(false);
         return;
       }
@@ -162,10 +224,17 @@ function LoginForm() {
       router.push(getSafeNextPath(searchParams.get("next")));
       router.refresh();
     } catch (caughtError) {
-      const message =
-        caughtError instanceof Error ? caughtError.message : "Giriş başarısız.";
       logLoginError(caughtError);
-      setError(message);
+
+      if (isNetworkError(caughtError)) {
+        logNetworkError("signInWithPassword-catch", caughtError, {
+          email: email.trim(),
+        });
+        setError(SUPABASE_NETWORK_ERROR_MESSAGE);
+      } else {
+        setError(getLoginErrorMessage(caughtError));
+      }
+
       setIsLoading(false);
     }
   };
@@ -186,6 +255,7 @@ function LoginForm() {
             hasSupabaseUrl={hasSupabaseUrl}
             hasAnonKey={hasAnonKey}
             pageOrigin={pageOrigin}
+            authSettingsIssues={authSettingsIssues}
           />
         ) : null}
 
