@@ -15,17 +15,23 @@ const tools = [
   { id: "kur", title: "Kur Değerleme" },
   { id: "adat", title: "Adat Hesaplama" },
   { id: "police", title: "Poliçe Giderleştirme" },
+  { id: "ihracat", title: "İhracat İndirimi Hesaplama" },
+  { id: "kar-dagitim", title: "Kar Dağıtım Tablosu" },
+  { id: "fon", title: "Fon Alış Satış Tablosu" },
+  { id: "bordro", title: "Bordro Hesaplama" },
+  { id: "tazminat-toplu", title: "Tazminat Hesaplama Toplu" },
+  { id: "ekstre", title: "Ekstre Karşılaştırma Mutabakat" },
 ];
 
 export default function CalculatorToolsGrid() {
   return (
-    <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-3">
       {tools.map((tool) => {
         if (tool.active) {
           return (
             <article
               key={tool.id}
-              className="rounded-2xl border border-violet-300 bg-violet-50/70 p-5 shadow-sm sm:col-span-2 xl:col-span-2"
+              className="rounded-2xl border border-violet-300 bg-violet-50/70 p-5 shadow-sm lg:col-span-3"
             >
               <h3 className="text-lg font-semibold text-slate-900">
                 {tool.title}
