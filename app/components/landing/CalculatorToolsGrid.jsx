@@ -10,17 +10,12 @@ const tools = [
   { id: "sgk", title: "SGK İşveren Maliyeti" },
   { id: "binek", title: "Binek Araç Gider Kısıtlaması" },
   { id: "finansman", title: "Finansman Gider Kısıtlaması" },
-  { id: "amortisman", title: "Amortisman Hesaplama" },
-  { id: "mtv", title: "MTV Hesaplama" },
-  { id: "kur", title: "Kur Değerleme" },
   { id: "adat", title: "Adat Hesaplama" },
   { id: "police", title: "Poliçe Giderleştirme" },
   { id: "ihracat", title: "İhracat İndirimi Hesaplama" },
   { id: "kar-dagitim", title: "Kar Dağıtım Tablosu" },
-  { id: "fon", title: "Fon Alış Satış Tablosu" },
   { id: "bordro", title: "Bordro Hesaplama" },
   { id: "tazminat-toplu", title: "Tazminat Hesaplama Toplu" },
-  { id: "ekstre", title: "Ekstre Karşılaştırma Mutabakat" },
 ];
 
 export default function CalculatorToolsGrid() {

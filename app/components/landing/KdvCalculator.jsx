@@ -1,6 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import {
+  formatTurkishMoney,
+  parseTurkishAmount,
+} from "@/src/utils/turkishNumberFormat";
 
 const RATE_OPTIONS = [
   { label: "%1", value: 1 },
@@ -8,28 +12,11 @@ const RATE_OPTIONS = [
   { label: "%20", value: 20 },
 ];
 
-function parseAmount(value) {
-  const normalized = String(value || "")
-    .replace(/\./g, "")
-    .replace(",", ".")
-    .trim();
-
-  const number = Number(normalized);
-  return Number.isFinite(number) && number >= 0 ? number : 0;
-}
-
-function formatMoney(value) {
-  return Number(value || 0).toLocaleString("tr-TR", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
 export default function KdvCalculator() {
   const [matrahInput, setMatrahInput] = useState("");
   const [rate, setRate] = useState("20");
 
-  const matrah = parseAmount(matrahInput);
+  const matrah = parseTurkishAmount(matrahInput);
   const rateNumber = Number(rate);
 
   const { kdvTutari, toplam } = useMemo(() => {
@@ -39,6 +26,11 @@ export default function KdvCalculator() {
       toplam: matrah + kdv,
     };
   }, [matrah, rateNumber]);
+
+  const handleMatrahBlur = () => {
+    if (!matrahInput.trim()) return;
+    setMatrahInput(formatTurkishMoney(matrah));
+  };
 
   return (
     <div className="mt-4 space-y-4">
@@ -51,6 +43,7 @@ export default function KdvCalculator() {
           inputMode="decimal"
           value={matrahInput}
           onChange={(event) => setMatrahInput(event.target.value)}
+          onBlur={handleMatrahBlur}
           placeholder="Örn. 10.000,00"
           className="w-full rounded-xl border border-violet-100 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
         />
@@ -74,10 +67,13 @@ export default function KdvCalculator() {
       </label>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <ResultField label="KDV Tutarı" value={formatMoney(kdvTutari)} />
+        <ResultField
+          label="KDV Tutarı"
+          value={formatTurkishMoney(kdvTutari)}
+        />
         <ResultField
           label="KDV Dahil Toplam"
-          value={formatMoney(toplam)}
+          value={formatTurkishMoney(toplam)}
           highlight
         />
       </div>
