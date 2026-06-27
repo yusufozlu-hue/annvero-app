@@ -48,9 +48,9 @@ export default function PublicHeader() {
         <div className="flex items-center gap-3 lg:hidden">
           <Link
             href="/login"
-            className="rounded-full bg-violet-700 px-4 py-2 text-sm font-semibold text-white"
+            className="rounded-full bg-violet-700 px-3 py-2 text-xs font-semibold text-white shadow-md shadow-violet-500/25 sm:px-4 sm:text-sm"
           >
-            Giriş
+            Platform Girişi
           </Link>
           <button
             type="button"

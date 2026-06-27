@@ -1,4 +1,3 @@
-import Link from "next/link";
 import PublicHeader from "./PublicHeader";
 
 const services = [
@@ -110,12 +109,6 @@ export default function LandingPage() {
                 >
                   Hesaplama Araçları
                 </a>
-                <Link
-                  href="/login"
-                  className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-slate-900 px-6 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
-                >
-                  Platform Girişi
-                </Link>
               </div>
             </div>
 
@@ -296,19 +289,11 @@ export default function LandingPage() {
       </main>
 
       <footer className="border-t border-violet-100 bg-slate-900 px-4 py-10 text-slate-300 sm:px-6 lg:px-8">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-lg font-bold text-white">ANNVERO</p>
-            <p className="mt-1 text-sm text-slate-400">
-              Muhasebe ve vergi yönetiminde akıllı dönüşüm.
-            </p>
-          </div>
-          <Link
-            href="/login"
-            className="inline-flex items-center justify-center rounded-full bg-violet-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-violet-500"
-          >
-            Platform Girişi
-          </Link>
+        <div className="mx-auto max-w-7xl">
+          <p className="text-lg font-bold text-white">ANNVERO</p>
+          <p className="mt-1 text-sm text-slate-400">
+            Muhasebe ve vergi yönetiminde akıllı dönüşüm.
+          </p>
         </div>
       </footer>
     </div>
