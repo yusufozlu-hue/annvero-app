@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import AnnveroModuleNav from "@/app/components/AnnveroModuleNav";
 
 function IconBase({ children }) {
   return (
@@ -119,7 +120,9 @@ export default function MuhasebeMenu() {
     href === "/muhasebe" ? pathname === "/muhasebe" : pathname.startsWith(href);
 
   return (
-    <nav className="mb-8 -mx-1 overflow-x-auto pb-2">
+    <>
+      <AnnveroModuleNav variant="muhasebe-subpage" className="mb-4" />
+      <nav className="mb-8 -mx-1 overflow-x-auto pb-2">
       <div className="flex w-max gap-2 rounded-2xl border border-white/10 bg-white/5 p-1.5 backdrop-blur-xl sm:w-full sm:flex-wrap">
         {links.map(({ title, href, Icon }) => {
           const active = isActive(href);
@@ -148,5 +151,6 @@ export default function MuhasebeMenu() {
         })}
       </div>
     </nav>
+    </>
   );
 }

@@ -5,6 +5,14 @@
  */
 export const CARI_SHORT_CODE_MAPPINGS = [
   {
+    keys: ["BATUHAN BULUT", "BATUHAN"],
+    names: ["BATUHAN BULUT"],
+  },
+  {
+    keys: ["YUSUF OZLU", "YUSUF ÖZLÜ"],
+    names: ["YUSUF OZLU", "YUSUF ÖZLÜ"],
+  },
+  {
     keys: [
       "TTLKOM",
       "TURK TELEKOM",

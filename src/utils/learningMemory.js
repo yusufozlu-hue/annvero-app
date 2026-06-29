@@ -1,10 +1,16 @@
-export async function fetchLearningMemoryForCompany(companyId) {
+export async function fetchLearningMemoryForCompany(companyId, options = {}) {
   if (!companyId) return [];
 
+  const params = new URLSearchParams({
+    companyId,
+  });
+
+  if (options.includeInactive) {
+    params.set("includeInactive", "1");
+  }
+
   try {
-    const response = await fetch(
-      `/api/learning-memory?companyId=${encodeURIComponent(companyId)}`
-    );
+    const response = await fetch(`/api/learning-memory?${params.toString()}`);
 
     if (!response.ok) {
       console.error("learning_memory fetch failed", await response.text());
@@ -16,6 +22,27 @@ export async function fetchLearningMemoryForCompany(companyId) {
   } catch (error) {
     console.error("learning_memory fetch failed", error);
     return [];
+  }
+}
+
+export async function createLearningMemoryRecord(record) {
+  try {
+    const response = await fetch("/api/learning-memory", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ record }),
+    });
+
+    if (!response.ok) {
+      console.error("learning_memory create failed", await response.text());
+      return null;
+    }
+
+    const payload = await response.json();
+    return payload.data || null;
+  } catch (error) {
+    console.error("learning_memory create failed", error);
+    return null;
   }
 }
 
@@ -37,6 +64,27 @@ export async function updateLearningMemoryRecord(id, fields) {
     return true;
   } catch (error) {
     console.error("learning_memory record update failed", error);
+    return false;
+  }
+}
+
+export async function deleteLearningMemoryRecord(id) {
+  if (!id) return false;
+
+  try {
+    const response = await fetch(
+      `/api/learning-memory?id=${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+
+    if (!response.ok) {
+      console.error("learning_memory delete failed", await response.text());
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("learning_memory delete failed", error);
     return false;
   }
 }

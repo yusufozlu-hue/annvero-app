@@ -1,5 +1,5 @@
 import { normalizeParserText } from "@/src/utils/bankMovementMapper";
-import { resolve102BankAccount } from "@/src/utils/companyCenter";
+import { MEMORY_MATCH_LABEL } from "@/src/utils/previewRowEdit";
 
 function compactAccount(code) {
   return normalizeParserText(code).replace(/\s+/g, "");
@@ -286,9 +286,10 @@ export function applySuggestionToMovement(row, suggestion, bankAccounts = []) {
 
   if (
     row.matchedMemoryId ||
+    row.warning?.includes(MEMORY_MATCH_LABEL) ||
     row.warning?.includes("Öğrenen hafızadan eşleşti")
   ) {
-    warnings.push("Öğrenen hafızadan eşleşti");
+    warnings.push(MEMORY_MATCH_LABEL);
   }
 
   warnings.push("Önerilen hesap uygulandı");

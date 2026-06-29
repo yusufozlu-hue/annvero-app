@@ -154,8 +154,26 @@ function LoginForm() {
         }
 
         if (connectionTest.session) {
-          router.replace(getSafeNextPath(searchParams.get("next")));
-          return;
+          const { data: userData, error: userError } =
+            await supabase.auth.getUser();
+          const nextParam = searchParams.get("next");
+          const redirectTarget = nextParam
+            ? getSafeNextPath(nextParam)
+            : "/dashboard";
+
+          console.log("login error", userError);
+          console.log("user id", userData.user?.id ?? null);
+          console.log(
+            "session var mı",
+            Boolean(connectionTest.session || userData.user)
+          );
+          console.log("next url", nextParam);
+          console.log("redirect hedefi", redirectTarget);
+
+          if (userData.user) {
+            router.replace(redirectTarget);
+            return;
+          }
         }
 
         setIsCheckingSession(false);
@@ -210,10 +228,22 @@ function LoginForm() {
         return;
       }
 
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password,
-      });
+      const { data: signInData, error: signInError } =
+        await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+
+      const nextParam = searchParams.get("next");
+      const redirectTarget = nextParam
+        ? getSafeNextPath(nextParam)
+        : "/dashboard";
+
+      console.log("login error", signInError);
+      console.log("user id", signInData.user?.id ?? null);
+      console.log("session var mı", Boolean(signInData.session));
+      console.log("next url", nextParam);
+      console.log("redirect hedefi", redirectTarget);
 
       if (signInError) {
         logLoginError(signInError);
@@ -222,17 +252,31 @@ function LoginForm() {
           logNetworkError("signInWithPassword", signInError, {
             email: email.trim(),
           });
-          setError(SUPABASE_NETWORK_ERROR_MESSAGE);
+          setError(`Giriş başarısız: ${SUPABASE_NETWORK_ERROR_MESSAGE}`);
         } else {
-          setError(signInError.message);
+          setError(`Giriş başarısız: ${signInError.message}`);
         }
 
         setIsLoading(false);
         return;
       }
 
-      router.push(getSafeNextPath(searchParams.get("next")));
+      const { data: sessionData } = await supabase.auth.getSession();
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+
+      console.log("session var mı (getSession)", Boolean(sessionData.session));
+      console.log("user id (getUser)", userData.user?.id ?? null);
+      console.log("login error (getUser)", userError);
+
+      if (!sessionData.session || !userData.user) {
+        setError("Giriş başarısız: Oturum oluşturulamadı");
+        setIsLoading(false);
+        return;
+      }
+
       router.refresh();
+      router.push(redirectTarget);
+      setIsLoading(false);
     } catch (caughtError) {
       logLoginError(caughtError);
 
@@ -240,9 +284,9 @@ function LoginForm() {
         logNetworkError("signInWithPassword-catch", caughtError, {
           email: email.trim(),
         });
-        setError(SUPABASE_NETWORK_ERROR_MESSAGE);
+        setError(`Giriş başarısız: ${SUPABASE_NETWORK_ERROR_MESSAGE}`);
       } else {
-        setError(getLoginErrorMessage(caughtError));
+        setError(`Giriş başarısız: ${getLoginErrorMessage(caughtError)}`);
       }
 
       setIsLoading(false);

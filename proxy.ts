@@ -11,6 +11,8 @@ export const config = {
     "/muhasebe/:path*",
     "/dashboard",
     "/dashboard/:path*",
+    "/ofis-takip",
+    "/ofis-takip/:path*",
     "/login",
   ],
 };

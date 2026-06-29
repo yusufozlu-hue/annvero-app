@@ -1,13 +1,42 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
+import PreviewEyeButton from "../components/PreviewEyeButton";
+import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
-import { savePendingLucaRows } from "@/src/utils/companyCenter";
+import {
+  normalizeCompanyRecord,
+  savePendingLucaRows,
+  loadAccountPlansFromStorage,
+  getCompanyAccountPlansWithDiagnostics,
+  logElektrawebAccountPlanDiagnostics,
+  normalizeAccountPlanForMatching,
+} from "@/src/utils/companyCenter";
+import {
+  buildElektrawebCompanyMappings,
+  buildElektrawebCombinedSearchText,
+} from "@/src/utils/elektrawebAccountMatcher";
+import { fetchLearningMemoryForCompany } from "@/src/utils/learningMemory";
+import {
+  buildElektrawebPreviewRows,
+  buildStandardLucaTransferPayload,
+  getStandardLucaMissingBadges,
+  logElektrawebPreviewDiagnostics,
+  logStandardLucaReport,
+  standardLucaRowsToExcelRows,
+  stripStandardLucaRow,
+} from "@/src/utils/standardLucaRow";
+import { createLearningMemoryRecord } from "@/src/utils/learningMemory";
+import {
+  applyElektrawebEditDraft,
+  buildElektrawebEditDraft,
+  buildLearningMemoryPayload,
+} from "@/src/utils/previewRowEdit";
 
 type Filtre = "tumu" | "riskli" | "dengesiz" | "aciklama" | "belgeTuru";
 
@@ -16,8 +45,13 @@ const PAGE_SIZE = 25;
 export default function ElektrawebPage() {
   const router = useRouter();
 
-  const { companies, selectedCompanyId, setSelectedCompanyId, selectedCompany } =
+  const { companies, selectedCompanyId, setSelectedCompanyId, selectedCompany: selectedCompanyRaw } =
     useCompanyList();
+
+  const selectedCompany = useMemo(
+    () => (selectedCompanyRaw ? normalizeCompanyRecord(selectedCompanyRaw) : null),
+    [selectedCompanyRaw]
+  );
 
   const [file, setFile] = useState<File | null>(null);
   const [donem, setDonem] = useState("tum");
@@ -29,20 +63,172 @@ export default function ElektrawebPage() {
   const [dengesizFis, setDengesizFis] = useState(0);
   const [aciklamaEksikSatir, setAciklamaEksikSatir] = useState(0);
   const [belgeTuruEksikSatir, setBelgeTuruEksikSatir] = useState(0);
-  const [fisler, setFisler] = useState<any[]>([]);
+  const [standardLucaRows, setStandardLucaRows] = useState<any[]>([]);
+  const [accountPlans, setAccountPlans] = useState<Record<string, unknown>>({});
+  const [learningMemory, setLearningMemory] = useState<any[]>([]);
+
+  const { plans: companyPlans, diagnostics: accountPlanDiagnostics } = useMemo(
+    () =>
+      getCompanyAccountPlansWithDiagnostics(
+        accountPlans,
+        selectedCompany || selectedCompanyId
+      ),
+    [accountPlans, selectedCompany, selectedCompanyId]
+  );
+
+  const normalizedAccountPlan = useMemo(
+    () => normalizeAccountPlanForMatching(companyPlans),
+    [companyPlans]
+  );
+
+  const matchingContext = useMemo(
+    () => ({
+      selectedCompanyAccountPlan: normalizedAccountPlan,
+      normalizedAccountPlan,
+      learningMemory,
+      companyMappings: buildElektrawebCompanyMappings(selectedCompany || {}),
+      documentSeriesRules: selectedCompany?.documentSeriesRules || [],
+      accountingRules: selectedCompany?.accountingRules || {},
+      employees: selectedCompany?.employees || [],
+    }),
+    [normalizedAccountPlan, learningMemory, selectedCompany]
+  );
+
+  const rematchRows = (rows: any[], memory = learningMemory) =>
+    buildElektrawebPreviewRows(rows, {
+      firmaId: selectedCompanyId,
+      kaynakAdi: "ELEKTRAWEB",
+      ...matchingContext,
+      learningMemory: memory,
+    });
+
+  useEffect(() => {
+    const refreshPlans = () => setAccountPlans(loadAccountPlansFromStorage());
+    refreshPlans();
+    window.addEventListener("focus", refreshPlans);
+    return () => window.removeEventListener("focus", refreshPlans);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCompanyId) {
+      setLearningMemory([]);
+      return;
+    }
+
+    fetchLearningMemoryForCompany(selectedCompanyId).then(setLearningMemory);
+  }, [selectedCompanyId]);
 
   const [filtre, setFiltre] = useState<Filtre>("tumu");
   const [arama, setArama] = useState("");
   const [page, setPage] = useState(1);
   const [exportAcik, setExportAcik] = useState(false);
+  const [expandedPreviewRowId, setExpandedPreviewRowId] = useState<string | null>(
+    null
+  );
+  const [previewEditDraft, setPreviewEditDraft] = useState<any>(null);
+  const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: string } | null>(
+    null
+  );
 
   useEffect(() => {
     setPage(1);
-  }, [filtre, arama, fisler]);
+  }, [filtre, arama, standardLucaRows]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  const showToast = (message: string, type: string) =>
+    setToast({ message, type });
+
+  const togglePreviewRowDetail = (row: any) => {
+    if (expandedPreviewRowId === row.id) {
+      setExpandedPreviewRowId(null);
+      setPreviewEditDraft(null);
+      return;
+    }
+
+    setExpandedPreviewRowId(row.id);
+    setPreviewEditDraft(buildElektrawebEditDraft(row));
+  };
+
+  const cancelPreviewRowEdit = () => {
+    setExpandedPreviewRowId(null);
+    setPreviewEditDraft(null);
+  };
+
+  const savePreviewRowEdit = async () => {
+    if (!expandedPreviewRowId || !previewEditDraft) return;
+
+    const currentRow = standardLucaRows.find((row) => row.id === expandedPreviewRowId);
+    if (!currentRow) return;
+
+    setIsSavingPreviewEdit(true);
+
+    try {
+      const updatedRow = applyElektrawebEditDraft(currentRow, previewEditDraft);
+      let nextMemory = learningMemory;
+
+      if (previewEditDraft.saveToMemory && selectedCompanyId) {
+        const memoryRecord = buildLearningMemoryPayload({
+          companyId: selectedCompanyId,
+          sourceModule: "elektraweb",
+          description: buildElektrawebCombinedSearchText(updatedRow),
+          documentSeriesRules: selectedCompany?.documentSeriesRules || [],
+          accountCode: previewEditDraft.accountCode,
+          documentType: previewEditDraft.documentType,
+          standardDescription: previewEditDraft.description,
+        });
+
+        const created = await createLearningMemoryRecord(memoryRecord);
+        if (created) {
+          nextMemory = await fetchLearningMemoryForCompany(selectedCompanyId);
+          setLearningMemory(nextMemory);
+        }
+
+        showToast(
+          created
+            ? "Satır güncellendi ve hafızaya kaydedildi; eşleşmeler yenilendi"
+            : "Satır güncellendi, hafıza kaydı oluşturulamadı",
+          created ? "success" : "error"
+        );
+      } else {
+        showToast("Satır güncellendi", "success");
+      }
+
+      setStandardLucaRows((prev) => {
+        const withEdit = prev.map((row) =>
+          row.id === expandedPreviewRowId ? updatedRow : row
+        );
+        return rematchRows(withEdit, nextMemory);
+      });
+
+      cancelPreviewRowEdit();
+    } finally {
+      setIsSavingPreviewEdit(false);
+    }
+  };
 
   const onIzlemeOlustur = async () => {
     if (!file) {
       alert("Önce ElektraWeb fiş dosyasını seçmelisin.");
+      return;
+    }
+
+    logElektrawebAccountPlanDiagnostics({
+      selectedCompany,
+      accountPlan: normalizedAccountPlan,
+      storageKeys: accountPlanDiagnostics.storageKeys,
+      matchedStorageKey: accountPlanDiagnostics.matchedStorageKey,
+    });
+
+    if (normalizedAccountPlan.length === 0) {
+      alert(
+        "Hesap planı yüklü değil veya seçili firma ile eşleşmiyor. Konsoldaki [elektraweb-debug] kayıtlarına bakın."
+      );
       return;
     }
 
@@ -51,6 +237,14 @@ export default function ElektrawebPage() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      formData.append(
+        "matchingContext",
+        JSON.stringify({
+          firmaId: selectedCompanyId,
+          kaynakAdi: "ELEKTRAWEB",
+          ...matchingContext,
+        })
+      );
 
       const response = await fetch("/api/elektraweb", {
         method: "POST",
@@ -64,17 +258,31 @@ export default function ElektrawebPage() {
         return;
       }
 
-      const siraliFisler = [...data.fisler].sort(
-        (a, b) => b.riskPuani - a.riskPuani
+      const previewRows = data.standardLucaRows || data.fisler || [];
+
+      console.log("PREVIEW INPUT", previewRows.slice(0, 10));
+      logElektrawebPreviewDiagnostics(previewRows, { afterMatching: true });
+
+      const unmatchedWithPlan = previewRows.some(
+        (row: any) => !String(row.hesapKodu || "").trim()
       );
 
-      setSatirSayisi(data.toplamSatir ?? data.fisler.length);
+      if (unmatchedWithPlan) {
+        showToast(
+          "Bazı satırlarda hesap planında bu açıklamaya uygun hesap bulunamadı",
+          "error"
+        );
+      }
+
+      logStandardLucaReport("elektraweb-preview", previewRows);
+
+      setSatirSayisi(data.toplamSatir ?? previewRows.length);
       setFisSayisi(data.toplamFis ?? 0);
       setDengeliFis(data.dengeliFis ?? 0);
       setDengesizFis(data.dengesizFis ?? 0);
       setAciklamaEksikSatir(data.aciklamaEksikSatir ?? 0);
       setBelgeTuruEksikSatir(data.belgeTuruEksikSatir ?? 0);
-      setFisler(siraliFisler);
+      setStandardLucaRows(previewRows);
       setFiltre("tumu");
     } finally {
       setYukleniyor(false);
@@ -82,38 +290,38 @@ export default function ElektrawebPage() {
   };
 
   const handleLucaAktar = () => {
-    if (fisler.length === 0) {
+    if (standardLucaRows.length === 0) {
       alert("Önce ön izleme oluşturmalısın.");
       return;
     }
 
-    savePendingLucaRows({
-      companyId: selectedCompanyId,
-      companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
-      selectedBank: "ELEKTRAWEB",
-      createdAt: new Date().toISOString(),
-      rows: fisler.map((f) => ({
-        Tarih: f.tarih,
-        Aciklama: f.aciklama,
-        Tutar: f.borc || f.alacak,
-        BelgeTuru: f.belgeTuru,
-        LucaAciklama: f.aciklama,
-      })),
-    });
+    console.log("LUCA EXPORT INPUT", standardLucaRows.slice(0, 10));
+
+    savePendingLucaRows(
+      buildStandardLucaTransferPayload({
+        firmaId: selectedCompanyId,
+        companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+        kaynakTipi: "ELEKTRAWEB",
+        kaynakAdi: "ELEKTRAWEB",
+        rows: standardLucaRows,
+      })
+    );
+
+    logStandardLucaReport("elektraweb-transfer", standardLucaRows.map(stripStandardLucaRow));
 
     router.push("/muhasebe/luca-donusturucu");
   };
 
   const yuksekRiskli = useMemo(
-    () => fisler.filter((f) => f.riskSeviyesi === "Yüksek").length,
-    [fisler]
+    () => standardLucaRows.filter((f) => f.riskSeviyesi === "Yüksek").length,
+    [standardLucaRows]
   );
 
   const ortalamaRisk = useMemo(() => {
-    if (fisler.length === 0) return 0;
-    const toplam = fisler.reduce((acc, f) => acc + (f.riskPuani || 0), 0);
-    return Math.round(toplam / fisler.length);
-  }, [fisler]);
+    if (standardLucaRows.length === 0) return 0;
+    const toplam = standardLucaRows.reduce((acc, f) => acc + (f.riskPuani || 0), 0);
+    return Math.round(toplam / standardLucaRows.length);
+  }, [standardLucaRows]);
 
   const yuzde = (deger: number, toplam: number) =>
     toplam > 0 ? Math.round((deger / toplam) * 100) : 0;
@@ -121,7 +329,7 @@ export default function ElektrawebPage() {
   const filtrelenmis = useMemo(() => {
     const aramaText = arama.trim().toLocaleLowerCase("tr");
 
-    return fisler.filter((f) => {
+    return standardLucaRows.filter((f) => {
       if (filtre === "riskli" && f.durum !== "Riskli") return false;
       if (filtre === "dengesiz" && !f.riskler?.includes("Fiş dengesi bozuk"))
         return false;
@@ -131,7 +339,7 @@ export default function ElektrawebPage() {
         return false;
 
       if (aramaText) {
-        const hay = `${f.fisNo} ${f.aciklama} ${f.belgeTuru}`.toLocaleLowerCase(
+        const hay = `${f.fisNo} ${f.fisTarihi || f.tarih} ${f.fisAciklama} ${f.detayAciklama || f.aciklama} ${f.belgeTuru} ${f.hesapKodu}`.toLocaleLowerCase(
           "tr"
         );
         if (!hay.includes(aramaText)) return false;
@@ -139,7 +347,7 @@ export default function ElektrawebPage() {
 
       return true;
     });
-  }, [fisler, filtre, arama]);
+  }, [standardLucaRows, filtre, arama]);
 
   const totalPages = Math.max(1, Math.ceil(filtrelenmis.length / PAGE_SIZE));
   const sayfaSatirlari = filtrelenmis.slice(
@@ -153,22 +361,14 @@ export default function ElektrawebPage() {
       return;
     }
 
-    const data = rows.map((f) => ({
-      "Fiş No": f.fisNo,
-      Tarih: f.tarih,
-      "Belge Türü": f.belgeTuru,
-      Açıklama: f.aciklama,
-      Borç: f.borc,
-      Alacak: f.alacak,
-      "Risk Puanı": f.riskPuani,
-      "Risk Seviyesi": f.riskSeviyesi,
-      "Kontrol Notu": f.risk,
-    }));
+    console.log("LUCA EXPORT INPUT", rows.slice(0, 10));
+
+    const data = standardLucaRowsToExcelRows(rows.map(stripStandardLucaRow));
 
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Kontrol Raporu");
-    XLSX.writeFile(wb, "elektraweb_kontrol_raporu.xlsx");
+    XLSX.utils.book_append_sheet(wb, ws, "Luca Fiş");
+    XLSX.writeFile(wb, "elektraweb_luca_fis_onizleme.xlsx");
     setExportAcik(false);
   };
 
@@ -233,6 +433,18 @@ export default function ElektrawebPage() {
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-slate-950 text-white">
+      {toast && (
+        <div
+          role="status"
+          className={`fixed top-4 right-4 z-50 rounded-lg border px-4 py-3 text-sm font-medium shadow-xl ${
+            toast.type === "success"
+              ? "border-emerald-500/40 bg-emerald-950/95 text-emerald-100"
+              : "border-red-500/40 bg-red-950/95 text-red-100"
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
       {/* Arka plan neon glow */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute -left-40 -top-40 h-96 w-96 rounded-full bg-blue-600/10 blur-[120px]" />
@@ -357,7 +569,7 @@ export default function ElektrawebPage() {
         </section>
 
         {/* İstatistik kartları */}
-        {fisler.length > 0 && (
+        {standardLucaRows.length > 0 && (
           <section className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
             {statCards.map((card) => (
               <div
@@ -379,7 +591,7 @@ export default function ElektrawebPage() {
         )}
 
         {/* Kontrol raporu */}
-        {fisler.length > 0 && (
+        {standardLucaRows.length > 0 && (
           <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/70 p-6 shadow-xl shadow-black/30 backdrop-blur-xl">
             <div className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <h2 className="text-2xl font-bold">ANNVERO Kontrol Raporu</h2>
@@ -424,7 +636,7 @@ export default function ElektrawebPage() {
                   {exportAcik && (
                     <div className="absolute right-0 z-20 mt-2 w-52 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
                       <button
-                        onClick={() => exportToExcel(fisler)}
+                        onClick={() => exportToExcel(standardLucaRows)}
                         className="block w-full px-4 py-2.5 text-left text-sm text-slate-200 transition hover:bg-slate-800"
                       >
                         Tümünü Dışa Aktar
@@ -464,10 +676,13 @@ export default function ElektrawebPage() {
                   <tr className="text-slate-400">
                     <th className="p-3 font-semibold">Fiş No</th>
                     <th className="p-3 font-semibold">Tarih</th>
+                    <th className="p-3 font-semibold">Hesap Kodu</th>
                     <th className="p-3 font-semibold">Belge Türü</th>
-                    <th className="p-3 font-semibold">Açıklama</th>
+                    <th className="p-3 font-semibold">Fiş Açıklama</th>
+                    <th className="p-3 font-semibold">Detay Açıklama</th>
                     <th className="p-3 text-right font-semibold">Borç</th>
                     <th className="p-3 text-right font-semibold">Alacak</th>
+                    <th className="p-3 font-semibold">Eksikler</th>
                     <th className="p-3 text-right font-semibold">Risk</th>
                     <th className="p-3 font-semibold">Seviye</th>
                     <th className="p-3 font-semibold">Kontrol Notu</th>
@@ -477,59 +692,107 @@ export default function ElektrawebPage() {
 
                 <tbody>
                   {sayfaSatirlari.map((fis) => (
-                    <tr
-                      key={fis.id}
-                      className="border-t border-slate-800 transition-colors hover:bg-slate-800/50"
-                    >
-                      <td className="p-3 font-medium">{fis.fisNo}</td>
-                      <td className="p-3 text-slate-300">{fis.tarih}</td>
-                      <td className="p-3">
-                        <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-xs font-medium text-slate-200">
-                          {fis.belgeTuru || "-"}
-                        </span>
-                      </td>
-                      <td className="max-w-xs truncate p-3 text-slate-300">
-                        {fis.aciklama || "-"}
-                      </td>
-                      <td className="p-3 text-right tabular-nums">{fis.borc}</td>
-                      <td className="p-3 text-right tabular-nums">
-                        {fis.alacak}
-                      </td>
-                      <td className="p-3 text-right tabular-nums">
-                        {fis.riskPuani}
-                      </td>
-                      <td className="p-3">
-                        <RiskBadge seviye={fis.riskSeviyesi} />
-                      </td>
-                      <td
-                        className={`p-3 ${
-                          fis.durum === "Riskli"
-                            ? "text-yellow-300"
-                            : "text-emerald-300"
-                        }`}
-                      >
-                        {fis.risk}
-                      </td>
-                      <td className="p-3 text-center">
-                        <button
-                          onClick={() =>
-                            alert(
-                              `Fiş No: ${fis.fisNo}\nKontrol: ${fis.risk}`
-                            )
-                          }
-                          title="Detay"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 bg-slate-950 text-slate-300 transition hover:border-blue-500 hover:text-white"
+                    <Fragment key={fis.id}>
+                      <tr className="border-t border-slate-800 transition-colors hover:bg-slate-800/50">
+                        <td className="p-3 font-medium">{fis.fisNo}</td>
+                        <td className="p-3 text-slate-300">
+                          {fis.fisTarihi || fis.tarih}
+                        </td>
+                        <td
+                          className={`p-3 font-mono text-xs ${
+                            fis.hesapKodu
+                              ? "text-slate-200"
+                              : "font-semibold text-red-400"
+                          }`}
                         >
-                          <EyeIcon />
-                        </button>
-                      </td>
-                    </tr>
+                          {fis.hesapKodu || "—"}
+                        </td>
+                        <td className="p-3">
+                          <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-xs font-medium text-slate-200">
+                            {fis.belgeTuru || "-"}
+                          </span>
+                        </td>
+                        <td className="max-w-[10rem] truncate p-3 text-slate-300">
+                          {fis.fisAciklama || "-"}
+                        </td>
+                        <td className="max-w-xs truncate p-3 text-slate-300">
+                          {fis.detayAciklama || fis.aciklama || "-"}
+                        </td>
+                        <td className="p-3 text-right tabular-nums">{fis.borc}</td>
+                        <td className="p-3 text-right tabular-nums">
+                          {fis.alacak}
+                        </td>
+                        <td className="p-3">
+                          <div className="flex flex-wrap gap-1">
+                            {fis.hesapKodu && fis.eslesmeYontemi ? (
+                              <span className="rounded-full border border-emerald-700/60 bg-emerald-950/50 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                                {fis.eslesmeYontemi}
+                              </span>
+                            ) : null}
+                            {fis.riskDurumu ? (
+                              <MissingFieldBadge label={fis.riskDurumu} />
+                            ) : null}
+                            {(fis.hesapEslesmeNotlari || []).map((note: string) => (
+                              <MissingFieldBadge key={note} label={note} />
+                            ))}
+                            {getStandardLucaMissingBadges(fis)
+                              .filter(
+                                (badge) =>
+                                  badge !== "Hesap eksik" && badge !== "HESAP_EKSIK"
+                              )
+                              .map((badge) => (
+                                <MissingFieldBadge key={badge} label={badge} />
+                              ))}
+                            {!fis.riskDurumu &&
+                            !(fis.hesapEslesmeNotlari || []).length &&
+                            getStandardLucaMissingBadges(fis).length === 0 ? (
+                              <span className="text-xs text-emerald-400">Tam</span>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="p-3 text-right tabular-nums">
+                          {fis.riskPuani}
+                        </td>
+                        <td className="p-3">
+                          <RiskBadge seviye={fis.riskSeviyesi} />
+                        </td>
+                        <td
+                          className={`p-3 ${
+                            fis.durum === "Riskli"
+                              ? "text-yellow-300"
+                              : "text-emerald-300"
+                          }`}
+                        >
+                          {fis.kontrolNotu || fis.risk}
+                        </td>
+                        <td className="p-3 text-center">
+                          <PreviewEyeButton
+                            active={expandedPreviewRowId === fis.id}
+                            onClick={() => togglePreviewRowDetail(fis)}
+                          />
+                        </td>
+                      </tr>
+
+                      {expandedPreviewRowId === fis.id && previewEditDraft ? (
+                        <tr className="border-t border-slate-800">
+                          <td colSpan={13} className="p-4">
+                            <PreviewVoucherDetailPanel
+                              draft={previewEditDraft}
+                              onChange={setPreviewEditDraft}
+                              onSave={savePreviewRowEdit}
+                              onCancel={cancelPreviewRowEdit}
+                              isSaving={isSavingPreviewEdit}
+                            />
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
                   ))}
 
                   {sayfaSatirlari.length === 0 && (
                     <tr>
                       <td
-                        colSpan={10}
+                        colSpan={13}
                         className="p-8 text-center text-slate-500"
                       >
                         Sonuç bulunamadı.
@@ -576,6 +839,14 @@ export default function ElektrawebPage() {
         </section>
       </div>
     </main>
+  );
+}
+
+function MissingFieldBadge({ label }: { label: string }) {
+  return (
+    <span className="inline-flex rounded-full border border-red-700/60 bg-red-950/50 px-2 py-0.5 text-[10px] font-semibold text-red-300">
+      {label}
+    </span>
   );
 }
 

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import AnnveroModuleNav from "@/app/components/AnnveroModuleNav";
 
 function IconBase({ children }) {
   return (
@@ -240,6 +241,8 @@ export default function Page() {
       </div>
 
       <div className="relative mx-auto max-w-7xl">
+        <AnnveroModuleNav variant="muhasebe-home" className="mb-8" />
+
         {/* Üst bölüm */}
         <header className="mb-12 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
           <div>

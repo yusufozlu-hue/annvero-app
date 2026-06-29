@@ -57,6 +57,7 @@ export function hasBankMovementError(row) {
   if (!warning) return false;
 
   const nonErrorParts = new Set([
+    normalizeSearchText("Hafızadan eşleşti"),
     normalizeSearchText("Öğrenen hafızadan eşleşti"),
     normalizeSearchText("Önerilen hesap uygulandı"),
     normalizeSearchText("Cari hesap eşleşti"),
@@ -94,6 +95,7 @@ export function matchesBankMovementQuickFilter(row, filterId) {
       return (
         Boolean(row.matchedMemoryId) ||
         row.matchedRule?.source === "learningMemory" ||
+        warningText.includes("HAFIZADAN ESLESTI") ||
         warningText.includes("OGRENEN HAFIZADAN ESLESTI")
       );
     case "creditCard":

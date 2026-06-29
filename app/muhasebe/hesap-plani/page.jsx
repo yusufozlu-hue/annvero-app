@@ -38,8 +38,8 @@ export default function HesapPlaniPage() {
   }, [accountPlans, isLoaded]);
 
   const currentPlan = useMemo(
-    () => getAccountPlanForCompany(accountPlans, selectedCompanyId),
-    [accountPlans, selectedCompanyId]
+    () => getAccountPlanForCompany(accountPlans, selectedCompany || selectedCompanyId),
+    [accountPlans, selectedCompany, selectedCompanyId]
   );
 
   const filteredPlan = useMemo(() => {

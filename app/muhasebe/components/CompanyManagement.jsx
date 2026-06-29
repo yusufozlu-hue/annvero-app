@@ -35,6 +35,8 @@ export default function CompanyManagement() {
   const [creditCardsSectionOpen, setCreditCardsSectionOpen] = useState(false);
   const [expandedBankDetails, setExpandedBankDetails] = useState({});
   const [expandedCreditCardDetails, setExpandedCreditCardDetails] = useState({});
+  const [documentSeriesEditId, setDocumentSeriesEditId] = useState(null);
+  const [documentSeriesFormDraft, setDocumentSeriesFormDraft] = useState(null);
   const [companySearchQuery, setCompanySearchQuery] = useState("");
   const [toast, setToast] = useState(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
@@ -94,6 +96,8 @@ export default function CompanyManagement() {
       setCreditCardsSectionOpen(false);
       setExpandedBankDetails({});
       setExpandedCreditCardDetails({});
+      setDocumentSeriesEditId(null);
+      setDocumentSeriesFormDraft(null);
     }
   };
 
@@ -193,6 +197,8 @@ export default function CompanyManagement() {
     setCreditCardsSectionOpen(false);
     setExpandedBankDetails({});
     setExpandedCreditCardDetails({});
+    setDocumentSeriesEditId(null);
+    setDocumentSeriesFormDraft(null);
   };
 
   const deleteCompany = async (id) => {
@@ -416,6 +422,92 @@ export default function CompanyManagement() {
       delete next[id];
       return next;
     });
+  };
+
+  // =========================
+  // BELGE SERİLERİ
+  // =========================
+
+  const documentTypeOptions = ["EA", "EF", "DK", "KR", "NM", "SMM", "FT"];
+
+  const createEmptyDocumentSeries = () => ({
+    id: crypto.randomUUID(),
+    prefix: "",
+    documentType: "EA",
+    description: "",
+  });
+
+  const cancelDocumentSeriesForm = () => {
+    setDocumentSeriesEditId(null);
+    setDocumentSeriesFormDraft(null);
+  };
+
+  const openNewDocumentSeriesForm = () => {
+    if (documentSeriesEditId === "new") {
+      cancelDocumentSeriesForm();
+      return;
+    }
+
+    setDocumentSeriesEditId("new");
+    setDocumentSeriesFormDraft(createEmptyDocumentSeries());
+  };
+
+  const openEditDocumentSeriesForm = (rule) => {
+    if (documentSeriesEditId === rule.id) {
+      cancelDocumentSeriesForm();
+      return;
+    }
+
+    setDocumentSeriesEditId(rule.id);
+    setDocumentSeriesFormDraft({ ...rule });
+  };
+
+  const updateDocumentSeriesFormDraft = (field, value) => {
+    setDocumentSeriesFormDraft((prev) => {
+      if (!prev) return prev;
+
+      if (field === "prefix") {
+        return { ...prev, prefix: value.toUpperCase() };
+      }
+
+      return { ...prev, [field]: value };
+    });
+  };
+
+  const saveDocumentSeriesForm = () => {
+    if (!documentSeriesFormDraft) return;
+
+    if (documentSeriesEditId === "new") {
+      setCompany({
+        ...company,
+        documentSeriesRules: [
+          ...(company.documentSeriesRules || []),
+          documentSeriesFormDraft,
+        ],
+      });
+    } else {
+      setCompany({
+        ...company,
+        documentSeriesRules: (company.documentSeriesRules || []).map((rule) =>
+          rule.id === documentSeriesEditId ? documentSeriesFormDraft : rule
+        ),
+      });
+    }
+
+    cancelDocumentSeriesForm();
+  };
+
+  const removeDocumentSeriesRule = (id) => {
+    setCompany({
+      ...company,
+      documentSeriesRules: (company.documentSeriesRules || []).filter(
+        (rule) => rule.id !== id
+      ),
+    });
+
+    if (documentSeriesEditId === id) {
+      cancelDocumentSeriesForm();
+    }
   };
 
   // =========================
@@ -668,12 +760,26 @@ export default function CompanyManagement() {
       <div className="mx-auto max-w-screen-2xl space-y-6">
         <div className="flex items-start justify-between">
           <div>
-            <Link
-              href="/muhasebe"
-              className="mb-4 inline-block rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold hover:bg-slate-700"
-            >
-              ← Muhasebe Paneline Dön
-            </Link>
+            <div className="mb-4 flex flex-wrap gap-3">
+              <Link
+                href="/muhasebe"
+                className="inline-flex items-center rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold hover:bg-slate-700"
+              >
+                ← Muhasebe Paneline Dön
+              </Link>
+              <Link
+                href="/ofis-takip"
+                className="inline-flex items-center rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold hover:bg-slate-700"
+              >
+                Ofis Takip
+              </Link>
+              <Link
+                href="/dashboard"
+                className="inline-flex items-center rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold hover:bg-slate-700"
+              >
+                Dashboard
+              </Link>
+            </div>
 
             <h1 className="text-3xl font-bold">
               Firma Yönetim Merkezi v2.4
@@ -1094,84 +1200,96 @@ export default function CompanyManagement() {
             )}
 
 {activeTab === "documents" && (
-              <ListSection
-                buttonText="+ Belge Serisi Ekle"
-                onAdd={() =>
-                  setCompany({
-                    ...company,
-                    documentSeriesRules: [
-                      ...(company.documentSeriesRules || []),
-                      {
-                        id: crypto.randomUUID(),
-                        prefix: "",
-                        documentType: "EA",
-                        description: "",
-                      },
-                    ],
-                  })
-                }
-              >
-                {(company.documentSeriesRules || []).map((r) => (
-                  <Card key={r.id}>
-                    <Input
-                      label="Seri Ön Eki"
-                      value={r.prefix}
-                      onChange={(v) =>
-                        setCompany({
-                          ...company,
-                          documentSeriesRules: company.documentSeriesRules.map(
-                            (x) =>
-                              x.id === r.id
-                                ? { ...x, prefix: v.toUpperCase() }
-                                : x
-                          ),
-                        })
-                      }
-                    />
+              <div className="space-y-4">
+                <button
+                  type="button"
+                  onClick={openNewDocumentSeriesForm}
+                  className="rounded-lg bg-emerald-600 px-4 py-2 hover:bg-emerald-700"
+                >
+                  + Yeni Belge Serisi
+                </button>
 
-                    <Select
-                      label="Belge Türü"
-                      value={r.documentType}
-                      onChange={(v) =>
-                        setCompany({
-                          ...company,
-                          documentSeriesRules: company.documentSeriesRules.map(
-                            (x) =>
-                              x.id === r.id ? { ...x, documentType: v } : x
-                          ),
-                        })
-                      }
-                      options={["EA", "EF", "DK", "KR", "NM", "SMM", "FT"]}
-                    />
+                {(company.documentSeriesRules || []).length === 0 &&
+                documentSeriesEditId !== "new" ? (
+                  <EmptyListMessage text="Henüz belge serisi eklenmedi." />
+                ) : (
+                  <div className="overflow-x-auto rounded-xl border border-slate-700/80 bg-slate-950/40">
+                    <table className="min-w-[720px] w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-xs uppercase tracking-wide text-slate-400">
+                          <th className="px-4 py-3 font-semibold">Seri Ön Eki</th>
+                          <th className="px-4 py-3 font-semibold">Belge Türü</th>
+                          <th className="px-4 py-3 font-semibold">Açıklama</th>
+                          <th className="px-4 py-3 font-semibold text-right">
+                            İşlemler
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {documentSeriesEditId === "new" &&
+                        documentSeriesFormDraft ? (
+                          <>
+                            <tr className="border-b border-slate-800/80 bg-slate-900/40">
+                              <td className="px-4 py-3 font-medium text-slate-100">
+                                Yeni kayıt
+                              </td>
+                              <td className="px-4 py-3 text-slate-400">—</td>
+                              <td className="px-4 py-3 text-slate-400">—</td>
+                              <td className="px-4 py-3" />
+                            </tr>
+                            <DocumentSeriesEditRow
+                              title="Yeni Belge Serisi"
+                              draft={documentSeriesFormDraft}
+                              onFieldChange={updateDocumentSeriesFormDraft}
+                              onSave={saveDocumentSeriesForm}
+                              onCancel={cancelDocumentSeriesForm}
+                              documentTypeOptions={documentTypeOptions}
+                            />
+                          </>
+                        ) : null}
 
-                    <Input
-                      label="Açıklama"
-                      value={r.description}
-                      onChange={(v) =>
-                        setCompany({
-                          ...company,
-                          documentSeriesRules: company.documentSeriesRules.map(
-                            (x) =>
-                              x.id === r.id ? { ...x, description: v } : x
-                          ),
-                        })
-                      }
-                    />
+                        {(company.documentSeriesRules || []).map((rule) => (
+                          <React.Fragment key={rule.id}>
+                            <tr className="border-b border-slate-800/80 transition-colors hover:bg-slate-900/40">
+                              <td className="px-4 py-3 font-medium text-slate-100">
+                                {rule.prefix || "—"}
+                              </td>
+                              <td className="px-4 py-3 text-slate-300">
+                                {labelText(rule.documentType)}
+                              </td>
+                              <td className="px-4 py-3 text-slate-300">
+                                {rule.description || "—"}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex flex-wrap justify-end gap-2">
+                                  <EditButton
+                                    onClick={() => openEditDocumentSeriesForm(rule)}
+                                  />
+                                  <DeleteButton
+                                    onClick={() => removeDocumentSeriesRule(rule.id)}
+                                  />
+                                </div>
+                              </td>
+                            </tr>
 
-                    <DeleteButton
-                      onClick={() =>
-                        setCompany({
-                          ...company,
-                          documentSeriesRules:
-                            company.documentSeriesRules.filter(
-                              (x) => x.id !== r.id
-                            ),
-                        })
-                      }
-                    />
-                  </Card>
-                ))}
-              </ListSection>
+                            {documentSeriesEditId === rule.id &&
+                            documentSeriesFormDraft ? (
+                              <DocumentSeriesEditRow
+                                title="Belge Serisini Düzenle"
+                                draft={documentSeriesFormDraft}
+                                onFieldChange={updateDocumentSeriesFormDraft}
+                                onSave={saveDocumentSeriesForm}
+                                onCancel={cancelDocumentSeriesForm}
+                                documentTypeOptions={documentTypeOptions}
+                              />
+                            ) : null}
+                          </React.Fragment>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             )}
 
             {activeTab === "vehicles" && (
@@ -1722,6 +1840,61 @@ export default function CompanyManagement() {
           </button>
         </div>
       </div>
+    );
+  }
+
+  function DocumentSeriesEditRow({
+    title,
+    draft,
+    onFieldChange,
+    onSave,
+    onCancel,
+    documentTypeOptions,
+  }) {
+    return (
+      <tr>
+        <td colSpan={4} className="border-b border-slate-800 bg-slate-950 p-4">
+          <div className="rounded-xl border border-indigo-700/50 bg-slate-950 p-4">
+            <h4 className="mb-4 text-base font-semibold text-slate-100">
+              {title}
+            </h4>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <Input
+                label="Seri Ön Eki"
+                value={draft.prefix}
+                onChange={(v) => onFieldChange("prefix", v)}
+              />
+              <Select
+                label="Belge Türü"
+                value={draft.documentType}
+                onChange={(v) => onFieldChange("documentType", v)}
+                options={documentTypeOptions}
+              />
+              <Input
+                label="Açıklama"
+                value={draft.description}
+                onChange={(v) => onFieldChange("description", v)}
+              />
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={onSave}
+                className="rounded-lg bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-700"
+              >
+                Kaydet
+              </button>
+              <button
+                type="button"
+                onClick={onCancel}
+                className="rounded-lg bg-slate-700 px-4 py-2 hover:bg-slate-600"
+              >
+                İptal
+              </button>
+            </div>
+          </div>
+        </td>
+      </tr>
     );
   }
   

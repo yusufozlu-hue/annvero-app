@@ -1,4 +1,4 @@
-export function getSafeNextPath(nextPath, fallback = "/muhasebe") {
+export function getSafeNextPath(nextPath, fallback = "/dashboard") {
   if (!nextPath || typeof nextPath !== "string") {
     return fallback;
   }
@@ -9,7 +9,8 @@ export function getSafeNextPath(nextPath, fallback = "/muhasebe") {
 
   if (
     !nextPath.startsWith("/muhasebe") &&
-    !nextPath.startsWith("/dashboard")
+    !nextPath.startsWith("/dashboard") &&
+    !nextPath.startsWith("/ofis-takip")
   ) {
     return fallback;
   }

@@ -4,7 +4,19 @@ import { getSafeNextPath } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
 
 function isProtectedPath(pathname) {
-  return pathname.startsWith("/muhasebe") || pathname.startsWith("/dashboard");
+  return (
+    pathname.startsWith("/muhasebe") ||
+    pathname.startsWith("/dashboard") ||
+    pathname.startsWith("/ofis-takip")
+  );
+}
+
+function withSupabaseCookies(supabaseResponse, response) {
+  supabaseResponse.cookies.getAll().forEach((cookie) => {
+    response.cookies.set(cookie);
+  });
+
+  return response;
 }
 
 export async function updateSession(request) {
@@ -45,7 +57,10 @@ export async function updateSession(request) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     loginUrl.searchParams.set("next", pathname);
-    return NextResponse.redirect(loginUrl);
+    return withSupabaseCookies(
+      supabaseResponse,
+      NextResponse.redirect(loginUrl)
+    );
   }
 
   if (pathname === "/login" && user) {
@@ -54,7 +69,10 @@ export async function updateSession(request) {
       redirectUrl.searchParams.get("next")
     );
     redirectUrl.search = "";
-    return NextResponse.redirect(redirectUrl);
+    return withSupabaseCookies(
+      supabaseResponse,
+      NextResponse.redirect(redirectUrl)
+    );
   }
 
   return supabaseResponse;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
@@ -17,9 +17,12 @@ import {
   loadAccountPlansFromStorage,
   loadPendingLucaRows,
   loadRuleEngineFromStorage,
+  normalizeAccountPlanForMatching,
   normalizeCompanyRecord,
   resolve102BankAccount,
 } from "@/src/utils/companyCenter";
+import { buildElektrawebCompanyMappings } from "@/src/utils/elektrawebAccountMatcher";
+import { fetchLearningMemoryForCompany } from "@/src/utils/learningMemory";
 import {
   findCreditCardByText,
   buildCreditCardPaymentDescription,
@@ -36,23 +39,33 @@ import {
   parseSuggestionsFromWarning,
 } from "@/src/utils/accountPlanSuggestions";
 import AccountSuggestionBadges from "../components/AccountSuggestionBadges";
-
-const LUCA_EXPORT_HEADERS = [
-  "Fiş No",
-  "Fiş Tarihi",
-  "Fiş Açıklama",
-  "Hesap Kodu",
-  "Evrak No",
-  "Evrak Tarihi",
-  "Detay Açıklama",
-  "Borç",
-  "Alacak",
-  "Miktar",
-  "Belge Türü",
-  "Para Birimi",
-  "Kur",
-  "Döviz Tutar",
-];
+import PreviewEyeButton from "../components/PreviewEyeButton";
+import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
+import {
+  createLearningMemoryRecord,
+} from "@/src/utils/learningMemory";
+import {
+  applyFisLineEditDraft,
+  buildFisLineEditDraft,
+  buildLearningMemoryPayload,
+} from "@/src/utils/previewRowEdit";
+import {
+  finalizeStandardLucaRow,
+  filterStandardLucaRows,
+  getStandardLucaMissingBadges,
+  groupStandardLucaRowsToFisler,
+  isStandardLucaPayload,
+  KAYNAK_TIPI,
+  lucaFislerToStandardLucaRows,
+  logStandardLucaReport,
+  LUCA_EXPORT_HEADERS,
+  sortStandardLucaRows,
+  standardLucaRowsToExcelRows,
+} from "@/src/utils/standardLucaRow";
+import {
+  enforceLucaExportDateStrings,
+  formatDateTR,
+} from "@/src/utils/formatDateTR";
 
 const LUCA_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -63,14 +76,87 @@ const LUCA_PREVIEW_FILTERS = [
   { id: "learningMemory", label: "Öğrenen Hafıza" },
 ];
 
+const SOURCE_TYPES = {
+  ELEKTRAWEB: "ELEKTRAWEB",
+  BANKA: "BANKA",
+};
+
+const SOURCE_UI = {
+  [SOURCE_TYPES.ELEKTRAWEB]: {
+    label: "Elektraweb",
+    title: "Elektraweb Fiş Dosyası",
+    description: "Elektraweb fiş Excel dosyasını yükleyin.",
+  },
+  [SOURCE_TYPES.BANKA]: {
+    label: "Elektraweb",
+    title: "Elektraweb Fiş Dosyası",
+    description: "Elektraweb fiş Excel dosyasını yükleyin.",
+  },
+};
+
+function getSourceTypeLabel(sourceType) {
+  return SOURCE_UI[sourceType]?.label || SOURCE_UI[SOURCE_TYPES.ELEKTRAWEB].label;
+}
+
+function getFileSectionTitle(sourceType) {
+  return (
+    SOURCE_UI[sourceType]?.title || SOURCE_UI[SOURCE_TYPES.ELEKTRAWEB].title
+  );
+}
+
+function getFileSectionDescription(sourceType) {
+  return (
+    SOURCE_UI[sourceType]?.description ||
+    SOURCE_UI[SOURCE_TYPES.ELEKTRAWEB].description
+  );
+}
+
+function formatRowCountLabel(count, sourceType) {
+  return `${count} satır (${getSourceTypeLabel(sourceType)})`;
+}
+
+function resolvePendingSourceType(pending) {
+  if (
+    pending.kaynakTipi === KAYNAK_TIPI.ELEKTRAWEB ||
+    pending.sourceModule === "elektraweb"
+  ) {
+    return SOURCE_TYPES.ELEKTRAWEB;
+  }
+
+  if (pending.kaynakTipi === KAYNAK_TIPI.BANKA) {
+    return SOURCE_TYPES.BANKA;
+  }
+
+  const firstRowKaynakTipi = pending.rows?.[0]?.kaynakTipi;
+  if (firstRowKaynakTipi === KAYNAK_TIPI.ELEKTRAWEB) {
+    return SOURCE_TYPES.ELEKTRAWEB;
+  }
+  if (firstRowKaynakTipi === KAYNAK_TIPI.BANKA) {
+    return SOURCE_TYPES.BANKA;
+  }
+
+  return SOURCE_TYPES.ELEKTRAWEB;
+}
+
 export default function LucaDonusturucuPage() {
+  console.log("LUCA FIS DONUSTURUCU ELEKTRAWEB MODE ACTIVE");
+
+  const [sourceType, setSourceType] = useState("ELEKTRAWEB");
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [learningMemory, setLearningMemory] = useState([]);
+  const [yukleniyor, setYukleniyor] = useState(false);
   const [hareketFileName, setHareketFileName] = useState("");
   const [rawRows, setRawRows] = useState([]);
+  const [standardLucaRows, setStandardLucaRows] = useState([]);
   const [fisler, setFisler] = useState([]);
   const [previewSearch, setPreviewSearch] = useState("");
   const [previewQuickFilter, setPreviewQuickFilter] = useState("all");
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
+  const [expandedPreviewLineKey, setExpandedPreviewLineKey] = useState(null);
+  const [previewEditDraft, setPreviewEditDraft] = useState(null);
+  const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
+  const [toast, setToast] = useState(null);
 
   const {
     companies,
@@ -103,24 +189,90 @@ export default function LucaDonusturucuPage() {
 
   useEffect(() => {
     const pending = loadPendingLucaRows();
-    if (!pending?.rows?.length) return;
+    if (!pending?.rows?.length || !isStandardLucaPayload(pending)) return;
 
     if (pending.companyId) {
       setSelectedCompanyId(pending.companyId);
     }
 
-    setRawRows(pending.rows);
-    setFisler([]);
+    const pendingSourceType = resolvePendingSourceType(pending);
+    setSourceType(pendingSourceType);
+
+    const rows = sortStandardLucaRows(
+      pending.rows.map((row) =>
+        finalizeStandardLucaRow({
+          ...row,
+          firmaId: row.firmaId || pending.firmaId || pending.companyId || "",
+          kaynakTipi:
+            row.kaynakTipi ||
+            pending.kaynakTipi ||
+            (pendingSourceType === SOURCE_TYPES.ELEKTRAWEB
+              ? KAYNAK_TIPI.ELEKTRAWEB
+              : KAYNAK_TIPI.BANKA),
+          kaynakAdi:
+            row.kaynakAdi ||
+            pending.kaynakAdi ||
+            pending.selectedBank ||
+            getSourceTypeLabel(pendingSourceType),
+        })
+      )
+    );
+    setStandardLucaRows(rows);
+    setRawRows([]);
+    setFisler(groupStandardLucaRowsToFisler(rows));
+    logStandardLucaReport("luca-donusturucu-pending", rows);
     setHareketFileName(
       pending.companyName
-        ? `${pending.companyName} — ${pending.rows.length} satır (Banka Parser)`
-        : `Banka Parser (${pending.rows.length} satır)`
+        ? `${pending.companyName} — ${formatRowCountLabel(rows.length, pendingSourceType)}`
+        : formatRowCountLabel(rows.length, pendingSourceType)
     );
   }, [setSelectedCompanyId]);
 
+  useEffect(() => {
+    console.log("CURRENT SOURCE TYPE:", sourceType);
+  }, [sourceType]);
+
+  const changeSourceType = (nextType) => {
+    if (nextType === sourceType) return;
+
+    setSourceType(nextType);
+    setRawRows([]);
+    setStandardLucaRows([]);
+    setFisler([]);
+    setUploadedFile(null);
+    setHareketFileName("");
+  };
+
+  useEffect(() => {
+    if (!selectedCompanyId) {
+      setLearningMemory([]);
+      return;
+    }
+
+    fetchLearningMemoryForCompany(selectedCompanyId).then(setLearningMemory);
+  }, [selectedCompanyId]);
+
   const companyPlans = useMemo(
-    () => getAccountPlanForCompany(accountPlans, selectedCompanyId),
-    [accountPlans, selectedCompanyId]
+    () => getAccountPlanForCompany(accountPlans, selectedCompany || selectedCompanyId),
+    [accountPlans, selectedCompany, selectedCompanyId]
+  );
+
+  const normalizedAccountPlan = useMemo(
+    () => normalizeAccountPlanForMatching(companyPlans),
+    [companyPlans]
+  );
+
+  const matchingContext = useMemo(
+    () => ({
+      selectedCompanyAccountPlan: normalizedAccountPlan,
+      normalizedAccountPlan,
+      learningMemory,
+      companyMappings: buildElektrawebCompanyMappings(selectedCompany || {}),
+      documentSeriesRules: selectedCompany?.documentSeriesRules || [],
+      accountingRules: selectedCompany?.accountingRules || {},
+      employees: selectedCompany?.employees || [],
+    }),
+    [normalizedAccountPlan, learningMemory, selectedCompany]
   );
 
   const ruleCount = useMemo(
@@ -163,10 +315,28 @@ export default function LucaDonusturucuPage() {
     [selectedCompanyId, accountPlans, rawRows]
   );
 
+  const filteredStandardLucaRows = useMemo(
+    () =>
+      filterStandardLucaRows(
+        standardLucaRows,
+        previewSearch,
+        previewQuickFilter === "missingAccount"
+          ? "missingAccount"
+          : previewQuickFilter === "learningMemory"
+          ? "learningMemory"
+          : previewQuickFilter === "errors"
+          ? "errors"
+          : "all"
+      ),
+    [standardLucaRows, previewSearch, previewQuickFilter]
+  );
+
   const filteredFisler = useMemo(
     () => filterLucaFisRows(fisler, previewSearch, previewQuickFilter),
     [fisler, previewSearch, previewQuickFilter]
   );
+
+  const displayedStandardLucaRows = filteredStandardLucaRows.slice(0, 100);
 
   const displayedFisler = filteredFisler.slice(0, 50);
 
@@ -432,8 +602,15 @@ export default function LucaDonusturucuPage() {
     if (!file) return;
 
     setRawRows([]);
+    setStandardLucaRows([]);
     setFisler([]);
-    setHareketFileName(file.name);
+    setUploadedFile(file);
+
+    if (sourceType === SOURCE_TYPES.ELEKTRAWEB) {
+      setHareketFileName(file.name);
+      e.target.value = "";
+      return;
+    }
 
     const data = await file.arrayBuffer();
     const workbook = XLSX.read(data, { cellDates: true });
@@ -444,6 +621,74 @@ export default function LucaDonusturucuPage() {
     });
 
     setRawRows(jsonRows);
+    setHareketFileName(
+      `${file.name} — ${formatRowCountLabel(jsonRows.length, sourceType)}`
+    );
+    e.target.value = "";
+  };
+
+  const createElektrawebPreview = async () => {
+    if (!selectedCompany) {
+      alert("Önce firma seçmelisin.");
+      return;
+    }
+
+    if (!uploadedFile) {
+      alert("Önce Elektraweb fiş dosyasını yüklemelisin.");
+      return;
+    }
+
+    if (normalizedAccountPlan.length === 0) {
+      alert("Seçili firma için hesap planı bulunamadı. Önce Hesap Planı yükleyin.");
+      return;
+    }
+
+    setYukleniyor(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", uploadedFile);
+      formData.append(
+        "matchingContext",
+        JSON.stringify({
+          firmaId: selectedCompanyId,
+          kaynakAdi: "ELEKTRAWEB",
+          ...matchingContext,
+        })
+      );
+
+      const response = await fetch("/api/elektraweb", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || "Elektraweb dosyası işlenirken hata oluştu.");
+        return;
+      }
+
+      const rows = sortStandardLucaRows(data.standardLucaRows || data.fisler || []);
+
+      console.log("CURRENT SOURCE TYPE:", sourceType);
+      console.log("USING PARSER", "ELEKTRAWEB");
+      console.log("PARSED ROWS", rows.slice(0, 10));
+
+      setStandardLucaRows(rows);
+      setFisler(groupStandardLucaRowsToFisler(rows));
+      setRawRows([]);
+      setHareketFileName(
+        `${uploadedFile.name} — ${formatRowCountLabel(rows.length, sourceType)}`
+      );
+      logStandardLucaReport("luca-donusturucu-elektraweb", rows);
+    } finally {
+      setYukleniyor(false);
+    }
+  };
+
+  const createPreview = () => {
+    createElektrawebPreview();
   };
 
   const createFisler = () => {
@@ -662,6 +907,22 @@ export default function LucaDonusturucuPage() {
       });
 
       setFisler(createdFisler);
+      const parsedRows = lucaFislerToStandardLucaRows(createdFisler, {
+        firmaId: selectedCompanyId,
+        kaynakTipi: KAYNAK_TIPI.BANKA,
+        kaynakAdi: hareketFileName || "MANUEL",
+      });
+
+      console.log("CURRENT SOURCE TYPE:", sourceType);
+      console.log("USING PARSER", "BANKA");
+      console.log("PARSED ROWS", parsedRows.slice(0, 10));
+
+      setStandardLucaRows(parsedRows);
+      setHareketFileName(
+        uploadedFile
+          ? `${uploadedFile.name} — ${formatRowCountLabel(parsedRows.length, sourceType)}`
+          : formatRowCountLabel(parsedRows.length, sourceType)
+      );
       alert(`${createdFisler.length} fiş oluşturuldu.`);
     } catch (error) {
       console.error("Ön izleme genel hata:", error);
@@ -669,84 +930,191 @@ export default function LucaDonusturucuPage() {
     }
   };
 
-  const exportExcel = () => {
-    if (!fisler || fisler.length === 0) {
-      alert("Önce ön izleme oluştur.");
+  const showToast = (message, type) => setToast({ message, type });
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  const getPreviewLineKey = (fisNo, lineIndex) => `${fisNo}::${lineIndex}`;
+
+  const togglePreviewLineDetail = (fis, lineIndex) => {
+    const key = getPreviewLineKey(fis.fisNo, lineIndex);
+
+    if (expandedPreviewLineKey === key) {
+      setExpandedPreviewLineKey(null);
+      setPreviewEditDraft(null);
       return;
     }
 
-    const chunkSize = 50;
-    const totalFiles = Math.ceil(fisler.length / chunkSize);
+    setExpandedPreviewLineKey(key);
+    setPreviewEditDraft(buildFisLineEditDraft(fis, lineIndex));
+  };
 
-    for (let fileIndex = 0; fileIndex < totalFiles; fileIndex++) {
-      const chunk = fisler.slice(
-        fileIndex * chunkSize,
-        fileIndex * chunkSize + chunkSize
+  const cancelPreviewLineEdit = () => {
+    setExpandedPreviewLineKey(null);
+    setPreviewEditDraft(null);
+  };
+
+  const savePreviewLineEdit = async () => {
+    if (!expandedPreviewLineKey || !previewEditDraft) return;
+
+    const [fisNoText, lineIndexText] = expandedPreviewLineKey.split("::");
+    const fisNo = Number(fisNoText);
+    const lineIndex = Number(lineIndexText);
+    const currentFis = fisler.find((fis) => fis.fisNo === fisNo);
+
+    if (!currentFis) return;
+
+    setIsSavingPreviewEdit(true);
+
+    try {
+      const updatedFis = applyFisLineEditDraft(
+        currentFis,
+        lineIndex,
+        previewEditDraft
       );
 
-      const excelRows = [];
+      setFisler((prev) =>
+        prev.map((fis) => (fis.fisNo === fisNo ? updatedFis : fis))
+      );
 
-      chunk.forEach((fis, index) => {
-        const yeniFisNo = index + 1;
-        const fisTarihi = formatLucaDate(fis.tarih);
-
-        fis.satirlar.forEach((satir) => {
-          excelRows.push({
-            "Fiş No": yeniFisNo,
-            "Fiş Tarihi": fisTarihi,
-            "Fiş Açıklama": fis.aciklama || "",
-            "Hesap Kodu": satir.hesapKodu || "",
-            "Evrak No": "",
-            "Evrak Tarihi": fisTarihi,
-            "Detay Açıklama": satir.aciklama || "",
-            "Borç": toNumericAmount(satir.borc),
-            "Alacak": toNumericAmount(satir.alacak),
-            "Miktar": "",
-            "Belge Türü": fis.belgeTuru || "DK",
-            "Para Birimi": "TL",
-            "Kur": "",
-            "Döviz Tutar": "",
-          });
+      if (previewEditDraft.saveToMemory && selectedCompanyId && updatedFis) {
+        const memoryRecord = buildLearningMemoryPayload({
+          companyId: selectedCompanyId,
+          sourceModule: "luca",
+          description: updatedFis.aciklama,
+          documentSeriesRules: selectedCompany?.documentSeriesRules || [],
+          accountCode: previewEditDraft.accountCode,
+          counterAccountCode: "",
+          documentType: previewEditDraft.documentType,
+          standardDescription: previewEditDraft.description,
         });
-      });
 
-      const worksheet = XLSX.utils.json_to_sheet(excelRows, {
+        const created = await createLearningMemoryRecord(memoryRecord);
+        showToast(
+          created
+            ? "Satır güncellendi ve hafızaya kaydedildi"
+            : "Satır güncellendi, hafıza kaydı oluşturulamadı",
+          created ? "success" : "error"
+        );
+      } else {
+        showToast("Satır güncellendi", "success");
+      }
+
+      cancelPreviewLineEdit();
+    } finally {
+      setIsSavingPreviewEdit(false);
+    }
+  };
+
+  const exportExcel = () => {
+    if (!standardLucaRows || standardLucaRows.length === 0) {
+      alert("Önce ön izleme oluşturun");
+      return;
+    }
+
+    console.log("EXPORT USING standardLucaRows", standardLucaRows.slice(0, 10));
+    console.log(
+      "[luca-export-date-debug]",
+      standardLucaRows.slice(0, 20).map((row) => ({
+        hamFisTarihi: row.fisTarihi,
+        formattedFisTarihi: formatDateTR(row.fisTarihi),
+        hamEvrakTarihi: row.evrakTarihi,
+        formattedEvrakTarihi: formatDateTR(row.evrakTarihi || row.fisTarihi),
+      }))
+    );
+
+    const rows = sortStandardLucaRows(standardLucaRows);
+    const uniqueFisNo = [...new Set(rows.map((r) => r.fisNo))];
+    const chunkSize = 50;
+    const totalFiles = Math.ceil(uniqueFisNo.length / chunkSize);
+
+    const mapRowToExcel = (row) => ({
+      "Fiş No": row.fisNo,
+      "Fiş Tarihi": formatDateTR(row.fisTarihi),
+      "Fiş Açıklama": row.fisAciklama,
+      "Hesap Kodu": row.hesapKodu,
+      "Evrak No": row.evrakNo || row.belgeNo || "",
+      "Evrak Tarihi": formatDateTR(row.evrakTarihi || row.fisTarihi),
+      "Detay Açıklama": row.detayAciklama,
+      Borç: row.borc,
+      Alacak: row.alacak,
+      Miktar: "",
+      "Belge Türü": row.belgeTuru || "",
+      "Para Birimi": "",
+      Kur: "",
+      "Döviz Tutar": "",
+    });
+
+    const firmaKisa = getCompanyDisplayName(selectedCompany)
+      .split(" ")[0]
+      .toLowerCase()
+      .replaceAll("ı", "i")
+      .replaceAll("ğ", "g")
+      .replaceAll("ü", "u")
+      .replaceAll("ş", "s")
+      .replaceAll("ö", "o")
+      .replaceAll("ç", "c");
+
+    for (let fileIndex = 0; fileIndex < totalFiles; fileIndex++) {
+      const chunkFisNos = new Set(
+        uniqueFisNo.slice(fileIndex * chunkSize, fileIndex * chunkSize + chunkSize)
+      );
+      const chunkRows = rows.filter((row) => chunkFisNos.has(row.fisNo));
+      const excelRows = chunkRows.map(mapRowToExcel);
+
+      const ws = XLSX.utils.json_to_sheet(excelRows, {
         header: LUCA_EXPORT_HEADERS,
       });
-      const workbook = XLSX.utils.book_new();
+      enforceLucaExportDateStrings(ws);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Luca Fiş");
 
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Fiş Aktarım Şablon");
-
-      const firmaKisa = getCompanyDisplayName(selectedCompany)
-        .split(" ")[0]
-        .toLowerCase()
-        .replaceAll("ı", "i")
-        .replaceAll("ğ", "g")
-        .replaceAll("ü", "u")
-        .replaceAll("ş", "s")
-        .replaceAll("ö", "o")
-        .replaceAll("ç", "c");
-
-      const ilkTarih = String(chunk[0]?.tarih || "")
+      const ilkTarih = String(chunkRows[0]?.fisTarihi || "")
         .replaceAll(".", "")
         .replaceAll("/", "")
         .replaceAll("-", "");
 
       const ilkFis = fileIndex * chunkSize + 1;
-      const sonFis = Math.min((fileIndex + 1) * chunkSize, fisler.length);
+      const sonFis = Math.min((fileIndex + 1) * chunkSize, uniqueFisNo.length);
 
       XLSX.writeFile(
-        workbook,
-        `${firmaKisa}_${ilkTarih}_fis${ilkFis}-${sonFis}.xlsx`
+        wb,
+        totalFiles === 1
+          ? "luca_fis_standard.xlsx"
+          : `${firmaKisa}_${ilkTarih}_fis${ilkFis}-${sonFis}.xlsx`
       );
     }
 
-    alert(`${totalFiles} adet Luca Excel dosyası oluşturuldu.`);
+    logStandardLucaReport("luca-donusturucu-export", rows);
+
+    if (totalFiles > 1) {
+      alert(`${totalFiles} adet Luca Excel dosyası oluşturuldu.`);
+    }
   };
 
   return (
     <main className="min-h-screen bg-gray-950 p-8 text-white">
+      {toast && (
+        <div
+          role="status"
+          className={`fixed top-4 right-4 z-50 rounded-lg border px-4 py-3 text-sm font-medium shadow-xl ${
+            toast.type === "success"
+              ? "border-emerald-500/40 bg-emerald-950/95 text-emerald-100"
+              : "border-red-500/40 bg-red-950/95 text-red-100"
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
       <MuhasebeMenu />
+
+      <p className="mb-6 text-3xl font-bold text-yellow-400">
+        TEST - BU DOSYA ÇALIŞIYOR
+      </p>
 
       <h1 className="mb-10 text-4xl font-bold">Luca Fiş Üretici</h1>
 
@@ -835,13 +1203,58 @@ export default function LucaDonusturucuPage() {
         </div>
 
         <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
+          <h2 className="mb-4 text-2xl font-semibold">Kaynak Tipi</h2>
+
+          <div
+            className="mb-6 flex flex-wrap gap-4"
+            role="radiogroup"
+            aria-label="Kaynak tipi seçimi"
+          >
+            <label
+              className={`flex cursor-pointer items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition ${
+                sourceType === SOURCE_TYPES.ELEKTRAWEB
+                  ? "bg-violet-600 text-white"
+                  : "border border-gray-700 bg-gray-950 text-gray-300 hover:text-white"
+              }`}
+            >
+              <input
+                type="radio"
+                name="luca-source-type"
+                value={SOURCE_TYPES.ELEKTRAWEB}
+                checked={sourceType === SOURCE_TYPES.ELEKTRAWEB}
+                onChange={() => changeSourceType(SOURCE_TYPES.ELEKTRAWEB)}
+                className="accent-violet-500"
+              />
+              Elektraweb
+            </label>
+            <label
+              className={`flex cursor-pointer items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition ${
+                sourceType === SOURCE_TYPES.BANKA
+                  ? "bg-blue-600 text-white"
+                  : "border border-gray-700 bg-gray-950 text-gray-300 hover:text-white"
+              }`}
+            >
+              <input
+                type="radio"
+                name="luca-source-type"
+                value={SOURCE_TYPES.BANKA}
+                checked={sourceType === SOURCE_TYPES.BANKA}
+                onChange={() => changeSourceType(SOURCE_TYPES.BANKA)}
+                className="accent-blue-500"
+              />
+              Banka Parser
+            </label>
+          </div>
+
+          <p className="mb-4 text-xs font-medium uppercase tracking-wide text-violet-300">
+            Aktif kaynak: {getSourceTypeLabel(sourceType)}
+          </p>
+
           <h2 className="mb-4 text-2xl font-semibold">
-            Standart Hareket Dosyası
+            {getFileSectionTitle(sourceType)}
           </h2>
 
-          <p className="mb-6 text-gray-400">
-            Banka parser merkezinden çıkan standart hareket dosyasını yükleyin.
-          </p>
+          <p className="mb-6 text-gray-400">{getFileSectionDescription(sourceType)}</p>
 
           <div className="flex items-center gap-4">
             <label className="cursor-pointer rounded-lg bg-blue-600 px-5 py-2 font-medium hover:bg-blue-700">
@@ -859,19 +1272,33 @@ export default function LucaDonusturucuPage() {
             </span>
           </div>
 
-          {rawRows.length > 0 && (
+          {standardLucaRows.length > 0 && (
+            <p className="mt-4 text-sm text-emerald-400">
+              {standardLucaRows.length} StandardLucaRow satırı aktarıldı. Ön izleme ve
+              Excel aynı normalize veriden üretilir.
+            </p>
+          )}
+
+          {sourceType === SOURCE_TYPES.BANKA && rawRows.length > 0 && (
             <p className="mt-4 text-sm text-green-400">
-              {rawRows.length} satır okundu.
+              {formatRowCountLabel(rawRows.length, sourceType)} okundu.
+            </p>
+          )}
+
+          {sourceType === SOURCE_TYPES.ELEKTRAWEB && uploadedFile && standardLucaRows.length === 0 && (
+            <p className="mt-4 text-sm text-blue-300">
+              {uploadedFile.name} seçildi. Ön izleme oluşturun.
             </p>
           )}
         </div>
 
         <div className="flex flex-wrap gap-4">
           <button
-            onClick={createFisler}
-            className="rounded-xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700"
+            onClick={createPreview}
+            disabled={yukleniyor}
+            className="rounded-xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700 disabled:opacity-60"
           >
-            Ön İzleme Oluştur
+            {yukleniyor ? "İşleniyor..." : "Ön İzleme Oluştur"}
           </button>
 
           <button
@@ -885,8 +1312,73 @@ export default function LucaDonusturucuPage() {
         <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
           <h2 className="mb-6 text-3xl font-bold">Ön İzleme</h2>
 
-          {fisler.length === 0 ? (
-            <p className="text-gray-400">Henüz fiş oluşturulmadı.</p>
+          {standardLucaRows.length === 0 && fisler.length === 0 ? (
+            <p className="text-gray-400">Henüz StandardLucaRow oluşturulmadı.</p>
+          ) : standardLucaRows.length > 0 ? (
+            <div className="space-y-4">
+              <RowSearchToolbar
+                search={previewSearch}
+                onSearchChange={setPreviewSearch}
+                placeholder="Fiş no, hesap, açıklama, belge türü veya tutar ara..."
+                filters={LUCA_PREVIEW_FILTERS}
+                activeFilter={previewQuickFilter}
+                onFilterChange={setPreviewQuickFilter}
+                shownCount={filteredStandardLucaRows.length}
+                totalCount={standardLucaRows.length}
+              />
+
+              <div className="overflow-auto">
+                <table className="w-full min-w-[1600px] text-sm">
+                  <thead className="bg-gray-800 text-gray-300">
+                    <tr>
+                      <th className="p-3 text-left">Fiş No</th>
+                      <th className="p-3 text-left">Fiş Tarihi</th>
+                      <th className="p-3 text-left">Kaynak</th>
+                      <th className="p-3 text-left">Hesap Kodu</th>
+                      <th className="p-3 text-left">Belge Türü</th>
+                      <th className="p-3 text-left">Fiş Açıklama</th>
+                      <th className="p-3 text-left">Detay Açıklama</th>
+                      <th className="p-3 text-right">Borç</th>
+                      <th className="p-3 text-right">Alacak</th>
+                      <th className="p-3 text-left">Risk</th>
+                      <th className="p-3 text-left">Kontrol Notu</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {displayedStandardLucaRows.map((row, index) => (
+                      <tr
+                        key={`${row.fisNo}-${row.hesapKodu}-${row.borc}-${row.alacak}-${index}`}
+                        className="border-t border-gray-800"
+                      >
+                        <td className="p-3">{row.fisNo}</td>
+                        <td className="p-3">{formatDateTR(row.fisTarihi)}</td>
+                        <td className="p-3">{row.kaynakAdi || row.kaynakTipi}</td>
+                        <td className="p-3 font-mono text-xs">{row.hesapKodu || "—"}</td>
+                        <td className="p-3">{row.belgeTuru || "—"}</td>
+                        <td className="p-3">{row.fisAciklama || "—"}</td>
+                        <td className="p-3">{row.detayAciklama || "—"}</td>
+                        <td className="p-3 text-right">{row.borc}</td>
+                        <td className="p-3 text-right">{row.alacak}</td>
+                        <td className="p-3">
+                          {row.riskDurumu ? (
+                            <span className="rounded-full border border-red-700/60 bg-red-950/50 px-2 py-0.5 text-[10px] font-semibold text-red-300">
+                              {row.riskDurumu}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="p-3">{row.kontrolNotu || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="text-sm text-gray-400">
+                Toplam {standardLucaRows.length} StandardLucaRow satırı.
+              </p>
+            </div>
           ) : (
             <div className="space-y-8">
               <RowSearchToolbar
@@ -946,25 +1438,51 @@ export default function LucaDonusturucuPage() {
                         <th className="p-3 text-left">Açıklama</th>
                         <th className="p-3 text-right">Borç</th>
                         <th className="p-3 text-right">Alacak</th>
+                        <th className="p-3 text-center">Detay</th>
                       </tr>
                     </thead>
 
                     <tbody>
                       {fis.satirlar.map((satir, index) => {
                         const hesapEksik = isMissingLucaAccountCode(satir.hesapKodu);
+                        const lineKey = getPreviewLineKey(fis.fisNo, index);
 
                         return (
-                          <tr
-                            key={`fis-${fis.fisNo}-satir-${index}`}
-                            className={`border-b border-gray-800 ${
-                              hesapEksik ? "bg-red-900/50 text-red-100" : ""
-                            }`}
-                          >
-                            <td className="p-3">{satir.hesapKodu}</td>
-                            <td className="p-3">{satir.aciklama}</td>
-                            <td className="p-3 text-right">{satir.borc}</td>
-                            <td className="p-3 text-right">{satir.alacak}</td>
-                          </tr>
+                          <Fragment key={`fis-${fis.fisNo}-satir-${index}`}>
+                            <tr
+                              className={`border-b border-gray-800 ${
+                                hesapEksik ? "bg-red-900/50 text-red-100" : ""
+                              }`}
+                            >
+                              <td className="p-3">{satir.hesapKodu}</td>
+                              <td className="p-3">{satir.aciklama}</td>
+                              <td className="p-3 text-right">{satir.borc}</td>
+                              <td className="p-3 text-right">{satir.alacak}</td>
+                              <td className="p-3 text-center">
+                                <PreviewEyeButton
+                                  active={expandedPreviewLineKey === lineKey}
+                                  onClick={() =>
+                                    togglePreviewLineDetail(fis, index)
+                                  }
+                                />
+                              </td>
+                            </tr>
+
+                            {expandedPreviewLineKey === lineKey &&
+                            previewEditDraft ? (
+                              <tr className="border-b border-gray-800">
+                                <td colSpan={5} className="p-4">
+                                  <PreviewVoucherDetailPanel
+                                    draft={previewEditDraft}
+                                    onChange={setPreviewEditDraft}
+                                    onSave={savePreviewLineEdit}
+                                    onCancel={cancelPreviewLineEdit}
+                                    isSaving={isSavingPreviewEdit}
+                                  />
+                                </td>
+                              </tr>
+                            ) : null}
+                          </Fragment>
                         );
                       })}
                     </tbody>

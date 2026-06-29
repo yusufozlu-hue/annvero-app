@@ -16,6 +16,10 @@ import {
 } from "@/src/utils/creditCardAccountResolver";
 
 import { normalizeParserText } from "@/src/utils/textNormalize";
+import {
+  extractSeriesPrefix,
+  MEMORY_MATCH_LABEL,
+} from "@/src/utils/previewRowEdit";
 
 export { normalizeParserText };
 
@@ -82,23 +86,47 @@ function findLegacyRule(legacyRules, description) {
   );
 }
 
-function findLearningMemoryMatch(learningMemory, description) {
+function findLearningMemoryMatch(learningMemory, description, context = {}) {
   const text = normalizeParserText(description);
+  const bankName = normalizeParserText(context.bankName || "");
+  const seriesPrefix = normalizeParserText(context.seriesPrefix || "");
+  const counterpartyName = normalizeParserText(context.counterpartyName || "");
+  const sourceModule = normalizeParserText(context.sourceModule || "");
+
   const records = (learningMemory || []).filter(
     (record) => record?.is_active !== false
   );
 
   let best = null;
-  let bestKeywordLength = 0;
+  let bestScore = 0;
 
   for (const record of records) {
     const keyword = normalizeParserText(record.keyword);
 
     if (!keyword || !text.includes(keyword)) continue;
 
-    if (!best || keyword.length > bestKeywordLength) {
+    let score = keyword.length;
+
+    const recordBank = normalizeParserText(
+      record.account_name || record.transaction_type || ""
+    );
+    const recordSeries = normalizeParserText(record.counter_account_name || "");
+    const recordSource = normalizeParserText(record.source_module || "");
+
+    if (bankName && recordBank && recordBank === bankName) score += 20;
+    if (seriesPrefix && recordSeries && text.includes(recordSeries)) score += 15;
+    if (
+      counterpartyName &&
+      recordSeries &&
+      text.includes(normalizeParserText(recordSeries))
+    ) {
+      score += 10;
+    }
+    if (sourceModule && recordSource && recordSource === sourceModule) score += 5;
+
+    if (!best || score > bestScore) {
       best = record;
-      bestKeywordLength = keyword.length;
+      bestScore = score;
     }
   }
 
@@ -362,7 +390,18 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         });
       counterAccountCode = legacyRule.hesap || "";
     } else {
-      const memoryMatch = findLearningMemoryMatch(learningMemory, description);
+      const memoryMatch = findLearningMemoryMatch(
+        learningMemory,
+        description,
+        {
+          bankName: rawRow.banka || rawRow.bankName || selectedBank,
+          seriesPrefix: extractSeriesPrefix(
+            description,
+            selectedCompany?.documentSeriesRules || []
+          ),
+          sourceModule: "banka",
+        }
+      );
 
       if (memoryMatch) {
         matchedRule = {
@@ -391,7 +430,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
           documentType = memoryMatch.document_type;
         }
 
-        appendWarning(warnings, "Öğrenen hafızadan eşleşti");
+        appendWarning(warnings, MEMORY_MATCH_LABEL);
       } else {
         appendWarning(warnings, "Kural bulunamadı");
         lucaDescription = buildFallbackLucaDescription({

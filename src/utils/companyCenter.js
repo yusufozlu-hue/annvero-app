@@ -35,11 +35,69 @@ export function normalizeCompanyRecord(company) {
   return normalizeCompany(company);
 }
 
+function compactHeader(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replaceAll("İ", "I")
+    .replaceAll("Ş", "S")
+    .replaceAll("Ğ", "G")
+    .replaceAll("Ü", "U")
+    .replaceAll("Ö", "O")
+    .replaceAll("Ç", "C")
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function pickAccountPlanField(row, ...keys) {
+  if (!row || typeof row !== "object") return "";
+
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null && String(row[key]).trim() !== "") {
+      return String(row[key]).trim();
+    }
+  }
+
+  const wanted = keys.map(compactHeader);
+
+  for (const [rawKey, value] of Object.entries(row)) {
+    if (value === undefined || value === null || String(value).trim() === "") continue;
+
+    if (wanted.includes(compactHeader(rawKey))) {
+      return String(value).trim();
+    }
+  }
+
+  return "";
+}
+
 function normalizeAccountPlanRow(row) {
   if (!row || typeof row !== "object") return null;
 
-  const accountCode = String(row.accountCode || row.hesapKodu || "").trim();
-  const accountName = String(row.accountName || row.hesapAdi || "").trim();
+  const accountCode = pickAccountPlanField(
+    row,
+    "accountCode",
+    "hesapKodu",
+    "Hesap Kodu",
+    "HesapKodu",
+    "kod",
+    "Kod",
+    "code",
+    "Code"
+  );
+  const accountName = pickAccountPlanField(
+    row,
+    "accountName",
+    "hesapAdi",
+    "Hesap Adı",
+    "Hesap Adi",
+    "HesapAdi",
+    "açıklama",
+    "aciklama",
+    "Açıklama",
+    "unvan",
+    "Unvan",
+    "name",
+    "Name"
+  );
 
   if (!accountCode || !accountName) return null;
 
@@ -47,9 +105,55 @@ function normalizeAccountPlanRow(row) {
     id: row.id || crypto.randomUUID(),
     accountCode,
     accountName,
-    currency: String(row.currency || row.paraBirimi || "TL").trim() || "TL",
+    currency:
+      pickAccountPlanField(row, "currency", "paraBirimi", "Para Birimi", "ParaBirimi") ||
+      "TL",
     isActive: row.isActive ?? true,
   };
+}
+
+export function normalizeAccountPlanForMatching(accounts = []) {
+  const normalized = [];
+
+  for (const account of accounts || []) {
+    const row = normalizeAccountPlanRow(account);
+    if (row) normalized.push(row);
+  }
+
+  return normalized;
+}
+
+export function resolveAccountPlanStorageKey(accountPlans, companyOrId) {
+  if (!accountPlans || typeof accountPlans !== "object") return null;
+
+  const keys = Object.keys(accountPlans);
+  const companyId =
+    typeof companyOrId === "string" ? companyOrId : companyOrId?.id;
+  const companyName =
+    typeof companyOrId === "object" && companyOrId
+      ? getCompanyDisplayName(companyOrId)
+      : typeof companyOrId === "string"
+        ? companyOrId
+        : "";
+
+  if (companyId && accountPlans[companyId]) return companyId;
+
+  if (companyName && accountPlans[companyName]) return companyName;
+
+  if (companyName) {
+    const normalizedName = companyName.toLocaleLowerCase("tr");
+    const byName = keys.find(
+      (key) => key.toLocaleLowerCase("tr") === normalizedName
+    );
+    if (byName) return byName;
+  }
+
+  if (companyId) {
+    const byId = keys.find((key) => key === companyId);
+    if (byId) return byId;
+  }
+
+  return null;
 }
 
 function extractAccountRows(entry) {
@@ -214,21 +318,108 @@ export function saveRuleEngineToStorage(uiEngine) {
 }
 
 export function getAccountPlanForCompany(accountPlans, companyOrId) {
+  const storageKey = resolveAccountPlanStorageKey(accountPlans, companyOrId);
+
+  if (!storageKey) return [];
+
+  return normalizeAccountPlanForMatching(extractAccountRows(accountPlans[storageKey]));
+}
+
+function normalizeEmbeddedAccountRow(row) {
+  return normalizeAccountPlanRow(row);
+}
+
+/**
+ * @param {{
+ *   selectedCompany?: object | null,
+ *   accountPlan?: Array<{ accountCode: string, accountName: string }>,
+ *   storageKeys?: string[],
+ *   matchedStorageKey?: string,
+ * }} params
+ */
+export function logElektrawebAccountPlanDiagnostics({
+  selectedCompany = null,
+  accountPlan = [],
+  storageKeys = [],
+  matchedStorageKey = "",
+}) {
+  console.log("[elektraweb-debug] selectedCompany", selectedCompany);
+  console.log("[elektraweb-debug] accountPlan.length", accountPlan.length);
+  console.log("[elektraweb-debug] accountPlan.slice(0, 10)", accountPlan.slice(0, 10));
+  console.log(
+    "[elektraweb-debug] accountPlan columns",
+    Object.keys(accountPlan[0] || {})
+  );
+  console.log("[elektraweb-debug] storageKeys", storageKeys);
+  console.log("[elektraweb-debug] matchedStorageKey", matchedStorageKey || "(none)");
+
+  if (accountPlan.length === 0) {
+    console.warn(
+      "[elektraweb-debug] accountPlan.length 0 — hesap planı firmaId/ad ile eşleşmiyor olabilir",
+      {
+        selectedCompanyId: selectedCompany?.id || "",
+        selectedCompanyName: getCompanyDisplayName(selectedCompany),
+        storageKeys,
+      }
+    );
+  }
+}
+
+export function getCompanyAccountPlansWithDiagnostics(accountPlans, companyOrId) {
   const companyId =
     typeof companyOrId === "string" ? companyOrId : companyOrId?.id;
+  const companyName =
+    typeof companyOrId === "object" && companyOrId
+      ? getCompanyDisplayName(companyOrId)
+      : "";
+  const storageKey = resolveAccountPlanStorageKey(accountPlans, companyOrId);
+  const fromStorage = normalizeAccountPlanForMatching(
+    extractAccountRows(storageKey ? accountPlans?.[storageKey] : [])
+  );
+  const merged = new Map();
 
-  if (!companyId) return [];
-
-  const byId = extractAccountRows(accountPlans?.[companyId]);
-
-  if (byId.length > 0) return byId;
-
-  if (typeof companyOrId === "object" && companyOrId) {
-    const companyName = getCompanyDisplayName(companyOrId);
-    return extractAccountRows(accountPlans?.[companyName]);
+  for (const account of fromStorage) {
+    merged.set(account.accountCode, account);
   }
 
-  return byId;
+  const embeddedAccounts =
+    typeof companyOrId === "object" && companyOrId
+      ? companyOrId.accounts || companyOrId.accountPlan || []
+      : [];
+
+  for (const account of normalizeAccountPlanForMatching(embeddedAccounts)) {
+    merged.set(account.accountCode, account);
+  }
+
+  const plans = [...merged.values()];
+  let matchedBy = "none";
+
+  if (plans.length > 0) {
+    if (storageKey && companyId && storageKey === companyId) {
+      matchedBy = "storage-id";
+    } else if (storageKey && companyName && storageKey === companyName) {
+      matchedBy = "storage-name";
+    } else if (storageKey) {
+      matchedBy = "storage-key";
+    } else if (embeddedAccounts.length > 0) {
+      matchedBy = "company-embedded";
+    } else {
+      matchedBy = "merged";
+    }
+  }
+
+  const diagnostics = {
+    companyId: companyId || "",
+    companyName,
+    storageKeys: Object.keys(accountPlans || {}),
+    matchedStorageKey: storageKey || "",
+    planRowCount: plans.length,
+    matchedBy,
+  };
+
+  console.log("[elektraweb-account-plan] diagnostics", diagnostics);
+
+  return { plans, diagnostics };
 }
 
 export function companyHasRules(ruleEngine, companyId) {
@@ -250,20 +441,23 @@ export function getCompanyRules(ruleEngine, companyId) {
   return normalizeUiCompanyRules(ruleEngine?.[companyId]);
 }
 
-export function getAccountPlanUploadedAt(accountPlans, companyId) {
-  if (!companyId) return null;
+export function getAccountPlanUploadedAt(accountPlans, companyOrId) {
+  const storageKey = resolveAccountPlanStorageKey(accountPlans, companyOrId);
+  if (!storageKey) return null;
 
-  return extractUploadedAt(accountPlans?.[companyId]);
+  return extractUploadedAt(accountPlans?.[storageKey]);
 }
 
 export function setCompanyAccountPlan(accountPlans, companyId, accounts) {
   if (!companyId) return accountPlans;
 
+  const normalizedAccounts = normalizeAccountPlanForMatching(accounts);
+
   return {
     ...accountPlans,
     [companyId]: {
       uploadedAt: Date.now(),
-      accounts,
+      accounts: normalizedAccounts,
     },
   };
 }
@@ -272,11 +466,13 @@ export function updateCompanyAccounts(accountPlans, companyId, updater) {
   if (!companyId) return accountPlans;
 
   const current = getAccountPlanForCompany(accountPlans, companyId);
+  const storageKey =
+    resolveAccountPlanStorageKey(accountPlans, companyId) || companyId;
 
   return {
     ...accountPlans,
     [companyId]: {
-      uploadedAt: getAccountPlanUploadedAt(accountPlans, companyId),
+      uploadedAt: getAccountPlanUploadedAt(accountPlans, storageKey),
       accounts: updater(current),
     },
   };

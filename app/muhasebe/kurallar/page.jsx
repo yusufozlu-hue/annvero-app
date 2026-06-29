@@ -5,6 +5,11 @@ import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import {
+  deleteLearningMemoryRecord,
+  fetchLearningMemoryForCompany,
+  updateLearningMemoryRecord,
+} from "@/src/utils/learningMemory";
+import {
   countCompanyRules,
   getCompanyRules,
   loadRuleEngineFromStorage,
@@ -87,6 +92,10 @@ function formatAccountDisplay(code, name) {
 
 const learningMemoryColumns = [
   {
+    label: "Kaynak",
+    getValue: (row) => row.source_module || "-",
+  },
+  {
     label: "Anahtar Kelime",
     getValue: (row) =>
       row.keyword || row.anahtar_kelime || row.anahtar || row.key || "",
@@ -165,6 +174,8 @@ export default function KurallarPage() {
   const [isMemoryModalOpen, setIsMemoryModalOpen] = useState(false);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
   const [memoryForm, setMemoryForm] = useState(emptyMemoryForm);
+  const [editingMemoryId, setEditingMemoryId] = useState(null);
+  const [memorySearch, setMemorySearch] = useState("");
   const [toast, setToast] = useState(null);
 
   const showToast = (message, type) => {
@@ -179,10 +190,7 @@ export default function KurallarPage() {
   }, [toast]);
 
   const loadLearningMemory = useCallback(async () => {
-    const supabase = getSupabaseClient();
-
-    if (!supabase) {
-      console.error("Supabase istemcisi yapılandırılmamış.");
+    if (!selectedCompanyId) {
       setLearningMemory([]);
       return;
     }
@@ -190,25 +198,14 @@ export default function KurallarPage() {
     setIsLearningMemoryLoading(true);
 
     try {
-      const { data, error } = await supabase
-        .from("learning_memory")
-        .select("*")
-        .order("usage_count", { ascending: false });
-
-      console.log("learning_memory data", data);
-      console.log("learning_memory error", error);
-
-      if (error) {
-        console.error(error);
-        setLearningMemory([]);
-        return;
-      }
-
+      const data = await fetchLearningMemoryForCompany(selectedCompanyId, {
+        includeInactive: true,
+      });
       setLearningMemory(data || []);
     } finally {
       setIsLearningMemoryLoading(false);
     }
-  }, []);
+  }, [selectedCompanyId]);
 
   useEffect(() => {
     setRules(loadRuleEngineFromStorage());
@@ -222,7 +219,9 @@ export default function KurallarPage() {
     }
 
     loadLearningMemory();
-  }, [activeTab, loadLearningMemory]);  useEffect(() => {
+  }, [activeTab, loadLearningMemory, selectedCompanyId]);
+
+  useEffect(() => {
     if (!isLoaded) return;
 
     saveRuleEngineToStorage(rules);
@@ -239,6 +238,28 @@ export default function KurallarPage() {
   const ruleCount = countCompanyRules(rules, selectedCompanyId);
   const isMemoryTab = activeTab === "hafiza";
 
+  const filteredLearningMemory = useMemo(() => {
+    const query = memorySearch.trim().toLocaleLowerCase("tr");
+    if (!query) return learningMemory;
+
+    return learningMemory.filter((row) => {
+      const haystack = [
+        row.keyword,
+        row.account_code,
+        row.counter_account_code,
+        row.document_type,
+        row.source_module,
+        row.account_name,
+        row.counter_account_name,
+        row.description_format,
+      ]
+        .join(" ")
+        .toLocaleLowerCase("tr");
+
+      return haystack.includes(query);
+    });
+  }, [learningMemory, memorySearch]);
+
   const updateMemoryForm = (field, value) => {
     setMemoryForm((prev) => ({ ...prev, [field]: value }));
   };
@@ -249,13 +270,56 @@ export default function KurallarPage() {
       return;
     }
 
+    setEditingMemoryId(null);
     setMemoryForm({ ...emptyMemoryForm });
+    setIsMemoryModalOpen(true);
+  };
+
+  const openEditMemoryModal = (row) => {
+    setEditingMemoryId(row.id);
+    setMemoryForm({
+      keyword: row.keyword || "",
+      account_code: row.account_code || "",
+      account_name: row.account_name || "",
+      counter_account_code: row.counter_account_code || "",
+      counter_account_name: row.counter_account_name || "",
+      document_type: row.document_type || "EA",
+      transaction_type: row.transaction_type || "",
+      description_format: row.description_format || "",
+    });
     setIsMemoryModalOpen(true);
   };
 
   const closeMemoryModal = () => {
     if (isSavingMemory) return;
     setIsMemoryModalOpen(false);
+    setEditingMemoryId(null);
+  };
+
+  const toggleMemoryActive = async (row) => {
+    const ok = await updateLearningMemoryRecord(row.id, {
+      is_active: row.is_active === false,
+    });
+
+    if (!ok) {
+      showToast("Durum güncellenemedi", "error");
+      return;
+    }
+
+    await loadLearningMemory();
+    showToast("Hafıza durumu güncellendi", "success");
+  };
+
+  const deleteMemory = async (row) => {
+    const ok = await deleteLearningMemoryRecord(row.id);
+
+    if (!ok) {
+      showToast("Hafıza kaydı silinemedi", "error");
+      return;
+    }
+
+    await loadLearningMemory();
+    showToast("Hafıza kaydı silindi", "success");
   };
 
   const saveMemoryRecord = async () => {
@@ -275,6 +339,39 @@ export default function KurallarPage() {
     setIsSavingMemory(true);
 
     try {
+      if (editingMemoryId) {
+        const ok = await updateLearningMemoryRecord(editingMemoryId, {
+          keyword: memoryForm.keyword.trim(),
+          account_code: memoryForm.account_code.trim(),
+          account_name: memoryForm.account_name.trim(),
+          counter_account_code: memoryForm.counter_account_code.trim(),
+          counter_account_name: memoryForm.counter_account_name.trim(),
+          document_type: memoryForm.document_type.trim(),
+          transaction_type: memoryForm.transaction_type.trim(),
+          description_format: memoryForm.description_format.trim(),
+        });
+
+        if (!ok) {
+          showToast("Hafıza kaydı güncellenemedi", "error");
+          return;
+        }
+
+        setIsMemoryModalOpen(false);
+        setEditingMemoryId(null);
+        setMemoryForm({ ...emptyMemoryForm });
+        await loadLearningMemory();
+        showToast("Hafıza kaydı güncellendi", "success");
+        return;
+      }
+
+      const supabase = getSupabaseClient();
+
+      if (!supabase) {
+        console.error("Supabase istemcisi yapılandırılmamış.");
+        showToast("Hafıza kaydı eklenemedi", "error");
+        return;
+      }
+
       const { error } = await supabase.from("learning_memory").insert([
         {
           company_id: selectedCompanyId,
@@ -427,7 +524,9 @@ export default function KurallarPage() {
               Yeni Hafıza Kaydı
             </h2>
             <p className="relative mt-2 text-sm text-slate-400">
-              Seçili firma için manuel öğrenen hafıza kaydı oluşturun.
+              {editingMemoryId
+                ? "Seçili hafıza kaydını düzenleyin."
+                : "Seçili firma için manuel öğrenen hafıza kaydı oluşturun."}
             </p>
 
             <div className="relative mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -584,7 +683,17 @@ export default function KurallarPage() {
         </p>
 
         {isMemoryTab ? (
-          <div className="overflow-auto rounded-xl border border-slate-800">
+          <>
+            <div className="mb-4">
+              <input
+                value={memorySearch}
+                onChange={(event) => setMemorySearch(event.target.value)}
+                placeholder="Anahtar kelime, hesap kodu, kaynak veya belge türü ara..."
+                className="w-full max-w-xl rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-white outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div className="overflow-auto rounded-xl border border-slate-800">
             <table className="w-full min-w-[1100px] text-sm">
               <thead className="bg-slate-800/90">
                 <tr>
@@ -596,6 +705,12 @@ export default function KurallarPage() {
                       {column.label}
                     </th>
                   ))}
+                  <th className="p-3 text-left font-semibold text-slate-200">
+                    Durum
+                  </th>
+                  <th className="p-3 text-left font-semibold text-slate-200">
+                    İşlemler
+                  </th>
                 </tr>
               </thead>
 
@@ -603,7 +718,7 @@ export default function KurallarPage() {
                 {isLearningMemoryLoading && (
                   <tr>
                     <td
-                      colSpan={learningMemoryColumns.length}
+                      colSpan={learningMemoryColumns.length + 2}
                       className="p-6 text-center text-slate-400"
                     >
                       Öğrenen hafıza yükleniyor...
@@ -612,7 +727,7 @@ export default function KurallarPage() {
                 )}
 
                 {!isLearningMemoryLoading &&
-                  learningMemory.map((row) => (
+                  filteredLearningMemory.map((row) => (
                     <tr
                       key={row.id || `${row.keyword}-${row.usage_count}`}
                       className="border-t border-slate-800 hover:bg-slate-950/60"
@@ -625,13 +740,49 @@ export default function KurallarPage() {
                           {column.getValue(row) || "-"}
                         </td>
                       ))}
+                      <td className="p-3">
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                            row.is_active === false
+                              ? "bg-slate-800 text-slate-400"
+                              : "bg-emerald-900/40 text-emerald-300"
+                          }`}
+                        >
+                          {row.is_active === false ? "Pasif" : "Aktif"}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openEditMemoryModal(row)}
+                            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold hover:bg-indigo-500"
+                          >
+                            Düzenle
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleMemoryActive(row)}
+                            className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold hover:bg-slate-600"
+                          >
+                            {row.is_active === false ? "Aktif Et" : "Pasif Et"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteMemory(row)}
+                            className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold hover:bg-red-500"
+                          >
+                            Sil
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
 
-                {!isLearningMemoryLoading && learningMemory.length === 0 && (
+                {!isLearningMemoryLoading && filteredLearningMemory.length === 0 && (
                   <tr>
                     <td
-                      colSpan={learningMemoryColumns.length}
+                      colSpan={learningMemoryColumns.length + 2}
                       className="p-6 text-center text-slate-400"
                     >
                       Henüz öğrenen hafıza kaydı yok.
@@ -641,6 +792,7 @@ export default function KurallarPage() {
               </tbody>
             </table>
           </div>
+          </>
         ) : (
           <div className="overflow-auto">
             <table className="w-full min-w-[1000px] text-sm">
