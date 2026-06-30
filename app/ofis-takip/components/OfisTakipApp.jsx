@@ -7,13 +7,11 @@ import { getCompanyDisplayName } from "@/src/utils/companies";
 import { OFIS_TAKIP_TABS, ONCELIK_OPTIONS } from "@/src/ofis-takip/constants";
 import {
   filterCompaniesForSearch,
-  findCompanyById,
   formatContactValue,
   getActiveCompanies,
   getCompanyContactSummary,
   getCompanyName,
   getCompanyWhatsAppPhone,
-  getSortedCompanyContacts,
   migrateOfisTakipToCompanies,
   resolveCompanyId,
   resolveContactWhatsApp,
@@ -92,6 +90,7 @@ export default function OfisTakipApp() {
   const [loaded, setLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState("dashboard");
   const [search, setSearch] = useState("");
+  const [expandedCompanyId, setExpandedCompanyId] = useState(null);
   const jsonInputRef = useRef(null);
   const taxExcelInputRef = useRef(null);
 
@@ -428,6 +427,52 @@ export default function OfisTakipApp() {
     );
   };
 
+  const renderMailButton = (email, subject, body) => {
+    const value = String(email || "").trim();
+
+    if (!value) {
+      return (
+        <span className="rounded-lg border border-gray-800 px-2 py-1 text-[11px] text-gray-500">
+          Mail yok
+        </span>
+      );
+    }
+
+    const href = `mailto:${value}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+    return (
+      <a
+        href={href}
+        className={`${buttonSecondary} inline-flex px-3 py-1.5 text-xs`}
+      >
+        Mail Gönder
+      </a>
+    );
+  };
+
+  const renderWhatsAppSendButton = (companyId, title, date, contactId = "") => {
+    const phone = getCompanyWhatsAppPhone(companies, companyId, contactId);
+    const message = buildReminderMessage(title, date, companyId);
+    const href = buildWhatsAppLink(phone, message);
+
+    if (!href) {
+      return (
+        <span className="text-[11px] text-gray-500">Telefon yok</span>
+      );
+    }
+
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+      >
+        WhatsApp Gönder
+      </a>
+    );
+  };
+
   const renderWhatsAppButton = (companyId, title, date, contactId = "") => {
     const phone = getCompanyWhatsAppPhone(companies, companyId, contactId);
     const message = buildReminderMessage(title, date, companyId);
@@ -448,29 +493,6 @@ export default function OfisTakipApp() {
       >
         WhatsApp
       </a>
-    );
-  };
-
-  const renderContactChannelActions = (companyId, title, date) => {
-    const contactPeople = getSortedCompanyContacts(findCompanyById(companies, companyId));
-
-    if (contactPeople.length === 0) {
-      return renderWhatsAppButton(companyId, title, date);
-    }
-
-    return (
-      <div className="space-y-2">
-        {contactPeople.map((contact) => (
-          <div key={contact.id} className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-gray-400">
-              {contact.name || "Kişi"}
-              {contact.isDefault ? " · Varsayılan" : ""}
-            </span>
-            {renderWhatsAppButton(companyId, title, date, contact.id)}
-            {renderEmailLink(contact.email)}
-          </div>
-        ))}
-      </div>
     );
   };
 
@@ -538,6 +560,10 @@ export default function OfisTakipApp() {
     </div>
   );
 
+  const toggleCompanyDetail = (companyId) => {
+    setExpandedCompanyId((current) => (current === companyId ? null : companyId));
+  };
+
   const renderMukellefler = () => (
     <div className="space-y-6">
       <div className={`${cardClass} flex flex-wrap items-center gap-3`}>
@@ -574,59 +600,117 @@ export default function OfisTakipApp() {
         sayfasını kullanın.
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {filteredCompanies.map((company) => {
           const summary = getCompanyContactSummary(company);
+          const isExpanded = expandedCompanyId === company.id;
+          const contactPeople =
+            summary.contactPeople.length > 0
+              ? summary.contactPeople
+              : summary.contactPerson ||
+                  summary.phone ||
+                  summary.email ||
+                  summary.whatsappPhone
+                ? [
+                    {
+                      id: "legacy",
+                      name: summary.contactPerson || "Yetkili",
+                      title: "",
+                      phone: summary.phone,
+                      whatsapp: summary.whatsappPhone,
+                      email: summary.email,
+                      isDefault: true,
+                    },
+                  ]
+                : [];
+          const messageTitle = "Ofis hatırlatması";
+          const messageDate = formatTrDate(new Date());
+          const mailSubject = `${summary.name} - ${messageTitle}`;
+          const mailBody = buildReminderMessage(messageTitle, messageDate, company.id);
 
           return (
-            <div key={company.id} className={cardClass}>
-              <h3 className="text-lg font-semibold">{summary.name}</h3>
-              <p className="mt-2 text-sm text-gray-400">
-                VKN/TCKN: {summary.taxNumber || "—"}
-              </p>
-              {summary.contactPeople.length > 0 ? (
-                <div className="mt-3 space-y-2">
-                  {summary.contactPeople.map((contact) => (
-                    <div
-                      key={contact.id}
-                      className="rounded-xl border border-gray-800 bg-gray-950 px-3 py-2 text-sm"
-                    >
-                      <p className="font-medium text-gray-200">
-                        {contact.name}
-                        {contact.isDefault ? " · Varsayılan" : ""}
-                      </p>
-                      {contact.title ? (
-                        <p className="text-gray-400">{contact.title}</p>
-                      ) : null}
-                      <div className="mt-1 space-y-1 text-gray-400">
-                        <p>Telefon: {formatContactValue(contact.phone)}</p>
-                        <p>
-                          WhatsApp:{" "}
-                          {formatContactValue(resolveContactWhatsApp(contact))}
-                        </p>
-                        <p>E-posta: {renderEmailLink(contact.email)}</p>
-                      </div>
-                    </div>
-                  ))}
+            <div
+              key={company.id}
+              className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900"
+            >
+              <div className="flex items-start justify-between gap-3 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <h3 className="truncate text-sm font-semibold text-white">
+                    {summary.name}
+                  </h3>
+                  <p className="mt-0.5 text-xs text-gray-400">
+                    VKN/TCKN: {summary.taxNumber || "—"}
+                  </p>
                 </div>
-              ) : null}
-              {summary.taxOffice ? (
-                <p className="mt-2 text-sm text-gray-400">
-                  Vergi Dairesi: {summary.taxOffice}
-                </p>
-              ) : null}
-              {summary.address ? (
-                <p className="mt-2 text-sm text-gray-400">Adres: {summary.address}</p>
-              ) : null}
-              {summary.notes ? (
-                <p className="mt-2 text-sm text-gray-500">Not: {summary.notes}</p>
-              ) : null}
-              {summary.contactPeople.length > 0 ? (
-                <div className="mt-4">
-                  {renderContactChannelActions(
-                    company.id,
-                    "Ofis hatırlatması",
-                    formatTrDate(new Date())
+
+                <button
+                  type="button"
+                  onClick={() => toggleCompanyDetail(company.id)}
+                  aria-expanded={isExpanded}
+                  aria-label={isExpanded ? "Detayı kapat" : "Detayı aç"}
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border text-lg font-bold leading-none transition ${
+                    isExpanded
+                      ? "border-violet-500 bg-violet-950/60 text-violet-200"
+                      : "border-gray-700 bg-gray-950 text-gray-300 hover:border-violet-500 hover:text-white"
+                  }`}
+                >
+                  {isExpanded ? "−" : "+"}
+                </button>
+              </div>
+
+              {isExpanded ? (
+                <div className="space-y-3 border-t border-gray-800 px-4 py-3 text-sm">
+                  <p className="text-gray-300">
+                    <span className="text-gray-500">Vergi Dairesi:</span>{" "}
+                    {summary.taxOffice || "—"}
+                  </p>
+
+                  {contactPeople.length === 0 ? (
+                    <p className="text-xs text-gray-500">
+                      İletişim kişisi tanımlı değil.
+                    </p>
+                  ) : (
+                    contactPeople.map((contact) => (
+                      <div
+                        key={contact.id}
+                        className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-2.5"
+                      >
+                        <p className="font-medium text-gray-200">
+                          {contact.name || "İletişim Kişisi"}
+                          {contact.isDefault ? (
+                            <span className="ml-1 text-xs text-violet-300">
+                              · Varsayılan
+                            </span>
+                          ) : null}
+                        </p>
+                        {contact.title ? (
+                          <p className="mt-0.5 text-xs text-gray-500">{contact.title}</p>
+                        ) : null}
+                        <div className="mt-2 space-y-1 text-xs text-gray-400">
+                          <p>
+                            <span className="text-gray-500">Telefon:</span>{" "}
+                            {formatContactValue(contact.phone)}
+                          </p>
+                          <p>
+                            <span className="text-gray-500">WhatsApp:</span>{" "}
+                            {formatContactValue(resolveContactWhatsApp(contact))}
+                          </p>
+                          <p className="flex flex-wrap items-center gap-1">
+                            <span className="text-gray-500">E-posta:</span>{" "}
+                            {renderEmailLink(contact.email)}
+                          </p>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {renderWhatsAppSendButton(
+                            company.id,
+                            messageTitle,
+                            messageDate,
+                            contact.id === "legacy" ? "" : contact.id
+                          )}
+                          {renderMailButton(contact.email, mailSubject, mailBody)}
+                        </div>
+                      </div>
+                    ))
                   )}
                 </div>
               ) : null}
