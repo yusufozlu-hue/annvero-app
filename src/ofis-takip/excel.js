@@ -31,7 +31,11 @@ export function exportAnnveroCompaniesToExcel(companies = []) {
       "Vergi No": summary.taxNumber,
       Telefon: summary.phone,
       "E-posta": summary.email,
-      Notlar: summary.contacts.join(", "),
+      Notlar: summary.contactPeople
+        .map((contact) =>
+          [contact.name, contact.phone, contact.email].filter(Boolean).join(" / ")
+        )
+        .join(" | "),
     };
   });
 

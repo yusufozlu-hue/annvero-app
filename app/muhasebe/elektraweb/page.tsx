@@ -432,7 +432,7 @@ export default function ElektrawebPage() {
   ];
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-slate-950 text-white">
+    <main className="relative min-h-screen bg-slate-950 text-white">
       {toast && (
         <div
           role="status"
@@ -451,7 +451,7 @@ export default function ElektrawebPage() {
         <div className="absolute -right-32 top-10 h-96 w-96 rounded-full bg-violet-600/10 blur-[120px]" />
       </div>
 
-      <div className="relative mx-auto max-w-[1500px] p-6 sm:p-8">
+      <div className="relative mx-auto w-full max-w-[1800px] p-6 sm:p-8">
         {/* Premium navbar */}
         <nav className="mb-8 flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-3 backdrop-blur-xl lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-2 px-2">
@@ -670,23 +670,42 @@ export default function ElektrawebPage() {
               ))}
             </div>
 
-            <div className="max-h-[600px] overflow-auto rounded-xl border border-slate-800">
-              <table className="w-full border-collapse text-left text-sm">
-                <thead className="sticky top-0 z-10 bg-slate-950">
-                  <tr className="text-slate-400">
-                    <th className="p-3 font-semibold">Fiş No</th>
-                    <th className="p-3 font-semibold">Tarih</th>
-                    <th className="p-3 font-semibold">Hesap Kodu</th>
-                    <th className="p-3 font-semibold">Belge Türü</th>
-                    <th className="p-3 font-semibold">Fiş Açıklama</th>
-                    <th className="p-3 font-semibold">Detay Açıklama</th>
-                    <th className="p-3 text-right font-semibold">Borç</th>
-                    <th className="p-3 text-right font-semibold">Alacak</th>
-                    <th className="p-3 font-semibold">Eksikler</th>
-                    <th className="p-3 text-right font-semibold">Risk</th>
-                    <th className="p-3 font-semibold">Seviye</th>
-                    <th className="p-3 font-semibold">Kontrol Notu</th>
-                    <th className="p-3 text-center font-semibold">İşlem</th>
+            <div className="rounded-xl border border-slate-800">
+              <table className="w-full table-fixed border-collapse text-left text-sm">
+                <colgroup>
+                  <col className="w-12" />
+                  <col className="w-[76px]" />
+                  <col className="w-[88px]" />
+                  <col className="w-[72px]" />
+                  <col />
+                  <col className="w-[260px]" />
+                  <col className="w-[72px]" />
+                  <col className="w-[72px]" />
+                  <col className="w-[120px]" />
+                  <col className="w-12" />
+                  <col className="w-[72px]" />
+                  <col />
+                  <col className="w-[70px]" />
+                </colgroup>
+                <thead className="bg-slate-950">
+                  <tr className="text-xs text-slate-400">
+                    <th className="px-2 py-2.5 font-semibold">Fiş No</th>
+                    <th className="px-2 py-2.5 font-semibold">Tarih</th>
+                    <th className="px-2 py-2.5 font-semibold">Hesap Kodu</th>
+                    <th className="px-2 py-2.5 font-semibold">Belge Türü</th>
+                    <th className="px-2 py-2.5 font-semibold">Fiş Açıklama</th>
+                    <th className="max-w-[260px] px-2 py-2.5 font-semibold">
+                      Detay Açıklama
+                    </th>
+                    <th className="px-2 py-2.5 text-right font-semibold">Borç</th>
+                    <th className="px-2 py-2.5 text-right font-semibold">Alacak</th>
+                    <th className="px-2 py-2.5 font-semibold">Eksikler</th>
+                    <th className="px-2 py-2.5 text-right font-semibold">Risk</th>
+                    <th className="px-2 py-2.5 font-semibold">Seviye</th>
+                    <th className="px-2 py-2.5 font-semibold">Kontrol Notu</th>
+                    <th className="w-[70px] px-1 py-2.5 text-center font-semibold">
+                      İşlem
+                    </th>
                   </tr>
                 </thead>
 
@@ -694,12 +713,14 @@ export default function ElektrawebPage() {
                   {sayfaSatirlari.map((fis) => (
                     <Fragment key={fis.id}>
                       <tr className="border-t border-slate-800 transition-colors hover:bg-slate-800/50">
-                        <td className="p-3 font-medium">{fis.fisNo}</td>
-                        <td className="p-3 text-slate-300">
+                        <td className="px-2 py-2 text-xs font-medium tabular-nums">
+                          {fis.fisNo}
+                        </td>
+                        <td className="px-2 py-2 text-xs text-slate-300">
                           {fis.fisTarihi || fis.tarih}
                         </td>
                         <td
-                          className={`p-3 font-mono text-xs ${
+                          className={`px-2 py-2 font-mono text-[11px] ${
                             fis.hesapKodu
                               ? "text-slate-200"
                               : "font-semibold text-red-400"
@@ -707,25 +728,29 @@ export default function ElektrawebPage() {
                         >
                           {fis.hesapKodu || "—"}
                         </td>
-                        <td className="p-3">
-                          <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-xs font-medium text-slate-200">
+                        <td className="px-2 py-2">
+                          <span className="inline-block rounded-md border border-slate-700 bg-slate-800/60 px-1.5 py-0.5 text-[10px] font-medium text-slate-200">
                             {fis.belgeTuru || "-"}
                           </span>
                         </td>
-                        <td className="max-w-[10rem] truncate p-3 text-slate-300">
-                          {fis.fisAciklama || "-"}
+                        <ClampedCell
+                          text={fis.fisAciklama}
+                          className="px-2 py-2"
+                        />
+                        <ClampedCell
+                          text={fis.detayAciklama || fis.aciklama}
+                          className="max-w-[260px] px-2 py-2"
+                        />
+                        <td className="px-2 py-2 text-right text-xs tabular-nums">
+                          {fis.borc}
                         </td>
-                        <td className="max-w-xs truncate p-3 text-slate-300">
-                          {fis.detayAciklama || fis.aciklama || "-"}
-                        </td>
-                        <td className="p-3 text-right tabular-nums">{fis.borc}</td>
-                        <td className="p-3 text-right tabular-nums">
+                        <td className="px-2 py-2 text-right text-xs tabular-nums">
                           {fis.alacak}
                         </td>
-                        <td className="p-3">
+                        <td className="px-2 py-2">
                           <div className="flex flex-wrap gap-1">
                             {fis.hesapKodu && fis.eslesmeYontemi ? (
-                              <span className="rounded-full border border-emerald-700/60 bg-emerald-950/50 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                              <span className="rounded-full border border-emerald-700/60 bg-emerald-950/50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-300">
                                 {fis.eslesmeYontemi}
                               </span>
                             ) : null}
@@ -746,26 +771,26 @@ export default function ElektrawebPage() {
                             {!fis.riskDurumu &&
                             !(fis.hesapEslesmeNotlari || []).length &&
                             getStandardLucaMissingBadges(fis).length === 0 ? (
-                              <span className="text-xs text-emerald-400">Tam</span>
+                              <span className="text-[10px] text-emerald-400">Tam</span>
                             ) : null}
                           </div>
                         </td>
-                        <td className="p-3 text-right tabular-nums">
+                        <td className="px-2 py-2 text-right text-xs tabular-nums">
                           {fis.riskPuani}
                         </td>
-                        <td className="p-3">
-                          <RiskBadge seviye={fis.riskSeviyesi} />
+                        <td className="px-2 py-2">
+                          <RiskBadge seviye={fis.riskSeviyesi} compact />
                         </td>
-                        <td
-                          className={`p-3 ${
+                        <ClampedCell
+                          text={fis.kontrolNotu || fis.risk}
+                          className="px-2 py-2"
+                          spanClassName={
                             fis.durum === "Riskli"
                               ? "text-yellow-300"
                               : "text-emerald-300"
-                          }`}
-                        >
-                          {fis.kontrolNotu || fis.risk}
-                        </td>
-                        <td className="p-3 text-center">
+                          }
+                        />
+                        <td className="w-[70px] px-1 py-2 text-center">
                           <PreviewEyeButton
                             active={expandedPreviewRowId === fis.id}
                             onClick={() => togglePreviewRowDetail(fis)}
@@ -850,7 +875,31 @@ function MissingFieldBadge({ label }: { label: string }) {
   );
 }
 
-function RiskBadge({ seviye }: { seviye: string }) {
+function ClampedCell({
+  text,
+  className = "",
+  spanClassName = "text-slate-300",
+}: {
+  text?: string | null;
+  className?: string;
+  spanClassName?: string;
+}) {
+  const display = String(text || "").trim() || "-";
+
+  return (
+    <td className={className} title={display !== "-" ? display : undefined}>
+      <span className={`line-clamp-2 break-words ${spanClassName}`}>{display}</span>
+    </td>
+  );
+}
+
+function RiskBadge({
+  seviye,
+  compact = false,
+}: {
+  seviye: string;
+  compact?: boolean;
+}) {
   const styles: Record<string, string> = {
     Yüksek: "border-red-700/60 bg-red-950/50 text-red-300",
     Orta: "border-yellow-700/60 bg-yellow-950/50 text-yellow-300",
@@ -861,9 +910,11 @@ function RiskBadge({ seviye }: { seviye: string }) {
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${cls}`}
+      className={`inline-flex items-center gap-1 rounded-full border font-semibold ${cls} ${
+        compact ? "px-1.5 py-0.5 text-[10px] leading-tight" : "gap-1.5 px-3 py-1 text-xs"
+      }`}
     >
-      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      <span className={`rounded-full bg-current ${compact ? "h-1 w-1" : "h-1.5 w-1.5"}`} />
       {seviye}
     </span>
   );

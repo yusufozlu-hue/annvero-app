@@ -152,3 +152,13 @@ export function syncSelectedCompanyId(loadedCompanies, currentId) {
 
   return loadedCompanies[0]?.id || "";
 }
+
+export function persistCompaniesToLocalStorage(companies) {
+  if (typeof window === "undefined") return;
+
+  try {
+    localStorage.setItem(COMPANY_STORAGE_KEYS[0], JSON.stringify(companies));
+  } catch (error) {
+    console.error("Firma listesi localStorage'a yazılamadı:", error);
+  }
+}

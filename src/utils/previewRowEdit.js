@@ -1,3 +1,4 @@
+import { buildElektrawebCombinedSearchText } from "@/src/utils/elektrawebAccountMatcher";
 import { normalizeParserText } from "@/src/utils/textNormalize";
 
 export const DOCUMENT_TYPE_OPTIONS = [
@@ -144,6 +145,81 @@ export function buildElektrawebEditDraft(row) {
     cariAccountCode: "",
     controlNote: row.kontrolNotu || row.risk || "",
     saveToMemory: false,
+  };
+}
+
+export function buildStandardLucaRowEditDraft(row) {
+  return {
+    fisNo: row.fisNo ?? "",
+    fisTarihi: row.fisTarihi || "",
+    fisAciklama: row.fisAciklama || "",
+    documentType: row.belgeTuru || "DK",
+    belgeNo: row.belgeNo || "",
+    evrakNo: row.evrakNo || "",
+    evrakTarihi: row.evrakTarihi || row.fisTarihi || "",
+    accountCode: row.hesapKodu || "",
+    detayAciklama: row.detayAciklama || row.aciklama || "",
+    borc: row.borc ?? "",
+    alacak: row.alacak ?? "",
+    controlNote: row.kontrolNotu || "",
+    originalAccountCode: row.hesapKodu || "",
+    saveToMemory: false,
+  };
+}
+
+export function applyStandardLucaRowEditDraft(row, draft) {
+  const hesapKodu = String(draft.accountCode || "").trim();
+  const controlNote = String(draft.controlNote || "").trim();
+  const detayAciklama = String(draft.detayAciklama || "").trim();
+  const fisAciklama = String(draft.fisAciklama || "").trim();
+  const fisNoRaw = String(draft.fisNo ?? "").trim();
+  const parsedFisNo = Number(fisNoRaw);
+
+  return {
+    ...row,
+    fisNo: fisNoRaw === "" ? "" : Number.isNaN(parsedFisNo) ? fisNoRaw : parsedFisNo,
+    fisTarihi: String(draft.fisTarihi || "").trim(),
+    fisAciklama,
+    belgeTuru: String(draft.documentType || "DK").trim().toUpperCase(),
+    belgeNo: String(draft.belgeNo || "").trim(),
+    evrakNo: String(draft.evrakNo || "").trim(),
+    evrakTarihi: String(draft.evrakTarihi || "").trim(),
+    detayAciklama,
+    aciklama: detayAciklama || fisAciklama,
+    hesapKodu,
+    borc: draft.borc === "" ? "" : parsePreviewAmount(draft.borc),
+    alacak: draft.alacak === "" ? "" : parsePreviewAmount(draft.alacak),
+    kontrolNotu: controlNote,
+    riskDurumu: hesapKodu ? "" : "HESAP_EKSIK",
+    manuallyEdited: true,
+  };
+}
+
+export function buildStandardLucaLearningMemoryPayload(originalRow, draft, companyId) {
+  const searchText = buildElektrawebCombinedSearchText({
+    ...originalRow,
+    fisAciklama: draft.fisAciklama,
+    detayAciklama: draft.detayAciklama,
+    belgeTuru: draft.documentType,
+  });
+  const aramaAnahtari =
+    extractDescriptionKeyword(searchText) ||
+    extractDescriptionKeyword(draft.detayAciklama || draft.fisAciklama);
+
+  return {
+    company_id: companyId,
+    source_module: String(originalRow.kaynakTipi || "luca").toLowerCase(),
+    keyword: aramaAnahtari,
+    account_code: String(draft.accountCode || "").trim(),
+    counter_account_code: String(
+      draft.originalAccountCode || originalRow.hesapKodu || ""
+    ).trim(),
+    account_name: String(originalRow.kaynakAdi || "").trim(),
+    document_type: String(draft.documentType || "DK").trim(),
+    description_format: String(draft.detayAciklama || "").trim(),
+    transaction_type: String(originalRow.kaynakTipi || "").trim(),
+    usage_count: 0,
+    is_active: true,
   };
 }
 

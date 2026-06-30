@@ -7,19 +7,33 @@ import { getCompanyDisplayName } from "@/src/utils/companies";
 import { OFIS_TAKIP_TABS, ONCELIK_OPTIONS } from "@/src/ofis-takip/constants";
 import {
   filterCompaniesForSearch,
+  findCompanyById,
+  formatContactValue,
   getActiveCompanies,
   getCompanyContactSummary,
   getCompanyName,
-  getCompanyPhone,
+  getCompanyWhatsAppPhone,
+  getSortedCompanyContacts,
   migrateOfisTakipToCompanies,
   resolveCompanyId,
+  resolveContactWhatsApp,
 } from "@/src/ofis-takip/companyBridge";
 import { createDefaultOfisTakipState, createId } from "@/src/ofis-takip/defaultState";
+import RemindersTab from "./RemindersTab";
+import {
+  buildReminderDisplayRows,
+} from "@/src/ofis-takip/reminderUtils";
+import {
+  downloadTaxCalendarTemplate,
+  parseTaxCalendarExcelBuffer,
+} from "@/src/ofis-takip/taxCalendarExcel";
 import {
   daysUntil,
   formatTrDate,
+  formatTrDateInputValue,
   isDueSoon,
   isOverdue,
+  normalizeTrDateInput,
   parseTrDate,
 } from "@/src/ofis-takip/dateUtils";
 import {
@@ -79,6 +93,7 @@ export default function OfisTakipApp() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [search, setSearch] = useState("");
   const jsonInputRef = useRef(null);
+  const taxExcelInputRef = useRef(null);
 
   const {
     companies,
@@ -92,12 +107,6 @@ export default function OfisTakipApp() {
     sonTarih: "",
     oncelik: "normal",
     companyId: "",
-  });
-  const [reminderForm, setReminderForm] = useState({
-    baslik: "",
-    tarih: "",
-    companyId: "",
-    aciklama: "",
   });
   const [taxForm, setTaxForm] = useState({
     baslik: "",
@@ -170,6 +179,17 @@ export default function OfisTakipApp() {
     [data.vergiTakvimi]
   );
 
+  const reminderDisplayRows = useMemo(
+    () =>
+      buildReminderDisplayRows({
+        hatirlatmalar: data.hatirlatmalar,
+        vergiTakvimi: data.vergiTakvimi,
+        companies,
+        reminderDaysBefore: data.settings.reminderDaysBefore,
+      }),
+    [companies, data.hatirlatmalar, data.settings.reminderDaysBefore, data.vergiTakvimi]
+  );
+
   const stats = useMemo(() => {
     const overdueTasks = openTasks.filter((task) => isOverdue(task.sonTarih)).length;
     const dueSoonTasks = openTasks.filter((task) =>
@@ -186,9 +206,9 @@ export default function OfisTakipApp() {
       overdueTasks,
       dueSoonTasks,
       overdueTax,
-      activeReminders: data.hatirlatmalar.filter((item) => item.aktif !== false).length,
+      activeReminders: reminderDisplayRows.length,
     };
-  }, [activeCompanies.length, completedTasks.length, data, openTasks, upcomingTaxItems]);
+  }, [activeCompanies.length, completedTasks.length, data, openTasks, reminderDisplayRows.length, upcomingTaxItems]);
 
   const patchSettings = (partial) => {
     setData((current) => ({
@@ -249,32 +269,11 @@ export default function OfisTakipApp() {
     }));
   };
 
-  const addReminder = () => {
-    if (!reminderForm.baslik.trim() || !reminderForm.tarih.trim()) {
-      alert("Hatırlatma başlığı ve tarihi girin.");
-      return;
-    }
-
+  const handleAddReminders = (entries) => {
     setData((current) => ({
       ...current,
-      hatirlatmalar: [
-        ...current.hatirlatmalar,
-        {
-          id: createId(),
-          ...reminderForm,
-          baslik: reminderForm.baslik.trim(),
-          aktif: true,
-          whatsappEnabled: true,
-        },
-      ],
+      hatirlatmalar: [...current.hatirlatmalar, ...entries],
     }));
-
-    setReminderForm({
-      baslik: "",
-      tarih: "",
-      companyId: "",
-      aciklama: "",
-    });
   };
 
   const removeReminder = (id) => {
@@ -285,8 +284,10 @@ export default function OfisTakipApp() {
   };
 
   const addTaxItem = () => {
-    if (!taxForm.baslik.trim() || !taxForm.sonTarih.trim()) {
-      alert("Vergi kalemi başlığı ve son tarih girin.");
+    const normalizedDate = normalizeTrDateInput(taxForm.sonTarih);
+
+    if (!taxForm.baslik.trim() || !normalizedDate) {
+      alert("Vergi kalemi başlığı ve geçerli son tarih girin.");
       return;
     }
 
@@ -298,6 +299,7 @@ export default function OfisTakipApp() {
           id: createId(),
           ...taxForm,
           baslik: taxForm.baslik.trim(),
+          sonTarih: normalizedDate,
           tamamlandi: false,
         },
       ],
@@ -319,6 +321,33 @@ export default function OfisTakipApp() {
         item.id === id ? { ...item, tamamlandi: !item.tamamlandi } : item
       ),
     }));
+  };
+
+  const handleTaxExcelUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const imported = parseTaxCalendarExcelBuffer(buffer);
+
+      if (imported.length === 0) {
+        alert("Excel dosyasında geçerli vergi takvimi kaydı bulunamadı.");
+        event.target.value = "";
+        return;
+      }
+
+      setData((current) => ({
+        ...current,
+        vergiTakvimi: [...current.vergiTakvimi, ...imported],
+      }));
+
+      alert(`${imported.length} vergi takvimi kaydı eklendi.`);
+    } catch {
+      alert("Excel dosyası okunamadı.");
+    }
+
+    event.target.value = "";
   };
 
   const removeTaxItem = (id) => {
@@ -385,8 +414,22 @@ export default function OfisTakipApp() {
     setData(createDefaultOfisTakipState());
   };
 
-  const renderWhatsAppButton = (companyId, title, date) => {
-    const phone = getCompanyPhone(companies, companyId);
+  const renderEmailLink = (email) => {
+    const value = String(email || "").trim();
+
+    if (!value) {
+      return <span className="text-gray-500">—</span>;
+    }
+
+    return (
+      <a href={`mailto:${value}`} className="text-violet-300 hover:underline">
+        {value}
+      </a>
+    );
+  };
+
+  const renderWhatsAppButton = (companyId, title, date, contactId = "") => {
+    const phone = getCompanyWhatsAppPhone(companies, companyId, contactId);
     const message = buildReminderMessage(title, date, companyId);
     const href = buildWhatsAppLink(phone, message);
 
@@ -405,6 +448,29 @@ export default function OfisTakipApp() {
       >
         WhatsApp
       </a>
+    );
+  };
+
+  const renderContactChannelActions = (companyId, title, date) => {
+    const contactPeople = getSortedCompanyContacts(findCompanyById(companies, companyId));
+
+    if (contactPeople.length === 0) {
+      return renderWhatsAppButton(companyId, title, date);
+    }
+
+    return (
+      <div className="space-y-2">
+        {contactPeople.map((contact) => (
+          <div key={contact.id} className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-gray-400">
+              {contact.name || "Kişi"}
+              {contact.isDefault ? " · Varsayılan" : ""}
+            </span>
+            {renderWhatsAppButton(companyId, title, date, contact.id)}
+            {renderEmailLink(contact.email)}
+          </div>
+        ))}
+      </div>
     );
   };
 
@@ -518,24 +584,52 @@ export default function OfisTakipApp() {
               <p className="mt-2 text-sm text-gray-400">
                 VKN/TCKN: {summary.taxNumber || "—"}
               </p>
-              {summary.contacts.length > 0 ? (
-                <p className="mt-2 text-sm text-gray-300">
-                  İletişim: {summary.contacts.join(", ")}
-                </p>
-              ) : null}
-              {summary.phone || summary.email ? (
-                <div className="mt-2 space-y-1 text-sm text-gray-400">
-                  {summary.phone ? <p>Telefon: {summary.phone}</p> : null}
-                  {summary.email ? <p>E-posta: {summary.email}</p> : null}
+              {summary.contactPeople.length > 0 ? (
+                <div className="mt-3 space-y-2">
+                  {summary.contactPeople.map((contact) => (
+                    <div
+                      key={contact.id}
+                      className="rounded-xl border border-gray-800 bg-gray-950 px-3 py-2 text-sm"
+                    >
+                      <p className="font-medium text-gray-200">
+                        {contact.name}
+                        {contact.isDefault ? " · Varsayılan" : ""}
+                      </p>
+                      {contact.title ? (
+                        <p className="text-gray-400">{contact.title}</p>
+                      ) : null}
+                      <div className="mt-1 space-y-1 text-gray-400">
+                        <p>Telefon: {formatContactValue(contact.phone)}</p>
+                        <p>
+                          WhatsApp:{" "}
+                          {formatContactValue(resolveContactWhatsApp(contact))}
+                        </p>
+                        <p>E-posta: {renderEmailLink(contact.email)}</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ) : null}
-              <div className="mt-4">
-                {renderWhatsAppButton(
-                  company.id,
-                  "Ofis hatırlatması",
-                  formatTrDate(new Date())
-                )}
-              </div>
+              {summary.taxOffice ? (
+                <p className="mt-2 text-sm text-gray-400">
+                  Vergi Dairesi: {summary.taxOffice}
+                </p>
+              ) : null}
+              {summary.address ? (
+                <p className="mt-2 text-sm text-gray-400">Adres: {summary.address}</p>
+              ) : null}
+              {summary.notes ? (
+                <p className="mt-2 text-sm text-gray-500">Not: {summary.notes}</p>
+              ) : null}
+              {summary.contactPeople.length > 0 ? (
+                <div className="mt-4">
+                  {renderContactChannelActions(
+                    company.id,
+                    "Ofis hatırlatması",
+                    formatTrDate(new Date())
+                  )}
+                </div>
+              ) : null}
             </div>
           );
         })}
@@ -668,6 +762,25 @@ export default function OfisTakipApp() {
 
   const renderVergiTakvimi = () => (
     <div className="space-y-6">
+      <div className={`${cardClass} flex flex-wrap items-center gap-3`}>
+        <button type="button" onClick={downloadTaxCalendarTemplate} className={buttonSecondary}>
+          Excel Şablon İndir
+        </button>
+        <label className={`${buttonSecondary} cursor-pointer`}>
+          Excel Yükle
+          <input
+            ref={taxExcelInputRef}
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={handleTaxExcelUpload}
+            className="hidden"
+          />
+        </label>
+        <p className="text-sm text-gray-400">
+          Kolonlar: Vergi/Yükümlülük · Son Ödeme Tarihi · Açıklama/Mesaj
+        </p>
+      </div>
+
       <div className={`${cardClass} grid gap-3 md:grid-cols-2 xl:grid-cols-6`}>
         <input
           className={`${inputClass} xl:col-span-2`}
@@ -687,10 +800,16 @@ export default function OfisTakipApp() {
         />
         <input
           className={inputClass}
-          placeholder="Son tarih (gg.aa.yyyy)"
+          placeholder="gg.aa.yyyy"
           value={taxForm.sonTarih}
           onChange={(event) =>
             setTaxForm((current) => ({ ...current, sonTarih: event.target.value }))
+          }
+          onBlur={() =>
+            setTaxForm((current) => ({
+              ...current,
+              sonTarih: formatTrDateInputValue(current.sonTarih),
+            }))
           }
         />
         <CompanySelectOptions
@@ -757,87 +876,15 @@ export default function OfisTakipApp() {
   );
 
   const renderHatirlatmalar = () => (
-    <div className="space-y-6">
-      <div className={`${cardClass} grid gap-3 md:grid-cols-2 xl:grid-cols-5`}>
-        <input
-          className={`${inputClass} xl:col-span-2`}
-          placeholder="Hatırlatma başlığı"
-          value={reminderForm.baslik}
-          onChange={(event) =>
-            setReminderForm((current) => ({ ...current, baslik: event.target.value }))
-          }
-        />
-        <input
-          className={inputClass}
-          placeholder="Tarih (gg.aa.yyyy)"
-          value={reminderForm.tarih}
-          onChange={(event) =>
-            setReminderForm((current) => ({ ...current, tarih: event.target.value }))
-          }
-        />
-        <CompanySelectOptions
-          companies={activeCompanies}
-          value={reminderForm.companyId}
-          onChange={(event) =>
-            setReminderForm((current) => ({ ...current, companyId: event.target.value }))
-          }
-        />
-        <button type="button" onClick={addReminder} className={buttonPrimary}>
-          Ekle
-        </button>
-        <textarea
-          className={`${inputClass} min-h-20 md:col-span-2 xl:col-span-5`}
-          placeholder="Açıklama"
-          value={reminderForm.aciklama}
-          onChange={(event) =>
-            setReminderForm((current) => ({ ...current, aciklama: event.target.value }))
-          }
-        />
-      </div>
-
-      <div className={`${cardClass} overflow-auto`}>
-        <table className="w-full min-w-[900px] text-sm">
-          <thead className="text-left text-gray-400">
-            <tr>
-              <th className="p-3">Başlık</th>
-              <th className="p-3">Tarih</th>
-              <th className="p-3">Firma</th>
-              <th className="p-3">WhatsApp</th>
-              <th className="p-3">İşlem</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.hatirlatmalar.map((item) => (
-              <tr key={item.id} className="border-t border-gray-800">
-                <td className="p-3">
-                  <p className="font-medium">{item.baslik}</p>
-                  {item.aciklama ? (
-                    <p className="mt-1 text-gray-400">{item.aciklama}</p>
-                  ) : null}
-                </td>
-                <td className="p-3">{item.tarih}</td>
-                <td className="p-3">{getCompanyName(companies, resolveCompanyId(item))}</td>
-                <td className="p-3">
-                  {renderWhatsAppButton(resolveCompanyId(item), item.baslik, item.tarih)}
-                </td>
-                <td className="p-3">
-                  <button
-                    type="button"
-                    onClick={() => removeReminder(item.id)}
-                    className="rounded-lg border border-red-800 px-3 py-1.5 text-xs text-red-300"
-                  >
-                    Sil
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {data.hatirlatmalar.length === 0 && (
-          <p className="mt-4 text-sm text-gray-500">Hatırlatma kaydı yok.</p>
-        )}
-      </div>
-    </div>
+    <RemindersTab
+      hatirlatmalar={data.hatirlatmalar}
+      vergiTakvimi={data.vergiTakvimi}
+      settings={data.settings}
+      companies={companies}
+      activeCompanies={activeCompanies}
+      onAddReminders={handleAddReminders}
+      onRemoveReminder={removeReminder}
+    />
   );
 
   const renderAyarlar = () => (
@@ -926,6 +973,11 @@ export default function OfisTakipApp() {
     }
   };
 
+  const contentWidthClass =
+    activeTab === "hatirlatmalar" || activeTab === "vergi-takvimi"
+      ? "max-w-[1400px]"
+      : "max-w-7xl";
+
   if (!loaded) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-gray-950 text-white">
@@ -937,7 +989,7 @@ export default function OfisTakipApp() {
   return (
     <main className="min-h-screen bg-gray-950 text-white">
       <div className="border-b border-gray-800 bg-gray-900/80 px-6 py-4 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4">
+        <div className={`mx-auto flex ${contentWidthClass} flex-wrap items-center justify-between gap-4`}>
           <div>
             <p className="text-sm text-violet-300">ANNVERO Modülü</p>
             <h1 className="text-2xl font-bold">{data.settings.officeName || "Ofis Takip"}</h1>
@@ -948,7 +1000,7 @@ export default function OfisTakipApp() {
         </div>
       </div>
 
-      <div className="mx-auto flex max-w-7xl flex-col gap-6 px-6 py-8 lg:flex-row">
+      <div className={`mx-auto flex ${contentWidthClass} flex-col gap-6 px-6 py-8 lg:flex-row`}>
         <aside className="lg:w-64">
           <nav className={`${cardClass} space-y-1 p-3`}>
             {OFIS_TAKIP_TABS.map((tab) => (
@@ -968,7 +1020,7 @@ export default function OfisTakipApp() {
           </nav>
         </aside>
 
-        <section className="min-w-0 flex-1">{renderContent()}</section>
+        <section className="min-w-0 flex-1 lg:max-w-none">{renderContent()}</section>
       </div>
     </main>
   );

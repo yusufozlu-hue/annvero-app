@@ -1,4 +1,9 @@
 import { getCompanyDisplayName, isCompanyActive } from "@/src/utils/companies";
+import {
+  normalizeContacts,
+  resolveContactWhatsApp,
+  sortContactsWithDefaultFirst,
+} from "@/src/utils/companyContacts";
 
 export function resolveCompanyId(record = {}) {
   return record.companyId || record.firmaId || record.mukellefId || "";
@@ -13,37 +18,76 @@ export function findCompanyById(companies, companyId) {
   return companies.find((company) => company.id === companyId) || null;
 }
 
+export function getSortedCompanyContacts(company) {
+  if (!company) return [];
+  return sortContactsWithDefaultFirst(normalizeContacts(company.contacts, company));
+}
+
+export function getDefaultCompanyContact(company) {
+  return getSortedCompanyContacts(company)[0] || null;
+}
+
 export function getCompanyContactSummary(company) {
   if (!company) {
     return {
       name: "—",
       taxNumber: "",
+      taxOffice: "",
+      contactPerson: "",
+      contactPeople: [],
       contacts: [],
       phone: "",
+      whatsappPhone: "",
       email: "",
+      address: "",
+      notes: "",
     };
   }
 
-  const employees = (company.employees || []).filter(
-    (employee) => employee.isActive !== false && employee.fullName
-  );
+  const contactPeople = getSortedCompanyContacts(company);
+  const defaultContact = contactPeople[0] || null;
 
   return {
     name: getCompanyDisplayName(company),
     taxNumber: company.taxNumber || "",
-    contacts: employees.map((employee) => employee.fullName),
-    phone:
-      company.contactPhone ||
-      company.phone ||
-      company.telefon ||
-      company.gsm ||
-      "",
-    email: company.contactEmail || company.email || company.mail || "",
+    taxOffice: company.taxOffice || "",
+    contactPerson: defaultContact?.name || "",
+    contactPeople,
+    contacts: contactPeople.map((contact) => contact.name).filter(Boolean),
+    phone: defaultContact?.phone || "",
+    whatsappPhone: defaultContact ? resolveContactWhatsApp(defaultContact) : "",
+    email: defaultContact?.email || "",
+    address: company.address || "",
+    notes: company.notes || "",
   };
 }
 
 export function getCompanyPhone(companies, companyId) {
   return getCompanyContactSummary(findCompanyById(companies, companyId)).phone;
+}
+
+export function getCompanyWhatsAppPhone(companies, companyId, contactId = "") {
+  const company = findCompanyById(companies, companyId);
+  const contacts = getSortedCompanyContacts(company);
+
+  if (contactId) {
+    const selected = contacts.find((contact) => contact.id === contactId);
+    return selected ? resolveContactWhatsApp(selected) : "";
+  }
+
+  const defaultContact = contacts[0];
+  return defaultContact ? resolveContactWhatsApp(defaultContact) : "";
+}
+
+export function getCompanyEmail(companies, companyId, contactId = "") {
+  const company = findCompanyById(companies, companyId);
+  const contacts = getSortedCompanyContacts(company);
+
+  if (contactId) {
+    return contacts.find((contact) => contact.id === contactId)?.email || "";
+  }
+
+  return contacts[0]?.email || "";
 }
 
 export function getCompanyName(companies, companyId) {
@@ -126,12 +170,24 @@ export function filterCompaniesForSearch(companies, query) {
 
   return getActiveCompanies(companies).filter((company) => {
     const summary = getCompanyContactSummary(company);
+    const contactHaystack = summary.contactPeople
+      .flatMap((contact) => [
+        contact.name,
+        contact.title,
+        contact.phone,
+        contact.whatsapp,
+        contact.email,
+        contact.note,
+      ])
+      .join(" ");
+
     const haystack = [
       summary.name,
       summary.taxNumber,
-      summary.phone,
-      summary.email,
-      ...summary.contacts,
+      summary.taxOffice,
+      summary.address,
+      summary.notes,
+      contactHaystack,
     ]
       .join(" ")
       .toLocaleLowerCase("tr");
@@ -139,3 +195,10 @@ export function filterCompaniesForSearch(companies, query) {
     return haystack.includes(normalizedQuery);
   });
 }
+
+export function formatContactValue(value) {
+  const text = String(value || "").trim();
+  return text || "—";
+}
+
+export { resolveContactWhatsApp };

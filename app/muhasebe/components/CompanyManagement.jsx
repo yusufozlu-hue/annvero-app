@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
-import { fetchCompanies } from "@/src/utils/companies";
+import { fetchCompanies, persistCompaniesToLocalStorage } from "@/src/utils/companies";
 import { emptyCompany, normalizeCompany } from "@/src/utils/companyNormalize";
 
 const moduleLabels = {
@@ -37,6 +37,10 @@ export default function CompanyManagement() {
   const [expandedCreditCardDetails, setExpandedCreditCardDetails] = useState({});
   const [documentSeriesEditId, setDocumentSeriesEditId] = useState(null);
   const [documentSeriesFormDraft, setDocumentSeriesFormDraft] = useState(null);
+  const [contactFormMode, setContactFormMode] = useState(null);
+  const [contactFormDraft, setContactFormDraft] = useState(null);
+  const [contactsSectionOpen, setContactsSectionOpen] = useState(true);
+  const [expandedContactDetails, setExpandedContactDetails] = useState({});
   const [companySearchQuery, setCompanySearchQuery] = useState("");
   const [toast, setToast] = useState(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
@@ -98,6 +102,9 @@ export default function CompanyManagement() {
       setExpandedCreditCardDetails({});
       setDocumentSeriesEditId(null);
       setDocumentSeriesFormDraft(null);
+      setContactFormMode(null);
+      setContactFormDraft(null);
+      setExpandedContactDetails({});
     }
   };
 
@@ -124,9 +131,21 @@ export default function CompanyManagement() {
       return;
     }
 
+    let previousCompany = companies.find((c) => c.id === company.id);
+
     let normalized = normalizeCompany({
+      ...(previousCompany || {}),
       ...company,
       companyName: trimmedName,
+      contacts: company.contacts?.length
+        ? company.contacts
+        : previousCompany?.contacts || [],
+      contactPerson: company.contactPerson ?? previousCompany?.contactPerson ?? "",
+      contactPhone: company.contactPhone ?? previousCompany?.contactPhone ?? "",
+      whatsappPhone: company.whatsappPhone ?? previousCompany?.whatsappPhone ?? "",
+      contactEmail: company.contactEmail ?? previousCompany?.contactEmail ?? "",
+      address: company.address ?? previousCompany?.address ?? "",
+      notes: company.notes ?? previousCompany?.notes ?? "",
     });
 
     if (!normalized.id) {
@@ -179,6 +198,7 @@ export default function CompanyManagement() {
       setCompanies(updated);
       setCompany(normalized);
       setSelectedId(normalized.id);
+      persistCompaniesToLocalStorage(updated);
 
       showToast("Firma kaydedildi", "success");
     } finally {
@@ -199,6 +219,9 @@ export default function CompanyManagement() {
     setExpandedCreditCardDetails({});
     setDocumentSeriesEditId(null);
     setDocumentSeriesFormDraft(null);
+    setContactFormMode(null);
+    setContactFormDraft(null);
+    setExpandedContactDetails({});
   };
 
   const deleteCompany = async (id) => {
@@ -347,6 +370,138 @@ export default function CompanyManagement() {
       return next;
     });
   };
+
+  // =========================
+  // İLETİŞİM KİŞİLERİ
+  // =========================
+
+  const createEmptyContact = () => ({
+    id: crypto.randomUUID(),
+    name: "",
+    title: "",
+    phone: "",
+    whatsapp: "",
+    email: "",
+    note: "",
+    isDefault: (company.contacts || []).length === 0,
+  });
+
+  const openNewContactForm = () => {
+    setContactsSectionOpen(true);
+    setContactFormMode("new");
+    setContactFormDraft(createEmptyContact());
+  };
+
+  const openEditContactForm = (contact) => {
+    setContactsSectionOpen(true);
+    setContactFormMode(contact.id);
+    setContactFormDraft({ ...contact });
+  };
+
+  const cancelContactForm = () => {
+    setContactFormMode(null);
+    setContactFormDraft(null);
+  };
+
+  const updateContactFormDraft = (field, value) => {
+    setContactFormDraft((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const applyDefaultContactRules = (contacts, selectedId, isDefault) => {
+    let nextContacts = contacts.map((contact) => ({ ...contact }));
+
+    if (isDefault) {
+      return nextContacts.map((contact) => ({
+        ...contact,
+        isDefault: contact.id === selectedId,
+      }));
+    }
+
+    const hasDefault = nextContacts.some((contact) => contact.isDefault);
+    if (!hasDefault && nextContacts.length > 0) {
+      nextContacts[0] = { ...nextContacts[0], isDefault: true };
+    }
+
+    return nextContacts;
+  };
+
+  const saveContactForm = () => {
+    if (!contactFormDraft) return;
+
+    const trimmedName = (contactFormDraft.name || "").trim();
+    if (!trimmedName) {
+      showToast("İletişim kişisi adı zorunludur", "error");
+      return;
+    }
+
+    const nextContact = {
+      ...contactFormDraft,
+      name: trimmedName,
+    };
+
+    let nextContacts = [];
+
+    if (contactFormMode === "new") {
+      nextContacts = [...(company.contacts || []), nextContact];
+    } else {
+      nextContacts = (company.contacts || []).map((contact) =>
+        contact.id === contactFormMode ? nextContact : contact
+      );
+    }
+
+    nextContacts = applyDefaultContactRules(
+      nextContacts,
+      nextContact.id,
+      nextContact.isDefault
+    );
+
+    setCompany({
+      ...company,
+      contacts: nextContacts,
+    });
+
+    cancelContactForm();
+  };
+
+  const removeContact = (id) => {
+    const nextContacts = (company.contacts || []).filter((contact) => contact.id !== id);
+
+    if (nextContacts.length > 0 && !nextContacts.some((contact) => contact.isDefault)) {
+      nextContacts[0] = { ...nextContacts[0], isDefault: true };
+    }
+
+    setCompany({
+      ...company,
+      contacts: nextContacts,
+    });
+
+    if (contactFormMode === id) {
+      cancelContactForm();
+    }
+
+    setExpandedContactDetails((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const toggleContactDetails = (id) => {
+    setExpandedContactDetails((prev) => ({
+      ...prev,
+      [id]: !prev[id],
+    }));
+  };
+
+  const sortedContacts = [...(company.contacts || [])].sort((left, right) => {
+    if (left.isDefault === right.isDefault) {
+      return (left.name || "").localeCompare(right.name || "", "tr", {
+        sensitivity: "base",
+      });
+    }
+
+    return left.isDefault ? -1 : 1;
+  });
 
   // =========================
   // KREDİ KARTLARI
@@ -782,7 +937,7 @@ export default function CompanyManagement() {
             </div>
 
             <h1 className="text-3xl font-bold">
-              Firma Yönetim Merkezi v2.4
+              Firma Yönetim Merkezi v2.5
             </h1>
 
             <p className="mt-1 text-slate-400">
@@ -849,7 +1004,7 @@ export default function CompanyManagement() {
             </div>
           </aside>
 
-          <main className="min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-4 lg:min-h-[calc(100vh-10rem)] lg:p-6">
+          <main className="min-w-0 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-4 lg:max-h-[calc(100vh-10rem)] lg:min-h-[calc(100vh-10rem)] lg:p-6">
             {!selectedId ? (
               <WelcomeScreen />
             ) : (
@@ -871,50 +1026,201 @@ export default function CompanyManagement() {
             </div>
 
             {activeTab === "general" && (
-              <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
-                <Input
-                  label="Firma Adı"
-                  value={company.companyName}
-                  onChange={(v) => updateField("companyName", v)}
-                />
+              <div className="space-y-6">
+                <div className="rounded-lg border-2 border-indigo-400 bg-indigo-600/20 px-4 py-3 text-center text-base font-bold tracking-wide text-indigo-100">
+                  İLETİŞİM FORMU AKTİF
+                </div>
 
-                <Input
-                  label="Vergi No"
-                  value={company.taxNumber}
-                  onChange={(v) => updateField("taxNumber", v)}
-                />
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+                  <Input
+                    label="Firma Adı"
+                    value={company.companyName}
+                    onChange={(v) => updateField("companyName", v)}
+                  />
 
-                <Input
-                  label="Vergi Dairesi"
-                  value={company.taxOffice}
-                  onChange={(v) => updateField("taxOffice", v)}
-                />
+                  <Input
+                    label="Vergi No"
+                    value={company.taxNumber}
+                    onChange={(v) => updateField("taxNumber", v)}
+                  />
 
-                <Select
-                  label="Muhasebe Programı"
-                  value={company.accountingSoftware}
-                  onChange={(v) => updateField("accountingSoftware", v)}
-                  options={["LUCA", "LOGO", "MIKRO", "NETSIS"]}
-                />
+                  <Input
+                    label="Vergi Dairesi"
+                    value={company.taxOffice}
+                    onChange={(v) => updateField("taxOffice", v)}
+                  />
 
-                <Select
-                  label="Otel Programı"
-                  value={company.hotelSoftware}
-                  onChange={(v) => updateField("hotelSoftware", v)}
-                  options={["YOK", "ELEKTRAWEB"]}
-                />
+                  <Select
+                    label="Muhasebe Programı"
+                    value={company.accountingSoftware}
+                    onChange={(v) => updateField("accountingSoftware", v)}
+                    options={["LUCA", "LOGO", "MIKRO", "NETSIS"]}
+                  />
 
-                <Checkbox
-                  label="Dövizli Çalışıyor"
-                  checked={company.hasForeignCurrency}
-                  onChange={(v) => updateField("hasForeignCurrency", v)}
-                />
+                  <Select
+                    label="Otel Programı"
+                    value={company.hotelSoftware}
+                    onChange={(v) => updateField("hotelSoftware", v)}
+                    options={["YOK", "ELEKTRAWEB"]}
+                  />
 
-                <Checkbox
-                  label="Aktif Firma"
-                  checked={company.isActive}
-                  onChange={(v) => updateField("isActive", v)}
-                />
+                  <Checkbox
+                    label="Dövizli Çalışıyor"
+                    checked={company.hasForeignCurrency}
+                    onChange={(v) => updateField("hasForeignCurrency", v)}
+                  />
+
+                  <Checkbox
+                    label="Aktif Firma"
+                    checked={company.isActive}
+                    onChange={(v) => updateField("isActive", v)}
+                  />
+
+                  <Input
+                    label="Yetkili Kişi"
+                    value={company.contactPerson || ""}
+                    onChange={(v) => updateField("contactPerson", v)}
+                  />
+
+                  <Input
+                    label="Telefon"
+                    value={company.contactPhone || ""}
+                    onChange={(v) => updateField("contactPhone", v)}
+                  />
+
+                  <Input
+                    label="WhatsApp"
+                    value={company.whatsappPhone || ""}
+                    onChange={(v) => updateField("whatsappPhone", v)}
+                  />
+
+                  <Input
+                    label="E-posta"
+                    value={company.contactEmail || ""}
+                    onChange={(v) => updateField("contactEmail", v)}
+                  />
+
+                  <Textarea
+                    label="Adres"
+                    value={company.address || ""}
+                    onChange={(v) => updateField("address", v)}
+                    className="md:col-span-2 xl:col-span-3"
+                  />
+
+                  <Textarea
+                    label="Firma Notu"
+                    value={company.notes || ""}
+                    onChange={(v) => updateField("notes", v)}
+                    className="md:col-span-2 xl:col-span-3"
+                  />
+                </div>
+
+                <CollapsibleSection
+                  title="İletişim Kişileri"
+                  count={sortedContacts.length}
+                  open={contactsSectionOpen}
+                  onToggle={() => setContactsSectionOpen((value) => !value)}
+                  onAdd={openNewContactForm}
+                  addLabel="+ İletişim Kişisi Ekle"
+                >
+                  <div className="space-y-3">
+                    {sortedContacts.length === 0 ? (
+                      <EmptyListMessage text="Henüz iletişim kişisi eklenmedi." />
+                    ) : (
+                      sortedContacts.map((contact) => (
+                        <CompactListItem
+                          key={contact.id}
+                          onEdit={() => openEditContactForm(contact)}
+                          onDelete={() => removeContact(contact.id)}
+                          detailsOpen={!!expandedContactDetails[contact.id]}
+                          onToggleDetails={() => toggleContactDetails(contact.id)}
+                          primary={
+                            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                              <ListField
+                                label="Ad Soyad"
+                                value={
+                                  contact.isDefault
+                                    ? `${contact.name} (Varsayılan)`
+                                    : contact.name
+                                }
+                              />
+                              <ListField label="Görev / Ünvan" value={contact.title} />
+                              <ListField label="Telefon" value={contact.phone} />
+                              <ListField
+                                label="WhatsApp"
+                                value={contact.whatsapp || contact.phone}
+                              />
+                            </div>
+                          }
+                          secondary={
+                            <InfoRow>
+                              <InfoItem label="E-posta" value={contact.email} wrap />
+                              <InfoItem label="Not" value={contact.note} wrap />
+                              <InfoItem
+                                label="Varsayılan"
+                                value={contact.isDefault ? "Evet" : "Hayır"}
+                                active={contact.isDefault}
+                              />
+                            </InfoRow>
+                          }
+                        />
+                      ))
+                    )}
+                  </div>
+
+                  {contactFormDraft && (
+                    <FormPanel
+                      title={
+                        contactFormMode === "new"
+                          ? "Yeni İletişim Kişisi"
+                          : "İletişim Kişisini Düzenle"
+                      }
+                      onSave={saveContactForm}
+                      onCancel={cancelContactForm}
+                    >
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                        <Input
+                          label="Ad Soyad"
+                          value={contactFormDraft.name}
+                          onChange={(v) => updateContactFormDraft("name", v)}
+                        />
+                        <Input
+                          label="Görev / Ünvan"
+                          value={contactFormDraft.title}
+                          onChange={(v) => updateContactFormDraft("title", v)}
+                        />
+                        <Input
+                          label="Telefon"
+                          value={contactFormDraft.phone}
+                          onChange={(v) => updateContactFormDraft("phone", v)}
+                        />
+                        <Input
+                          label="WhatsApp"
+                          value={contactFormDraft.whatsapp}
+                          onChange={(v) => updateContactFormDraft("whatsapp", v)}
+                          hint="Boş bırakılırsa telefon kullanılır"
+                        />
+                        <Input
+                          label="E-posta"
+                          value={contactFormDraft.email}
+                          onChange={(v) => updateContactFormDraft("email", v)}
+                          type="email"
+                        />
+                        <Checkbox
+                          label="Varsayılan kişi"
+                          checked={contactFormDraft.isDefault}
+                          onChange={(v) => updateContactFormDraft("isDefault", v)}
+                        />
+                        <Textarea
+                          label="Not"
+                          value={contactFormDraft.note}
+                          onChange={(v) => updateContactFormDraft("note", v)}
+                          className="md:col-span-2 xl:col-span-3"
+                        />
+                      </div>
+                    </FormPanel>
+                  )}
+                </CollapsibleSection>
               </div>
             )}
 
@@ -1620,7 +1926,7 @@ export default function CompanyManagement() {
     return (
       <label className="block">
         <div className="mb-1 text-sm text-slate-400">{label}</div>
-  
+
         <input
           type={type}
           value={value ?? ""}
@@ -1629,6 +1935,21 @@ export default function CompanyManagement() {
         />
 
         {hint && <div className="mt-1 text-xs text-slate-500">{hint}</div>}
+      </label>
+    );
+  }
+
+  function Textarea({ label, value, onChange, className = "" }) {
+    return (
+      <label className={`block ${className}`}>
+        <div className="mb-1 text-sm text-slate-400">{label}</div>
+
+        <textarea
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value)}
+          rows={3}
+          className="min-h-24 w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 outline-none focus:border-indigo-500"
+        />
       </label>
     );
   }

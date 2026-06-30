@@ -7,12 +7,18 @@ export default function PreviewVoucherDetailPanel({
   onCancel,
   cariOptions = [],
   isSaving = false,
+  variant = "default",
 }) {
   if (!draft) return null;
 
   const updateField = (field, value) => {
     onChange({ ...draft, [field]: value });
   };
+
+  const memoryLabel =
+    variant === "standardLuca"
+      ? "Bu düzeltmeyi öğrenen hafızaya kaydet"
+      : "Bu düzeltmeyi öğrenen hesap hafızasına kaydet";
 
   return (
     <div className="rounded-xl border border-indigo-700/50 bg-slate-950 p-4">
@@ -21,6 +27,80 @@ export default function PreviewVoucherDetailPanel({
       </h4>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        {variant === "standardLuca" ? (
+          <>
+            <PreviewField label="Fiş No">
+              <input
+                value={draft.fisNo}
+                onChange={(event) => updateField("fisNo", event.target.value)}
+                className={inputClassName}
+              />
+            </PreviewField>
+
+            <PreviewField label="Fiş Tarihi">
+              <input
+                value={draft.fisTarihi}
+                onChange={(event) => updateField("fisTarihi", event.target.value)}
+                className={inputClassName}
+                placeholder="GG.AA.YYYY"
+              />
+            </PreviewField>
+
+            <PreviewField label="Belge Türü">
+              <select
+                value={draft.documentType}
+                onChange={(event) =>
+                  updateField("documentType", event.target.value)
+                }
+                className={inputClassName}
+              >
+                {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </PreviewField>
+
+            <PreviewField label="Fiş Açıklaması" className="md:col-span-3">
+              <input
+                value={draft.fisAciklama}
+                onChange={(event) =>
+                  updateField("fisAciklama", event.target.value)
+                }
+                className={inputClassName}
+              />
+            </PreviewField>
+
+            <PreviewField label="Belge No">
+              <input
+                value={draft.belgeNo}
+                onChange={(event) => updateField("belgeNo", event.target.value)}
+                className={inputClassName}
+              />
+            </PreviewField>
+
+            <PreviewField label="Evrak No">
+              <input
+                value={draft.evrakNo}
+                onChange={(event) => updateField("evrakNo", event.target.value)}
+                className={inputClassName}
+              />
+            </PreviewField>
+
+            <PreviewField label="Evrak Tarihi">
+              <input
+                value={draft.evrakTarihi}
+                onChange={(event) =>
+                  updateField("evrakTarihi", event.target.value)
+                }
+                className={inputClassName}
+                placeholder="GG.AA.YYYY"
+              />
+            </PreviewField>
+          </>
+        ) : null}
+
         <PreviewField label="Hesap Kodu">
           <input
             value={draft.accountCode}
@@ -29,34 +109,50 @@ export default function PreviewVoucherDetailPanel({
           />
         </PreviewField>
 
-        <PreviewField label="Karşı Hesap">
+        {variant !== "standardLuca" ? (
+          <PreviewField label="Karşı Hesap">
+            <input
+              value={draft.counterAccountCode || ""}
+              onChange={(event) =>
+                updateField("counterAccountCode", event.target.value)
+              }
+              className={inputClassName}
+            />
+          </PreviewField>
+        ) : null}
+
+        {variant !== "standardLuca" ? (
+          <PreviewField label="Belge Türü">
+            <select
+              value={draft.documentType}
+              onChange={(event) =>
+                updateField("documentType", event.target.value)
+              }
+              className={inputClassName}
+            >
+              {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </PreviewField>
+        ) : null}
+
+        <PreviewField
+          label={variant === "standardLuca" ? "Detay Açıklama" : "Açıklama"}
+          className="md:col-span-3"
+        >
           <input
-            value={draft.counterAccountCode || ""}
-            onChange={(event) =>
-              updateField("counterAccountCode", event.target.value)
+            value={
+              variant === "standardLuca" ? draft.detayAciklama : draft.description
             }
-            className={inputClassName}
-          />
-        </PreviewField>
-
-        <PreviewField label="Belge Türü">
-          <select
-            value={draft.documentType}
-            onChange={(event) => updateField("documentType", event.target.value)}
-            className={inputClassName}
-          >
-            {DOCUMENT_TYPE_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </PreviewField>
-
-        <PreviewField label="Açıklama" className="md:col-span-3">
-          <input
-            value={draft.description}
-            onChange={(event) => updateField("description", event.target.value)}
+            onChange={(event) =>
+              updateField(
+                variant === "standardLuca" ? "detayAciklama" : "description",
+                event.target.value
+              )
+            }
             className={inputClassName}
           />
         </PreviewField>
@@ -111,7 +207,7 @@ export default function PreviewVoucherDetailPanel({
           checked={!!draft.saveToMemory}
           onChange={(event) => updateField("saveToMemory", event.target.checked)}
         />
-        Bu düzeltmeyi öğrenen hesap hafızasına kaydet
+        {memoryLabel}
       </label>
 
       <div className="mt-4 flex flex-wrap gap-2">

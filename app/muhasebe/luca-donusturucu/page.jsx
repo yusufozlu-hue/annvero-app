@@ -22,7 +22,7 @@ import {
   resolve102BankAccount,
 } from "@/src/utils/companyCenter";
 import { buildElektrawebCompanyMappings } from "@/src/utils/elektrawebAccountMatcher";
-import { fetchLearningMemoryForCompany } from "@/src/utils/learningMemory";
+import { fetchLearningMemoryForCompany, createLearningMemoryRecord } from "@/src/utils/learningMemory";
 import {
   findCreditCardByText,
   buildCreditCardPaymentDescription,
@@ -30,26 +30,17 @@ import {
 } from "@/src/utils/creditCardAccountResolver";
 import { findCariAccountInPlan } from "@/src/utils/bankMovementMapper";
 import {
-  filterLucaFisRows,
-  isMissingLucaAccountCode,
-} from "@/src/utils/tableSearch";
-import {
   buildAccountPlanNotFoundWarning,
   collectAccountSuggestions,
-  parseSuggestionsFromWarning,
 } from "@/src/utils/accountPlanSuggestions";
-import AccountSuggestionBadges from "../components/AccountSuggestionBadges";
-import PreviewEyeButton from "../components/PreviewEyeButton";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import {
-  createLearningMemoryRecord,
-} from "@/src/utils/learningMemory";
-import {
-  applyFisLineEditDraft,
-  buildFisLineEditDraft,
-  buildLearningMemoryPayload,
+  applyStandardLucaRowEditDraft,
+  buildStandardLucaLearningMemoryPayload,
+  buildStandardLucaRowEditDraft,
 } from "@/src/utils/previewRowEdit";
 import {
+  ensureStandardLucaRowIds,
   finalizeStandardLucaRow,
   filterStandardLucaRows,
   getStandardLucaMissingBadges,
@@ -153,8 +144,9 @@ export default function LucaDonusturucuPage() {
   const [previewQuickFilter, setPreviewQuickFilter] = useState("all");
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
-  const [expandedPreviewLineKey, setExpandedPreviewLineKey] = useState(null);
-  const [previewEditDraft, setPreviewEditDraft] = useState(null);
+  const [editingRowIndex, setEditingRowIndex] = useState(null);
+  const [draftRow, setDraftRow] = useState(null);
+  const [previewError, setPreviewError] = useState("");
   const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
   const [toast, setToast] = useState(null);
 
@@ -198,23 +190,25 @@ export default function LucaDonusturucuPage() {
     const pendingSourceType = resolvePendingSourceType(pending);
     setSourceType(pendingSourceType);
 
-    const rows = sortStandardLucaRows(
-      pending.rows.map((row) =>
-        finalizeStandardLucaRow({
-          ...row,
-          firmaId: row.firmaId || pending.firmaId || pending.companyId || "",
-          kaynakTipi:
-            row.kaynakTipi ||
-            pending.kaynakTipi ||
-            (pendingSourceType === SOURCE_TYPES.ELEKTRAWEB
-              ? KAYNAK_TIPI.ELEKTRAWEB
-              : KAYNAK_TIPI.BANKA),
-          kaynakAdi:
-            row.kaynakAdi ||
-            pending.kaynakAdi ||
-            pending.selectedBank ||
-            getSourceTypeLabel(pendingSourceType),
-        })
+    const rows = ensureStandardLucaRowIds(
+      sortStandardLucaRows(
+        pending.rows.map((row) =>
+          finalizeStandardLucaRow({
+            ...row,
+            firmaId: row.firmaId || pending.firmaId || pending.companyId || "",
+            kaynakTipi:
+              row.kaynakTipi ||
+              pending.kaynakTipi ||
+              (pendingSourceType === SOURCE_TYPES.ELEKTRAWEB
+                ? KAYNAK_TIPI.ELEKTRAWEB
+                : KAYNAK_TIPI.BANKA),
+            kaynakAdi:
+              row.kaynakAdi ||
+              pending.kaynakAdi ||
+              pending.selectedBank ||
+              getSourceTypeLabel(pendingSourceType),
+          })
+        )
       )
     );
     setStandardLucaRows(rows);
@@ -241,6 +235,9 @@ export default function LucaDonusturucuPage() {
     setFisler([]);
     setUploadedFile(null);
     setHareketFileName("");
+    setPreviewError("");
+    setEditingRowIndex(null);
+    setDraftRow(null);
   };
 
   useEffect(() => {
@@ -331,14 +328,7 @@ export default function LucaDonusturucuPage() {
     [standardLucaRows, previewSearch, previewQuickFilter]
   );
 
-  const filteredFisler = useMemo(
-    () => filterLucaFisRows(fisler, previewSearch, previewQuickFilter),
-    [fisler, previewSearch, previewQuickFilter]
-  );
-
   const displayedStandardLucaRows = filteredStandardLucaRows.slice(0, 100);
-
-  const displayedFisler = filteredFisler.slice(0, 50);
 
   const normalizeText = (value) =>
     String(value || "")
@@ -629,21 +619,26 @@ export default function LucaDonusturucuPage() {
 
   const createElektrawebPreview = async () => {
     if (!selectedCompany) {
-      alert("Önce firma seçmelisin.");
+      setPreviewError("Ön izleme oluşturulamadı: Önce firma seçmelisin.");
       return;
     }
 
     if (!uploadedFile) {
-      alert("Önce Elektraweb fiş dosyasını yüklemelisin.");
+      setPreviewError("Ön izleme oluşturulamadı: Önce Elektraweb fiş dosyasını yüklemelisin.");
       return;
     }
 
     if (normalizedAccountPlan.length === 0) {
-      alert("Seçili firma için hesap planı bulunamadı. Önce Hesap Planı yükleyin.");
+      setPreviewError(
+        "Ön izleme oluşturulamadı: Seçili firma için hesap planı bulunamadı."
+      );
       return;
     }
 
     setYukleniyor(true);
+    setPreviewError("");
+    setEditingRowIndex(null);
+    setDraftRow(null);
 
     try {
       const formData = new FormData();
@@ -665,41 +660,66 @@ export default function LucaDonusturucuPage() {
       const data = await response.json();
 
       if (!response.ok) {
-        alert(data.error || "Elektraweb dosyası işlenirken hata oluştu.");
-        return;
+        throw new Error(data.error || "Elektraweb dosyası işlenirken hata oluştu.");
       }
 
-      const rows = sortStandardLucaRows(data.standardLucaRows || data.fisler || []);
+      const apiRows = Array.isArray(data.standardLucaRows)
+        ? data.standardLucaRows
+        : [];
 
-      console.log("CURRENT SOURCE TYPE:", sourceType);
-      console.log("USING PARSER", "ELEKTRAWEB");
-      console.log("PARSED ROWS", rows.slice(0, 10));
+      if (apiRows.length === 0) {
+        throw new Error("Parser sonucu boş döndü.");
+      }
 
-      setStandardLucaRows(rows);
-      setFisler(groupStandardLucaRowsToFisler(rows));
+      const parsedRows = ensureStandardLucaRowIds(sortStandardLucaRows(apiRows));
+
+      console.log("PREVIEW CLICKED");
+      console.log("PARSED ROWS", parsedRows);
+      setStandardLucaRows(parsedRows);
+      console.log("STANDARD ROWS STATE", parsedRows);
+      setFisler(groupStandardLucaRowsToFisler(parsedRows));
       setRawRows([]);
       setHareketFileName(
-        `${uploadedFile.name} — ${formatRowCountLabel(rows.length, sourceType)}`
+        `${uploadedFile.name} — ${formatRowCountLabel(parsedRows.length, sourceType)}`
       );
-      logStandardLucaReport("luca-donusturucu-elektraweb", rows);
+      logStandardLucaReport("luca-donusturucu-elektraweb", parsedRows);
+    } catch (error) {
+      console.error("Ön izleme hatası:", error);
+      setPreviewError(
+        `Ön izleme oluşturulamadı: ${error?.message || "Bilinmeyen hata"}`
+      );
     } finally {
       setYukleniyor(false);
     }
   };
 
-  const createPreview = () => {
-    createElektrawebPreview();
+  const createPreview = async () => {
+    console.log("PREVIEW CLICKED");
+    setPreviewError("");
+    setEditingRowIndex(null);
+    setDraftRow(null);
+
+    if (sourceType === SOURCE_TYPES.BANKA) {
+      createFisler();
+      return;
+    }
+
+    await createElektrawebPreview();
   };
 
   const createFisler = () => {
+    setPreviewError("");
+    setEditingRowIndex(null);
+    setDraftRow(null);
+
     try {
       if (!selectedCompany) {
-        alert("Önce firma seçmelisin.");
+        setPreviewError("Ön izleme oluşturulamadı: Önce firma seçmelisin.");
         return;
       }
 
       if (!rawRows || rawRows.length === 0) {
-        alert("Önce standart hareket dosyası yüklemelisin.");
+        setPreviewError("Ön izleme oluşturulamadı: Önce standart hareket dosyası yüklemelisin.");
         return;
       }
 
@@ -907,26 +927,33 @@ export default function LucaDonusturucuPage() {
       });
 
       setFisler(createdFisler);
-      const parsedRows = lucaFislerToStandardLucaRows(createdFisler, {
-        firmaId: selectedCompanyId,
-        kaynakTipi: KAYNAK_TIPI.BANKA,
-        kaynakAdi: hareketFileName || "MANUEL",
-      });
+      const parsedRows = ensureStandardLucaRowIds(
+        lucaFislerToStandardLucaRows(createdFisler, {
+          firmaId: selectedCompanyId,
+          kaynakTipi: KAYNAK_TIPI.BANKA,
+          kaynakAdi: hareketFileName || "MANUEL",
+        })
+      );
 
       console.log("CURRENT SOURCE TYPE:", sourceType);
       console.log("USING PARSER", "BANKA");
       console.log("PARSED ROWS", parsedRows.slice(0, 10));
 
       setStandardLucaRows(parsedRows);
+      console.log("PREVIEW CLICKED");
+      console.log("PARSED ROWS", parsedRows);
+      console.log("STANDARD ROWS STATE", parsedRows);
       setHareketFileName(
         uploadedFile
           ? `${uploadedFile.name} — ${formatRowCountLabel(parsedRows.length, sourceType)}`
           : formatRowCountLabel(parsedRows.length, sourceType)
       );
-      alert(`${createdFisler.length} fiş oluşturuldu.`);
+      setPreviewError("");
     } catch (error) {
       console.error("Ön izleme genel hata:", error);
-      alert("Ön izleme oluşturulurken hata oluştu: " + error.message);
+      setPreviewError(
+        `Ön izleme oluşturulamadı: ${error?.message || "Bilinmeyen hata"}`
+      );
     }
   };
 
@@ -938,62 +965,54 @@ export default function LucaDonusturucuPage() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const getPreviewLineKey = (fisNo, lineIndex) => `${fisNo}::${lineIndex}`;
+  const closePreviewEdit = () => {
+    setEditingRowIndex(null);
+    setDraftRow(null);
+  };
 
-  const togglePreviewLineDetail = (fis, lineIndex) => {
-    const key = getPreviewLineKey(fis.fisNo, lineIndex);
-
-    if (expandedPreviewLineKey === key) {
-      setExpandedPreviewLineKey(null);
-      setPreviewEditDraft(null);
+  const toggleRowEdit = (rowIndex) => {
+    if (editingRowIndex === rowIndex) {
+      closePreviewEdit();
       return;
     }
 
-    setExpandedPreviewLineKey(key);
-    setPreviewEditDraft(buildFisLineEditDraft(fis, lineIndex));
+    const row = standardLucaRows[rowIndex];
+    if (!row) return;
+
+    setEditingRowIndex(rowIndex);
+    setDraftRow(buildStandardLucaRowEditDraft(row));
   };
 
   const cancelPreviewLineEdit = () => {
-    setExpandedPreviewLineKey(null);
-    setPreviewEditDraft(null);
+    closePreviewEdit();
   };
 
   const savePreviewLineEdit = async () => {
-    if (!expandedPreviewLineKey || !previewEditDraft) return;
+    if (editingRowIndex == null || !draftRow) return;
 
-    const [fisNoText, lineIndexText] = expandedPreviewLineKey.split("::");
-    const fisNo = Number(fisNoText);
-    const lineIndex = Number(lineIndexText);
-    const currentFis = fisler.find((fis) => fis.fisNo === fisNo);
-
-    if (!currentFis) return;
+    const currentRow = standardLucaRows[editingRowIndex];
+    if (!currentRow) return;
 
     setIsSavingPreviewEdit(true);
 
     try {
-      const updatedFis = applyFisLineEditDraft(
-        currentFis,
-        lineIndex,
-        previewEditDraft
+      const updatedRow = finalizeStandardLucaRow(
+        applyStandardLucaRowEditDraft(currentRow, draftRow)
       );
 
-      setFisler((prev) =>
-        prev.map((fis) => (fis.fisNo === fisNo ? updatedFis : fis))
-      );
-
-      if (previewEditDraft.saveToMemory && selectedCompanyId && updatedFis) {
-        const memoryRecord = buildLearningMemoryPayload({
-          companyId: selectedCompanyId,
-          sourceModule: "luca",
-          description: updatedFis.aciklama,
-          documentSeriesRules: selectedCompany?.documentSeriesRules || [],
-          accountCode: previewEditDraft.accountCode,
-          counterAccountCode: "",
-          documentType: previewEditDraft.documentType,
-          standardDescription: previewEditDraft.description,
-        });
+      if (draftRow.saveToMemory && selectedCompanyId) {
+        const memoryRecord = buildStandardLucaLearningMemoryPayload(
+          currentRow,
+          draftRow,
+          selectedCompanyId
+        );
 
         const created = await createLearningMemoryRecord(memoryRecord);
+        if (created) {
+          const nextMemory = await fetchLearningMemoryForCompany(selectedCompanyId);
+          setLearningMemory(nextMemory);
+        }
+
         showToast(
           created
             ? "Satır güncellendi ve hafızaya kaydedildi"
@@ -1004,7 +1023,10 @@ export default function LucaDonusturucuPage() {
         showToast("Satır güncellendi", "success");
       }
 
-      cancelPreviewLineEdit();
+      setStandardLucaRows((prev) =>
+        prev.map((row, index) => (index === editingRowIndex ? updatedRow : row))
+      );
+      closePreviewEdit();
     } finally {
       setIsSavingPreviewEdit(false);
     }
@@ -1294,7 +1316,8 @@ export default function LucaDonusturucuPage() {
 
         <div className="flex flex-wrap gap-4">
           <button
-            onClick={createPreview}
+            type="button"
+            onClick={() => void createPreview()}
             disabled={yukleniyor}
             className="rounded-xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700 disabled:opacity-60"
           >
@@ -1312,9 +1335,15 @@ export default function LucaDonusturucuPage() {
         <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
           <h2 className="mb-6 text-3xl font-bold">Ön İzleme</h2>
 
-          {standardLucaRows.length === 0 && fisler.length === 0 ? (
+          {previewError ? (
+            <p className="mb-4 rounded-lg border border-red-700/60 bg-red-950/40 px-4 py-3 text-red-300">
+              {previewError}
+            </p>
+          ) : null}
+
+          {standardLucaRows.length === 0 ? (
             <p className="text-gray-400">Henüz StandardLucaRow oluşturulmadı.</p>
-          ) : standardLucaRows.length > 0 ? (
+          ) : (
             <div className="space-y-4">
               <RowSearchToolbar
                 search={previewSearch}
@@ -1342,164 +1371,78 @@ export default function LucaDonusturucuPage() {
                       <th className="p-3 text-right">Alacak</th>
                       <th className="p-3 text-left">Risk</th>
                       <th className="p-3 text-left">Kontrol Notu</th>
+                      <th className="p-3 text-center">Düzenle</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {displayedStandardLucaRows.map((row, index) => (
-                      <tr
-                        key={`${row.fisNo}-${row.hesapKodu}-${row.borc}-${row.alacak}-${index}`}
-                        className="border-t border-gray-800"
-                      >
-                        <td className="p-3">{row.fisNo}</td>
-                        <td className="p-3">{formatDateTR(row.fisTarihi)}</td>
-                        <td className="p-3">{row.kaynakAdi || row.kaynakTipi}</td>
-                        <td className="p-3 font-mono text-xs">{row.hesapKodu || "—"}</td>
-                        <td className="p-3">{row.belgeTuru || "—"}</td>
-                        <td className="p-3">{row.fisAciklama || "—"}</td>
-                        <td className="p-3">{row.detayAciklama || "—"}</td>
-                        <td className="p-3 text-right">{row.borc}</td>
-                        <td className="p-3 text-right">{row.alacak}</td>
-                        <td className="p-3">
-                          {row.riskDurumu ? (
-                            <span className="rounded-full border border-red-700/60 bg-red-950/50 px-2 py-0.5 text-[10px] font-semibold text-red-300">
-                              {row.riskDurumu}
-                            </span>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td className="p-3">{row.kontrolNotu || "—"}</td>
-                      </tr>
-                    ))}
+                    {displayedStandardLucaRows.map((row) => {
+                      const rowIndex = standardLucaRows.findIndex(
+                        (candidate) => candidate.id === row.id
+                      );
+                      if (rowIndex < 0) return null;
+
+                      return (
+                        <Fragment key={`${row.id}-${rowIndex}`}>
+                          <tr className="border-t border-gray-800">
+                            <td className="p-3">{row.fisNo}</td>
+                            <td className="p-3">{formatDateTR(row.fisTarihi)}</td>
+                            <td className="p-3">{row.kaynakAdi || row.kaynakTipi}</td>
+                            <td className="p-3 font-mono text-xs">
+                              {row.hesapKodu || "—"}
+                            </td>
+                            <td className="p-3">{row.belgeTuru || "—"}</td>
+                            <td className="p-3">{row.fisAciklama || "—"}</td>
+                            <td className="p-3">{row.detayAciklama || "—"}</td>
+                            <td className="p-3 text-right">{row.borc}</td>
+                            <td className="p-3 text-right">{row.alacak}</td>
+                            <td className="p-3">
+                              {row.riskDurumu ? (
+                                <span className="rounded-full border border-red-700/60 bg-red-950/50 px-2 py-0.5 text-[10px] font-semibold text-red-300">
+                                  {row.riskDurumu}
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                            <td className="p-3">{row.kontrolNotu || "—"}</td>
+                            <td className="p-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => toggleRowEdit(rowIndex)}
+                                className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                                  editingRowIndex === rowIndex
+                                    ? "border-indigo-500 bg-indigo-950/60 text-indigo-200"
+                                    : "border-gray-700 bg-gray-950 text-gray-300 hover:border-indigo-500 hover:text-white"
+                                }`}
+                              >
+                                Düzenle
+                              </button>
+                            </td>
+                          </tr>
+
+                          {editingRowIndex === rowIndex && draftRow ? (
+                            <tr className="border-t border-gray-800">
+                              <td colSpan={12} className="p-4">
+                                <PreviewVoucherDetailPanel
+                                  variant="standardLuca"
+                                  draft={draftRow}
+                                  onChange={setDraftRow}
+                                  onSave={savePreviewLineEdit}
+                                  onCancel={cancelPreviewLineEdit}
+                                  isSaving={isSavingPreviewEdit}
+                                />
+                              </td>
+                            </tr>
+                          ) : null}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
 
               <p className="text-sm text-gray-400">
                 Toplam {standardLucaRows.length} StandardLucaRow satırı.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-8">
-              <RowSearchToolbar
-                search={previewSearch}
-                onSearchChange={setPreviewSearch}
-                placeholder="Fiş no, hesap, açıklama, belge türü veya tutar ara..."
-                filters={LUCA_PREVIEW_FILTERS}
-                activeFilter={previewQuickFilter}
-                onFilterChange={setPreviewQuickFilter}
-                shownCount={filteredFisler.length}
-                totalCount={fisler.length}
-              />
-
-              {displayedFisler.length === 0 ? (
-                <p className="text-gray-400">
-                  Arama veya filtreye uygun fiş bulunamadı.
-                </p>
-              ) : (
-                displayedFisler.map((fis) => (
-                <div
-                  key={`fis-${fis.fisNo}`}
-                  className="rounded-xl border border-gray-700 p-4"
-                >
-                  <div className="mb-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <h3 className="text-xl font-semibold">
-                        Fiş No: {fis.fisNo}
-                      </h3>
-
-                      <span className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1 text-xs font-semibold text-gray-200">
-                        Belge Türü: {fis.belgeTuru || "DK"}
-                      </span>
-                    </div>
-
-                    {fis.uyari ? (
-                      <div className="max-w-xl text-right">
-                        <span className="rounded-lg border border-yellow-700/60 bg-yellow-900/40 px-3 py-1 text-xs font-semibold text-yellow-300">
-                          {fis.uyari}
-                        </span>
-                        <AccountSuggestionBadges
-                          suggestions={
-                            fis.accountSuggestions?.length
-                              ? fis.accountSuggestions
-                              : parseSuggestionsFromWarning(fis.uyari)
-                          }
-                        />
-                      </div>
-                    ) : (
-                      <span className="text-sm text-gray-400">Belge No: boş</span>
-                    )}
-                  </div>
-
-                  <table className="w-full text-sm">
-                    <thead className="bg-gray-800 text-gray-300">
-                      <tr>
-                        <th className="p-3 text-left">Hesap Kodu</th>
-                        <th className="p-3 text-left">Açıklama</th>
-                        <th className="p-3 text-right">Borç</th>
-                        <th className="p-3 text-right">Alacak</th>
-                        <th className="p-3 text-center">Detay</th>
-                      </tr>
-                    </thead>
-
-                    <tbody>
-                      {fis.satirlar.map((satir, index) => {
-                        const hesapEksik = isMissingLucaAccountCode(satir.hesapKodu);
-                        const lineKey = getPreviewLineKey(fis.fisNo, index);
-
-                        return (
-                          <Fragment key={`fis-${fis.fisNo}-satir-${index}`}>
-                            <tr
-                              className={`border-b border-gray-800 ${
-                                hesapEksik ? "bg-red-900/50 text-red-100" : ""
-                              }`}
-                            >
-                              <td className="p-3">{satir.hesapKodu}</td>
-                              <td className="p-3">{satir.aciklama}</td>
-                              <td className="p-3 text-right">{satir.borc}</td>
-                              <td className="p-3 text-right">{satir.alacak}</td>
-                              <td className="p-3 text-center">
-                                <PreviewEyeButton
-                                  active={expandedPreviewLineKey === lineKey}
-                                  onClick={() =>
-                                    togglePreviewLineDetail(fis, index)
-                                  }
-                                />
-                              </td>
-                            </tr>
-
-                            {expandedPreviewLineKey === lineKey &&
-                            previewEditDraft ? (
-                              <tr className="border-b border-gray-800">
-                                <td colSpan={5} className="p-4">
-                                  <PreviewVoucherDetailPanel
-                                    draft={previewEditDraft}
-                                    onChange={setPreviewEditDraft}
-                                    onSave={savePreviewLineEdit}
-                                    onCancel={cancelPreviewLineEdit}
-                                    isSaving={isSavingPreviewEdit}
-                                  />
-                                </td>
-                              </tr>
-                            ) : null}
-                          </Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              ))
-              )}
-
-              <p className="text-sm text-gray-400">
-                Toplam {fisler.length} fiş oluşturuldu.
-                {filteredFisler.length !== fisler.length ||
-                previewSearch.trim() ||
-                previewQuickFilter !== "all"
-                  ? ` Filtre sonucu ${filteredFisler.length} fiş.`
-                  : ""}{" "}
-                Listede {displayedFisler.length} fiş gösteriliyor
-                {filteredFisler.length > 50 ? " (ilk 50)" : ""}.
               </p>
             </div>
           )}

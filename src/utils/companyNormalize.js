@@ -1,8 +1,17 @@
+import { normalizeContacts } from "@/src/utils/companyContacts";
+
 export const emptyCompany = {
   id: "",
   companyName: "",
   taxNumber: "",
   taxOffice: "",
+  address: "",
+  notes: "",
+  contactPerson: "",
+  contactPhone: "",
+  whatsappPhone: "",
+  contactEmail: "",
+  contacts: [],
 
   accountingSoftware: "LUCA",
   hotelSoftware: "YOK",
@@ -49,6 +58,13 @@ export function normalizeCompany(c) {
 
     id: source.id || "",
     companyName: source.companyName || "",
+    address: source.address || "",
+    notes: source.notes || "",
+    contactPerson: source.contactPerson || "",
+    contactPhone: source.contactPhone || "",
+    whatsappPhone: source.whatsappPhone || "",
+    contactEmail: source.contactEmail || "",
+    contacts: normalizeContacts(source.contacts, source),
 
     enabledModules: {
       ...emptyCompany.enabledModules,

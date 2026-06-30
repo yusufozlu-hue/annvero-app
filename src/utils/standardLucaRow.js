@@ -123,6 +123,13 @@ export function parseStandardLucaDate(value) {
   return parseDateTR(value);
 }
 
+export function ensureStandardLucaRowIds(rows = []) {
+  return rows.map((row, index) => ({
+    ...row,
+    id: row.id ?? `sl-${index + 1}`,
+  }));
+}
+
 export function sortStandardLucaRows(rows = []) {
   return [...rows].sort((left, right) => {
     const leftDate = parseStandardLucaDate(left.fisTarihi);

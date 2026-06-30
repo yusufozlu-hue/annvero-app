@@ -60,3 +60,45 @@ export function isOverdue(value) {
   const remaining = daysUntil(value);
   return remaining !== null && remaining < 0;
 }
+
+export function normalizeTrDateInput(value, referenceYear = new Date().getFullYear()) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (/^\d{2}\.\d{2}\.\d{4}$/.test(trimmed) && parseTrDate(trimmed)) {
+    return trimmed;
+  }
+
+  const shortDotMatch = trimmed.match(/^(\d{1,2})\.(\d{1,2})$/);
+  if (shortDotMatch) {
+    const day = shortDotMatch[1].padStart(2, "0");
+    const month = shortDotMatch[2].padStart(2, "0");
+    const formatted = `${day}.${month}.${referenceYear}`;
+    return parseTrDate(formatted) ? formatted : trimmed;
+  }
+
+  const digits = trimmed.replace(/\D/g, "");
+
+  if (digits.length === 4) {
+    const formatted = `${digits.slice(0, 2)}.${digits.slice(2, 4)}.${referenceYear}`;
+    return parseTrDate(formatted) ? formatted : trimmed;
+  }
+
+  if (digits.length === 8) {
+    const formatted = `${digits.slice(0, 2)}.${digits.slice(2, 4)}.${digits.slice(4, 8)}`;
+    return parseTrDate(formatted) ? formatted : trimmed;
+  }
+
+  if (digits.length === 6) {
+    const formatted = `${digits.slice(0, 2)}.${digits.slice(2, 4)}.20${digits.slice(4, 6)}`;
+    return parseTrDate(formatted) ? formatted : trimmed;
+  }
+
+  return trimmed;
+}
+
+export function formatTrDateInputValue(value) {
+  return normalizeTrDateInput(value);
+}
