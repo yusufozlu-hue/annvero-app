@@ -282,6 +282,11 @@ const categories = [
         desc: "Dövizli hesapların dönem sonu kur değerlemesi ve Luca kur farkı fişi üretimi.",
         href: "/muhasebe/kur-degerleme",
       },
+      {
+        title: "Finansman Gider Kısıtlaması Motoru",
+        desc: "Finansman gider kısıtlaması, KKEG ayrımı ve rapor üretimi.",
+        href: "/muhasebe/finansman-gider-kisitlamasi",
+      },
     ],
   },
   {
@@ -354,6 +359,11 @@ const categories = [
         title: "Kur Farkı",
         desc: "Dövizli işlemler için kur farkı hesaplama.",
         href: "/muhasebe/kur-degerleme",
+      },
+      {
+        title: "Finansman Gider Kısıtlaması",
+        desc: "YK/ÖK oranına göre finansman gider kısıtlaması ve KKEG hesaplama.",
+        href: "/muhasebe/finansman-gider-kisitlamasi",
       },
     ],
   },

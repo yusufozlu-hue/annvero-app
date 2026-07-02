@@ -168,6 +168,11 @@ const links = [
     Icon: ScaleIcon,
   },
   {
+    title: "Finansman Gider Kısıtlaması",
+    href: "/muhasebe/finansman-gider-kisitlamasi",
+    Icon: ShieldCheckIcon,
+  },
+  {
     title: "Luca Fiş Üretici",
     href: "/muhasebe/luca-donusturucu",
     Icon: FileTextIcon,
