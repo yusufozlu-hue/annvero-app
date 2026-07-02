@@ -13,6 +13,8 @@ export const config = {
     "/dashboard/:path*",
     "/ofis-takip",
     "/ofis-takip/:path*",
+    "/admin",
+    "/admin/:path*",
     "/login",
   ],
 };

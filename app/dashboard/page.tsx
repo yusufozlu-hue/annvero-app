@@ -3,6 +3,9 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import * as XLSX from "xlsx";
+import AuthUserBar from "@/src/components/AuthUserBar";
+import { useAdminAccess } from "@/src/hooks/useAdminAccess";
+import BuildVersionBadge from "@/app/components/BuildVersionBadge";
 
 type Account = {
   code: string;
@@ -112,6 +115,7 @@ function belgeTuruBul(fisSatirlari: any[]) {
 }
 
 export default function DashboardPage() {
+  const { isAdmin } = useAdminAccess();
   const [loaded, setLoaded] = useState(false);
   const [showModal, setShowModal] = useState(false);
 
@@ -341,12 +345,62 @@ export default function DashboardPage() {
   };
 
   return (
-    <main className="min-h-screen bg-black p-8 text-white">
+    <main className="min-h-screen bg-black p-6 text-white sm:p-8">
+      <header className="mb-10 flex flex-col gap-4 border-b border-gray-800 pb-6 sm:gap-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-gray-500">
+            ANNVERO Dashboard
+          </p>
+          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Finansal Kontrol Paneli</h1>
+          <BuildVersionBadge className="mt-2" />
+        </div>
+        <div className="w-full lg:w-auto lg:shrink-0">
+          <AuthUserBar variant="embedded" showAdminLink />
+        </div>
+      </header>
+
       <section className="mb-10">
         <p className="mb-4 text-sm font-medium uppercase tracking-[0.2em] text-gray-500">
           Modüller
         </p>
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+          {isAdmin ? (
+            <div className="relative rounded-3xl bg-gradient-to-br from-amber-500/60 via-amber-500/10 to-transparent p-[1.5px]">
+              <div className="relative flex h-full flex-col overflow-hidden rounded-[22px] bg-gray-900/90 p-6 shadow-xl shadow-black/30 backdrop-blur-xl">
+                <div className="pointer-events-none absolute -left-6 -top-6 h-28 w-28 rounded-full bg-amber-500/25 opacity-70 blur-2xl" />
+                <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-500/30 to-amber-600/5 text-amber-200 ring-1 ring-amber-400/30">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="28"
+                    height="28"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 3v18" />
+                    <path d="M3 12h18" />
+                    <rect width="18" height="18" x="3" y="3" rx="2" />
+                  </svg>
+                </div>
+                <h2 className="relative mt-6 text-2xl font-semibold text-gray-100">
+                  Mevzuat Parametre Yönetimi
+                </h2>
+                <p className="relative mt-2 flex-1 text-sm leading-relaxed text-gray-400">
+                  Maaş, SGK, vergi ve diğer hesaplama parametrelerini yönetin.
+                </p>
+                <Link
+                  href="/admin/parametre-yonetimi"
+                  className="relative mt-6 inline-flex w-fit items-center justify-center rounded-xl bg-amber-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-amber-500"
+                >
+                  Parametre Yönetimi
+                </Link>
+              </div>
+            </div>
+          ) : null}
+
           <div className="relative rounded-3xl bg-gradient-to-br from-violet-500/60 via-violet-500/10 to-transparent p-[1.5px]">
             <div className="relative flex h-full flex-col overflow-hidden rounded-[22px] bg-gray-900/90 p-6 shadow-xl shadow-black/30 backdrop-blur-xl">
               <div className="pointer-events-none absolute -left-6 -top-6 h-28 w-28 rounded-full bg-violet-500/25 opacity-70 blur-2xl" />
@@ -420,8 +474,6 @@ export default function DashboardPage() {
           </div>
         </div>
       </section>
-
-      <h1 className="text-6xl font-bold">Finansal Kontrol Paneli</h1>
 
       <section className="mt-14 rounded-3xl border border-gray-800 bg-zinc-900 p-10">
         <div className="flex items-center justify-between">

@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
+import { isAdminUser } from "@/src/lib/auth/admin";
 import { getSafeNextPath } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
 
@@ -7,8 +8,13 @@ function isProtectedPath(pathname) {
   return (
     pathname.startsWith("/muhasebe") ||
     pathname.startsWith("/dashboard") ||
-    pathname.startsWith("/ofis-takip")
+    pathname.startsWith("/ofis-takip") ||
+    pathname.startsWith("/admin")
   );
+}
+
+function isAdminPath(pathname) {
+  return pathname.startsWith("/admin");
 }
 
 function withSupabaseCookies(supabaseResponse, response) {
@@ -60,6 +66,17 @@ export async function updateSession(request) {
     return withSupabaseCookies(
       supabaseResponse,
       NextResponse.redirect(loginUrl)
+    );
+  }
+
+  if (isAdminPath(pathname) && user && !isAdminUser(user)) {
+    const deniedUrl = request.nextUrl.clone();
+    deniedUrl.pathname = "/dashboard";
+    deniedUrl.search = "";
+    deniedUrl.searchParams.set("error", "admin_required");
+    return withSupabaseCookies(
+      supabaseResponse,
+      NextResponse.redirect(deniedUrl)
     );
   }
 

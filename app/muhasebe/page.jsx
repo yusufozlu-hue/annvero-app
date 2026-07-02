@@ -336,9 +336,9 @@ const categories = [
         href: null,
       },
       {
-        title: "Maaş Maliyet",
-        desc: "Personel maaş maliyeti ve işveren yük hesaplaması.",
-        href: null,
+        title: "Maaş Hesaplama Merkezi",
+        desc: "Brüt-net, net-brüt maaş ve işveren maliyeti hesaplama.",
+        href: "/hesaplama-araclari/maas-hesaplama",
       },
       {
         title: "Kur Farkı",
