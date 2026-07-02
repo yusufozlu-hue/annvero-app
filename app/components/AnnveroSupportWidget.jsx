@@ -4,8 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { buildWhatsAppLink } from "@/src/ofis-takip/whatsapp";
 
-const SUPPORT_PHONE = "+90 (212) 000 00 00";
+const SUPPORT_PHONE = "+905323637729";
+const SUPPORT_PHONE_DISPLAY = "+90 532 363 77 29";
 const SUPPORT_EMAIL = "info@annvero.com";
+const WHATSAPP_DEFAULT_MESSAGE = "Merhaba, ANNVERO hakkında bilgi almak istiyorum.";
 
 const FAQ_ITEMS = [
   {
@@ -74,7 +76,7 @@ export default function AnnveroSupportWidget() {
 
   const whatsAppGeneralLink = buildWhatsAppLink(
     SUPPORT_PHONE,
-    "Merhaba ANNVERO ekibi, destek almak istiyorum.",
+    WHATSAPP_DEFAULT_MESSAGE,
   );
 
   const whatsAppDemoLink = buildWhatsAppLink(
@@ -450,7 +452,7 @@ export default function AnnveroSupportWidget() {
 
           {view === "menu" ? (
             <div className="border-t border-slate-100 px-4 py-3 text-center text-xs text-slate-500">
-              {SUPPORT_EMAIL} · {SUPPORT_PHONE}
+              {SUPPORT_EMAIL} · {SUPPORT_PHONE_DISPLAY}
             </div>
           ) : null}
         </div>
