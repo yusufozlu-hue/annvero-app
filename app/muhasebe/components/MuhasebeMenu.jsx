@@ -178,6 +178,11 @@ const links = [
     Icon: FileSpreadsheetIcon,
   },
   {
+    title: "Adat Hesaplama",
+    href: "/muhasebe/adat-hesaplama",
+    Icon: ScaleIcon,
+  },
+  {
     title: "Luca Fiş Üretici",
     href: "/muhasebe/luca-donusturucu",
     Icon: FileTextIcon,

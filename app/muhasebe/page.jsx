@@ -292,6 +292,11 @@ const categories = [
         desc: "Sigorta poliçesi giderleştirme, binek araç KKEG ayrımı ve rapor üretimi.",
         href: "/muhasebe/police-giderlestirme",
       },
+      {
+        title: "Adat Hesaplama ve Faiz Fiş Motoru",
+        desc: "Günlük bakiye üzerinden adat/faiz hesaplama ve Luca fiş önerisi.",
+        href: "/muhasebe/adat-hesaplama",
+      },
     ],
   },
   {
