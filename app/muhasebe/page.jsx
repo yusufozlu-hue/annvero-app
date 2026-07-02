@@ -376,6 +376,11 @@ const categories = [
         href: "/hesaplama-araclari/kidem-ihbar",
       },
       {
+        title: "Toplu Kıdem ve İhbar Tazminatı Hesaplama",
+        desc: "Excel personel listesi ile çoklu kıdem, ihbar ve net ödeme hesaplama.",
+        href: "/muhasebe/toplu-kidem-ihbar",
+      },
+      {
         title: "Kur Farkı",
         desc: "Dövizli işlemler için kur farkı hesaplama.",
         href: "/muhasebe/kur-degerleme",

@@ -130,7 +130,7 @@ function validateInput(input) {
  * @returns {object}
  */
 export function calculateSeveranceNotice(input) {
-  const params = getSeveranceNoticeParameters(input.year);
+  const params = input.paramsOverride || getSeveranceNoticeParameters(input.year);
   const { errors, startDate, endDate } = validateInput(input);
 
   if (errors.length > 0 || !startDate || !endDate) {

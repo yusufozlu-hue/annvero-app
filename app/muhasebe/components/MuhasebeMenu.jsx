@@ -193,6 +193,11 @@ const links = [
     Icon: ShieldCheckIcon,
   },
   {
+    title: "Toplu Kıdem/İhbar",
+    href: "/muhasebe/toplu-kidem-ihbar",
+    Icon: ScaleIcon,
+  },
+  {
     title: "Luca Fiş Üretici",
     href: "/muhasebe/luca-donusturucu",
     Icon: FileTextIcon,
