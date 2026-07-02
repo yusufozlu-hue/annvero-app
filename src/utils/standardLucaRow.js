@@ -139,6 +139,28 @@ export function ensureStandardLucaRowIds(rows = []) {
   }));
 }
 
+export function createEmptyStandardLucaRow(context = {}) {
+  const nextIndex = Number(context.nextIndex || 1);
+
+  return finalizeStandardLucaRow({
+    id: `manual-${Date.now()}-${nextIndex}`,
+    firmaId: context.firmaId || "",
+    kaynakTipi: context.kaynakTipi || KAYNAK_TIPI.BANKA,
+    kaynakAdi: context.kaynakAdi || "Manuel",
+    fisNo: context.fisNo ?? nextIndex,
+    fisTarihi: context.fisTarihi || "",
+    fisAciklama: "",
+    belgeTuru: context.belgeTuru || "DK",
+    hesapKodu: "",
+    hesapAdi: "",
+    karsiHesapKodu: "",
+    detayAciklama: "",
+    borc: "",
+    alacak: "",
+    manuallyEdited: true,
+  });
+}
+
 export function sortStandardLucaRows(rows = []) {
   return [...rows].sort((left, right) => {
     const leftDate = parseStandardLucaDate(left.fisTarihi);
@@ -233,6 +255,8 @@ export function finalizeStandardLucaRow(row) {
   }
 
   const hesapKodu = String(row.hesapKodu || "").trim();
+  const hesapAdi = String(row.hesapAdi || "").trim();
+  const karsiHesapKodu = String(row.karsiHesapKodu || row.karsiHesap || "").trim();
   let riskDurumu = String(row.riskDurumu || "").trim();
 
   if (!hesapKodu) {
@@ -249,6 +273,8 @@ export function finalizeStandardLucaRow(row) {
     belgeTuru,
     belgeNo: String(row.belgeNo || "").trim(),
     hesapKodu,
+    hesapAdi,
+    karsiHesapKodu,
     evrakNo: String(row.evrakNo || "").trim(),
     evrakTarihi: formatDateTR(row.evrakTarihi || row.fisTarihi),
     detayAciklama: detayAciklama || fisAciklama,
@@ -263,6 +289,7 @@ export function finalizeStandardLucaRow(row) {
     riskDurumu,
     kontrolNotu: String(row.kontrolNotu || "").trim(),
     hafizaEslesme: Boolean(row.hafizaEslesme),
+    manuallyEdited: Boolean(row.manuallyEdited),
     ...(row.id ? { id: row.id } : {}),
     ...(row._movementId ? { _movementId: row._movementId } : {}),
   };

@@ -1,10 +1,11 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
+import EditableStandardLucaPreviewTable from "../components/EditableStandardLucaPreviewTable";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
@@ -33,12 +34,11 @@ import {
   buildAccountPlanNotFoundWarning,
   collectAccountSuggestions,
 } from "@/src/utils/accountPlanSuggestions";
-import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import {
   applyStandardLucaRowEditDraft,
   buildStandardLucaLearningMemoryPayload,
-  buildStandardLucaRowEditDraft,
 } from "@/src/utils/previewRowEdit";
+import { exportStandardLucaExcel } from "@/src/utils/exportStandardLucaExcel";
 import {
   ensureStandardLucaRowIds,
   finalizeStandardLucaRow,
@@ -49,14 +49,8 @@ import {
   KAYNAK_TIPI,
   lucaFislerToStandardLucaRows,
   logStandardLucaReport,
-  LUCA_EXPORT_HEADERS,
   sortStandardLucaRows,
-  standardLucaRowsToExcelRows,
 } from "@/src/utils/standardLucaRow";
-import {
-  enforceLucaExportDateStrings,
-  formatDateTR,
-} from "@/src/utils/formatDateTR";
 
 const LUCA_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -144,10 +138,9 @@ export default function LucaDonusturucuPage() {
   const [previewQuickFilter, setPreviewQuickFilter] = useState("all");
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
-  const [editingRowIndex, setEditingRowIndex] = useState(null);
-  const [draftRow, setDraftRow] = useState(null);
   const [previewError, setPreviewError] = useState("");
   const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
+  const [exportValidation, setExportValidation] = useState(null);
   const [toast, setToast] = useState(null);
 
   const {
@@ -965,33 +958,11 @@ export default function LucaDonusturucuPage() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const closePreviewEdit = () => {
-    setEditingRowIndex(null);
-    setDraftRow(null);
-  };
+  const saveAdvancedPreviewEdit = async (editingRowId, draftRow) => {
+    if (!editingRowId || !draftRow) return null;
 
-  const toggleRowEdit = (rowIndex) => {
-    if (editingRowIndex === rowIndex) {
-      closePreviewEdit();
-      return;
-    }
-
-    const row = standardLucaRows[rowIndex];
-    if (!row) return;
-
-    setEditingRowIndex(rowIndex);
-    setDraftRow(buildStandardLucaRowEditDraft(row));
-  };
-
-  const cancelPreviewLineEdit = () => {
-    closePreviewEdit();
-  };
-
-  const savePreviewLineEdit = async () => {
-    if (editingRowIndex == null || !draftRow) return;
-
-    const currentRow = standardLucaRows[editingRowIndex];
-    if (!currentRow) return;
+    const currentRow = standardLucaRows.find((row) => row.id === editingRowId);
+    if (!currentRow) return null;
 
     setIsSavingPreviewEdit(true);
 
@@ -1023,54 +994,14 @@ export default function LucaDonusturucuPage() {
         showToast("Satır güncellendi", "success");
       }
 
-      setStandardLucaRows((prev) =>
-        prev.map((row, index) => (index === editingRowIndex ? updatedRow : row))
-      );
-      closePreviewEdit();
+      setExportValidation(null);
+      return updatedRow;
     } finally {
       setIsSavingPreviewEdit(false);
     }
   };
 
   const exportExcel = () => {
-    if (!standardLucaRows || standardLucaRows.length === 0) {
-      alert("Önce ön izleme oluşturun");
-      return;
-    }
-
-    console.log("EXPORT USING standardLucaRows", standardLucaRows.slice(0, 10));
-    console.log(
-      "[luca-export-date-debug]",
-      standardLucaRows.slice(0, 20).map((row) => ({
-        hamFisTarihi: row.fisTarihi,
-        formattedFisTarihi: formatDateTR(row.fisTarihi),
-        hamEvrakTarihi: row.evrakTarihi,
-        formattedEvrakTarihi: formatDateTR(row.evrakTarihi || row.fisTarihi),
-      }))
-    );
-
-    const rows = sortStandardLucaRows(standardLucaRows);
-    const uniqueFisNo = [...new Set(rows.map((r) => r.fisNo))];
-    const chunkSize = 50;
-    const totalFiles = Math.ceil(uniqueFisNo.length / chunkSize);
-
-    const mapRowToExcel = (row) => ({
-      "Fiş No": row.fisNo,
-      "Fiş Tarihi": formatDateTR(row.fisTarihi),
-      "Fiş Açıklama": row.fisAciklama,
-      "Hesap Kodu": row.hesapKodu,
-      "Evrak No": row.evrakNo || row.belgeNo || "",
-      "Evrak Tarihi": formatDateTR(row.evrakTarihi || row.fisTarihi),
-      "Detay Açıklama": row.detayAciklama,
-      Borç: row.borc,
-      Alacak: row.alacak,
-      Miktar: "",
-      "Belge Türü": row.belgeTuru || "",
-      "Para Birimi": "",
-      Kur: "",
-      "Döviz Tutar": "",
-    });
-
     const firmaKisa = getCompanyDisplayName(selectedCompany)
       .split(" ")[0]
       .toLowerCase()
@@ -1081,41 +1012,28 @@ export default function LucaDonusturucuPage() {
       .replaceAll("ö", "o")
       .replaceAll("ç", "c");
 
-    for (let fileIndex = 0; fileIndex < totalFiles; fileIndex++) {
-      const chunkFisNos = new Set(
-        uniqueFisNo.slice(fileIndex * chunkSize, fileIndex * chunkSize + chunkSize)
-      );
-      const chunkRows = rows.filter((row) => chunkFisNos.has(row.fisNo));
-      const excelRows = chunkRows.map(mapRowToExcel);
+    const result = exportStandardLucaExcel(standardLucaRows, {
+      filePrefix: `${firmaKisa}_luca_fis`,
+      logLabel: "luca-donusturucu-export",
+      onValidationFail: setExportValidation,
+    });
 
-      const ws = XLSX.utils.json_to_sheet(excelRows, {
-        header: LUCA_EXPORT_HEADERS,
-      });
-      enforceLucaExportDateStrings(ws);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Luca Fiş");
-
-      const ilkTarih = String(chunkRows[0]?.fisTarihi || "")
-        .replaceAll(".", "")
-        .replaceAll("/", "")
-        .replaceAll("-", "");
-
-      const ilkFis = fileIndex * chunkSize + 1;
-      const sonFis = Math.min((fileIndex + 1) * chunkSize, uniqueFisNo.length);
-
-      XLSX.writeFile(
-        wb,
-        totalFiles === 1
-          ? "luca_fis_standard.xlsx"
-          : `${firmaKisa}_${ilkTarih}_fis${ilkFis}-${sonFis}.xlsx`
-      );
+    if (!result.ok) {
+      if (result.reason === "validation") {
+        showToast("Excel oluşturulamadı. Satır hatalarını düzeltin.", "error");
+      } else {
+        showToast(result.message || "Önce ön izleme oluşturun.", "error");
+      }
+      return;
     }
 
-    logStandardLucaReport("luca-donusturucu-export", rows);
-
-    if (totalFiles > 1) {
-      alert(`${totalFiles} adet Luca Excel dosyası oluşturuldu.`);
-    }
+    setExportValidation(null);
+    showToast(
+      result.fileCount > 1
+        ? `${result.fileCount} adet Luca Excel dosyası oluşturuldu.`
+        : "Luca Excel dosyası oluşturuldu.",
+      "success"
+    );
   };
 
   return (
@@ -1356,90 +1274,23 @@ export default function LucaDonusturucuPage() {
                 totalCount={standardLucaRows.length}
               />
 
-              <div className="overflow-auto">
-                <table className="w-full min-w-[1600px] text-sm">
-                  <thead className="bg-gray-800 text-gray-300">
-                    <tr>
-                      <th className="p-3 text-left">Fiş No</th>
-                      <th className="p-3 text-left">Fiş Tarihi</th>
-                      <th className="p-3 text-left">Kaynak</th>
-                      <th className="p-3 text-left">Hesap Kodu</th>
-                      <th className="p-3 text-left">Belge Türü</th>
-                      <th className="p-3 text-left">Fiş Açıklama</th>
-                      <th className="p-3 text-left">Detay Açıklama</th>
-                      <th className="p-3 text-right">Borç</th>
-                      <th className="p-3 text-right">Alacak</th>
-                      <th className="p-3 text-left">Risk</th>
-                      <th className="p-3 text-left">Kontrol Notu</th>
-                      <th className="p-3 text-center">Düzenle</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {displayedStandardLucaRows.map((row) => {
-                      const rowIndex = standardLucaRows.findIndex(
-                        (candidate) => candidate.id === row.id
-                      );
-                      if (rowIndex < 0) return null;
-
-                      return (
-                        <Fragment key={`${row.id}-${rowIndex}`}>
-                          <tr className="border-t border-gray-800">
-                            <td className="p-3">{row.fisNo}</td>
-                            <td className="p-3">{formatDateTR(row.fisTarihi)}</td>
-                            <td className="p-3">{row.kaynakAdi || row.kaynakTipi}</td>
-                            <td className="p-3 font-mono text-xs">
-                              {row.hesapKodu || "—"}
-                            </td>
-                            <td className="p-3">{row.belgeTuru || "—"}</td>
-                            <td className="p-3">{row.fisAciklama || "—"}</td>
-                            <td className="p-3">{row.detayAciklama || "—"}</td>
-                            <td className="p-3 text-right">{row.borc}</td>
-                            <td className="p-3 text-right">{row.alacak}</td>
-                            <td className="p-3">
-                              {row.riskDurumu ? (
-                                <span className="rounded-full border border-red-700/60 bg-red-950/50 px-2 py-0.5 text-[10px] font-semibold text-red-300">
-                                  {row.riskDurumu}
-                                </span>
-                              ) : (
-                                "—"
-                              )}
-                            </td>
-                            <td className="p-3">{row.kontrolNotu || "—"}</td>
-                            <td className="p-3 text-center">
-                              <button
-                                type="button"
-                                onClick={() => toggleRowEdit(rowIndex)}
-                                className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
-                                  editingRowIndex === rowIndex
-                                    ? "border-indigo-500 bg-indigo-950/60 text-indigo-200"
-                                    : "border-gray-700 bg-gray-950 text-gray-300 hover:border-indigo-500 hover:text-white"
-                                }`}
-                              >
-                                Düzenle
-                              </button>
-                            </td>
-                          </tr>
-
-                          {editingRowIndex === rowIndex && draftRow ? (
-                            <tr className="border-t border-gray-800">
-                              <td colSpan={12} className="p-4">
-                                <PreviewVoucherDetailPanel
-                                  variant="standardLuca"
-                                  draft={draftRow}
-                                  onChange={setDraftRow}
-                                  onSave={savePreviewLineEdit}
-                                  onCancel={cancelPreviewLineEdit}
-                                  isSaving={isSavingPreviewEdit}
-                                />
-                              </td>
-                            </tr>
-                          ) : null}
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <EditableStandardLucaPreviewTable
+                rows={standardLucaRows}
+                onRowsChange={(nextRows) => {
+                  setStandardLucaRows(nextRows);
+                  setExportValidation(null);
+                }}
+                displayedRows={displayedStandardLucaRows}
+                showKaynakColumn
+                exportValidation={exportValidation}
+                createRowContext={{
+                  firmaId: selectedCompanyId,
+                  kaynakTipi: sourceType,
+                  kaynakAdi: SOURCE_UI[sourceType]?.label || sourceType,
+                }}
+                onSaveAdvancedEdit={saveAdvancedPreviewEdit}
+                isSavingAdvancedEdit={isSavingPreviewEdit}
+              />
 
               <p className="text-sm text-gray-400">
                 Toplam {standardLucaRows.length} StandardLucaRow satırı.

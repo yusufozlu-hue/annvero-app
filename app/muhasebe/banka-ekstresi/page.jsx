@@ -1,13 +1,13 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
 import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import AccountSuggestionBadges from "../components/AccountSuggestionBadges";
-import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
+import EditableStandardLucaPreviewTable from "../components/EditableStandardLucaPreviewTable";
 import {
   applySuggestionToMovement,
   buildLearningMemoryAccountUpdate,
@@ -36,13 +36,10 @@ import {
   ensureStandardLucaRowIds,
   filterStandardLucaRows,
   finalizeStandardLucaRow,
-  getStandardLucaMissingBadges,
   KAYNAK_TIPI,
   logStandardLucaReport,
-  LUCA_EXPORT_HEADERS,
-  standardLucaRowsToExcelRows,
 } from "@/src/utils/standardLucaRow";
-import { enforceLucaExportDateStrings } from "@/src/utils/formatDateTR";
+import { exportStandardLucaExcel } from "@/src/utils/exportStandardLucaExcel";
 import {
   formatParserDate,
   mapParsedRowsToStandardMovements,
@@ -62,7 +59,6 @@ import {
 } from "@/src/utils/learningMemory";
 import {
   applyStandardLucaRowEditDraft,
-  buildStandardLucaRowEditDraft,
   MEMORY_MATCH_LABEL,
 } from "@/src/utils/previewRowEdit";
 import { hasBankMovementError } from "@/src/utils/tableSearch";
@@ -92,9 +88,8 @@ export default function BankaParserPage() {
   const [previewQuickFilter, setPreviewQuickFilter] = useState("all");
   const [toast, setToast] = useState(null);
   const [applyingSuggestionRowId, setApplyingSuggestionRowId] = useState(null);
-  const [editingRowId, setEditingRowId] = useState(null);
-  const [draftRow, setDraftRow] = useState(null);
   const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
+  const [exportValidation, setExportValidation] = useState(null);
   const [standardLucaRows, setStandardLucaRows] = useState([]);
 
   const {
@@ -196,12 +191,6 @@ export default function BankaParserPage() {
     () => countPendingLucaRowsForCompany(selectedCompanyId),
     [selectedCompanyId, accountPlans, movementRows]
   );
-
-  const formatAmount = (value) =>
-    Number(value || 0).toLocaleString("tr-TR", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
 
   const computedStandardLucaRows = useMemo(
     () => {
@@ -436,30 +425,15 @@ export default function BankaParserPage() {
     }
   };
 
-  const toggleRowEdit = (row) => {
-    if (editingRowId === row.id) {
-      cancelPreviewRowEdit();
-      return;
-    }
-
-    setEditingRowId(row.id);
-    setDraftRow(buildStandardLucaRowEditDraft(row));
-  };
-
-  const cancelPreviewRowEdit = () => {
-    setEditingRowId(null);
-    setDraftRow(null);
-  };
-
-  const savePreviewRowEdit = async () => {
-    if (!editingRowId || !draftRow) return;
+  const saveAdvancedPreviewEdit = async (editingRowId, draftRow) => {
+    if (!editingRowId || !draftRow) return null;
 
     const currentRow = standardLucaRows.find((row) => row.id === editingRowId);
-    if (!currentRow) return;
+    if (!currentRow) return null;
 
     if (draftRow.saveToMemory && !selectedCompanyId) {
       alert("Hafızaya kaydetmek için önce firma seçmelisin.");
-      return;
+      return null;
     }
 
     setIsSavingPreviewEdit(true);
@@ -468,8 +442,6 @@ export default function BankaParserPage() {
       const updatedRow = finalizeStandardLucaRow(
         applyStandardLucaRowEditDraft(currentRow, draftRow)
       );
-
-      console.log("UPDATED ROW", updatedRow);
 
       if (draftRow.saveToMemory && selectedCompanyId) {
         const memoryPayload = buildBankStandardLucaLearningMemoryPayload(
@@ -487,12 +459,7 @@ export default function BankaParserPage() {
           const created = await createLearningMemoryRecord(memoryPayload);
 
           if (created) {
-            const memoryItem = mapLearningMemoryRecordToItem(
-              created,
-              draftRow,
-              currentRow
-            );
-            console.log("LEARNING MEMORY SAVED", memoryItem);
+            mapLearningMemoryRecordToItem(created, draftRow, currentRow);
             setLearningMemory((prev) => [created, ...prev]);
             showToast("Satır güncellendi ve hafızaya kaydedildi", "success");
           } else {
@@ -503,62 +470,37 @@ export default function BankaParserPage() {
         showToast("Satır güncellendi", "success");
       }
 
-      setStandardLucaRows((prev) =>
-        prev.map((row) => (row.id === editingRowId ? updatedRow : row))
-      );
-      cancelPreviewRowEdit();
+      setExportValidation(null);
+      return updatedRow;
     } finally {
       setIsSavingPreviewEdit(false);
     }
   };
 
   const exportExcel = () => {
-    if (!standardLucaRows.length) {
-      alert("Önce dosyayı yükleyip ön izleme oluşturun.");
+    const bankPrefix = `${String(selectedBank || "banka").toLowerCase()}_luca`;
+    const result = exportStandardLucaExcel(standardLucaRows, {
+      filePrefix: bankPrefix,
+      logLabel: "banka-export",
+      onValidationFail: setExportValidation,
+    });
+
+    if (!result.ok) {
+      if (result.reason === "validation") {
+        showToast("Excel oluşturulamadı. Satır hatalarını düzeltin.", "error");
+      } else {
+        showToast(result.message || "Önce dosyayı yükleyip ön izleme oluşturun.", "error");
+      }
       return;
     }
 
-    console.log("EXPORT DATA", standardLucaRows.slice(0, 5));
-
-    const uniqueFisNo = [...new Set(standardLucaRows.map((row) => row.fisNo))];
-    const chunkSize = 50;
-    const totalFiles = Math.ceil(uniqueFisNo.length / chunkSize);
-
-    for (let fileIndex = 0; fileIndex < totalFiles; fileIndex += 1) {
-      const chunkFisNos = new Set(
-        uniqueFisNo.slice(fileIndex * chunkSize, fileIndex * chunkSize + chunkSize)
-      );
-      const chunkRows = standardLucaRows.filter((row) => chunkFisNos.has(row.fisNo));
-      const excelRows = standardLucaRowsToExcelRows(chunkRows);
-
-      const worksheet = XLSX.utils.json_to_sheet(excelRows, {
-        header: LUCA_EXPORT_HEADERS,
-      });
-      enforceLucaExportDateStrings(worksheet, [
-        "Fiş Tarihi",
-        "Evrak Tarihi",
-        "Hesap Kodu",
-      ]);
-
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Luca Fisleri");
-
-      const ilkFis = fileIndex * chunkSize + 1;
-      const sonFis = Math.min((fileIndex + 1) * chunkSize, uniqueFisNo.length);
-      const fileSuffix =
-        totalFiles === 1 ? "luca" : `luca_${ilkFis}-${sonFis}`;
-
-      XLSX.writeFile(
-        workbook,
-        `${selectedBank.toLowerCase()}_${fileSuffix}.xlsx`
-      );
-    }
-
-    logStandardLucaReport("banka-export", standardLucaRows);
-
-    if (totalFiles > 1) {
-      alert(`${totalFiles} adet Luca Excel dosyası oluşturuldu.`);
-    }
+    setExportValidation(null);
+    showToast(
+      result.fileCount > 1
+        ? `${result.fileCount} adet Luca Excel dosyası oluşturuldu.`
+        : "Luca Excel dosyası oluşturuldu.",
+      "success"
+    );
   };
 
   const handleGoToLucaProducer = (event) => {
@@ -849,127 +791,47 @@ export default function BankaParserPage() {
                 totalCount={standardLucaRows.length}
               />
 
-              <div className="overflow-auto">
-              <table className="w-full min-w-[1800px] text-sm">
-                <thead className="bg-gray-800">
-                  <tr>
-                    <th className="p-3 text-left">Fiş No</th>
-                    <th className="p-3 text-left">Fiş Tarihi</th>
-                    <th className="p-3 text-left">Hesap Kodu</th>
-                    <th className="p-3 text-left">Belge Türü</th>
-                    <th className="p-3 text-left">Fiş Açıklama</th>
-                    <th className="p-3 text-left">Detay Açıklama</th>
-                    <th className="p-3 text-right">Borç</th>
-                    <th className="p-3 text-right">Alacak</th>
-                    <th className="p-3 text-left">Risk</th>
-                    <th className="p-3 text-left">Kontrol Notu</th>
-                    <th className="p-3 text-center">İşlem</th>
-                  </tr>
-                </thead>
+              <EditableStandardLucaPreviewTable
+                rows={standardLucaRows}
+                onRowsChange={(nextRows) => {
+                  setStandardLucaRows(nextRows);
+                  setExportValidation(null);
+                }}
+                displayedRows={displayedStandardLucaRows}
+                exportValidation={exportValidation}
+                createRowContext={{
+                  firmaId: selectedCompanyId,
+                  kaynakTipi: KAYNAK_TIPI.BANKA,
+                  kaynakAdi: selectedBank,
+                  belgeTuru: "DK",
+                }}
+                onSaveAdvancedEdit={saveAdvancedPreviewEdit}
+                isSavingAdvancedEdit={isSavingPreviewEdit}
+                renderKontrolCell={(row) => {
+                  const movement = row._movementId
+                    ? movementById.get(row._movementId)
+                    : null;
 
-                <tbody>
-                  {displayedStandardLucaRows.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={11}
-                        className="p-6 text-center text-gray-400"
-                      >
-                        Arama veya filtreye uygun satır bulunamadı.
-                      </td>
-                    </tr>
-                  ) : (
-                    displayedStandardLucaRows.map((row) => {
-                      const movement = row._movementId
-                        ? movementById.get(row._movementId)
-                        : null;
-
-                      return (
-                      <Fragment key={row.id}>
-                        <tr className="border-t border-gray-800">
-                          <td className="p-3">{row.fisNo}</td>
-                          <td className="p-3">{row.fisTarihi}</td>
-                          <td className="p-3 font-mono text-xs">{row.hesapKodu || "—"}</td>
-                          <td className="p-3">{row.belgeTuru || "—"}</td>
-                          <td className="p-3">{row.fisAciklama || "—"}</td>
-                          <td className="p-3">{row.detayAciklama || "—"}</td>
-                          <td className="p-3 text-right">{formatAmount(row.borc)}</td>
-                          <td className="p-3 text-right">{formatAmount(row.alacak)}</td>
-                          <td className="p-3">
-                            <div className="flex flex-wrap gap-1">
-                              {row.riskDurumu ? (
-                                <span className="rounded-full border border-red-700/60 bg-red-950/50 px-2 py-0.5 text-[10px] font-semibold text-red-300">
-                                  {row.riskDurumu}
-                                </span>
-                              ) : null}
-                              {getStandardLucaMissingBadges(row)
-                                .filter((badge) => badge !== "Hesap eksik")
-                                .map((badge) => (
-                                  <span
-                                    key={badge}
-                                    className="rounded-full border border-red-700/60 bg-red-950/50 px-2 py-0.5 text-[10px] font-semibold text-red-300"
-                                  >
-                                    {badge}
-                                  </span>
-                                ))}
-                              {row.hafizaEslesme ? (
-                                <span className="rounded-full border border-emerald-700/60 bg-emerald-950/50 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
-                                  Hafızadan eşleşti
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td className={`p-3 ${getMovementWarningClass(row.kontrolNotu)}`}>
-                            <div>{row.kontrolNotu || "—"}</div>
-                            {movement ? (
-                              <AccountSuggestionBadges
-                                suggestions={
-                                  movement.accountSuggestions?.length
-                                    ? movement.accountSuggestions
-                                    : parseSuggestionsFromWarning(movement.warning)
-                                }
-                                disabled={applyingSuggestionRowId === movement.id}
-                                onSelect={(suggestion) =>
-                                  handleApplyAccountSuggestion(movement, suggestion)
-                                }
-                              />
-                            ) : null}
-                          </td>
-                          <td className="p-3 text-center">
-                            <button
-                              type="button"
-                              onClick={() => toggleRowEdit(row)}
-                              className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
-                                editingRowId === row.id
-                                  ? "border-indigo-500 bg-indigo-950/60 text-indigo-200"
-                                  : "border-gray-700 bg-gray-950 text-gray-300 hover:border-indigo-500 hover:text-white"
-                              }`}
-                            >
-                              Düzenle
-                            </button>
-                          </td>
-                        </tr>
-
-                        {editingRowId === row.id && draftRow ? (
-                          <tr className="border-t border-gray-800">
-                            <td colSpan={11} className="p-4">
-                              <PreviewVoucherDetailPanel
-                                variant="standardLuca"
-                                draft={draftRow}
-                                onChange={setDraftRow}
-                                onSave={savePreviewRowEdit}
-                                onCancel={cancelPreviewRowEdit}
-                                isSaving={isSavingPreviewEdit}
-                              />
-                            </td>
-                          </tr>
-                        ) : null}
-                      </Fragment>
-                    );
-                    })
-                  )}
-                </tbody>
-              </table>
-              </div>
+                  return (
+                    <div className={getMovementWarningClass(row.kontrolNotu)}>
+                      <div>{row.kontrolNotu || "—"}</div>
+                      {movement ? (
+                        <AccountSuggestionBadges
+                          suggestions={
+                            movement.accountSuggestions?.length
+                              ? movement.accountSuggestions
+                              : parseSuggestionsFromWarning(movement.warning)
+                          }
+                          disabled={applyingSuggestionRowId === movement.id}
+                          onSelect={(suggestion) =>
+                            handleApplyAccountSuggestion(movement, suggestion)
+                          }
+                        />
+                      ) : null}
+                    </div>
+                  );
+                }}
+              />
 
               <p className="mt-4 text-sm text-gray-400">
                 Toplam {standardLucaRows.length} StandardLucaRow satırı oluşturuldu.

@@ -110,6 +110,28 @@ export default function PreviewVoucherDetailPanel({
           />
         </PreviewField>
 
+        {variant === "standardLuca" ? (
+          <>
+            <PreviewField label="Hesap Adı">
+              <input
+                value={draft.accountName || ""}
+                onChange={(event) => updateField("accountName", event.target.value)}
+                className={inputClassName}
+              />
+            </PreviewField>
+
+            <PreviewField label="Karşı Hesap">
+              <input
+                value={draft.counterAccountCode || ""}
+                onChange={(event) =>
+                  updateField("counterAccountCode", event.target.value)
+                }
+                className={inputClassName}
+              />
+            </PreviewField>
+          </>
+        ) : null}
+
         {variant !== "standardLuca" ? (
           <PreviewField label="Karşı Hesap">
             <input
