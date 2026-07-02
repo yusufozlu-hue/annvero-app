@@ -287,6 +287,11 @@ const categories = [
         desc: "Finansman gider kısıtlaması, KKEG ayrımı ve rapor üretimi.",
         href: "/muhasebe/finansman-gider-kisitlamasi",
       },
+      {
+        title: "Poliçe Giderleştirme ve Araç Gider Kısıtı Motoru",
+        desc: "Sigorta poliçesi giderleştirme, binek araç KKEG ayrımı ve rapor üretimi.",
+        href: "/muhasebe/police-giderlestirme",
+      },
     ],
   },
   {
@@ -333,7 +338,7 @@ const categories = [
       {
         title: "Poliçe Giderleştirme",
         desc: "Sigorta poliçelerini döneme yayarak giderleştirin.",
-        href: null,
+        href: "/muhasebe/police-giderlestirme",
       },
       {
         title: "Amortisman",

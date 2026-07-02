@@ -173,6 +173,11 @@ const links = [
     Icon: ShieldCheckIcon,
   },
   {
+    title: "Poliçe Giderleştirme",
+    href: "/muhasebe/police-giderlestirme",
+    Icon: FileSpreadsheetIcon,
+  },
+  {
     title: "Luca Fiş Üretici",
     href: "/muhasebe/luca-donusturucu",
     Icon: FileTextIcon,
