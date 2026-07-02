@@ -163,6 +163,11 @@ const links = [
     Icon: ShieldCheckIcon,
   },
   {
+    title: "Kur Değerleme",
+    href: "/muhasebe/kur-degerleme",
+    Icon: ScaleIcon,
+  },
+  {
     title: "Luca Fiş Üretici",
     href: "/muhasebe/luca-donusturucu",
     Icon: FileTextIcon,

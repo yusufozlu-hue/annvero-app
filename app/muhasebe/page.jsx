@@ -277,6 +277,11 @@ const categories = [
         desc: "ANNVERO Luca export ile Luca'dan alınan fiş kayıtlarını karşılaştırır.",
         href: "/muhasebe/luca-aktarim-kontrol",
       },
+      {
+        title: "Kur Değerleme ve Kur Farkı Fiş Motoru",
+        desc: "Dövizli hesapların dönem sonu kur değerlemesi ve Luca kur farkı fişi üretimi.",
+        href: "/muhasebe/kur-degerleme",
+      },
     ],
   },
   {
@@ -348,7 +353,7 @@ const categories = [
       {
         title: "Kur Farkı",
         desc: "Dövizli işlemler için kur farkı hesaplama.",
-        href: null,
+        href: "/muhasebe/kur-degerleme",
       },
     ],
   },
