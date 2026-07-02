@@ -302,6 +302,11 @@ const categories = [
         desc: "Fatura ve KDV listelerinde matrah-KDV tutarlılık ve mükerrer risk kontrolü.",
         href: "/muhasebe/kdv-matrah-kontrol",
       },
+      {
+        title: "E-Defter Kontrol Merkezi",
+        desc: "E-defter berat öncesi fiş, yevmiye, ters bakiye ve dönem sonu kayıt kontrolleri.",
+        href: "/muhasebe/e-defter-kontrol",
+      },
     ],
   },
   {

@@ -188,6 +188,11 @@ const links = [
     Icon: ShieldCheckIcon,
   },
   {
+    title: "E-Defter Kontrol",
+    href: "/muhasebe/e-defter-kontrol",
+    Icon: ShieldCheckIcon,
+  },
+  {
     title: "Luca Fiş Üretici",
     href: "/muhasebe/luca-donusturucu",
     Icon: FileTextIcon,
