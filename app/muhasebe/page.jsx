@@ -273,9 +273,9 @@ const categories = [
         href: "/muhasebe/ai-kontrol",
       },
       {
-        title: "Luca Aktarım Kontrolü",
-        desc: "Luca'ya aktarılacak fişlerin ön aktarım kontrolü.",
-        href: null,
+        title: "Luca Aktarım Kontrol Merkezi",
+        desc: "ANNVERO Luca export ile Luca'dan alınan fiş kayıtlarını karşılaştırır.",
+        href: "/muhasebe/luca-aktarim-kontrol",
       },
     ],
   },

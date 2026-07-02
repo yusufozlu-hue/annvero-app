@@ -158,6 +158,11 @@ const links = [
     Icon: ScaleIcon,
   },
   {
+    title: "Luca Aktarım Kontrol",
+    href: "/muhasebe/luca-aktarim-kontrol",
+    Icon: ShieldCheckIcon,
+  },
+  {
     title: "Luca Fiş Üretici",
     href: "/muhasebe/luca-donusturucu",
     Icon: FileTextIcon,
