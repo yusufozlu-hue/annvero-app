@@ -183,6 +183,11 @@ const links = [
     Icon: ScaleIcon,
   },
   {
+    title: "KDV Matrah Kontrol",
+    href: "/muhasebe/kdv-matrah-kontrol",
+    Icon: ShieldCheckIcon,
+  },
+  {
     title: "Luca Fiş Üretici",
     href: "/muhasebe/luca-donusturucu",
     Icon: FileTextIcon,

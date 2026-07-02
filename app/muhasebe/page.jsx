@@ -297,6 +297,11 @@ const categories = [
         desc: "Günlük bakiye üzerinden adat/faiz hesaplama ve Luca fiş önerisi.",
         href: "/muhasebe/adat-hesaplama",
       },
+      {
+        title: "KDV Matrah Kontrol Merkezi",
+        desc: "Fatura ve KDV listelerinde matrah-KDV tutarlılık ve mükerrer risk kontrolü.",
+        href: "/muhasebe/kdv-matrah-kontrol",
+      },
     ],
   },
   {
