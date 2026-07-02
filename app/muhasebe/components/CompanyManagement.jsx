@@ -1,6 +1,7 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import AnnveroLogo from "@/app/components/AnnveroLogo";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { fetchCompanies, persistCompaniesToLocalStorage } from "@/src/utils/companies";
 import { emptyCompany, normalizeCompany } from "@/src/utils/companyNormalize";
@@ -2385,9 +2386,7 @@ export default function CompanyManagement() {
         <div className="relative mb-6">
           <div className="absolute -inset-8 -z-10 rounded-full bg-indigo-500/10 blur-3xl" />
           <div className="absolute -inset-4 -z-10 rounded-full bg-violet-500/5 blur-2xl" />
-          <h2 className="bg-gradient-to-r from-indigo-300 via-slate-100 to-indigo-300 bg-clip-text text-5xl font-bold tracking-[0.2em] text-transparent sm:text-6xl">
-            ANNVERO
-          </h2>
+          <AnnveroLogo onLight={false} size={52} />
         </div>
         <p className="text-lg font-medium text-slate-300 sm:text-xl">
           AI Destekli Mali Operasyon Platformu

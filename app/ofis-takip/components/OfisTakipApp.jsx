@@ -43,6 +43,7 @@ import {
   buildWhatsAppLink,
 } from "@/src/ofis-takip/whatsapp";
 import AnnveroModuleNav from "@/app/components/AnnveroModuleNav";
+import AnnveroLogo from "@/app/components/AnnveroLogo";
 
 const inputClass =
   "w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-2.5 text-white outline-none focus:border-violet-500";
@@ -1074,9 +1075,14 @@ export default function OfisTakipApp() {
     <main className="min-h-screen bg-gray-950 text-white">
       <div className="border-b border-gray-800 bg-gray-900/80 px-6 py-4 backdrop-blur">
         <div className={`mx-auto flex ${contentWidthClass} flex-wrap items-center justify-between gap-4`}>
-          <div>
-            <p className="text-sm text-violet-300">ANNVERO Modülü</p>
-            <h1 className="text-2xl font-bold">{data.settings.officeName || "Ofis Takip"}</h1>
+          <div className="flex items-center gap-3">
+            <Link href="/" aria-label="ANNVERO ana sayfa">
+              <AnnveroLogo onLight={false} size={30} />
+            </Link>
+            <div>
+              <p className="text-sm text-violet-300">ANNVERO Modülü</p>
+              <h1 className="text-2xl font-bold">{data.settings.officeName || "Ofis Takip"}</h1>
+            </div>
           </div>
           <div className="flex flex-wrap gap-3">
             <AnnveroModuleNav variant="ofis-takip" />

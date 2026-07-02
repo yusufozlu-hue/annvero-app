@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import MuhasebeMenu from "../components/MuhasebeMenu";
+import AnnveroLogo from "@/app/components/AnnveroLogo";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import PreviewEyeButton from "../components/PreviewEyeButton";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
@@ -465,13 +466,8 @@ export default function ElektrawebPage() {
       <div className="relative mx-auto w-full max-w-[1800px] p-6 sm:p-8">
         {/* Premium navbar */}
         <nav className="mb-8 flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-3 backdrop-blur-xl lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-2 px-2">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-sky-500 to-violet-600 text-sm font-black">
-              A
-            </span>
-            <span className="bg-gradient-to-r from-sky-400 to-violet-400 bg-clip-text text-lg font-black tracking-tight text-transparent">
-              ANNVERO
-            </span>
+          <div className="flex items-center px-2">
+            <AnnveroLogo onLight={false} size={42} priority />
           </div>
 
           <div className="flex-1 lg:flex lg:justify-center">

@@ -16,6 +16,11 @@ export const metadata: Metadata = {
   title: "ANNVERO | Muhasebe ve Vergi Yönetiminde Akıllı Dönüşüm",
   description:
     "ANNVERO ile muhasebe süreçlerinizi otomatikleştirin, vergisel risklerinizi azaltın ve mali operasyonlarınızı tek merkezden yönetin.",
+  icons: {
+    icon: "/annvero-icon.png",
+    shortcut: "/annvero-icon.png",
+    apple: "/annvero-icon.png",
+  },
 };
 
 export default function RootLayout({

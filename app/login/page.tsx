@@ -3,6 +3,7 @@
 import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import AuthLoadingScreen from "@/src/components/AuthLoadingScreen";
+import AnnveroLogo from "@/app/components/AnnveroLogo";
 import { getSafeNextPath } from "@/src/utils/authRedirect";
 import {
   checkSupabaseAuthSettings,
@@ -305,9 +306,11 @@ function LoginForm() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-black text-white">
       <div className="w-full max-w-md rounded-2xl border border-gray-800 bg-zinc-900 p-10">
-        <h1 className="text-center text-3xl font-bold">ANNVERO</h1>
+        <div className="flex justify-center">
+          <AnnveroLogo onLight={false} size={44} priority />
+        </div>
 
-        <p className="mt-2 text-center text-gray-400">Platform Girişi</p>
+        <p className="mt-4 text-center text-gray-400">Platform Girişi</p>
 
         {showDebug ? (
           <LoginDebugPanel

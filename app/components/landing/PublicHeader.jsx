@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -18,13 +19,14 @@ export default function PublicHeader() {
   return (
     <header className="sticky top-0 z-50 border-b border-violet-100 bg-white/90 backdrop-blur-md">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
-        <Link href="/" className="flex items-center gap-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-600 to-purple-700 text-sm font-bold text-white shadow-md shadow-violet-500/30">
-            A
-          </span>
-          <span className="text-xl font-bold tracking-tight text-slate-900">
-            ANNVERO
-          </span>
+        <Link href="/" className="flex items-center" aria-label="ANNVERO ana sayfa">
+          <Image
+            src="/annvero-logo.png"
+            alt="ANNVERO"
+            width={150}
+            height={42}
+            priority
+          />
         </Link>
 
         <nav className="hidden items-center gap-6 lg:flex">

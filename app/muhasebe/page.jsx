@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import AnnveroModuleNav from "@/app/components/AnnveroModuleNav";
+import AnnveroLogo from "@/app/components/AnnveroLogo";
 
 function IconBase({ children }) {
   return (
@@ -499,11 +500,9 @@ export default function Page() {
               Annvero Platform
             </span>
 
-            <h1 className="mt-5 text-5xl font-black leading-none tracking-tight sm:text-6xl">
-              <span className="bg-gradient-to-r from-sky-400 via-blue-400 to-violet-400 bg-clip-text text-transparent">
-                ANNVERO
-              </span>
-            </h1>
+            <div className="mt-5">
+              <AnnveroLogo onLight={false} size={52} priority />
+            </div>
 
             <h2 className="mt-2 text-2xl font-semibold text-gray-200 sm:text-3xl">
               Muhasebe Modülü

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import AnnveroModuleNav from "@/app/components/AnnveroModuleNav";
+import AnnveroLogo from "@/app/components/AnnveroLogo";
 
 function IconBase({ children }) {
   return (
@@ -175,7 +176,12 @@ export default function MuhasebeMenu() {
 
   return (
     <>
-      <AnnveroModuleNav variant="muhasebe-subpage" className="mb-4" />
+      <div className="mb-4 flex items-center gap-4">
+        <Link href="/muhasebe" aria-label="Muhasebe ana sayfa">
+          <AnnveroLogo onLight={false} size={30} />
+        </Link>
+        <AnnveroModuleNav variant="muhasebe-subpage" />
+      </div>
       <nav className="mb-8 -mx-1 overflow-x-auto pb-2">
       <div className="flex w-max gap-2 rounded-2xl border border-white/10 bg-white/5 p-1.5 backdrop-blur-xl sm:w-full sm:flex-wrap">
         {links.map(({ title, href, Icon }) => {
