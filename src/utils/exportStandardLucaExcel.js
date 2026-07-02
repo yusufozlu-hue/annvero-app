@@ -13,6 +13,7 @@ export function exportStandardLucaExcel(rows = [], options = {}) {
     filePrefix = "luca",
     logLabel = "luca-export",
     onValidationFail,
+    ignoreWarnings = false,
   } = options;
 
   if (!rows.length) {
@@ -24,13 +25,28 @@ export function exportStandardLucaExcel(rows = [], options = {}) {
   }
 
   const validation = validatePreviewForExport(rows);
-  if (!validation.ok) {
+
+  if (validation.hasBlockingErrors) {
     onValidationFail?.(validation);
     return {
       ok: false,
       reason: "validation",
       validation,
-      message: "Excel oluşturulamadı. Lütfen satır hatalarını düzeltin.",
+      message: validation.hasCriticalDuplicates
+        ? "Excel oluşturulamadı. Kritik mükerrer kayıtları giderin."
+        : "Excel oluşturulamadı. Lütfen satır hatalarını düzeltin.",
+    };
+  }
+
+  if (validation.hasWarnings && !ignoreWarnings) {
+    return {
+      ok: false,
+      reason: "warnings",
+      needsConfirm: true,
+      validation,
+      message: validation.hasHighDuplicateRisk
+        ? `${validation.warningCount} uyarı bulundu (yüksek/orta mükerrer riski dahil). Devam etmek için onaylayın.`
+        : `${validation.warningCount} uyarı bulundu. Devam etmek için onaylayın.`,
     };
   }
 
@@ -71,5 +87,6 @@ export function exportStandardLucaExcel(rows = [], options = {}) {
     ok: true,
     fileCount: totalFiles,
     rowCount: sortedRows.length,
+    exportedWithWarnings: validation.hasWarnings && ignoreWarnings,
   };
 }

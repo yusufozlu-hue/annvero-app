@@ -290,6 +290,14 @@ export function finalizeStandardLucaRow(row) {
     kontrolNotu: String(row.kontrolNotu || "").trim(),
     hafizaEslesme: Boolean(row.hafizaEslesme),
     manuallyEdited: Boolean(row.manuallyEdited),
+    ...(row.hafizaGuvenSkoru !== undefined && row.hafizaGuvenSkoru !== null
+      ? { hafizaGuvenSkoru: Number(row.hafizaGuvenSkoru) }
+      : {}),
+    ...(row.accountMemoryAutoFilled
+      ? { accountMemoryAutoFilled: true }
+      : {}),
+    ...(row.accountMemoryId ? { accountMemoryId: row.accountMemoryId } : {}),
+    ...(row.matchedMemoryId ? { matchedMemoryId: row.matchedMemoryId } : {}),
     ...(row.id ? { id: row.id } : {}),
     ...(row._movementId ? { _movementId: row._movementId } : {}),
   };

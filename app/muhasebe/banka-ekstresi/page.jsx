@@ -41,6 +41,11 @@ import {
 } from "@/src/utils/standardLucaRow";
 import { exportStandardLucaExcel } from "@/src/utils/exportStandardLucaExcel";
 import {
+  applyAccountMemoryV1ToRows,
+  saveAccountMemoryFromEdit,
+} from "@/src/utils/accountMemoryV1";
+import { buildExportWarningConfirmMessage } from "@/src/utils/previewExportValidation";
+import {
   formatParserDate,
   mapParsedRowsToStandardMovements,
   normalizeParserText,
@@ -199,12 +204,18 @@ export default function BankaParserPage() {
         kaynakAdi: selectedBank,
       });
 
-      return applyLearningMemoryToStandardLucaRows(
-        ensureStandardLucaRowIds(baseRows),
-        learningMemory,
+      return applyAccountMemoryV1ToRows(
+        applyLearningMemoryToStandardLucaRows(
+          ensureStandardLucaRowIds(baseRows),
+          learningMemory,
+          {
+            firmaId: selectedCompanyId,
+            kaynakTipi: KAYNAK_TIPI.BANKA,
+            kaynakAdi: selectedBank,
+          }
+        ),
         {
           firmaId: selectedCompanyId,
-          kaynakTipi: KAYNAK_TIPI.BANKA,
           kaynakAdi: selectedBank,
         }
       );
@@ -214,8 +225,6 @@ export default function BankaParserPage() {
 
   useEffect(() => {
     setStandardLucaRows(computedStandardLucaRows);
-    setEditingRowId(null);
-    setDraftRow(null);
   }, [computedStandardLucaRows]);
 
   const filteredStandardLucaRows = useMemo(
@@ -477,17 +486,44 @@ export default function BankaParserPage() {
     }
   };
 
-  const exportExcel = () => {
+  const handleAccountMemorySave = (row) => {
+    if (!selectedCompanyId) return;
+
+    saveAccountMemoryFromEdit(row, {
+      firmaId: selectedCompanyId,
+      kaynakAdi: selectedBank,
+    });
+  };
+
+  const exportExcel = (ignoreWarnings = false) => {
     const bankPrefix = `${String(selectedBank || "banka").toLowerCase()}_luca`;
     const result = exportStandardLucaExcel(standardLucaRows, {
       filePrefix: bankPrefix,
       logLabel: "banka-export",
       onValidationFail: setExportValidation,
+      ignoreWarnings,
     });
 
     if (!result.ok) {
+      if (result.reason === "warnings" && result.needsConfirm) {
+        const confirmed = window.confirm(
+          buildExportWarningConfirmMessage(result.validation)
+        );
+
+        if (confirmed) {
+          exportExcel(true);
+        }
+
+        return;
+      }
+
       if (result.reason === "validation") {
-        showToast("Excel oluşturulamadı. Satır hatalarını düzeltin.", "error");
+        showToast(
+          result.validation?.hasCriticalDuplicates
+            ? "Excel oluşturulamadı. Kritik mükerrer kayıtları düzeltin."
+            : "Excel oluşturulamadı. Satır hatalarını düzeltin.",
+          "error"
+        );
       } else {
         showToast(result.message || "Önce dosyayı yükleyip ön izleme oluşturun.", "error");
       }
@@ -806,6 +842,7 @@ export default function BankaParserPage() {
                   belgeTuru: "DK",
                 }}
                 onSaveAdvancedEdit={saveAdvancedPreviewEdit}
+                onAccountFieldChange={handleAccountMemorySave}
                 isSavingAdvancedEdit={isSavingPreviewEdit}
                 renderKontrolCell={(row) => {
                   const movement = row._movementId

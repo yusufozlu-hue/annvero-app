@@ -4,6 +4,7 @@ import { Fragment, useMemo, useState } from "react";
 import PreviewVoucherDetailPanel from "./PreviewVoucherDetailPanel";
 import { DOCUMENT_TYPE_OPTIONS, buildStandardLucaRowEditDraft } from "@/src/utils/previewRowEdit";
 import { validatePreviewForExport } from "@/src/utils/previewExportValidation";
+import { MUKERRER_RISK_SEVIYE } from "@/src/utils/duplicateRiskAnalysis";
 import {
   createEmptyStandardLucaRow,
   finalizeStandardLucaRow,
@@ -21,6 +22,7 @@ export default function EditableStandardLucaPreviewTable({
   exportValidation = null,
   renderKontrolCell,
   onSaveAdvancedEdit,
+  onAccountFieldChange,
   isSavingAdvancedEdit = false,
   showAdvancedEdit = true,
 }) {
@@ -42,13 +44,46 @@ export default function EditableStandardLucaPreviewTable({
     return map;
   }, [validation.rowErrors]);
 
-  const patchRow = (rowId, patch) => {
+  const rowWarningById = useMemo(() => {
+    const map = new Map();
+    for (const item of validation.rowErrors || []) {
+      if (item.rowId) map.set(item.rowId, item.warnings);
+    }
+    return map;
+  }, [validation.rowErrors]);
+
+  const rowDuplicateRiskById = useMemo(() => {
+    const map = new Map();
+    for (const item of validation.rowErrors || []) {
+      if (item.rowId && item.duplicateRisk) {
+        map.set(item.rowId, item.duplicateRisk);
+      }
+    }
+    return map;
+  }, [validation.rowErrors]);
+
+  const patchRow = (rowId, patch, options = {}) => {
+    const { trackAccountMemory = false } = options;
+
     onRowsChange(
-      rows.map((row) =>
-        row.id === rowId
-          ? finalizeStandardLucaRow({ ...row, ...patch, manuallyEdited: true })
-          : row
-      )
+      rows.map((row) => {
+        if (row.id !== rowId) return row;
+
+        const updatedRow = finalizeStandardLucaRow({
+          ...row,
+          ...patch,
+          manuallyEdited: true,
+          ...(trackAccountMemory
+            ? { hafizaGuvenSkoru: 100, accountMemoryAutoFilled: false }
+            : {}),
+        });
+
+        if (trackAccountMemory && onAccountFieldChange) {
+          onAccountFieldChange(updatedRow);
+        }
+
+        return updatedRow;
+      })
     );
   };
 
@@ -96,20 +131,59 @@ export default function EditableStandardLucaPreviewTable({
   };
 
   const columnCount =
-    11 + (showKaynakColumn ? 1 : 0) + (renderKontrolCell ? 1 : 0);
+    14 + (showKaynakColumn ? 1 : 0) + (renderKontrolCell ? 1 : 0);
+
+  const showBlockingBanner =
+    exportValidation?.hasBlockingErrors && exportValidation?.blockingMessages?.length;
+
+  const duplicateSummary = validation.duplicateAnalysis?.summary;
 
   return (
     <div className="space-y-4">
-      {!validation.ok && exportValidation ? (
+      {duplicateSummary?.hasCritical || duplicateSummary?.highCount ? (
+        <div
+          className={`rounded-xl border px-4 py-3 text-sm ${
+            duplicateSummary?.hasCritical
+              ? "border-red-700/60 bg-red-950/30 text-red-100"
+              : "border-orange-700/60 bg-orange-950/25 text-orange-100"
+          }`}
+        >
+          <p className="font-semibold">Mükerrer risk özeti</p>
+          <p className="mt-1 text-xs opacity-90">
+            {duplicateSummary.criticalCount > 0
+              ? `${duplicateSummary.criticalCount} kritik, `
+              : ""}
+            {duplicateSummary.highCount > 0
+              ? `${duplicateSummary.highCount} yüksek, `
+              : ""}
+            {duplicateSummary.mediumCount > 0
+              ? `${duplicateSummary.mediumCount} orta, `
+              : ""}
+            {duplicateSummary.lowCount} düşük risk.
+            {duplicateSummary.hasCritical
+              ? " Kritik mükerrer kayıtlar Excel oluşturmayı engeller."
+              : duplicateSummary.highCount > 0
+                ? " Yüksek riskli satırlar export öncesi uyarı verir."
+                : ""}
+          </p>
+        </div>
+      ) : null}
+
+      {showBlockingBanner ? (
         <div className="rounded-xl border border-red-700/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
           <p className="font-semibold">Excel oluşturulamadı — lütfen hataları düzeltin:</p>
-          {validation.globalErrors?.length ? (
+          {exportValidation.globalErrors?.length ? (
             <ul className="mt-2 list-inside list-disc">
-              {validation.globalErrors.map((error) => (
+              {exportValidation.globalErrors.map((error) => (
                 <li key={error}>{error}</li>
               ))}
             </ul>
           ) : null}
+          <ul className="mt-2 list-inside list-disc">
+            {(exportValidation.blockingMessages || []).slice(0, 12).map((error) => (
+              <li key={error}>{error}</li>
+            ))}
+          </ul>
         </div>
       ) : null}
 
@@ -136,11 +210,14 @@ export default function EditableStandardLucaPreviewTable({
               <th className="p-3 text-left">Açıklama</th>
               <th className="p-3 text-left">Hesap Kodu</th>
               <th className="p-3 text-left">Hesap Adı</th>
+              <th className="p-3 text-center">Güven</th>
               <th className="p-3 text-left">Belge Türü</th>
               <th className="p-3 text-right">Borç</th>
               <th className="p-3 text-right">Alacak</th>
               <th className="p-3 text-left">Karşı Hesap</th>
               {renderKontrolCell ? <th className="p-3 text-left">Kontrol</th> : null}
+              <th className="p-3 text-center">Mükerrer</th>
+              <th className="p-3 text-left">Hatalar</th>
               <th className="p-3 text-left">Uyarılar</th>
               <th className="p-3 text-center">İşlem</th>
             </tr>
@@ -155,12 +232,30 @@ export default function EditableStandardLucaPreviewTable({
             ) : (
               displayedRows.map((row) => {
                 const errors = rowErrorById.get(row.id) || [];
+                const warnings = rowWarningById.get(row.id) || [];
+                const duplicateRisk = rowDuplicateRiskById.get(row.id);
+                const duplicateScore = duplicateRisk?.score || 0;
+                const isCriticalDuplicate = Boolean(duplicateRisk?.isCritical);
+                const isHighDuplicate =
+                  !isCriticalDuplicate &&
+                  (duplicateRisk?.level === MUKERRER_RISK_SEVIYE.YUKSEK ||
+                    duplicateScore >= 70);
+                const isMediumDuplicate =
+                  duplicateRisk?.level === MUKERRER_RISK_SEVIYE.ORTA;
 
                 return (
                   <Fragment key={row.id}>
                     <tr
                       className={`border-t border-gray-800 ${
-                        errors.length ? "bg-red-950/20" : ""
+                        errors.length || isCriticalDuplicate
+                          ? "border-l-4 border-l-red-500 bg-red-950/25"
+                          : isHighDuplicate
+                            ? "border-l-4 border-l-orange-500 bg-orange-950/20"
+                            : isMediumDuplicate
+                              ? "bg-amber-950/10"
+                              : warnings.length
+                                ? "bg-amber-950/10"
+                                : ""
                       }`}
                     >
                       <td className="p-2">
@@ -207,7 +302,11 @@ export default function EditableStandardLucaPreviewTable({
                         <input
                           value={row.hesapKodu || ""}
                           onChange={(event) =>
-                            patchRow(row.id, { hesapKodu: event.target.value })
+                            patchRow(
+                              row.id,
+                              { hesapKodu: event.target.value },
+                              { trackAccountMemory: true }
+                            )
                           }
                           className={`${cellInputClassName} font-mono`}
                         />
@@ -216,10 +315,36 @@ export default function EditableStandardLucaPreviewTable({
                         <input
                           value={row.hesapAdi || ""}
                           onChange={(event) =>
-                            patchRow(row.id, { hesapAdi: event.target.value })
+                            patchRow(
+                              row.id,
+                              { hesapAdi: event.target.value },
+                              { trackAccountMemory: true }
+                            )
                           }
                           className={`${cellInputClassName} min-w-[140px]`}
                         />
+                      </td>
+                      <td className="p-3 text-center">
+                        {row.hafizaGuvenSkoru ? (
+                          <span
+                            className={`inline-flex min-w-[42px] justify-center rounded-full px-2 py-1 text-[11px] font-semibold ${
+                              row.hafizaGuvenSkoru >= 100
+                                ? "bg-emerald-900/60 text-emerald-200"
+                                : row.hafizaGuvenSkoru >= 80
+                                  ? "bg-sky-900/60 text-sky-200"
+                                  : "bg-amber-900/60 text-amber-200"
+                            }`}
+                            title={
+                              row.accountMemoryAutoFilled
+                                ? "Hesap hafızasından otomatik dolduruldu"
+                                : "Hesap hafızası eşleşmesi"
+                            }
+                          >
+                            {row.hafizaGuvenSkoru}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-500">—</span>
+                        )}
                       </td>
                       <td className="p-2">
                         <select
@@ -267,6 +392,31 @@ export default function EditableStandardLucaPreviewTable({
                       {renderKontrolCell ? (
                         <td className="p-3">{renderKontrolCell(row)}</td>
                       ) : null}
+                      <td className="p-3 text-center align-top">
+                        {duplicateScore > 0 ? (
+                          <div className="space-y-1">
+                            <span
+                              className={`inline-flex min-w-[42px] justify-center rounded-full px-2 py-1 text-[11px] font-semibold ${
+                                isCriticalDuplicate
+                                  ? "bg-red-900/70 text-red-100"
+                                  : isHighDuplicate
+                                    ? "bg-orange-900/70 text-orange-100"
+                                    : isMediumDuplicate
+                                      ? "bg-amber-900/60 text-amber-100"
+                                      : "bg-gray-800 text-gray-300"
+                              }`}
+                              title={duplicateRisk?.level || "Düşük"}
+                            >
+                              {duplicateScore}
+                            </span>
+                            <div className="text-[10px] text-gray-400">
+                              {duplicateRisk?.level || "—"}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-gray-500">—</span>
+                        )}
+                      </td>
                       <td className="p-3 align-top">
                         {errors.length ? (
                           <ul className="space-y-1 text-[11px] text-red-300">
@@ -275,7 +425,18 @@ export default function EditableStandardLucaPreviewTable({
                             ))}
                           </ul>
                         ) : (
-                          <span className="text-xs text-emerald-400">—</span>
+                          <span className="text-xs text-gray-500">—</span>
+                        )}
+                      </td>
+                      <td className="p-3 align-top">
+                        {warnings.length ? (
+                          <ul className="space-y-1 text-[11px] text-amber-300">
+                            {warnings.map((warning) => (
+                              <li key={warning}>• {warning}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <span className="text-xs text-gray-500">—</span>
                         )}
                       </td>
                       <td className="p-3">

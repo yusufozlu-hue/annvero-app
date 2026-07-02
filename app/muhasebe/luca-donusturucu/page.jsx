@@ -40,6 +40,11 @@ import {
 } from "@/src/utils/previewRowEdit";
 import { exportStandardLucaExcel } from "@/src/utils/exportStandardLucaExcel";
 import {
+  applyAccountMemoryV1ToRows,
+  saveAccountMemoryFromEdit,
+} from "@/src/utils/accountMemoryV1";
+import { buildExportWarningConfirmMessage } from "@/src/utils/previewExportValidation";
+import {
   ensureStandardLucaRowIds,
   finalizeStandardLucaRow,
   filterStandardLucaRows,
@@ -156,6 +161,18 @@ export default function LucaDonusturucuPage() {
     [selectedCompanyRaw]
   );
 
+  const getAccountMemoryContext = (rows = []) => ({
+    firmaId: selectedCompanyId,
+    kaynakAdi:
+      rows[0]?.kaynakAdi ||
+      hareketFileName ||
+      SOURCE_UI[sourceType]?.label ||
+      sourceType,
+  });
+
+  const applyPreviewAccountMemory = (rows) =>
+    applyAccountMemoryV1ToRows(rows, getAccountMemoryContext(rows));
+
   useEffect(() => {
     const refreshCompanyData = () => {
       setAccountPlans(loadAccountPlansFromStorage());
@@ -204,7 +221,7 @@ export default function LucaDonusturucuPage() {
         )
       )
     );
-    setStandardLucaRows(rows);
+    setStandardLucaRows(applyPreviewAccountMemory(rows));
     setRawRows([]);
     setFisler(groupStandardLucaRowsToFisler(rows));
     logStandardLucaReport("luca-donusturucu-pending", rows);
@@ -668,7 +685,7 @@ export default function LucaDonusturucuPage() {
 
       console.log("PREVIEW CLICKED");
       console.log("PARSED ROWS", parsedRows);
-      setStandardLucaRows(parsedRows);
+      setStandardLucaRows(applyPreviewAccountMemory(parsedRows));
       console.log("STANDARD ROWS STATE", parsedRows);
       setFisler(groupStandardLucaRowsToFisler(parsedRows));
       setRawRows([]);
@@ -932,7 +949,7 @@ export default function LucaDonusturucuPage() {
       console.log("USING PARSER", "BANKA");
       console.log("PARSED ROWS", parsedRows.slice(0, 10));
 
-      setStandardLucaRows(parsedRows);
+      setStandardLucaRows(applyPreviewAccountMemory(parsedRows));
       console.log("PREVIEW CLICKED");
       console.log("PARSED ROWS", parsedRows);
       console.log("STANDARD ROWS STATE", parsedRows);
@@ -1001,7 +1018,13 @@ export default function LucaDonusturucuPage() {
     }
   };
 
-  const exportExcel = () => {
+  const handleAccountMemorySave = (row) => {
+    if (!selectedCompanyId) return;
+
+    saveAccountMemoryFromEdit(row, getAccountMemoryContext([row]));
+  };
+
+  const exportExcel = (ignoreWarnings = false) => {
     const firmaKisa = getCompanyDisplayName(selectedCompany)
       .split(" ")[0]
       .toLowerCase()
@@ -1016,11 +1039,29 @@ export default function LucaDonusturucuPage() {
       filePrefix: `${firmaKisa}_luca_fis`,
       logLabel: "luca-donusturucu-export",
       onValidationFail: setExportValidation,
+      ignoreWarnings,
     });
 
     if (!result.ok) {
+      if (result.reason === "warnings" && result.needsConfirm) {
+        const confirmed = window.confirm(
+          buildExportWarningConfirmMessage(result.validation)
+        );
+
+        if (confirmed) {
+          exportExcel(true);
+        }
+
+        return;
+      }
+
       if (result.reason === "validation") {
-        showToast("Excel oluşturulamadı. Satır hatalarını düzeltin.", "error");
+        showToast(
+          result.validation?.hasCriticalDuplicates
+            ? "Excel oluşturulamadı. Kritik mükerrer kayıtları düzeltin."
+            : "Excel oluşturulamadı. Satır hatalarını düzeltin.",
+          "error"
+        );
       } else {
         showToast(result.message || "Önce ön izleme oluşturun.", "error");
       }
@@ -1289,6 +1330,7 @@ export default function LucaDonusturucuPage() {
                   kaynakAdi: SOURCE_UI[sourceType]?.label || sourceType,
                 }}
                 onSaveAdvancedEdit={saveAdvancedPreviewEdit}
+                onAccountFieldChange={handleAccountMemorySave}
                 isSavingAdvancedEdit={isSavingPreviewEdit}
               />
 
