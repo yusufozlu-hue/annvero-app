@@ -460,7 +460,11 @@ export default function AnnveroSupportWidget() {
         onClick={() => setOpen((current) => !current)}
         aria-label={open ? "Destek panelini kapat" : "ANNVERO destek panelini aç"}
         aria-expanded={open}
-        className="pointer-events-auto flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg shadow-emerald-500/30 transition hover:scale-105 hover:from-emerald-600 hover:to-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-200 sm:h-16 sm:w-16"
+        className={`pointer-events-auto flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 text-white transition duration-300 focus:outline-none focus:ring-4 focus:ring-emerald-200 sm:h-16 sm:w-16 ${
+          open
+            ? "shadow-lg shadow-emerald-500/30 hover:scale-105 hover:from-emerald-600 hover:to-emerald-700"
+            : "animate-annvero-support-glow motion-reduce:animate-none hover:animate-none hover:scale-105 hover:from-emerald-600 hover:to-emerald-700 hover:shadow-lg hover:shadow-emerald-500/35"
+        }`}
       >
         {open ? (
           <svg className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
