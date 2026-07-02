@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { buildWhatsAppLink } from "@/src/ofis-takip/whatsapp";
 
 const SUPPORT_PHONE = "+90 (212) 000 00 00";
@@ -67,6 +68,7 @@ export default function AnnveroSupportWidget() {
   const [openFaqIndex, setOpenFaqIndex] = useState(null);
   const [form, setForm] = useState(INITIAL_FORM);
   const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState("");
   const panelRef = useRef(null);
   const buttonRef = useRef(null);
 
@@ -85,6 +87,7 @@ export default function AnnveroSupportWidget() {
     setOpenFaqIndex(null);
     setForm(INITIAL_FORM);
     setSubmitting(false);
+    setFormError("");
   }, []);
 
   const closeWidget = useCallback(() => {
@@ -135,22 +138,37 @@ export default function AnnveroSupportWidget() {
     setForm((current) => ({ ...current, [field]: event.target.value }));
   };
 
-  const handleFormSubmit = (event) => {
+  const handleFormSubmit = async (event) => {
     event.preventDefault();
     setSubmitting(true);
+    setFormError("");
 
-    const payload = {
-      ...form,
-      submittedAt: new Date().toISOString(),
-      source: "annvero-support-widget",
-    };
-
-    console.log("[ANNVERO Destek] İletişim formu:", payload);
-
-    window.setTimeout(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
       setSubmitting(false);
-      setView("success");
-    }, 400);
+      setFormError("Mesaj gönderilemedi, lütfen tekrar deneyin.");
+      return;
+    }
+
+    const { error } = await supabase.from("contact_messages").insert([
+      {
+        name: form.fullName.trim(),
+        email: form.email.trim() || null,
+        phone: form.phone.trim() || null,
+        message: form.message.trim(),
+        source: "contact_widget",
+      },
+    ]);
+
+    setSubmitting(false);
+
+    if (error) {
+      console.error("[ANNVERO Destek] İletişim formu hatası:", error);
+      setFormError("Mesaj gönderilemedi, lütfen tekrar deneyin.");
+      return;
+    }
+
+    setView("success");
   };
 
   const menuItems = [
@@ -396,6 +414,12 @@ export default function AnnveroSupportWidget() {
                 >
                   {submitting ? "Gönderiliyor..." : "Mesajı Gönder"}
                 </button>
+
+                {formError ? (
+                  <p className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {formError}
+                  </p>
+                ) : null}
               </form>
             ) : null}
 
