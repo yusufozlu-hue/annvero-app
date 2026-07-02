@@ -7,15 +7,21 @@ import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { normalizeCompanyRecord } from "@/src/utils/companyCenter";
 import {
+  approveMutabakatMatch,
   BANK_OPTIONS,
   buildMutabakatExcelRows,
+  buildMutabakatSummarySheetRows,
   buildSuggestedLucaExcelRows,
   filterMutabakatRows,
+  groupMutabakatRows,
   MUTABAKAT_DURUM,
+  MUTABAKAT_GRUP,
   parseBankEkstreSheet,
   parseLuca102MuavinSheet,
+  recalculateMutabakatSummary,
   runBankaMutabakat,
 } from "@/src/utils/bankaMutabakat";
+import { saveMutabakatManualMatch } from "@/src/utils/mutabakatMatchMemory";
 
 const inputClassName =
   "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-white outline-none focus:border-indigo-500";
@@ -36,6 +42,13 @@ function formatMoney(value) {
   });
 }
 
+function guvenClass(score) {
+  if (score >= 90) return "bg-emerald-900/70 text-emerald-100";
+  if (score >= 70) return "bg-sky-900/70 text-sky-100";
+  if (score >= 40) return "bg-amber-900/70 text-amber-100";
+  return "bg-gray-800 text-gray-300";
+}
+
 function riskClass(risk) {
   if (risk === "Yüksek") return "text-red-300";
   if (risk === "Orta") return "text-amber-300";
@@ -45,6 +58,10 @@ function riskClass(risk) {
 function durumClass(durum) {
   if (durum === MUTABAKAT_DURUM.TAM_ESLESTI) {
     return "bg-emerald-900/50 text-emerald-200";
+  }
+
+  if (durum === MUTABAKAT_DURUM.OLASI_ESLESTI) {
+    return "bg-sky-900/50 text-sky-200";
   }
 
   if (
@@ -65,6 +82,8 @@ function durumClass(durum) {
       MUTABAKAT_DURUM.ACIKLAMA_FARKI,
       MUTABAKAT_DURUM.ACIKLAMA_BENZER_TUTAR_FARKLI,
       MUTABAKAT_DURUM.MUKERRER,
+      MUTABAKAT_DURUM.BSMV_MASRAF_FARKI,
+      MUTABAKAT_DURUM.POS_KOMISYON_FARKI,
     ].includes(durum)
   ) {
     return "bg-amber-900/50 text-amber-200";
@@ -99,6 +118,8 @@ export default function BankaMutabakatPage() {
   const [bankRows, setBankRows] = useState([]);
   const [muavinRows, setMuavinRows] = useState([]);
   const [hasCompared, setHasCompared] = useState(false);
+  const [comparisonResult, setComparisonResult] = useState(null);
+  const [activeGroup, setActiveGroup] = useState("");
   const [showErrorsOnly, setShowErrorsOnly] = useState(false);
   const [hideMatched, setHideMatched] = useState(false);
   const [search, setSearch] = useState("");
@@ -134,30 +155,13 @@ export default function BankaMutabakatPage() {
     selectedCompanyId,
   ]);
 
-  const analysis = useMemo(() => {
-    if (!hasCompared) return null;
-    if (!bankRows.length && !muavinRows.length) return null;
-
-    return runBankaMutabakat({
-      bankRows,
-      muavinRows,
-      bankId: selectedBank,
-      company: selectedCompany || {},
-      firmaId: selectedCompanyId,
-    });
-  }, [
-    hasCompared,
-    bankRows,
-    muavinRows,
-    selectedBank,
-    selectedCompany,
-    selectedCompanyId,
-  ]);
+  const analysis = comparisonResult;
 
   const displayedRows = useMemo(() => {
     const baseRows = filterMutabakatRows(analysis?.rows || [], {
       errorsOnly: showErrorsOnly,
       hideMatched,
+      group: activeGroup,
     });
     const query = search.trim().toLocaleLowerCase("tr");
 
@@ -173,15 +177,21 @@ export default function BankaMutabakatPage() {
         row.oneri,
         row.riskSeviyesi,
         row.eslesmeYontemi,
+        row.grup,
+        row.guvenEtiketi,
+        String(row.guvenSkoru || ""),
+        ...(row.uyariListesi || []),
       ]
         .join(" ")
         .toLocaleLowerCase("tr")
         .includes(query)
     );
-  }, [analysis?.rows, showErrorsOnly, hideMatched, search]);
+  }, [analysis?.rows, showErrorsOnly, hideMatched, search, activeGroup]);
 
   const resetComparison = () => {
     setHasCompared(false);
+    setComparisonResult(null);
+    setActiveGroup("");
     setSuggestionRowId(null);
   };
 
@@ -244,34 +254,68 @@ export default function BankaMutabakatPage() {
     }
 
     setHasCompared(true);
+    setComparisonResult(
+      runBankaMutabakat({
+        bankRows,
+        muavinRows,
+        bankId: selectedBank,
+        company: selectedCompany || {},
+        firmaId: selectedCompanyId,
+      })
+    );
+    setActiveGroup("");
     setSuggestionRowId(null);
     showToast("Karşılaştırma tamamlandı", "success");
   };
 
-  const exportReport = () => {
+  const handleApproveMatch = (row) => {
+    if (!row?.bankRow || !row?.muavinRow) return;
+
+    saveMutabakatManualMatch(row.bankRow, row.muavinRow, {
+      firmaId: selectedCompanyId,
+      bankId: selectedBank,
+    });
+
+    setComparisonResult((current) => {
+      if (!current) return current;
+
+      const updatedRows = current.rows.map((item) =>
+        item.id === row.id ? approveMutabakatMatch(item) : item
+      );
+      const grouped = groupMutabakatRows(updatedRows);
+
+      return {
+        ...current,
+        rows: updatedRows,
+        grouped,
+        summary: recalculateMutabakatSummary(updatedRows, grouped, current.summary),
+      };
+    });
+
+    showToast("Eşleşme onaylandı ve hafızaya alındı", "success");
+  };
+
+  const downloadMutabakatReport = (mode = "all") => {
     if (!analysis?.rows?.length) {
       showToast("Dışa aktarılacak sonuç yok", "error");
       return;
     }
 
     const rowsToExport = filterMutabakatRows(analysis.rows, {
-      errorsOnly: showErrorsOnly,
-      hideMatched,
+      errorsOnly: mode === "risky" ? false : showErrorsOnly,
+      hideMatched: mode === "all" ? hideMatched : false,
+      group: activeGroup,
+      riskyOnly: mode === "risky",
+      unmatchedOnly: mode === "unmatched",
     });
 
     const workbook = XLSX.utils.book_new();
-    const summarySheet = XLSX.utils.json_to_sheet([
-      {
-        Firma: selectedCompany?.name || selectedCompanyId || "-",
-        Banka: selectedBank,
-        "Banka Satırı": analysis.summary.bankCount,
-        "Muavin Satırı": analysis.summary.muavinCount,
-        "Tam Eşleşen": analysis.summary.tamEslesenCount,
-        "Hatalı Kayıt": analysis.summary.errorCount,
-        "Bankada Var": analysis.summary.bankadaVarCount,
-        "Muavin Var": analysis.summary.muavinVarCount,
-      },
-    ]);
+    const summarySheet = XLSX.utils.json_to_sheet(
+      buildMutabakatSummarySheetRows(analysis, {
+        firma: selectedCompany?.name || selectedCompanyId,
+        bankId: selectedBank,
+      })
+    );
     const resultSheet = XLSX.utils.json_to_sheet(
       buildMutabakatExcelRows({ rows: rowsToExport })
     );
@@ -279,9 +323,16 @@ export default function BankaMutabakatPage() {
     XLSX.utils.book_append_sheet(workbook, summarySheet, "Özet");
     XLSX.utils.book_append_sheet(workbook, resultSheet, "Mutabakat");
 
+    const suffix =
+      mode === "unmatched"
+        ? "Eslesmeyenler"
+        : mode === "risky"
+          ? "Riskliler"
+          : "Tum_Sonuclar";
+
     XLSX.writeFile(
       workbook,
-      `Banka_Mutabakat_${selectedBank}_${new Date().toISOString().slice(0, 10)}.xlsx`
+      `Banka_Mutabakat_${selectedBank}_${suffix}_${new Date().toISOString().slice(0, 10)}.xlsx`
     );
     showToast("Excel raporu indirildi", "success");
   };
@@ -409,33 +460,85 @@ export default function BankaMutabakatPage() {
 
       {analysis ? (
         <>
-          <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
-            <SummaryCard title="Banka Satırı" value={analysis.summary.bankCount} />
-            <SummaryCard title="Muavin Satırı" value={analysis.summary.muavinCount} />
+          <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
+            <SummaryCard title="Toplam Banka Hareketi" value={analysis.summary.bankCount} />
+            <SummaryCard title="Toplam Muavin Hareketi" value={analysis.summary.muavinCount} />
             <SummaryCard
               title="Tam Eşleşen"
               value={analysis.summary.tamEslesenCount}
               tone="success"
             />
             <SummaryCard
-              title="Hatalı Kayıt"
-              value={analysis.summary.errorCount}
-              tone={analysis.summary.errorCount > 0 ? "error" : "success"}
-            />
-            <SummaryCard
-              title="Açıklama Farkı"
-              value={analysis.summary.aciklamaFarkiCount}
+              title="Olası Eşleşen"
+              value={analysis.summary.olasiEslesenCount}
               tone="warning"
             />
+            <SummaryCard
+              title="Eksik Kayıt"
+              value={analysis.summary.eksikKayitCount}
+              tone={analysis.summary.eksikKayitCount > 0 ? "error" : "success"}
+            />
+            <SummaryCard
+              title="Fark Olan"
+              value={analysis.summary.farkKayitCount}
+              tone={analysis.summary.farkKayitCount > 0 ? "warning" : "success"}
+            />
+            <SummaryCard
+              title="Riskli Kayıt"
+              value={analysis.summary.riskliKayitCount}
+              tone={analysis.summary.riskliKayitCount > 0 ? "error" : "success"}
+            />
+          </div>
+
+          <div className="mb-6 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveGroup("")}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+                !activeGroup
+                  ? "bg-indigo-600 text-white"
+                  : "border border-gray-700 text-gray-300 hover:bg-gray-900"
+              }`}
+            >
+              Tüm Gruplar
+            </button>
+            {Object.values(MUTABAKAT_GRUP).map((group) => (
+              <button
+                key={group}
+                type="button"
+                onClick={() => setActiveGroup(group)}
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+                  activeGroup === group
+                    ? "bg-indigo-600 text-white"
+                    : "border border-gray-700 text-gray-300 hover:bg-gray-900"
+                }`}
+              >
+                {group} ({analysis.grouped?.[group]?.length || 0})
+              </button>
+            ))}
           </div>
 
           <div className="mb-6 flex flex-wrap gap-3">
             <button
               type="button"
-              onClick={exportReport}
+              onClick={() => downloadMutabakatReport("all")}
               className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-700"
             >
-              Excel Raporu İndir
+              Tüm Sonuçlar Excel
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadMutabakatReport("unmatched")}
+              className="rounded-xl border border-amber-700 bg-amber-950/40 px-4 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-950/70"
+            >
+              Sadece Eşleşmeyenler Excel
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadMutabakatReport("risky")}
+              className="rounded-xl border border-red-700 bg-red-950/40 px-4 py-2 text-sm font-semibold text-red-100 hover:bg-red-950/70"
+            >
+              Sadece Riskliler Excel
             </button>
             <button
               type="button"
@@ -491,10 +594,12 @@ export default function BankaMutabakatPage() {
           </div>
 
           <div className="overflow-x-auto rounded-2xl border border-gray-800 bg-gray-900">
-            <table className="w-full min-w-[1500px] text-sm">
+            <table className="w-full min-w-[1700px] text-sm">
               <thead className="bg-gray-800 text-gray-300">
                 <tr>
+                  <th className="p-3 text-left">Grup</th>
                   <th className="p-3 text-left">Durum</th>
+                  <th className="p-3 text-center">Güven</th>
                   <th className="p-3 text-left">Banka Tarihi</th>
                   <th className="p-3 text-left">Muavin Tarihi</th>
                   <th className="p-3 text-left">Banka Açıklama</th>
@@ -503,14 +608,25 @@ export default function BankaMutabakatPage() {
                   <th className="p-3 text-right">Muavin Tutarı</th>
                   <th className="p-3 text-right">Fark</th>
                   <th className="p-3 text-left">Risk</th>
-                  <th className="p-3 text-left">Öneri</th>
+                  <th className="p-3 text-left">Öneri / Uyarı</th>
                   <th className="p-3 text-left">İşlem</th>
                 </tr>
               </thead>
               <tbody>
                 {displayedRows.slice(0, 150).map((row) => (
                   <Fragment key={row.id}>
-                    <tr className="border-t border-gray-800 align-top">
+                    <tr
+                      className={`border-t border-gray-800 align-top ${
+                        row.needsManualApproval
+                          ? "border-l-4 border-l-sky-500 bg-sky-950/10"
+                          : row.guvenSkoru >= 90 && row.isMatched
+                            ? "border-l-4 border-l-emerald-500/60"
+                            : row.riskSeviyesi === "Yüksek"
+                              ? "border-l-4 border-l-red-500/60 bg-red-950/10"
+                              : ""
+                      }`}
+                    >
+                      <td className="p-3 text-xs text-gray-400">{row.grup || "—"}</td>
                       <td className="p-3">
                         <span
                           className={`inline-block rounded-lg px-2 py-1 text-xs font-semibold ${durumClass(row.durum)}`}
@@ -523,6 +639,20 @@ export default function BankaMutabakatPage() {
                           </div>
                         ) : null}
                       </td>
+                      <td className="p-3 text-center">
+                        {row.guvenSkoru ? (
+                          <div className="space-y-1">
+                            <span
+                              className={`inline-flex min-w-[42px] justify-center rounded-full px-2 py-1 text-[11px] font-semibold ${guvenClass(row.guvenSkoru)}`}
+                            >
+                              {row.guvenSkoru}
+                            </span>
+                            <div className="text-[10px] text-gray-400">{row.guvenEtiketi}</div>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-gray-500">—</span>
+                        )}
+                      </td>
                       <td className="p-3">{row.bankaTarihi || "—"}</td>
                       <td className="p-3">{row.muavinTarihi || "—"}</td>
                       <td className="max-w-xs p-3">{row.bankaAciklama || "—"}</td>
@@ -533,29 +663,51 @@ export default function BankaMutabakatPage() {
                       <td className={`p-3 font-semibold ${riskClass(row.riskSeviyesi)}`}>
                         {row.riskSeviyesi}
                       </td>
-                      <td className="max-w-sm p-3 text-gray-300">{row.oneri}</td>
+                      <td className="max-w-sm p-3 text-gray-300">
+                        <div>{row.oneri}</div>
+                        {row.uyariListesi?.length ? (
+                          <ul className="mt-2 space-y-1 text-[11px] text-amber-300">
+                            {row.uyariListesi.map((warning) => (
+                              <li key={warning}>• {warning}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </td>
                       <td className="p-3">
-                        {row.suggestedLucaRows?.length ? (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSuggestionRowId((current) =>
-                                current === row.id ? null : row.id
-                              )
-                            }
-                            className="rounded-lg border border-indigo-700 px-3 py-1.5 text-xs font-semibold text-indigo-200 hover:bg-indigo-950"
-                          >
-                            Fiş Öner
-                          </button>
-                        ) : (
-                          <span className="text-xs text-gray-500">—</span>
-                        )}
+                        <div className="flex flex-col gap-2">
+                          {row.needsManualApproval && !row.manualApproved ? (
+                            <button
+                              type="button"
+                              onClick={() => handleApproveMatch(row)}
+                              className="rounded-lg border border-emerald-700 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-950"
+                            >
+                              Eşleşmeyi Onayla
+                            </button>
+                          ) : null}
+                          {row.suggestedLucaRows?.length ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSuggestionRowId((current) =>
+                                  current === row.id ? null : row.id
+                                )
+                              }
+                              className="rounded-lg border border-indigo-700 px-3 py-1.5 text-xs font-semibold text-indigo-200 hover:bg-indigo-950"
+                            >
+                              Fiş Öner
+                            </button>
+                          ) : (
+                            !row.needsManualApproval ? (
+                              <span className="text-xs text-gray-500">—</span>
+                            ) : null
+                          )}
+                        </div>
                       </td>
                     </tr>
 
                     {suggestionRowId === row.id && row.suggestedLucaRows?.length ? (
                       <tr className="border-t border-gray-800 bg-gray-950/80">
-                        <td colSpan={11} className="p-4">
+                        <td colSpan={13} className="p-4">
                           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                             <h3 className="text-lg font-semibold">
                               Fiş Önerisi (ön izleme — otomatik kayıt yapılmaz)
