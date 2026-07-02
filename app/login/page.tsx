@@ -83,9 +83,14 @@ function LoginForm() {
   const [debugSupabaseUrl, setDebugSupabaseUrl] = useState("");
   const [debugAnonKeyType, setDebugAnonKeyType] = useState("unknown");
 
-  const showDebug =
-    process.env.NODE_ENV === "development" ||
-    searchParams.get("debug") === "1";
+  // Debug paneli ve konsol debug kayıtları yalnızca ?debug=1 ile açılır.
+  // Localhost/development ortamında otomatik olarak GÖSTERİLMEZ.
+  const showDebug = searchParams.get("debug") === "1";
+  const debugLog = (...args: unknown[]) => {
+    if (showDebug) {
+      console.log(...args);
+    }
+  };
   const hasSupabaseUrl = Boolean(
     (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim()
   );
@@ -94,8 +99,8 @@ function LoginForm() {
   );
 
   useEffect(() => {
-    console.log("SUPABASE URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
-    console.log(
+    debugLog("SUPABASE URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
+    debugLog(
       "SUPABASE KEY EXISTS:",
       !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
     );
@@ -161,14 +166,14 @@ function LoginForm() {
             ? getSafeNextPath(nextParam)
             : "/dashboard";
 
-          console.log("login error", userError);
-          console.log("user id", userData.user?.id ?? null);
-          console.log(
+          debugLog("login error", userError);
+          debugLog("user id", userData.user?.id ?? null);
+          debugLog(
             "session var mı",
             Boolean(connectionTest.session || userData.user)
           );
-          console.log("next url", nextParam);
-          console.log("redirect hedefi", redirectTarget);
+          debugLog("next url", nextParam);
+          debugLog("redirect hedefi", redirectTarget);
 
           if (userData.user) {
             router.replace(redirectTarget);
@@ -239,11 +244,11 @@ function LoginForm() {
         ? getSafeNextPath(nextParam)
         : "/dashboard";
 
-      console.log("login error", signInError);
-      console.log("user id", signInData.user?.id ?? null);
-      console.log("session var mı", Boolean(signInData.session));
-      console.log("next url", nextParam);
-      console.log("redirect hedefi", redirectTarget);
+      debugLog("login error", signInError);
+      debugLog("user id", signInData.user?.id ?? null);
+      debugLog("session var mı", Boolean(signInData.session));
+      debugLog("next url", nextParam);
+      debugLog("redirect hedefi", redirectTarget);
 
       if (signInError) {
         logLoginError(signInError);
@@ -264,9 +269,9 @@ function LoginForm() {
       const { data: sessionData } = await supabase.auth.getSession();
       const { data: userData, error: userError } = await supabase.auth.getUser();
 
-      console.log("session var mı (getSession)", Boolean(sessionData.session));
-      console.log("user id (getUser)", userData.user?.id ?? null);
-      console.log("login error (getUser)", userError);
+      debugLog("session var mı (getSession)", Boolean(sessionData.session));
+      debugLog("user id (getUser)", userData.user?.id ?? null);
+      debugLog("login error (getUser)", userError);
 
       if (!sessionData.session || !userData.user) {
         setError("Giriş başarısız: Oturum oluşturulamadı");

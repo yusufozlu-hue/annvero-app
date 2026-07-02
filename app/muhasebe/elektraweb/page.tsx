@@ -22,6 +22,7 @@ import {
   buildElektrawebCombinedSearchText,
 } from "@/src/utils/elektrawebAccountMatcher";
 import { fetchLearningMemoryForCompany } from "@/src/utils/learningMemory";
+import { loadAccountingRulesFromStorage } from "@/src/utils/accountingRuleEngine";
 import {
   buildElektrawebPreviewRows,
   buildStandardLucaTransferPayload,
@@ -66,6 +67,7 @@ export default function ElektrawebPage() {
   const [standardLucaRows, setStandardLucaRows] = useState<any[]>([]);
   const [accountPlans, setAccountPlans] = useState<Record<string, unknown>>({});
   const [learningMemory, setLearningMemory] = useState<any[]>([]);
+  const [kuralMotoruRules, setKuralMotoruRules] = useState<any[]>([]);
 
   const { plans: companyPlans, diagnostics: accountPlanDiagnostics } = useMemo(
     () =>
@@ -86,12 +88,18 @@ export default function ElektrawebPage() {
       selectedCompanyAccountPlan: normalizedAccountPlan,
       normalizedAccountPlan,
       learningMemory,
-      companyMappings: buildElektrawebCompanyMappings(selectedCompany || {}),
+      companyId: selectedCompanyId,
+      kuralMotoruRules,
+      companyMappings: buildElektrawebCompanyMappings({
+        ...(selectedCompany || {}),
+        companyId: selectedCompanyId,
+        kuralMotoruRules,
+      }),
       documentSeriesRules: selectedCompany?.documentSeriesRules || [],
       accountingRules: selectedCompany?.accountingRules || {},
       employees: selectedCompany?.employees || [],
     }),
-    [normalizedAccountPlan, learningMemory, selectedCompany]
+    [normalizedAccountPlan, learningMemory, kuralMotoruRules, selectedCompany, selectedCompanyId]
   );
 
   const rematchRows = (rows: any[], memory = learningMemory) =>
@@ -103,7 +111,10 @@ export default function ElektrawebPage() {
     });
 
   useEffect(() => {
-    const refreshPlans = () => setAccountPlans(loadAccountPlansFromStorage());
+    const refreshPlans = () => {
+      setAccountPlans(loadAccountPlansFromStorage());
+      setKuralMotoruRules(loadAccountingRulesFromStorage());
+    };
     refreshPlans();
     window.addEventListener("focus", refreshPlans);
     return () => window.removeEventListener("focus", refreshPlans);

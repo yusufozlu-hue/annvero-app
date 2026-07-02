@@ -1,6 +1,15 @@
 import { extractSeriesPrefix, MEMORY_MATCH_LABEL } from "@/src/utils/previewRowEdit";
 import { formatParserDate } from "@/src/utils/bankMovementMapper";
 import {
+  appendControlNote,
+  buildGroupedCariDescription,
+  groupTebHavaleMovements,
+  logTebHavaleGroupingReport,
+  TEB_MASRAF_ACCOUNT,
+  TEB_MASRAF_DESCRIPTION,
+  TEB_UNMATCHED_MASRAF_NOTE,
+} from "@/src/utils/tebHavaleGrouping";
+import {
   applyMatchResultToRow,
   buildElektrawebCompanyMappings,
   buildElektrawebCombinedSearchText,
@@ -404,6 +413,8 @@ export function enrichElektrawebStandardLucaRow(row, context = {}) {
       documentSeriesRules,
       accountingRules: context.accountingRules,
       employees: context.employees,
+      kuralMotoruRules: context.kuralMotoruRules,
+      companyId: context.companyId || context.firmaId,
     });
 
   const match = matchAccountCode(
@@ -607,8 +618,124 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
   return rows;
 }
 
+export function groupedTebHavaleToStandardLucaRows(group, fisNo, context = {}) {
+  const mainMovement = group.mainMovement;
+  const masrafTotal = Number(group.masrafTotal || 0);
+  const mainAmount = Math.abs(Number(mainMovement.amount || 0));
+  if (!mainAmount) return [];
+
+  const bankAccount = mainMovement.accountCode;
+  const cariAccount = mainMovement.counterAccountCode;
+  const totalOut = Number((mainAmount + masrafTotal).toFixed(2));
+  const fisAciklama = buildGroupedCariDescription(mainMovement);
+  const belgeTuru = mainMovement.documentType || "DK";
+
+  const rows = [
+    buildBankLucaLine({
+      movement: mainMovement,
+      fisNo,
+      context,
+      hesapKodu: bankAccount,
+      borc: "",
+      alacak: totalOut,
+      fisAciklama,
+      detayAciklama: fisAciklama,
+      belgeTuru,
+    }),
+    buildBankLucaLine({
+      movement: mainMovement,
+      fisNo,
+      context,
+      hesapKodu: cariAccount,
+      borc: mainAmount,
+      alacak: "",
+      fisAciklama,
+      detayAciklama: fisAciklama,
+      belgeTuru,
+    }),
+  ];
+
+  if (masrafTotal > 0) {
+    rows.push(
+      buildBankLucaLine({
+        movement: mainMovement,
+        fisNo,
+        context,
+        hesapKodu: TEB_MASRAF_ACCOUNT,
+        borc: masrafTotal,
+        alacak: "",
+        fisAciklama,
+        detayAciklama: TEB_MASRAF_DESCRIPTION,
+        belgeTuru,
+      })
+    );
+  }
+
+  return rows;
+}
+
+export function tebUnmatchedMasrafToStandardLucaRows(movement, fisNo, context = {}) {
+  const tutar = Math.abs(Number(movement.amount || 0));
+  if (!tutar) return [];
+
+  const movementWithNote = {
+    ...movement,
+    warning: appendControlNote(movement.warning, TEB_UNMATCHED_MASRAF_NOTE),
+  };
+  const bankAccount = movement.accountCode;
+  const belgeTuru = movement.documentType || "DK";
+
+  return [
+    buildBankLucaLine({
+      movement: movementWithNote,
+      fisNo,
+      context,
+      hesapKodu: bankAccount,
+      borc: "",
+      alacak: tutar,
+      fisAciklama: TEB_MASRAF_DESCRIPTION,
+      detayAciklama: TEB_MASRAF_DESCRIPTION,
+      belgeTuru,
+    }),
+    buildBankLucaLine({
+      movement: movementWithNote,
+      fisNo,
+      context,
+      hesapKodu: TEB_MASRAF_ACCOUNT,
+      borc: tutar,
+      alacak: "",
+      fisAciklama: TEB_MASRAF_DESCRIPTION,
+      detayAciklama: TEB_MASRAF_DESCRIPTION,
+      belgeTuru,
+    }),
+  ];
+}
+
 export function bankMovementsToStandardLucaRows(movements = [], context = {}) {
   const rows = [];
+  const bankName = String(context.kaynakAdi || context.bankName || "")
+    .trim()
+    .toUpperCase();
+
+  if (bankName === "TEB") {
+    const { outputItems, report } = groupTebHavaleMovements(movements);
+    logTebHavaleGroupingReport(report);
+
+    let fisNo = 1;
+
+    outputItems.forEach((item) => {
+      if (item.kind === "teb_havale_group") {
+        rows.push(...groupedTebHavaleToStandardLucaRows(item, fisNo, context));
+      } else if (item.kind === "teb_unmatched_masraf") {
+        rows.push(...tebUnmatchedMasrafToStandardLucaRows(item.movement, fisNo, context));
+      } else {
+        rows.push(...bankMovementToStandardLucaRows(item.movement, fisNo, context));
+      }
+      fisNo += 1;
+    });
+
+    return sortStandardLucaRows(rows);
+  }
 
   movements.forEach((movement, index) => {
     const fisNo = index + 1;
@@ -704,7 +831,7 @@ export function standardLucaRowsToExcelRows(rows = []) {
     "Fiş No": row.fisNo,
     "Fiş Tarihi": formatDateTR(row.fisTarihi),
     "Fiş Açıklama": row.fisAciklama || row.detayAciklama || "",
-    "Hesap Kodu": row.hesapKodu || "",
+    "Hesap Kodu": String(row.hesapKodu || "").trim(),
     "Evrak No": row.evrakNo || "",
     "Evrak Tarihi": formatDateTR(row.evrakTarihi || row.fisTarihi),
     "Detay Açıklama": row.detayAciklama || row.fisAciklama || "",

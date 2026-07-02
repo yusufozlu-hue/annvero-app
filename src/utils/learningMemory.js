@@ -25,6 +25,32 @@ export async function fetchLearningMemoryForCompany(companyId, options = {}) {
   }
 }
 
+export async function fetchAllLearningMemory(options = {}) {
+  const params = new URLSearchParams();
+
+  if (options.includeInactive) {
+    params.set("includeInactive", "1");
+  }
+
+  const query = params.toString();
+  const url = query ? `/api/learning-memory?${query}` : "/api/learning-memory";
+
+  try {
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      console.error("learning_memory fetch failed", await response.text());
+      return [];
+    }
+
+    const payload = await response.json();
+    return payload.data || [];
+  } catch (error) {
+    console.error("learning_memory fetch failed", error);
+    return [];
+  }
+}
+
 export async function createLearningMemoryRecord(record) {
   try {
     const response = await fetch("/api/learning-memory", {

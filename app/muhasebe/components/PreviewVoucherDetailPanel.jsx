@@ -8,6 +8,7 @@ export default function PreviewVoucherDetailPanel({
   cariOptions = [],
   isSaving = false,
   variant = "default",
+  showMemoryOption = true,
 }) {
   if (!draft) return null;
 
@@ -201,6 +202,7 @@ export default function PreviewVoucherDetailPanel({
         </PreviewField>
       </div>
 
+      {showMemoryOption ? (
       <label className="mt-4 flex items-center gap-2 text-sm text-slate-300">
         <input
           type="checkbox"
@@ -209,6 +211,7 @@ export default function PreviewVoucherDetailPanel({
         />
         {memoryLabel}
       </label>
+      ) : null}
 
       <div className="mt-4 flex flex-wrap gap-2">
         <button

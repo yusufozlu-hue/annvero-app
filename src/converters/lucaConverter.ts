@@ -13,16 +13,45 @@ export function lucaConverter(items: any[], banka: Banka) {
   let fisNo = 1;
 
   items.forEach((item: any) => {
-    if (item.anaTutar > 0) {
+    const anaTutar = Number(item.anaTutar || 0);
+    const masrafTutar = Number(item.masrafTutar || 0);
+    const toplamBankaCikis = Number((anaTutar + masrafTutar).toFixed(2));
+
+    if (toplamBankaCikis <= 0) return;
+
+    const cariDesc = item.unvan
+      ? `GÖND. HVL / ${item.unvan}`
+      : item.aciklama || "BANKA HAREKETİ";
+    const fisAciklama = anaTutar > 0 ? cariDesc : "HAVALE/EFT MASRAFI";
+    const bankAccount = bankaHesapKodlari[banka];
+
+    result.push({
+      "Fiş No": fisNo,
+      "Fiş Tarihi": item.tarih,
+      "Fiş Açıklama": fisAciklama,
+      "Hesap Kodu": bankAccount,
+      "Evrak No": item.dekont || "",
+      "Evrak Tarihi": item.tarih,
+      "Detay Açıklama": fisAciklama,
+      Borç: "",
+      Alacak: toplamBankaCikis,
+      Miktar: "",
+      "Belge Türü": "DK",
+      "Para Birimi": "",
+      Kur: "",
+      "Döviz Tutar": "",
+    });
+
+    if (anaTutar > 0) {
       result.push({
         "Fiş No": fisNo,
         "Fiş Tarihi": item.tarih,
-        "Fiş Açıklama": item.aciklama || "BANKA HAREKETİ",
+        "Fiş Açıklama": fisAciklama,
         "Hesap Kodu": "320.01.001",
-        "Evrak No": "",
+        "Evrak No": item.dekont || "",
         "Evrak Tarihi": item.tarih,
-        "Detay Açıklama": item.aciklama || "BANKA HAREKETİ",
-        Borç: Number(item.anaTutar.toFixed(2)),
+        "Detay Açıklama": cariDesc,
+        Borç: Number(anaTutar.toFixed(2)),
         Alacak: "",
         Miktar: "",
         "Belge Türü": "DK",
@@ -30,37 +59,18 @@ export function lucaConverter(items: any[], banka: Banka) {
         Kur: "",
         "Döviz Tutar": "",
       });
-
-      result.push({
-        "Fiş No": fisNo,
-        "Fiş Tarihi": item.tarih,
-        "Fiş Açıklama": item.aciklama || "BANKA HAREKETİ",
-        "Hesap Kodu": bankaHesapKodlari[banka],
-        "Evrak No": "",
-        "Evrak Tarihi": item.tarih,
-        "Detay Açıklama": item.aciklama || "BANKA HAREKETİ",
-        Borç: "",
-        Alacak: Number(item.anaTutar.toFixed(2)),
-        Miktar: "",
-        "Belge Türü": "DK",
-        "Para Birimi": "",
-        Kur: "",
-        "Döviz Tutar": "",
-      });
-
-      fisNo++;
     }
 
-    if (item.masrafTutar > 0) {
+    if (masrafTutar > 0) {
       result.push({
         "Fiş No": fisNo,
         "Fiş Tarihi": item.tarih,
-        "Fiş Açıklama": "HAVALE/EFT MASRAFI",
+        "Fiş Açıklama": fisAciklama,
         "Hesap Kodu": "780.01.001",
-        "Evrak No": "",
+        "Evrak No": item.dekont || "",
         "Evrak Tarihi": item.tarih,
         "Detay Açıklama": "HAVALE/EFT MASRAFI",
-        Borç: Number(item.masrafTutar.toFixed(2)),
+        Borç: Number(masrafTutar.toFixed(2)),
         Alacak: "",
         Miktar: "",
         "Belge Türü": "DK",
@@ -68,26 +78,9 @@ export function lucaConverter(items: any[], banka: Banka) {
         Kur: "",
         "Döviz Tutar": "",
       });
-
-      result.push({
-        "Fiş No": fisNo,
-        "Fiş Tarihi": item.tarih,
-        "Fiş Açıklama": "HAVALE/EFT MASRAFI",
-        "Hesap Kodu": bankaHesapKodlari[banka],
-        "Evrak No": "",
-        "Evrak Tarihi": item.tarih,
-        "Detay Açıklama": "HAVALE/EFT MASRAFI",
-        Borç: "",
-        Alacak: Number(item.masrafTutar.toFixed(2)),
-        Miktar: "",
-        "Belge Türü": "DK",
-        "Para Birimi": "",
-        Kur: "",
-        "Döviz Tutar": "",
-      });
-
-      fisNo++;
     }
+
+    fisNo++;
   });
 
   return result;

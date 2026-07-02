@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import AnnveroModuleNav from "@/app/components/AnnveroModuleNav";
 
@@ -33,41 +36,6 @@ function Building2Icon() {
   );
 }
 
-function FileSpreadsheetIcon() {
-  return (
-    <IconBase>
-      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
-      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
-      <path d="M8 13h2" />
-      <path d="M14 13h2" />
-      <path d="M8 17h2" />
-      <path d="M14 17h2" />
-    </IconBase>
-  );
-}
-
-function SettingsIcon() {
-  return (
-    <IconBase>
-      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-      <circle cx="12" cy="12" r="3" />
-    </IconBase>
-  );
-}
-
-function LandmarkIcon() {
-  return (
-    <IconBase>
-      <line x1="3" x2="21" y1="22" y2="22" />
-      <line x1="6" x2="6" y1="18" y2="11" />
-      <line x1="10" x2="10" y1="18" y2="11" />
-      <line x1="14" x2="14" y1="18" y2="11" />
-      <line x1="18" x2="18" y1="18" y2="11" />
-      <polygon points="12 2 20 7 4 7" />
-    </IconBase>
-  );
-}
-
 function FileTextIcon() {
   return (
     <IconBase>
@@ -89,13 +57,26 @@ function ShieldCheckIcon() {
   );
 }
 
-function RefreshCwIcon() {
+function BrainIcon() {
   return (
     <IconBase>
-      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-      <path d="M21 3v5h-5" />
-      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
-      <path d="M3 21v-5h5" />
+      <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588 4 4 0 0 0 7.636 2.106 3.2 3.2 0 0 0 .556-6.588 4 4 0 0 0-2.526-5.77A3 3 0 0 0 12 5Z" />
+      <path d="M12 5v14" />
+      <path d="M9 9h6" />
+      <path d="M9 15h6" />
+    </IconBase>
+  );
+}
+
+function CalculatorIcon() {
+  return (
+    <IconBase>
+      <rect width="16" height="20" x="4" y="2" rx="2" />
+      <line x1="8" x2="16" y1="6" y2="6" />
+      <line x1="8" x2="10" y1="14" y2="14" />
+      <line x1="8" x2="10" y1="18" y2="18" />
+      <line x1="14" x2="16" y1="14" y2="14" />
+      <line x1="14" x2="16" y1="18" y2="18" />
     </IconBase>
   );
 }
@@ -119,12 +100,28 @@ function ArrowRightIcon() {
   );
 }
 
-const modules = [
-  {
-    title: "Firma Yönetim Merkezi",
-    desc: "Firma, banka, kredi kartı, araç, personel ve modül yönetimi.",
-    href: "/muhasebe/firma-yonetimi",
-    Icon: Building2Icon,
+function ArrowLeftIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M19 12H5" />
+      <path d="m12 19-7-7 7-7" />
+    </svg>
+  );
+}
+
+// Tailwind sınıflarının JIT tarafından algılanması için tema stringleri tam yazılır.
+const THEMES = {
+  blue: {
     border: "from-blue-500/60 via-blue-500/10 to-transparent",
     glow: "bg-blue-500/25",
     iconWrap: "from-blue-500/30 to-blue-600/5 text-blue-200 ring-blue-400/30",
@@ -134,41 +131,7 @@ const modules = [
     dot: "bg-blue-400",
     badgeText: "text-blue-200",
   },
-  {
-    title: "Hesap Planı Yükleme",
-    desc: "Firma bazlı hesap planı yükleme ve hesap eşleştirme işlemleri.",
-    href: "/muhasebe/hesap-plani",
-    Icon: FileSpreadsheetIcon,
-    border: "from-emerald-500/60 via-emerald-500/10 to-transparent",
-    glow: "bg-emerald-500/25",
-    iconWrap:
-      "from-emerald-500/30 to-emerald-600/5 text-emerald-200 ring-emerald-400/30",
-    cardHover: "hover:shadow-emerald-500/25",
-    arrowHover:
-      "group-hover:border-emerald-400/60 group-hover:bg-emerald-500/20 group-hover:text-emerald-200",
-    dot: "bg-emerald-400",
-    badgeText: "text-emerald-200",
-  },
-  {
-    title: "Muhasebe Kural Motoru",
-    desc: "Belge türü ve muhasebe kurallarını yönetir.",
-    href: "/muhasebe/kurallar",
-    Icon: SettingsIcon,
-    border: "from-orange-500/60 via-orange-500/10 to-transparent",
-    glow: "bg-orange-500/25",
-    iconWrap:
-      "from-orange-500/30 to-orange-600/5 text-orange-200 ring-orange-400/30",
-    cardHover: "hover:shadow-orange-500/25",
-    arrowHover:
-      "group-hover:border-orange-400/60 group-hover:bg-orange-500/20 group-hover:text-orange-200",
-    dot: "bg-orange-400",
-    badgeText: "text-orange-200",
-  },
-  {
-    title: "Banka Parser Merkezi",
-    desc: "TEB, Kuveyt, Vakıf, Garanti ve Ziraat ekstre parserleri.",
-    href: "/muhasebe/banka-ekstresi",
-    Icon: LandmarkIcon,
+  violet: {
     border: "from-violet-500/60 via-violet-500/10 to-transparent",
     glow: "bg-violet-500/25",
     iconWrap:
@@ -179,25 +142,7 @@ const modules = [
     dot: "bg-violet-400",
     badgeText: "text-violet-200",
   },
-  {
-    title: "Luca Fiş Üretici",
-    desc: "Standartlaştırılmış verileri Luca aktarım fişine dönüştürür.",
-    href: "/muhasebe/luca-donusturucu",
-    Icon: FileTextIcon,
-    border: "from-cyan-500/60 via-cyan-500/10 to-transparent",
-    glow: "bg-cyan-500/25",
-    iconWrap: "from-cyan-500/30 to-cyan-600/5 text-cyan-200 ring-cyan-400/30",
-    cardHover: "hover:shadow-cyan-500/25",
-    arrowHover:
-      "group-hover:border-cyan-400/60 group-hover:bg-cyan-500/20 group-hover:text-cyan-200",
-    dot: "bg-cyan-400",
-    badgeText: "text-cyan-200",
-  },
-  {
-    title: "Fiş Kontrol Merkezi",
-    desc: "Mükerrer fiş, belge no ve hesap kontrol işlemleri.",
-    href: "/muhasebe/fis-kontrol",
-    Icon: ShieldCheckIcon,
+  teal: {
     border: "from-teal-500/60 via-teal-500/10 to-transparent",
     glow: "bg-teal-500/25",
     iconWrap: "from-teal-500/30 to-teal-600/5 text-teal-200 ring-teal-400/30",
@@ -207,19 +152,199 @@ const modules = [
     dot: "bg-teal-400",
     badgeText: "text-teal-200",
   },
-  {
-    title: "Elektraweb Fiş Dönüştürücü",
-    desc: "Elektraweb fiş listesini Luca aktarım formatına dönüştürür.",
-    href: "/muhasebe/elektraweb",
-    Icon: RefreshCwIcon,
-    border: "from-rose-500/60 via-rose-500/10 to-transparent",
-    glow: "bg-rose-500/25",
-    iconWrap: "from-rose-500/30 to-rose-600/5 text-rose-200 ring-rose-400/30",
-    cardHover: "hover:shadow-rose-500/25",
+  amber: {
+    border: "from-amber-500/60 via-amber-500/10 to-transparent",
+    glow: "bg-amber-500/25",
+    iconWrap: "from-amber-500/30 to-amber-600/5 text-amber-200 ring-amber-400/30",
+    cardHover: "hover:shadow-amber-500/25",
     arrowHover:
-      "group-hover:border-rose-400/60 group-hover:bg-rose-500/20 group-hover:text-rose-200",
-    dot: "bg-rose-400",
-    badgeText: "text-rose-200",
+      "group-hover:border-amber-400/60 group-hover:bg-amber-500/20 group-hover:text-amber-200",
+    dot: "bg-amber-400",
+    badgeText: "text-amber-200",
+  },
+  fuchsia: {
+    border: "from-fuchsia-500/60 via-fuchsia-500/10 to-transparent",
+    glow: "bg-fuchsia-500/25",
+    iconWrap:
+      "from-fuchsia-500/30 to-fuchsia-600/5 text-fuchsia-200 ring-fuchsia-400/30",
+    cardHover: "hover:shadow-fuchsia-500/25",
+    arrowHover:
+      "group-hover:border-fuchsia-400/60 group-hover:bg-fuchsia-500/20 group-hover:text-fuchsia-200",
+    dot: "bg-fuchsia-400",
+    badgeText: "text-fuchsia-200",
+  },
+};
+
+const categories = [
+  {
+    id: "firma-yonetimi",
+    title: "Firma Yönetimi",
+    desc: "Firma, hesap planı, banka, personel, araç ve belge yönetimi.",
+    Icon: Building2Icon,
+    color: "blue",
+    items: [
+      {
+        title: "Firma Yönetim Merkezi",
+        desc: "Firma, banka, kredi kartı, araç, personel ve modül yönetimi.",
+        href: "/muhasebe/firma-yonetimi",
+      },
+      {
+        title: "Hesap Planı Yükleme",
+        desc: "Firma bazlı hesap planı yükleme ve hesap eşleştirme.",
+        href: "/muhasebe/hesap-plani",
+      },
+      {
+        title: "Banka & Kredi Kartları",
+        desc: "Firmanın banka hesapları ve kredi kartı tanımları.",
+        href: "/muhasebe/firma-yonetimi?tab=banks",
+      },
+      {
+        title: "Personel",
+        desc: "Personel kayıtları ve Excel'den toplu yükleme.",
+        href: "/muhasebe/firma-yonetimi?tab=employees",
+      },
+      {
+        title: "Araçlar",
+        desc: "Firma araç tanımları ve gider hesapları.",
+        href: "/muhasebe/firma-yonetimi?tab=vehicles",
+      },
+      {
+        title: "Belge Serileri",
+        desc: "Belge türü ve seri tanımlama kuralları.",
+        href: "/muhasebe/firma-yonetimi?tab=documents",
+      },
+    ],
+  },
+  {
+    id: "fis-islemleri",
+    title: "Fiş İşlemleri",
+    desc: "Banka, Elektraweb ve Luca fiş üretim/dönüştürme araçları.",
+    Icon: FileTextIcon,
+    color: "violet",
+    items: [
+      {
+        title: "Banka Parser Merkezi",
+        desc: "TEB, Kuveyt, Vakıf, Garanti ve Ziraat ekstre parserleri.",
+        href: "/muhasebe/banka-ekstresi",
+      },
+      {
+        title: "Elektraweb Fiş Dönüştürücü",
+        desc: "Elektraweb fiş listesini Luca aktarım formatına dönüştürür.",
+        href: "/muhasebe/elektraweb",
+      },
+      {
+        title: "Luca Fiş Üretici",
+        desc: "Standartlaştırılmış verileri Luca aktarım fişine dönüştürür.",
+        href: "/muhasebe/luca-donusturucu",
+      },
+      {
+        title: "Kredi Kartı Ekstresi Dönüştürücü",
+        desc: "Kredi kartı ekstrelerini fiş formatına dönüştürür.",
+        href: null,
+      },
+      {
+        title: "Fiş Dönüştürme Merkezi",
+        desc: "Tüm kaynakları tek pipeline ile fişe dönüştürün. (Ana merkez)",
+        href: "/muhasebe/fis-donusturme",
+      },
+    ],
+  },
+  {
+    id: "kontrol-mutabakat",
+    title: "Kontrol & Mutabakat",
+    desc: "Fiş kontrol, banka mutabakat ve AI tabanlı denetim.",
+    Icon: ShieldCheckIcon,
+    color: "teal",
+    items: [
+      {
+        title: "Fiş Kontrol Merkezi",
+        desc: "Mükerrer fiş, belge no ve hesap kontrol işlemleri.",
+        href: "/muhasebe/fis-kontrol",
+      },
+      {
+        title: "Banka Muavin Mutabakat",
+        desc: "Banka ekstresi ile Luca 102 muavinini karşılaştırır.",
+        href: "/muhasebe/banka-mutabakat",
+      },
+      {
+        title: "AI Kontrol Merkezi",
+        desc: "Şüpheli ve olağandışı fiş kayıtlarını kural tabanlı analiz eder.",
+        href: "/muhasebe/ai-kontrol",
+      },
+      {
+        title: "Luca Aktarım Kontrolü",
+        desc: "Luca'ya aktarılacak fişlerin ön aktarım kontrolü.",
+        href: null,
+      },
+    ],
+  },
+  {
+    id: "kural-hafiza",
+    title: "Kural & Hafıza",
+    desc: "Kural motoru, öğrenen hafıza ve eşleştirme standartları.",
+    Icon: BrainIcon,
+    color: "amber",
+    items: [
+      {
+        title: "Muhasebe Kural Motoru",
+        desc: "Belge türü ve muhasebe kurallarını yönetir.",
+        href: "/muhasebe/kural-motoru",
+      },
+      {
+        title: "Öğrenen Hafıza",
+        desc: "Ön izlemede kaydedilen firma bazlı düzeltmeleri yönetin.",
+        href: "/muhasebe/ogrenen-hafiza",
+      },
+      {
+        title: "Açıklama Standartları",
+        desc: "Fiş açıklama şablonları ve standartlarını yönetin.",
+        href: null,
+      },
+      {
+        title: "Cari Eşleştirme",
+        desc: "Cari hesap adlarını hesap kodlarıyla eşleştirin.",
+        href: null,
+      },
+    ],
+  },
+  {
+    id: "hesaplama-araclari",
+    title: "Hesaplama Araçları",
+    desc: "Vergi, poliçe, amortisman, tevkifat ve kur farkı hesaplamaları.",
+    Icon: CalculatorIcon,
+    color: "fuchsia",
+    items: [
+      {
+        title: "Vergi Hesaplama Araçları",
+        desc: "Sık kullanılan vergi hesaplamalarını tek merkezden yapın.",
+        href: "/hesaplama-araclari",
+      },
+      {
+        title: "Poliçe Giderleştirme",
+        desc: "Sigorta poliçelerini döneme yayarak giderleştirin.",
+        href: null,
+      },
+      {
+        title: "Amortisman",
+        desc: "Sabit kıymet amortisman hesaplamaları.",
+        href: null,
+      },
+      {
+        title: "Tevkifat",
+        desc: "KDV ve gelir vergisi tevkifat hesaplamaları.",
+        href: null,
+      },
+      {
+        title: "Maaş Maliyet",
+        desc: "Personel maaş maliyeti ve işveren yük hesaplaması.",
+        href: null,
+      },
+      {
+        title: "Kur Farkı",
+        desc: "Dövizli işlemler için kur farkı hesaplama.",
+        href: null,
+      },
+    ],
   },
 ];
 
@@ -230,7 +355,130 @@ const footerStats = [
   { label: "Akıllı", color: "bg-violet-400" },
 ];
 
+function CategoryCard({ category, onOpen }) {
+  const theme = THEMES[category.color];
+  const { Icon } = category;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(category.id)}
+      className="group block h-full w-full text-left"
+    >
+      <div
+        className={`relative h-full rounded-3xl bg-gradient-to-br ${theme.border} p-[1.5px] transition-transform duration-300 group-hover:scale-[1.02]`}
+      >
+        <div
+          className={`relative flex h-full flex-col overflow-hidden rounded-[22px] bg-gray-900/70 p-6 shadow-xl shadow-black/30 backdrop-blur-xl transition-shadow duration-300 ${theme.cardHover}`}
+        >
+          <div
+            className={`pointer-events-none absolute -left-6 -top-6 h-28 w-28 rounded-full ${theme.glow} opacity-60 blur-2xl transition-opacity duration-300 group-hover:opacity-100`}
+          />
+
+          <div className="relative flex items-start justify-between">
+            <div
+              className={`flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br ${theme.iconWrap} ring-1`}
+            >
+              <Icon />
+            </div>
+
+            <span
+              className={`flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-gray-400 transition-all duration-300 group-hover:translate-x-0.5 ${theme.arrowHover}`}
+            >
+              <ArrowRightIcon />
+            </span>
+          </div>
+
+          <h3 className="relative mt-6 text-xl font-semibold text-gray-100">
+            {category.title}
+          </h3>
+          <p className="relative mt-2 flex-1 text-sm leading-relaxed text-gray-400">
+            {category.desc}
+          </p>
+
+          <div className="relative mt-5 flex items-center gap-2">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium ${theme.badgeText}`}
+            >
+              <span
+                className={`h-1.5 w-1.5 animate-pulse rounded-full ${theme.dot}`}
+              />
+              {category.items.length} modül
+            </span>
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function SubModuleCard({ item, theme }) {
+  const available = Boolean(item.href);
+
+  const inner = (
+    <div
+      className={`relative h-full rounded-3xl bg-gradient-to-br ${theme.border} p-[1.5px] transition-transform duration-300 ${
+        available ? "group-hover:scale-[1.02]" : "opacity-60"
+      }`}
+    >
+      <div
+        className={`relative flex h-full flex-col overflow-hidden rounded-[22px] bg-gray-900/70 p-5 shadow-xl shadow-black/30 backdrop-blur-xl transition-shadow duration-300 ${
+          available ? theme.cardHover : ""
+        }`}
+      >
+        <div className="relative flex items-start justify-between gap-3">
+          <h3 className="text-base font-semibold text-gray-100">{item.title}</h3>
+
+          {available ? (
+            <span
+              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-gray-400 transition-all duration-300 group-hover:translate-x-0.5 ${theme.arrowHover}`}
+            >
+              <ArrowRightIcon />
+            </span>
+          ) : (
+            <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-gray-400">
+              Yakında
+            </span>
+          )}
+        </div>
+
+        <p className="mt-2 flex-1 text-sm leading-relaxed text-gray-400">
+          {item.desc}
+        </p>
+
+        <div className="mt-4 flex items-center gap-2">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium ${
+              available ? theme.badgeText : "text-gray-500"
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                available ? `animate-pulse ${theme.dot}` : "bg-gray-600"
+              }`}
+            />
+            {available ? "Aktif" : "Yakında"}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (!available) {
+    return <div className="block h-full cursor-not-allowed">{inner}</div>;
+  }
+
+  return (
+    <Link href={item.href} className="group block h-full">
+      {inner}
+    </Link>
+  );
+}
+
 export default function Page() {
+  const [activeCategoryId, setActiveCategoryId] = useState(null);
+  const activeCategory = categories.find((c) => c.id === activeCategoryId) || null;
+
   return (
     <main className="relative min-h-screen overflow-hidden bg-gray-950 p-6 text-white sm:p-10">
       {/* Arka plan neon glow katmanları */}
@@ -262,11 +510,12 @@ export default function Page() {
             </h2>
 
             <p className="mt-3 max-w-xl text-base text-gray-400">
-              Tüm muhasebe süreçlerinizi tek ekrandan yönetin
+              {activeCategory
+                ? activeCategory.desc
+                : "Modülleri kategoriler altında tek çatıdan yönetin"}
             </p>
           </div>
 
-          {/* Sağ üst mini info kartı */}
           <div className="relative rounded-3xl p-[1.5px] bg-gradient-to-br from-white/20 via-white/5 to-transparent">
             <div className="rounded-[22px] bg-white/5 px-6 py-5 backdrop-blur-xl">
               <div className="flex items-center gap-3">
@@ -284,62 +533,55 @@ export default function Page() {
           </div>
         </header>
 
-        {/* Modül kartları */}
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {modules.map((m) => {
-            const { Icon } = m;
-            return (
-              <Link key={m.href} href={m.href} className="group block h-full">
-                <div
-                  className={`relative h-full rounded-3xl bg-gradient-to-br ${m.border} p-[1.5px] transition-transform duration-300 group-hover:scale-[1.02]`}
+        {!activeCategory ? (
+          /* Ana kategori kartları */
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+            {categories.map((category) => (
+              <CategoryCard
+                key={category.id}
+                category={category}
+                onOpen={setActiveCategoryId}
+              />
+            ))}
+          </div>
+        ) : (
+          /* Kategori detayı: alt modüller */
+          <div>
+            <div className="mb-6 flex flex-wrap items-center gap-4">
+              <button
+                type="button"
+                onClick={() => setActiveCategoryId(null)}
+                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-gray-200 transition-colors hover:bg-white/10"
+              >
+                <ArrowLeftIcon />
+                Geri
+              </button>
+
+              <div className="flex items-center gap-3">
+                <span
+                  className={`flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br ${
+                    THEMES[activeCategory.color].iconWrap
+                  } ring-1`}
                 >
-                  <div
-                    className={`relative flex h-full flex-col overflow-hidden rounded-[22px] bg-gray-900/70 p-6 shadow-xl shadow-black/30 backdrop-blur-xl transition-shadow duration-300 ${m.cardHover}`}
-                  >
-                    {/* İkon arkası neon glow */}
-                    <div
-                      className={`pointer-events-none absolute -left-6 -top-6 h-28 w-28 rounded-full ${m.glow} opacity-60 blur-2xl transition-opacity duration-300 group-hover:opacity-100`}
-                    />
+                  <activeCategory.Icon />
+                </span>
+                <h3 className="text-2xl font-bold text-gray-100">
+                  {activeCategory.title}
+                </h3>
+              </div>
+            </div>
 
-                    <div className="relative flex items-start justify-between">
-                      <div
-                        className={`flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br ${m.iconWrap} ring-1`}
-                      >
-                        <Icon />
-                      </div>
-
-                      {/* Sağda yuvarlak ok butonu */}
-                      <span
-                        className={`flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-gray-400 transition-all duration-300 group-hover:translate-x-0.5 ${m.arrowHover}`}
-                      >
-                        <ArrowRightIcon />
-                      </span>
-                    </div>
-
-                    <h3 className="relative mt-6 text-lg font-semibold text-gray-100">
-                      {m.title}
-                    </h3>
-                    <p className="relative mt-2 flex-1 text-sm leading-relaxed text-gray-400">
-                      {m.desc}
-                    </p>
-
-                    {/* Alt status badge */}
-                    <div className="relative mt-5 flex items-center gap-2">
-                      <span
-                        className={`inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium ${m.badgeText}`}
-                      >
-                        <span
-                          className={`h-1.5 w-1.5 animate-pulse rounded-full ${m.dot}`}
-                        />
-                        Aktif
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </Link>
-            );
-          })}
-        </div>
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+              {activeCategory.items.map((item) => (
+                <SubModuleCard
+                  key={item.title}
+                  item={item}
+                  theme={THEMES[activeCategory.color]}
+                />
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Alt bilgi barı */}
         <div className="mt-12 rounded-3xl border border-white/10 bg-white/5 px-6 py-5 backdrop-blur-xl">

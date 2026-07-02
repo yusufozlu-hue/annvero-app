@@ -99,17 +99,71 @@ function RefreshCwIcon() {
   );
 }
 
+function BrainIcon() {
+  return (
+    <IconBase>
+      <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588 4 4 0 0 0 7.636 2.106 3.2 3.2 0 0 0 .556-6.588 4 4 0 0 0-2.526-5.77A3 3 0 0 0 12 5Z" />
+      <path d="M12 5v14" />
+      <path d="M9 9h6" />
+      <path d="M9 15h6" />
+    </IconBase>
+  );
+}
+
+function ScaleIcon() {
+  return (
+    <IconBase>
+      <path d="M12 3v18" />
+      <path d="M5 7h14" />
+      <path d="M7 7 5 21" />
+      <path d="M17 7l2 14" />
+      <path d="M9 13h6" />
+    </IconBase>
+  );
+}
+
+function SparklesIcon() {
+  return (
+    <IconBase>
+      <path d="M9.5 2 11 7l5 1.5L11 10l-1.5 5L8 10l-5-1.5L8 7z" />
+      <path d="M18 12 19 16l4 1-4 1-1 4-1-4-4-1 4-1 1-4z" />
+    </IconBase>
+  );
+}
+
+function LayersIcon() {
+  return (
+    <IconBase>
+      <path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.84Z" />
+      <path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" />
+      <path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" />
+    </IconBase>
+  );
+}
+
 const links = [
   { title: "Muhasebe Ana Sayfa", href: "/muhasebe", Icon: HomeIcon },
+  {
+    title: "Fiş Dönüştürme",
+    href: "/muhasebe/fis-donusturme",
+    Icon: LayersIcon,
+  },
   { title: "Hesap Planı", href: "/muhasebe/hesap-plani", Icon: FileSpreadsheetIcon },
-  { title: "Kural Motoru", href: "/muhasebe/kurallar", Icon: SettingsIcon },
+  { title: "Kural Motoru", href: "/muhasebe/kural-motoru", Icon: SettingsIcon },
   { title: "Banka Parser", href: "/muhasebe/banka-ekstresi", Icon: LandmarkIcon },
+  {
+    title: "Banka Mutabakat",
+    href: "/muhasebe/banka-mutabakat",
+    Icon: ScaleIcon,
+  },
   {
     title: "Luca Fiş Üretici",
     href: "/muhasebe/luca-donusturucu",
     Icon: FileTextIcon,
   },
   { title: "Fiş Kontrol", href: "/muhasebe/fis-kontrol", Icon: ShieldCheckIcon },
+  { title: "AI Kontrol", href: "/muhasebe/ai-kontrol", Icon: SparklesIcon },
+  { title: "Öğrenen Hafıza", href: "/muhasebe/ogrenen-hafiza", Icon: BrainIcon },
   { title: "Elektraweb", href: "/muhasebe/elektraweb", Icon: RefreshCwIcon },
 ];
 

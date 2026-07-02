@@ -1,5 +1,9 @@
 import { normalizeAccountPlanForMatching } from "@/src/utils/companyCenter";
 import {
+  formatAccountingRuleTemplate,
+  matchAccountingRule,
+} from "@/src/utils/accountingRuleEngine";
+import {
   buildCariSearchCandidates,
   normalizeCariNameCore,
   resolveCariAccountMatch,
@@ -9,6 +13,7 @@ import { normalizeParserText } from "@/src/utils/textNormalize";
 
 export const ESLESME_YONTEMI = {
   OGRENEN_HAFIZA: "Öğrenen Hafıza",
+  KURAL_MOTORU: "Kural Motoru",
   CARI_ESLESME: "Cari Eşleşme",
   HESAP_PLANI: "Hesap Planı",
   BELGE_TURU: "Belge Türü",
@@ -78,6 +83,8 @@ export function buildElektrawebCompanyMappings(company = {}) {
     documentSeriesRules: company.documentSeriesRules || [],
     accountingRules: company.accountingRules || {},
     employees: company.employees || [],
+    kuralMotoruRules: company.kuralMotoruRules || [],
+    companyId: company.companyId || company.id || "",
   };
 }
 
@@ -137,6 +144,9 @@ function buildMatchSuccess({
   eslesmeYontemi,
   hafizaEslesme = false,
   kontrolNotu = "",
+  belgeTuru = "",
+  fisAciklama = "",
+  detayAciklama = "",
   debug,
 }) {
   return {
@@ -146,12 +156,27 @@ function buildMatchSuccess({
     riskDurumu: "",
     hafizaEslesme,
     hesapEslesmeNotlari: [],
+    ...(belgeTuru ? { belgeTuru } : {}),
+    ...(fisAciklama ? { fisAciklama } : {}),
+    ...(detayAciklama ? { detayAciklama } : {}),
     debug: {
       ...debug,
       bulunanHesapKodu: hesapKodu,
       eslesmeYontemi,
       nedenBos: "",
     },
+  };
+}
+
+function applyRuleOverlayToMatch(match, ruleOverlay) {
+  if (!ruleOverlay) return match;
+
+  return {
+    ...match,
+    belgeTuru: ruleOverlay.belgeTuru || match.belgeTuru,
+    fisAciklama: ruleOverlay.fisAciklama || match.fisAciklama,
+    detayAciklama: ruleOverlay.detayAciklama || match.detayAciklama,
+    kontrolNotu: match.kontrolNotu || ruleOverlay.kontrolNotu,
   };
 }
 
@@ -418,6 +443,55 @@ export function matchAccountCode(
     });
   }
 
+  const kuralMotoruRules = companyMappings.kuralMotoruRules || [];
+  const companyId = companyMappings.companyId || "";
+  let ruleOverlay = null;
+  let workingRow = row;
+
+  const accountingRule = matchAccountingRule(combinedText, {
+    companyId,
+    kaynakTipi: "Elektraweb",
+    rules: kuralMotoruRules,
+  });
+
+  if (accountingRule) {
+    const templateDesc = formatAccountingRuleTemplate(
+      accountingRule.fisAciklamaSablonu,
+      combinedText
+    );
+    const ruleHesap = String(accountingRule.hesapKodu || "").trim();
+    const ruleBelgeTuru = String(accountingRule.belgeTuru || "")
+      .trim()
+      .toUpperCase();
+
+    ruleOverlay = {
+      belgeTuru: ruleBelgeTuru,
+      fisAciklama: templateDesc,
+      detayAciklama: templateDesc,
+      kontrolNotu: `Kural Motoru: ${accountingRule.aramaMetni}`,
+    };
+
+    workingRow = {
+      ...workingRow,
+      ...(ruleBelgeTuru ? { belgeTuru: ruleBelgeTuru } : {}),
+      ...(templateDesc
+        ? { fisAciklama: templateDesc, detayAciklama: templateDesc }
+        : {}),
+    };
+
+    if (ruleHesap && accountExistsInPlan(accountPlan, ruleHesap)) {
+      return buildMatchSuccess({
+        hesapKodu: ruleHesap,
+        eslesmeYontemi: ESLESME_YONTEMI.KURAL_MOTORU,
+        kontrolNotu: ruleOverlay.kontrolNotu,
+        belgeTuru: ruleOverlay.belgeTuru,
+        fisAciklama: ruleOverlay.fisAciklama,
+        detayAciklama: ruleOverlay.detayAciklama,
+        debug,
+      });
+    }
+  }
+
   const cariMatch = resolveCariAccountMatch(accountPlan, {
     description: combinedText,
     lucaDescription: row.fisAciklama,
@@ -425,32 +499,41 @@ export function matchAccountCode(
   });
 
   if (cariMatch.code) {
-    return buildMatchSuccess({
-      hesapKodu: cariMatch.code,
-      eslesmeYontemi: ESLESME_YONTEMI.CARI_ESLESME,
-      kontrolNotu: cariMatch.note || "Cari hesap eşleşti",
-      debug,
-    });
+    return applyRuleOverlayToMatch(
+      buildMatchSuccess({
+        hesapKodu: cariMatch.code,
+        eslesmeYontemi: ESLESME_YONTEMI.CARI_ESLESME,
+        kontrolNotu: cariMatch.note || "Cari hesap eşleşti",
+        debug,
+      }),
+      ruleOverlay
+    );
   }
 
   const employeeMatch = findEmployeeAccountMatch(employees, combinedText);
   if (employeeMatch?.code) {
-    return buildMatchSuccess({
-      hesapKodu: employeeMatch.code,
-      eslesmeYontemi: ESLESME_YONTEMI.CARI_ESLESME,
-      kontrolNotu: `${employeeMatch.label} personel hesabı eşleşti`,
-      debug,
-    });
+    return applyRuleOverlayToMatch(
+      buildMatchSuccess({
+        hesapKodu: employeeMatch.code,
+        eslesmeYontemi: ESLESME_YONTEMI.CARI_ESLESME,
+        kontrolNotu: `${employeeMatch.label} personel hesabı eşleşti`,
+        debug,
+      }),
+      ruleOverlay
+    );
   }
 
   const noterMatch = findNoterAccountMatch(accountPlan, combinedText);
   if (noterMatch?.found && noterMatch.code) {
-    return buildMatchSuccess({
-      hesapKodu: noterMatch.code,
-      eslesmeYontemi: ESLESME_YONTEMI.CARI_ESLESME,
-      kontrolNotu: `${noterMatch.label} hesabı eşleşti`,
-      debug,
-    });
+    return applyRuleOverlayToMatch(
+      buildMatchSuccess({
+        hesapKodu: noterMatch.code,
+        eslesmeYontemi: ESLESME_YONTEMI.CARI_ESLESME,
+        kontrolNotu: `${noterMatch.label} hesabı eşleşti`,
+        debug,
+      }),
+      ruleOverlay
+    );
   }
 
   const smmMatch = findSmmPersonMatch(
@@ -459,22 +542,28 @@ export function matchAccountCode(
     employees
   );
   if (smmMatch?.found && smmMatch.code) {
-    return buildMatchSuccess({
-      hesapKodu: smmMatch.code,
-      eslesmeYontemi: ESLESME_YONTEMI.CARI_ESLESME,
-      kontrolNotu: `${smmMatch.label} hesabı eşleşti`,
-      debug,
-    });
+    return applyRuleOverlayToMatch(
+      buildMatchSuccess({
+        hesapKodu: smmMatch.code,
+        eslesmeYontemi: ESLESME_YONTEMI.CARI_ESLESME,
+        kontrolNotu: `${smmMatch.label} hesabı eşleşti`,
+        debug,
+      }),
+      ruleOverlay
+    );
   }
 
   const exactCode = findPlanExactMatch(accountPlan, searchCandidates);
   if (exactCode) {
-    return buildMatchSuccess({
-      hesapKodu: exactCode,
-      eslesmeYontemi: ESLESME_YONTEMI.HESAP_PLANI,
-      kontrolNotu: "Hesap planında tam unvan eşleşti",
-      debug,
-    });
+    return applyRuleOverlayToMatch(
+      buildMatchSuccess({
+        hesapKodu: exactCode,
+        eslesmeYontemi: ESLESME_YONTEMI.HESAP_PLANI,
+        kontrolNotu: "Hesap planında tam unvan eşleşti",
+        debug,
+      }),
+      ruleOverlay
+    );
   }
 
   const containsCode = findPlanContainsMatch(
@@ -482,36 +571,42 @@ export function matchAccountCode(
     searchCandidates
   );
   if (containsCode) {
-    return buildMatchSuccess({
-      hesapKodu: containsCode,
-      eslesmeYontemi: ESLESME_YONTEMI.HESAP_PLANI,
-      kontrolNotu: "Hesap planında içerir eşleşme",
-      debug,
-    });
+    return applyRuleOverlayToMatch(
+      buildMatchSuccess({
+        hesapKodu: containsCode,
+        eslesmeYontemi: ESLESME_YONTEMI.HESAP_PLANI,
+        kontrolNotu: "Hesap planında içerir eşleşme",
+        debug,
+      }),
+      ruleOverlay
+    );
   }
 
   const defaultCode = getDefaultAccountByBelgeTuru(
-    row.belgeTuru,
+    workingRow.belgeTuru,
     companyMappings.accountingRules || {}
   );
   if (defaultCode && accountExistsInPlan(accountPlan, defaultCode)) {
-    return buildMatchSuccess({
-      hesapKodu: defaultCode,
-      eslesmeYontemi: ESLESME_YONTEMI.BELGE_TURU,
-      kontrolNotu: `${row.belgeTuru} belge türü varsayılan hesabı`,
-      debug,
-    });
+    return applyRuleOverlayToMatch(
+      buildMatchSuccess({
+        hesapKodu: defaultCode,
+        eslesmeYontemi: ESLESME_YONTEMI.BELGE_TURU,
+        kontrolNotu: `${workingRow.belgeTuru} belge türü varsayılan hesabı`,
+        debug,
+      }),
+      ruleOverlay
+    );
   }
 
   if (noterMatch && noterMatch.found === false) {
-    return buildMatchFailure(debug, "noter_hesabi_bulunamadi");
+    return applyRuleOverlayToMatch(buildMatchFailure(debug, "noter_hesabi_bulunamadi"), ruleOverlay);
   }
 
   if (smmMatch && smmMatch.found === false) {
-    return buildMatchFailure(debug, "smm_hesabi_bulunamadi");
+    return applyRuleOverlayToMatch(buildMatchFailure(debug, "smm_hesabi_bulunamadi"), ruleOverlay);
   }
 
-  return buildMatchFailure(debug, "eslesme_bulunamadi");
+  return applyRuleOverlayToMatch(buildMatchFailure(debug, "eslesme_bulunamadi"), ruleOverlay);
 }
 
 export function applyMatchResultToRow(row, match) {
@@ -523,6 +618,9 @@ export function applyMatchResultToRow(row, match) {
     hafizaEslesme: Boolean(match.hafizaEslesme),
     eslesmeYontemi: match.eslesmeYontemi || "",
     hesapEslesmeNotlari: match.hesapEslesmeNotlari || [],
+    ...(match.belgeTuru ? { belgeTuru: match.belgeTuru } : {}),
+    ...(match.fisAciklama ? { fisAciklama: match.fisAciklama } : {}),
+    ...(match.detayAciklama ? { detayAciklama: match.detayAciklama } : {}),
   };
 }
 
@@ -540,6 +638,8 @@ export function applyElektrawebAccountMatching(rows = [], context = {}) {
       documentSeriesRules: context.documentSeriesRules,
       accountingRules: context.accountingRules,
       employees: context.employees,
+      kuralMotoruRules: context.kuralMotoruRules,
+      companyId: context.companyId || context.firmaId,
     });
 
   const debugRows = [];
@@ -608,6 +708,8 @@ export function resolveElektrawebAccountCode(row, context = {}) {
         documentSeriesRules: context.documentSeriesRules,
         accountingRules: context.accountingRules,
         employees: context.employees,
+        kuralMotoruRules: context.kuralMotoruRules,
+        companyId: context.companyId || context.firmaId,
       })
   );
 

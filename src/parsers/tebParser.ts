@@ -19,11 +19,17 @@ export function tebParser(jsonData: any[]) {
         };
       }
   
+      const normalizedAciklama = aciklama.toUpperCase();
       const isMasraf =
-        aciklama.includes("Ücret") ||
-        aciklama.includes("Masraf") ||
-        aciklama.includes("Komisyon") ||
-        aciklama.includes("BSMV");
+        normalizedAciklama.includes("HAVALE/EFT MASRAFI") ||
+        normalizedAciklama.includes("HAVALE MASRAF") ||
+        normalizedAciklama.includes("EFT MASRAF") ||
+        normalizedAciklama.includes("BSMV") ||
+        normalizedAciklama.includes("KOMISYON") ||
+        normalizedAciklama.includes("KOMİSYON") ||
+        normalizedAciklama.includes("ÜCRET") ||
+        normalizedAciklama.includes("UCRET") ||
+        normalizedAciklama.includes("MASRAF");
   
       if (isMasraf) {
         grouped[dekont].masrafTutar += Math.abs(tutar);

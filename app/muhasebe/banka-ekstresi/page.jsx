@@ -7,7 +7,6 @@ import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import AccountSuggestionBadges from "../components/AccountSuggestionBadges";
-import PreviewEyeButton from "../components/PreviewEyeButton";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import {
   applySuggestionToMovement,
@@ -30,21 +29,31 @@ import {
   normalizeCompanyRecord,
   savePendingLucaRows,
 } from "@/src/utils/companyCenter";
+import { loadAccountingRulesFromStorage } from "@/src/utils/accountingRuleEngine";
 import {
   bankMovementsToStandardLucaRows,
   buildStandardLucaTransferPayload,
+  ensureStandardLucaRowIds,
   filterStandardLucaRows,
+  finalizeStandardLucaRow,
   getStandardLucaMissingBadges,
   KAYNAK_TIPI,
   logStandardLucaReport,
   LUCA_EXPORT_HEADERS,
   standardLucaRowsToExcelRows,
 } from "@/src/utils/standardLucaRow";
+import { enforceLucaExportDateStrings } from "@/src/utils/formatDateTR";
 import {
   formatParserDate,
   mapParsedRowsToStandardMovements,
   normalizeParserText,
 } from "@/src/utils/bankMovementMapper";
+import { enrichTebParsedRows } from "@/src/utils/tebHavaleGrouping";
+import {
+  applyLearningMemoryToStandardLucaRows,
+  buildBankStandardLucaLearningMemoryPayload,
+  mapLearningMemoryRecordToItem,
+} from "@/src/utils/bankLearningMemory";
 import {
   fetchLearningMemoryForCompany,
   createLearningMemoryRecord,
@@ -52,9 +61,8 @@ import {
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
 import {
-  applyMovementEditDraft,
-  buildLearningMemoryFromMovementRow,
-  buildMovementEditDraft,
+  applyStandardLucaRowEditDraft,
+  buildStandardLucaRowEditDraft,
   MEMORY_MATCH_LABEL,
 } from "@/src/utils/previewRowEdit";
 import { hasBankMovementError } from "@/src/utils/tableSearch";
@@ -79,13 +87,15 @@ export default function BankaParserPage() {
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
   const [learningMemory, setLearningMemory] = useState([]);
+  const [accountingRules, setAccountingRules] = useState([]);
   const [previewSearch, setPreviewSearch] = useState("");
   const [previewQuickFilter, setPreviewQuickFilter] = useState("all");
   const [toast, setToast] = useState(null);
   const [applyingSuggestionRowId, setApplyingSuggestionRowId] = useState(null);
-  const [expandedPreviewRowId, setExpandedPreviewRowId] = useState(null);
-  const [previewEditDraft, setPreviewEditDraft] = useState(null);
+  const [editingRowId, setEditingRowId] = useState(null);
+  const [draftRow, setDraftRow] = useState(null);
   const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
+  const [standardLucaRows, setStandardLucaRows] = useState([]);
 
   const {
     companies,
@@ -117,6 +127,7 @@ export default function BankaParserPage() {
     const refreshCompanyData = () => {
       setAccountPlans(loadAccountPlansFromStorage());
       setRuleEngine(loadRuleEngineFromStorage());
+      setAccountingRules(loadAccountingRulesFromStorage());
       refreshCompanies();
     };
 
@@ -192,14 +203,31 @@ export default function BankaParserPage() {
       maximumFractionDigits: 2,
     });
 
-  const standardLucaRows = useMemo(
-    () =>
-      bankMovementsToStandardLucaRows(movementRows, {
+  const computedStandardLucaRows = useMemo(
+    () => {
+      const baseRows = bankMovementsToStandardLucaRows(movementRows, {
         firmaId: selectedCompanyId,
         kaynakAdi: selectedBank,
-      }),
-    [movementRows, selectedCompanyId, selectedBank]
+      });
+
+      return applyLearningMemoryToStandardLucaRows(
+        ensureStandardLucaRowIds(baseRows),
+        learningMemory,
+        {
+          firmaId: selectedCompanyId,
+          kaynakTipi: KAYNAK_TIPI.BANKA,
+          kaynakAdi: selectedBank,
+        }
+      );
+    },
+    [movementRows, selectedCompanyId, selectedBank, learningMemory]
   );
+
+  useEffect(() => {
+    setStandardLucaRows(computedStandardLucaRows);
+    setEditingRowId(null);
+    setDraftRow(null);
+  }, [computedStandardLucaRows]);
 
   const filteredStandardLucaRows = useMemo(
     () =>
@@ -273,6 +301,17 @@ export default function BankaParserPage() {
           row[1] ||
           "";
 
+        const unvan =
+          getCell(row, headers, [
+            "ÜNVAN",
+            "UNVAN",
+            "ALICI",
+            "ALICI ÜNVAN",
+            "ALICI UNVAN",
+            "KARSI HESAP",
+            "KARŞI HESAP",
+          ]) || "";
+
         const dekontNo =
           getCell(row, headers, ["DEKONT", "DEKONT NO", "FİŞ NO", "FIS NO", "İŞLEM NO", "ISLEM NO"]) ||
           "";
@@ -301,6 +340,7 @@ export default function BankaParserPage() {
           tarih,
           dekontNo: dekontNo || `${bankaAdi}-${index + 1}`,
           aciklama,
+          unvan,
           borc: yon === "GIRIS" ? Math.abs(tutar) : 0,
           alacak: yon === "CIKIS" ? Math.abs(tutar) : 0,
           bakiye,
@@ -330,6 +370,7 @@ export default function BankaParserPage() {
       tarih: row.tarih || row.Tarih || "",
       dekontNo: row.dekontNo || row.FisNo || row.Dekont || "",
       aciklama: row.aciklama || row.Aciklama || row.HamAciklama || "",
+      unvan: row.unvan || row.Unvan || "",
       borc: borc || (yon === "GIRIS" ? Math.abs(tutar) : 0),
       alacak: alacak || (yon === "CIKIS" ? Math.abs(tutar) : 0),
       bakiye: row.bakiye || row.Bakiye || "",
@@ -347,6 +388,8 @@ export default function BankaParserPage() {
       selectedBank,
       legacyRules: bankaKurallari,
       learningMemory,
+      accountingRules,
+      selectedCompanyId,
     });
 
   const applyPreviewRows = async (parsedRows) => {
@@ -393,72 +436,76 @@ export default function BankaParserPage() {
     }
   };
 
-  const buildCariOptions = (row) =>
-    (row.cariSuggestions || []).map((suggestion) => ({
-      value: suggestion.code,
-      label: `${suggestion.code} - ${suggestion.name || suggestion.label || ""}`.trim(),
-    }));
-
-  const togglePreviewRowDetail = (standardRow) => {
-    const movementId = standardRow._movementId;
-    if (!movementId) return;
-
-    if (expandedPreviewRowId === movementId) {
-      setExpandedPreviewRowId(null);
-      setPreviewEditDraft(null);
+  const toggleRowEdit = (row) => {
+    if (editingRowId === row.id) {
+      cancelPreviewRowEdit();
       return;
     }
 
-    const movement = movementById.get(movementId);
-    if (!movement) return;
-
-    setExpandedPreviewRowId(movementId);
-    setPreviewEditDraft(buildMovementEditDraft(movement));
+    setEditingRowId(row.id);
+    setDraftRow(buildStandardLucaRowEditDraft(row));
   };
 
   const cancelPreviewRowEdit = () => {
-    setExpandedPreviewRowId(null);
-    setPreviewEditDraft(null);
+    setEditingRowId(null);
+    setDraftRow(null);
   };
 
   const savePreviewRowEdit = async () => {
-    if (!expandedPreviewRowId || !previewEditDraft) return;
+    if (!editingRowId || !draftRow) return;
 
-    const currentRow = movementRows.find((row) => row.id === expandedPreviewRowId);
+    const currentRow = standardLucaRows.find((row) => row.id === editingRowId);
     if (!currentRow) return;
+
+    if (draftRow.saveToMemory && !selectedCompanyId) {
+      alert("Hafızaya kaydetmek için önce firma seçmelisin.");
+      return;
+    }
 
     setIsSavingPreviewEdit(true);
 
     try {
-      const updatedRow = applyMovementEditDraft(currentRow, previewEditDraft);
-
-      setMovementRows((prev) =>
-        prev.map((row) => (row.id === expandedPreviewRowId ? updatedRow : row))
+      const updatedRow = finalizeStandardLucaRow(
+        applyStandardLucaRowEditDraft(currentRow, draftRow)
       );
 
-      if (previewEditDraft.saveToMemory && selectedCompanyId) {
-        const memoryRecord = buildLearningMemoryFromMovementRow(
+      console.log("UPDATED ROW", updatedRow);
+
+      if (draftRow.saveToMemory && selectedCompanyId) {
+        const memoryPayload = buildBankStandardLucaLearningMemoryPayload(
           currentRow,
-          previewEditDraft,
-          {
-            companyId: selectedCompanyId,
-            sourceModule: "banka",
-            documentSeriesRules: selectedCompany?.documentSeriesRules || [],
-          }
+          draftRow,
+          selectedCompanyId
         );
 
-        const created = await createLearningMemoryRecord(memoryRecord);
-
-        if (created) {
-          setLearningMemory((prev) => [created, ...prev]);
-          showToast("Düzeltme hafızaya kaydedildi", "success");
+        if (!memoryPayload.keyword) {
+          showToast(
+            "Satır güncellendi; arama anahtarı boş olduğu için hafızaya kaydedilemedi",
+            "error"
+          );
         } else {
-          showToast("Satır güncellendi, hafıza kaydı oluşturulamadı", "error");
+          const created = await createLearningMemoryRecord(memoryPayload);
+
+          if (created) {
+            const memoryItem = mapLearningMemoryRecordToItem(
+              created,
+              draftRow,
+              currentRow
+            );
+            console.log("LEARNING MEMORY SAVED", memoryItem);
+            setLearningMemory((prev) => [created, ...prev]);
+            showToast("Satır güncellendi ve hafızaya kaydedildi", "success");
+          } else {
+            showToast("Satır güncellendi, hafıza kaydı oluşturulamadı", "error");
+          }
         }
       } else {
         showToast("Satır güncellendi", "success");
       }
 
+      setStandardLucaRows((prev) =>
+        prev.map((row) => (row.id === editingRowId ? updatedRow : row))
+      );
       cancelPreviewRowEdit();
     } finally {
       setIsSavingPreviewEdit(false);
@@ -466,50 +513,58 @@ export default function BankaParserPage() {
   };
 
   const exportExcel = () => {
-    if (standardLucaRows.length === 0) {
-      alert("Önce standart hareket oluşturmalısın.");
+    if (!standardLucaRows.length) {
+      alert("Önce dosyayı yükleyip ön izleme oluşturun.");
       return;
     }
 
-    const excelRows = standardLucaRowsToExcelRows(standardLucaRows);
-    const fisMap = {};
+    console.log("EXPORT DATA", standardLucaRows.slice(0, 5));
 
-    excelRows.forEach((row) => {
-      const fisNo = row["Fiş No"];
-      if (!fisMap[fisNo]) fisMap[fisNo] = [];
-      fisMap[fisNo].push(row);
-    });
-
-    const allFisler = Object.values(fisMap);
+    const uniqueFisNo = [...new Set(standardLucaRows.map((row) => row.fisNo))];
     const chunkSize = 50;
+    const totalFiles = Math.ceil(uniqueFisNo.length / chunkSize);
 
-    for (let i = 0; i < allFisler.length; i += chunkSize) {
-      const chunk = allFisler.slice(i, i + chunkSize);
-      const chunkRows = chunk.flat();
+    for (let fileIndex = 0; fileIndex < totalFiles; fileIndex += 1) {
+      const chunkFisNos = new Set(
+        uniqueFisNo.slice(fileIndex * chunkSize, fileIndex * chunkSize + chunkSize)
+      );
+      const chunkRows = standardLucaRows.filter((row) => chunkFisNos.has(row.fisNo));
+      const excelRows = standardLucaRowsToExcelRows(chunkRows);
 
-      const worksheet = XLSX.utils.json_to_sheet(chunkRows, {
+      const worksheet = XLSX.utils.json_to_sheet(excelRows, {
         header: LUCA_EXPORT_HEADERS,
       });
+      enforceLucaExportDateStrings(worksheet, [
+        "Fiş Tarihi",
+        "Evrak Tarihi",
+        "Hesap Kodu",
+      ]);
 
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, "Luca Fisleri");
 
-      const ilkFis = i + 1;
-      const sonFis = Math.min(i + chunkSize, allFisler.length);
+      const ilkFis = fileIndex * chunkSize + 1;
+      const sonFis = Math.min((fileIndex + 1) * chunkSize, uniqueFisNo.length);
+      const fileSuffix =
+        totalFiles === 1 ? "luca" : `luca_${ilkFis}-${sonFis}`;
 
       XLSX.writeFile(
         workbook,
-        `${selectedBank.toLowerCase()}_luca_${ilkFis}-${sonFis}.xlsx`
+        `${selectedBank.toLowerCase()}_${fileSuffix}.xlsx`
       );
     }
 
     logStandardLucaReport("banka-export", standardLucaRows);
+
+    if (totalFiles > 1) {
+      alert(`${totalFiles} adet Luca Excel dosyası oluşturuldu.`);
+    }
   };
 
   const handleGoToLucaProducer = (event) => {
-    if (standardLucaRows.length === 0) {
+    if (!movementRows.length || !standardLucaRows.length) {
       event.preventDefault();
-      alert("Önce banka ekstresi yükleyip ön izleme oluşturmalısın.");
+      alert("Önce dosyayı yükleyip ön izleme oluşturun.");
       return;
     }
 
@@ -578,7 +633,9 @@ export default function BankaParserPage() {
 
     if (selectedBank === "GARANTI") parsedRows = parseGarantiEkstre(sheetRows);
     if (selectedBank === "VAKIFBANK") parsedRows = parseVakifbankEkstre(sheetRows);
-    if (selectedBank === "TEB") parsedRows = parseGenericBankEkstre(sheetRows, "TEB");
+    if (selectedBank === "TEB") {
+      parsedRows = enrichTebParsedRows(parseGenericBankEkstre(sheetRows, "TEB"));
+    }
     if (selectedBank === "KUVEYT") parsedRows = parseGenericBankEkstre(sheetRows, "KUVEYT");
     if (selectedBank === "ZIRAAT") parsedRows = parseGenericBankEkstre(sheetRows, "ZIRAAT");
 
@@ -806,7 +863,7 @@ export default function BankaParserPage() {
                     <th className="p-3 text-right">Alacak</th>
                     <th className="p-3 text-left">Risk</th>
                     <th className="p-3 text-left">Kontrol Notu</th>
-                    <th className="p-3 text-center">Detay</th>
+                    <th className="p-3 text-center">İşlem</th>
                   </tr>
                 </thead>
 
@@ -878,28 +935,29 @@ export default function BankaParserPage() {
                             ) : null}
                           </td>
                           <td className="p-3 text-center">
-                            {movement ? (
-                              <PreviewEyeButton
-                                active={expandedPreviewRowId === movement.id}
-                                onClick={() => togglePreviewRowDetail(row)}
-                              />
-                            ) : (
-                              "—"
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => toggleRowEdit(row)}
+                              className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                                editingRowId === row.id
+                                  ? "border-indigo-500 bg-indigo-950/60 text-indigo-200"
+                                  : "border-gray-700 bg-gray-950 text-gray-300 hover:border-indigo-500 hover:text-white"
+                              }`}
+                            >
+                              Düzenle
+                            </button>
                           </td>
                         </tr>
 
-                        {movement &&
-                        expandedPreviewRowId === movement.id &&
-                        previewEditDraft ? (
+                        {editingRowId === row.id && draftRow ? (
                           <tr className="border-t border-gray-800">
                             <td colSpan={11} className="p-4">
                               <PreviewVoucherDetailPanel
-                                draft={previewEditDraft}
-                                onChange={setPreviewEditDraft}
+                                variant="standardLuca"
+                                draft={draftRow}
+                                onChange={setDraftRow}
                                 onSave={savePreviewRowEdit}
                                 onCancel={cancelPreviewRowEdit}
-                                cariOptions={buildCariOptions(movement)}
                                 isSaving={isSavingPreviewEdit}
                               />
                             </td>

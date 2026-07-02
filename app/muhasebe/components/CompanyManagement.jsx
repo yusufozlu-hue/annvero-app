@@ -4,6 +4,14 @@ import Link from "next/link";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { fetchCompanies, persistCompaniesToLocalStorage } from "@/src/utils/companies";
 import { emptyCompany, normalizeCompany } from "@/src/utils/companyNormalize";
+import {
+  DEFAULT_ADVANCE_ACCOUNT,
+  DEFAULT_SALARY_ACCOUNT,
+  downloadEmployeeTemplate,
+  parseEmployeeExcelFile,
+} from "@/src/utils/employeeExcel";
+
+const EMPLOYEE_PAGE_SIZE = 20;
 
 const moduleLabels = {
   lucaExport: "Luca Export",
@@ -46,6 +54,18 @@ export default function CompanyManagement() {
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [newCompanyModalOpen, setNewCompanyModalOpen] = useState(false);
+  const [newCompanyDraft, setNewCompanyDraft] = useState({
+    companyName: "",
+    taxNumber: "",
+    taxOffice: "",
+  });
+
+  const [employeeSearch, setEmployeeSearch] = useState("");
+  const [employeePage, setEmployeePage] = useState(1);
+  const [employeeImportPreview, setEmployeeImportPreview] = useState(null);
+  const [employeeImportError, setEmployeeImportError] = useState("");
+  const [employeeDuplicateMode, setEmployeeDuplicateMode] = useState("update");
 
   const showToast = (message, type) => {
     setToast({ message, type });
@@ -69,20 +89,76 @@ export default function CompanyManagement() {
     loadCompanies();
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const validTabs = [
+      "general",
+      "banks",
+      "documents",
+      "vehicles",
+      "employees",
+      "modules",
+      "rules",
+    ];
+    const requestedTab = new URLSearchParams(window.location.search).get("tab");
+
+    if (requestedTab && validTabs.includes(requestedTab)) {
+      setActiveTab(requestedTab);
+    }
+  }, []);
+
  
 
-  const createNewCompany = () => {
+  const openNewCompanyModal = () => {
+    setNewCompanyDraft({
+      companyName: "",
+      taxNumber: "",
+      taxOffice: "",
+    });
+    setNewCompanyModalOpen(true);
+  };
+
+  const cancelNewCompanyModal = () => {
+    setNewCompanyModalOpen(false);
+  };
+
+  const confirmNewCompany = () => {
+    const trimmedName = (newCompanyDraft.companyName || "").trim();
+
+    if (!trimmedName) {
+      showToast("Firma adı zorunludur", "error");
+      return;
+    }
+
+    const normalizedName = trimmedName.toLowerCase();
+    const isDuplicate = companies.some(
+      (c) => (c.companyName || "").trim().toLowerCase() === normalizedName
+    );
+
+    if (isDuplicate) {
+      showToast("Bu firma adı zaten kayıtlı", "error");
+      return;
+    }
+
     const newCompany = normalizeCompany({
       ...emptyCompany,
       id: crypto.randomUUID(),
-      companyName: "Yeni Firma",
+      companyName: trimmedName,
+      taxNumber: newCompanyDraft.taxNumber || "",
+      taxOffice: newCompanyDraft.taxOffice || "",
     });
 
     setCompanies([...companies, newCompany]);
-
     setCompany(newCompany);
     setSelectedId(newCompany.id);
     setActiveTab("general");
+    setNewCompanyModalOpen(false);
+    showToast("Yeni firma oluşturuldu. Bilgileri tamamlayıp kaydedin.", "success");
+  };
+
+  const createNewCompany = () => {
+    openNewCompanyModal();
   };
 
   const selectCompany = (id) => {
@@ -724,22 +800,28 @@ export default function CompanyManagement() {
     setCompany({
       ...company,
       employees: [
-        ...(company.employees || []),
         {
           id: crypto.randomUUID(),
 
           fullName: "",
           tcNo: "",
+          phone: "",
+          email: "",
           position: "",
+          department: "",
+          hireDate: "",
+          sgkCode: "",
 
-          salaryAccountCode: "335",
+          salaryAccountCode: DEFAULT_SALARY_ACCOUNT,
 
-          advanceAccountCode: "196",
+          advanceAccountCode: DEFAULT_ADVANCE_ACCOUNT,
 
           isActive: true,
         },
+        ...(company.employees || []),
       ],
     });
+    setEmployeePage(1);
   };
 
   const updateEmployee = (id, field, value) => {
@@ -763,6 +845,102 @@ export default function CompanyManagement() {
         (e) => e.id !== id
       ),
     });
+  };
+
+  const clearAllEmployees = () => {
+    if (!(company.employees || []).length) return;
+
+    const confirmed = window.confirm(
+      "Tüm personel kayıtları listeden kaldırılacak. Emin misiniz? (Kaydet'e basana kadar kalıcı olmaz.)"
+    );
+    if (!confirmed) return;
+
+    setCompany({ ...company, employees: [] });
+    setEmployeeImportPreview(null);
+    setEmployeePage(1);
+    showToast("Personel listesi temizlendi. Kaydetmeyi unutmayın.", "success");
+  };
+
+  const handleEmployeeExcelUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setEmployeeImportError("");
+
+    try {
+      const parsed = await parseEmployeeExcelFile(file);
+
+      if (!parsed.length) {
+        setEmployeeImportPreview(null);
+        setEmployeeImportError(
+          "Dosyada geçerli personel satırı bulunamadı. Şablonu kullandığınızdan emin olun."
+        );
+      } else {
+        setEmployeeImportPreview(parsed);
+      }
+    } catch (error) {
+      console.error("employee excel parse error", error);
+      setEmployeeImportPreview(null);
+      setEmployeeImportError(
+        "Excel okunamadı. Lütfen geçerli bir .xlsx dosyası yükleyin."
+      );
+    }
+
+    event.target.value = "";
+  };
+
+  const cancelEmployeeImport = () => {
+    setEmployeeImportPreview(null);
+    setEmployeeImportError("");
+  };
+
+  const confirmEmployeeImport = () => {
+    if (!employeeImportPreview?.length) return;
+
+    const merged = [...(company.employees || [])];
+    let addedCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
+
+    employeeImportPreview.forEach((parsed) => {
+      const tc = (parsed.tcNo || "").trim();
+      const matchIndex = tc
+        ? merged.findIndex((e) => (e.tcNo || "").trim() === tc)
+        : -1;
+
+      if (matchIndex >= 0) {
+        if (employeeDuplicateMode === "skip") {
+          skippedCount += 1;
+          return;
+        }
+
+        if (employeeDuplicateMode === "add") {
+          merged.push({ ...parsed, id: crypto.randomUUID() });
+          addedCount += 1;
+          return;
+        }
+
+        merged[matchIndex] = {
+          ...merged[matchIndex],
+          ...parsed,
+          id: merged[matchIndex].id,
+        };
+        updatedCount += 1;
+        return;
+      }
+
+      merged.push({ ...parsed, id: crypto.randomUUID() });
+      addedCount += 1;
+    });
+
+    setCompany({ ...company, employees: merged });
+    setEmployeeImportPreview(null);
+    setEmployeeImportError("");
+    setEmployeePage(1);
+
+    const parts = [`${addedCount} eklendi`, `${updatedCount} güncellendi`];
+    if (skippedCount) parts.push(`${skippedCount} atlandı`);
+    showToast(`${parts.join(", ")}. Kaydetmeyi unutmayın.`, "success");
   };
 
   const tabs = [
@@ -846,6 +1024,33 @@ export default function CompanyManagement() {
     );
   };
 
+  const employeeSearchQuery = employeeSearch.trim().toLocaleLowerCase("tr");
+  const filteredEmployees = (company.employees || []).filter((e) => {
+    if (!employeeSearchQuery) return true;
+    return [
+      e.fullName,
+      e.tcNo,
+      e.position,
+      e.department,
+      e.sgkCode,
+      e.phone,
+      e.email,
+    ]
+      .join(" ")
+      .toLocaleLowerCase("tr")
+      .includes(employeeSearchQuery);
+  });
+
+  const employeeTotalPages = Math.max(
+    1,
+    Math.ceil(filteredEmployees.length / EMPLOYEE_PAGE_SIZE)
+  );
+  const employeeSafePage = Math.min(Math.max(employeePage, 1), employeeTotalPages);
+  const pagedEmployees = filteredEmployees.slice(
+    (employeeSafePage - 1) * EMPLOYEE_PAGE_SIZE,
+    employeeSafePage * EMPLOYEE_PAGE_SIZE
+  );
+
   return (
     <div className="min-h-screen bg-[#050816] p-6 text-white">
       {toast && (
@@ -867,7 +1072,7 @@ export default function CompanyManagement() {
         </div>
       )}
       {deleteConfirmId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
           <button
             type="button"
             aria-label="Kapat"
@@ -907,6 +1112,81 @@ export default function CompanyManagement() {
                 className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isDeleting ? "Siliniyor..." : "Firmayı Sil"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {newCompanyModalOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Kapat"
+            onClick={cancelNewCompanyModal}
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-company-title"
+            className="relative z-[10000] w-full max-w-lg rounded-2xl border border-slate-700/80 bg-slate-950 p-6 shadow-2xl shadow-indigo-500/10 ring-1 ring-white/5"
+          >
+            <div className="pointer-events-none absolute -inset-px rounded-2xl bg-gradient-to-b from-indigo-500/10 via-transparent to-transparent" />
+            <h2
+              id="new-company-title"
+              className="relative text-lg font-semibold text-white"
+            >
+              Yeni Firma
+            </h2>
+            <p className="relative mt-2 text-sm text-slate-400">
+              Temel bilgileri girin; detayları kaydettikten sonra düzenleyebilirsiniz.
+            </p>
+            <div className="relative mt-5 space-y-4">
+              <Input
+                label="Firma Adı"
+                value={newCompanyDraft.companyName}
+                onChange={(value) =>
+                  setNewCompanyDraft((current) => ({
+                    ...current,
+                    companyName: value,
+                  }))
+                }
+              />
+              <Input
+                label="Vergi No"
+                value={newCompanyDraft.taxNumber}
+                onChange={(value) =>
+                  setNewCompanyDraft((current) => ({
+                    ...current,
+                    taxNumber: value,
+                  }))
+                }
+              />
+              <Input
+                label="Vergi Dairesi"
+                value={newCompanyDraft.taxOffice}
+                onChange={(value) =>
+                  setNewCompanyDraft((current) => ({
+                    ...current,
+                    taxOffice: value,
+                  }))
+                }
+              />
+            </div>
+            <div className="relative mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={cancelNewCompanyModal}
+                className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="button"
+                onClick={confirmNewCompany}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500"
+              >
+                Oluştur
               </button>
             </div>
           </div>
@@ -965,7 +1245,7 @@ export default function CompanyManagement() {
         </div>
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[340px_1fr]">
-          <aside className="flex h-[480px] flex-col rounded-xl border border-slate-800 bg-slate-900 p-4 lg:h-[calc(100vh-10rem)] lg:w-full">
+          <aside className="rounded-xl border border-slate-800 bg-slate-900 p-4 lg:w-full">
             <h2 className="mb-3 shrink-0 font-semibold">Firmalar</h2>
 
             <input
@@ -976,7 +1256,7 @@ export default function CompanyManagement() {
               className="mb-3 w-full shrink-0 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm outline-none placeholder:text-slate-500 focus:border-indigo-500"
             />
 
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+            <div className="space-y-2 pr-1">
               {!isLoaded ? (
                 <p className="px-1 py-2 text-sm text-slate-400">
                   Firmalar yükleniyor...
@@ -1004,7 +1284,7 @@ export default function CompanyManagement() {
             </div>
           </aside>
 
-          <main className="min-w-0 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-4 lg:max-h-[calc(100vh-10rem)] lg:min-h-[calc(100vh-10rem)] lg:p-6">
+          <main className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 p-4 lg:p-6">
             {!selectedId ? (
               <WelcomeScreen />
             ) : (
@@ -1659,53 +1939,282 @@ export default function CompanyManagement() {
             )}
 
             {activeTab === "employees" && (
-              <ListSection buttonText="+ Personel Ekle" onAdd={addEmployee}>
-                {(company.employees || []).map((e) => (
-                  <Card key={e.id}>
-                    <Input
-                      label="Ad Soyad"
-                      value={e.fullName}
-                      onChange={(x) => updateEmployee(e.id, "fullName", x)}
-                    />
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={addEmployee}
+                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-700"
+                  >
+                    + Personel Ekle
+                  </button>
 
-                    <Input
-                      label="TC No"
-                      value={e.tcNo}
-                      onChange={(x) => updateEmployee(e.id, "tcNo", x)}
-                    />
+                  <button
+                    onClick={downloadEmployeeTemplate}
+                    className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium hover:bg-slate-600"
+                  >
+                    Excel Şablonu İndir
+                  </button>
 
-                    <Input
-                      label="Görev / Departman"
-                      value={e.position}
-                      onChange={(x) => updateEmployee(e.id, "position", x)}
+                  <label className="cursor-pointer rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500">
+                    Excel Yükle
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls"
+                      className="hidden"
+                      onChange={handleEmployeeExcelUpload}
                     />
+                  </label>
 
-                    <Input
-                      label="Maaş Hesabı"
-                      value={e.salaryAccountCode}
-                      onChange={(x) =>
-                        updateEmployee(e.id, "salaryAccountCode", x)
-                      }
-                    />
+                  <button
+                    onClick={clearAllEmployees}
+                    disabled={!(company.employees || []).length}
+                    className="rounded-lg bg-red-600/90 px-4 py-2 text-sm font-medium hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Tümünü Temizle
+                  </button>
 
-                    <Input
-                      label="Avans Hesabı"
-                      value={e.advanceAccountCode}
-                      onChange={(x) =>
-                        updateEmployee(e.id, "advanceAccountCode", x)
-                      }
-                    />
+                  <span className="ml-auto text-sm text-slate-400">
+                    Toplam: {(company.employees || []).length} personel
+                  </span>
+                </div>
 
-                    <Checkbox
-                      label="Aktif"
-                      checked={e.isActive}
-                      onChange={(x) => updateEmployee(e.id, "isActive", x)}
-                    />
+                {employeeImportError && (
+                  <div className="rounded-lg border border-red-700/60 bg-red-950/40 px-4 py-3 text-sm text-red-300">
+                    {employeeImportError}
+                  </div>
+                )}
 
-                    <DeleteButton onClick={() => removeEmployee(e.id)} />
-                  </Card>
-                ))}
-              </ListSection>
+                {employeeImportPreview && (
+                  <div className="space-y-3 rounded-xl border border-indigo-700/50 bg-slate-950 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <h4 className="text-base font-semibold text-slate-100">
+                        Ön İzleme — {employeeImportPreview.length} satır
+                      </h4>
+
+                      <label className="flex items-center gap-2 text-sm text-slate-300">
+                        Aynı TC No olursa:
+                        <select
+                          value={employeeDuplicateMode}
+                          onChange={(ev) =>
+                            setEmployeeDuplicateMode(ev.target.value)
+                          }
+                          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 outline-none focus:border-indigo-500"
+                        >
+                          <option value="update">Güncelle</option>
+                          <option value="add">Yeni Kayıt Olarak Ekle</option>
+                          <option value="skip">Atla</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="max-h-80 overflow-auto rounded-lg border border-slate-800">
+                      <table className="w-full text-left text-sm">
+                        <thead className="sticky top-0 bg-slate-900 text-xs uppercase text-slate-400">
+                          <tr>
+                            <th className="px-3 py-2">Ad Soyad</th>
+                            <th className="px-3 py-2">TC No</th>
+                            <th className="px-3 py-2">Görev</th>
+                            <th className="px-3 py-2">Departman</th>
+                            <th className="px-3 py-2">İşe Giriş</th>
+                            <th className="px-3 py-2">SGK Kodu</th>
+                            <th className="px-3 py-2">Maaş Hs.</th>
+                            <th className="px-3 py-2">Avans Hs.</th>
+                            <th className="px-3 py-2">Durum</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {employeeImportPreview.map((row, index) => {
+                            const isDuplicate =
+                              (row.tcNo || "").trim() &&
+                              (company.employees || []).some(
+                                (e) =>
+                                  (e.tcNo || "").trim() ===
+                                  (row.tcNo || "").trim()
+                              );
+                            return (
+                              <tr
+                                key={`${row.tcNo || "row"}-${index}`}
+                                className="border-t border-slate-800"
+                              >
+                                <td className="px-3 py-2">{row.fullName}</td>
+                                <td className="px-3 py-2">
+                                  <span className="flex items-center gap-2">
+                                    {row.tcNo}
+                                    {isDuplicate && (
+                                      <span className="rounded bg-amber-600/30 px-1.5 py-0.5 text-xs text-amber-300">
+                                        mevcut
+                                      </span>
+                                    )}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2">{row.position}</td>
+                                <td className="px-3 py-2">{row.department}</td>
+                                <td className="px-3 py-2">{row.hireDate}</td>
+                                <td className="px-3 py-2">{row.sgkCode}</td>
+                                <td className="px-3 py-2">
+                                  {row.salaryAccountCode}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {row.advanceAccountCode}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {row.isActive ? "Aktif" : "Pasif"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={confirmEmployeeImport}
+                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-700"
+                      >
+                        Kaydet
+                      </button>
+                      <button
+                        onClick={cancelEmployeeImport}
+                        className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium hover:bg-slate-600"
+                      >
+                        İptal
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <input
+                  type="text"
+                  value={employeeSearch}
+                  onChange={(ev) => {
+                    setEmployeeSearch(ev.target.value);
+                    setEmployeePage(1);
+                  }}
+                  placeholder="Personel ara (ad, TC, görev, departman...)"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+                />
+
+                {!filteredEmployees.length ? (
+                  <EmptyListMessage
+                    text={
+                      (company.employees || []).length
+                        ? "Aramanıza uygun personel bulunamadı."
+                        : "Henüz personel eklenmemiş. Personel ekleyin veya Excel yükleyin."
+                    }
+                  />
+                ) : (
+                  <div className="space-y-4">
+                    {pagedEmployees.map((e) => (
+                      <Card key={e.id}>
+                        <Input
+                          label="Ad Soyad"
+                          value={e.fullName}
+                          onChange={(x) => updateEmployee(e.id, "fullName", x)}
+                        />
+
+                        <Input
+                          label="TC No"
+                          value={e.tcNo}
+                          onChange={(x) => updateEmployee(e.id, "tcNo", x)}
+                        />
+
+                        <Input
+                          label="Telefon"
+                          value={e.phone}
+                          onChange={(x) => updateEmployee(e.id, "phone", x)}
+                        />
+
+                        <Input
+                          label="E-posta"
+                          value={e.email}
+                          onChange={(x) => updateEmployee(e.id, "email", x)}
+                        />
+
+                        <Input
+                          label="Görev"
+                          value={e.position}
+                          onChange={(x) => updateEmployee(e.id, "position", x)}
+                        />
+
+                        <Input
+                          label="Departman"
+                          value={e.department}
+                          onChange={(x) => updateEmployee(e.id, "department", x)}
+                        />
+
+                        <Input
+                          label="İşe Giriş Tarihi"
+                          value={e.hireDate}
+                          onChange={(x) => updateEmployee(e.id, "hireDate", x)}
+                          hint="GG.AA.YYYY"
+                        />
+
+                        <Input
+                          label="SGK Meslek Kodu"
+                          value={e.sgkCode}
+                          onChange={(x) => updateEmployee(e.id, "sgkCode", x)}
+                        />
+
+                        <Input
+                          label="Maaş Hesabı"
+                          value={e.salaryAccountCode}
+                          onChange={(x) =>
+                            updateEmployee(e.id, "salaryAccountCode", x)
+                          }
+                        />
+
+                        <Input
+                          label="Avans Hesabı"
+                          value={e.advanceAccountCode}
+                          onChange={(x) =>
+                            updateEmployee(e.id, "advanceAccountCode", x)
+                          }
+                        />
+
+                        <Checkbox
+                          label="Aktif"
+                          checked={e.isActive}
+                          onChange={(x) => updateEmployee(e.id, "isActive", x)}
+                        />
+
+                        <DeleteButton onClick={() => removeEmployee(e.id)} />
+                      </Card>
+                    ))}
+
+                    {employeeTotalPages > 1 && (
+                      <div className="flex items-center justify-between gap-3 pt-2">
+                        <span className="text-sm text-slate-400">
+                          {filteredEmployees.length} kayıt • Sayfa{" "}
+                          {employeeSafePage}/{employeeTotalPages}
+                        </span>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() =>
+                              setEmployeePage((p) => Math.max(1, p - 1))
+                            }
+                            disabled={employeeSafePage <= 1}
+                            className="rounded-lg bg-slate-700 px-3 py-1.5 text-sm hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Önceki
+                          </button>
+                          <button
+                            onClick={() =>
+                              setEmployeePage((p) =>
+                                Math.min(employeeTotalPages, p + 1)
+                              )
+                            }
+                            disabled={employeeSafePage >= employeeTotalPages}
+                            className="rounded-lg bg-slate-700 px-3 py-1.5 text-sm hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Sonraki
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
             {activeTab === "modules" && (
@@ -1872,7 +2381,7 @@ export default function CompanyManagement() {
 
   function WelcomeScreen() {
     return (
-      <div className="flex min-h-[480px] flex-col items-center justify-center px-6 py-16 text-center lg:min-h-[calc(100vh-10rem)]">
+      <div className="flex min-h-[360px] flex-col items-center justify-center overflow-hidden px-6 py-16 text-center">
         <div className="relative mb-6">
           <div className="absolute -inset-8 -z-10 rounded-full bg-indigo-500/10 blur-3xl" />
           <div className="absolute -inset-4 -z-10 rounded-full bg-violet-500/5 blur-2xl" />

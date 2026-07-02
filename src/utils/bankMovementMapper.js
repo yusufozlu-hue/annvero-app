@@ -6,6 +6,10 @@ import {
 } from "@/src/utils/accountPlanSuggestions";
 import { enhanceHgsOgsLucaDescription } from "@/src/utils/plateParser";
 import {
+  applyAccountingRuleToBankMovement,
+  matchAccountingRule,
+} from "@/src/utils/accountingRuleEngine";
+import {
   buildCariNotFoundWarning,
   resolveCariAccountMatch,
 } from "@/src/utils/cariAccountMatcher";
@@ -262,10 +266,15 @@ export function buildFallbackLucaDescription(row) {
     .trim();
 
   if (
+    text.includes("HAVALE/EFT MASRAFI") ||
+    text.includes("HAVALE MASRAF") ||
+    text.includes("EFT MASRAF") ||
+    text.includes("BSMV") ||
     text.includes("KESINTI") ||
     text.includes("BKM UCR") ||
     text.includes("MASRAF") ||
-    text.includes("KOMISYON")
+    text.includes("KOMISYON") ||
+    text.includes("KOMİSYON")
   ) {
     return "HAVALE/EFT MASRAFI";
   }
@@ -297,6 +306,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     selectedBank,
     legacyRules = [],
     learningMemory = [],
+    accountingRules = [],
+    selectedCompanyId = "",
   } = context;
 
   const description = String(rawRow.aciklama || rawRow.description || "").trim();
@@ -359,85 +370,118 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     if (resolvedCard.warning) appendWarning(warnings, resolvedCard.warning);
     if (!card) appendWarning(warnings, "Kredi kartı eşleşmedi");
   } else {
-    const engineRule = findBankRule(companyRules, description);
-    const legacyRule = findLegacyRule(legacyRules, description);
-
-    matchedRule = engineRule || legacyRule || null;
-
-    if (engineRule) {
-      ruleAciklama =
-        formatRuleDescription(engineRule, description) ||
-        engineRule.aciklama ||
-        engineRule.description ||
-        "";
-      lucaDescription =
-        ruleAciklama ||
-        buildFallbackLucaDescription({ ...rawRow, yon: direction, aciklama: description });
-
-      if (direction === "GIRIS") {
-        counterAccountCode = engineRule.alacakHesabi || engineRule.borcHesabi || "";
-      } else {
-        counterAccountCode = engineRule.borcHesabi || engineRule.alacakHesabi || "";
-      }
-    } else if (legacyRule) {
-      ruleAciklama = legacyRule.aciklama || "";
-      lucaDescription =
-        ruleAciklama ||
-        buildFallbackLucaDescription({
-          ...rawRow,
-          yon: direction,
-          aciklama: description,
-        });
-      counterAccountCode = legacyRule.hesap || "";
-    } else {
-      const memoryMatch = findLearningMemoryMatch(
-        learningMemory,
+    const memoryMatch = findLearningMemoryMatch(learningMemory, description, {
+      bankName: rawRow.banka || rawRow.bankName || selectedBank,
+      seriesPrefix: extractSeriesPrefix(
         description,
-        {
-          bankName: rawRow.banka || rawRow.bankName || selectedBank,
-          seriesPrefix: extractSeriesPrefix(
-            description,
-            selectedCompany?.documentSeriesRules || []
-          ),
-          sourceModule: "banka",
-        }
+        selectedCompany?.documentSeriesRules || []
+      ),
+      sourceModule: "banka",
+    });
+
+    if (memoryMatch) {
+      matchedRule = {
+        source: "learningMemory",
+        islem: "HAFIZA",
+        anahtar: memoryMatch.keyword || "",
+      };
+      matchedMemoryId = memoryMatch.id || null;
+
+      const memoryAccounts = applyLearningMemoryAccounts(
+        memoryMatch,
+        direction,
+        bankLucaBase,
+        selectedCompany?.bankAccounts || []
       );
 
-      if (memoryMatch) {
+      accountCode = memoryAccounts.accountCode;
+      counterAccountCode = memoryAccounts.counterAccountCode;
+      lucaDescription = formatMemoryDescription(
+        memoryMatch,
+        description,
+        direction
+      );
+
+      if (memoryMatch.document_type) {
+        documentType = memoryMatch.document_type;
+      }
+
+      appendWarning(warnings, MEMORY_MATCH_LABEL);
+    } else {
+      const accountingRule = matchAccountingRule(description, {
+        companyId: selectedCompany?.id || selectedCompanyId,
+        kaynakTipi: "Banka",
+        rules: accountingRules,
+      });
+
+      if (accountingRule) {
         matchedRule = {
-          source: "learningMemory",
-          islem: "HAFIZA",
-          anahtar: memoryMatch.keyword || "",
+          source: "accountingRuleEngine",
+          islem: "KURAL",
+          anahtar: accountingRule.aramaMetni || "",
         };
-        matchedMemoryId = memoryMatch.id || null;
 
-        const memoryAccounts = applyLearningMemoryAccounts(
-          memoryMatch,
-          direction,
-          bankLucaBase,
-          selectedCompany?.bankAccounts || []
-        );
-
-        accountCode = memoryAccounts.accountCode;
-        counterAccountCode = memoryAccounts.counterAccountCode;
-        lucaDescription = formatMemoryDescription(
-          memoryMatch,
+        const applied = applyAccountingRuleToBankMovement(
+          accountingRule,
           description,
           direction
         );
 
-        if (memoryMatch.document_type) {
-          documentType = memoryMatch.document_type;
-        }
+        counterAccountCode = applied.counterAccountCode;
+        documentType = applied.documentType || documentType;
+        ruleAciklama = applied.ruleAciklama;
+        lucaDescription =
+          applied.lucaDescription ||
+          buildFallbackLucaDescription({
+            ...rawRow,
+            yon: direction,
+            aciklama: description,
+          });
 
-        appendWarning(warnings, MEMORY_MATCH_LABEL);
+        appendWarning(warnings, `Kural Motoru: ${accountingRule.aramaMetni}`);
       } else {
-        appendWarning(warnings, "Kural bulunamadı");
-        lucaDescription = buildFallbackLucaDescription({
-          ...rawRow,
-          yon: direction,
-          aciklama: description,
-        });
+        const engineRule = findBankRule(companyRules, description);
+        const legacyRule = findLegacyRule(legacyRules, description);
+
+        matchedRule = engineRule || legacyRule || null;
+
+        if (engineRule) {
+          ruleAciklama =
+            formatRuleDescription(engineRule, description) ||
+            engineRule.aciklama ||
+            engineRule.description ||
+            "";
+          lucaDescription =
+            ruleAciklama ||
+            buildFallbackLucaDescription({
+              ...rawRow,
+              yon: direction,
+              aciklama: description,
+            });
+
+          if (direction === "GIRIS") {
+            counterAccountCode = engineRule.alacakHesabi || engineRule.borcHesabi || "";
+          } else {
+            counterAccountCode = engineRule.borcHesabi || engineRule.alacakHesabi || "";
+          }
+        } else if (legacyRule) {
+          ruleAciklama = legacyRule.aciklama || "";
+          lucaDescription =
+            ruleAciklama ||
+            buildFallbackLucaDescription({
+              ...rawRow,
+              yon: direction,
+              aciklama: description,
+            });
+          counterAccountCode = legacyRule.hesap || "";
+        } else {
+          appendWarning(warnings, "Kural bulunamadı");
+          lucaDescription = buildFallbackLucaDescription({
+            ...rawRow,
+            yon: direction,
+            aciklama: description,
+          });
+        }
       }
     }
 
@@ -456,11 +500,19 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 
   const faturaRule = findFaturaRule(companyRules, description);
 
-  if (!isCardPaymentRow && faturaRule?.belgeTuru && matchedRule?.source !== "learningMemory") {
+  if (
+    !isCardPaymentRow &&
+    faturaRule?.belgeTuru &&
+    matchedRule?.source !== "learningMemory" &&
+    matchedRule?.source !== "accountingRuleEngine"
+  ) {
     documentType = faturaRule.belgeTuru;
   }
 
-  if (matchedRule?.source !== "learningMemory") {
+  if (
+    matchedRule?.source !== "learningMemory" &&
+    matchedRule?.source !== "accountingRuleEngine"
+  ) {
     accountCode = resolve102BankAccount(
       selectedCompany?.bankAccounts || [],
       accountCode,
