@@ -341,6 +341,11 @@ const categories = [
         href: "/hesaplama-araclari/maas-hesaplama",
       },
       {
+        title: "Kıdem ve İhbar Tazminatı",
+        desc: "Hizmet süresi ve ücret bileşenlerine göre kıdem/ihbar tazminatı hesaplama.",
+        href: "/hesaplama-araclari/kidem-ihbar",
+      },
+      {
         title: "Kur Farkı",
         desc: "Dövizli işlemler için kur farkı hesaplama.",
         href: null,

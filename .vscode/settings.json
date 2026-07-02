@@ -1,0 +1,10 @@
+{
+  "git.enableSmartCommit": true,
+  "git.suggestSmartCommit": true,
+  "git.postCommitCommand": "push",
+  "git.confirmSync": false,
+  "git.autofetch": true,
+  "git.showPushSuccessNotification": true,
+  "git.untrackedChanges": "separate",
+  "scm.defaultViewMode": "tree"
+}

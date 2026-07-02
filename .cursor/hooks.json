@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "node .cursor/hooks/track-changes.mjs"
+      }
+    ],
+    "afterTabFileEdit": [
+      {
+        "command": "node .cursor/hooks/track-changes.mjs"
+      }
+    ],
+    "stop": [
+      {
+        "command": "node .cursor/hooks/prepare-deploy-stop.mjs",
+        "loop_limit": 1
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "node .cursor/hooks/guard-git-push.mjs",
+        "matcher": "git\\s|node\\s+\\.cursor\\/hooks\\/deploy-approved\\.mjs"
+      }
+    ]
+  }
+}

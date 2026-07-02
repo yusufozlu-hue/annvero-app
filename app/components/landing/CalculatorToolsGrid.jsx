@@ -21,8 +21,14 @@ const tools = [
     description:
       "KDV hariç tutardan dahile veya KDV dahil tutardan hariç tutarı hesaplayın.",
   },
-  { id: "kidem", title: "Kıdem Tazminatı" },
-  { id: "ihbar", title: "İhbar Tazminatı" },
+  {
+    id: "kidem-ihbar",
+    title: "Kıdem ve İhbar Tazminatı Hesaplama",
+    active: true,
+    href: "/hesaplama-araclari/kidem-ihbar",
+    description:
+      "Hizmet süresi, brüt ücret ve menfaatlere göre kıdem ve ihbar tazminatı brüt/net hesaplama.",
+  },
   { id: "sgk", title: "SGK İşveren Maliyeti" },
   { id: "binek", title: "Binek Araç Gider Kısıtlaması" },
   { id: "finansman", title: "Finansman Gider Kısıtlaması" },

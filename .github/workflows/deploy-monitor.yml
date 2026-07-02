@@ -1,0 +1,24 @@
+name: ANNVERO Deploy Monitor
+
+on:
+  deployment_status:
+
+permissions:
+  contents: read
+
+jobs:
+  notify-failure:
+    if: github.event.deployment_status.state == 'failure' || github.event.deployment_status.state == 'error'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report failed deployment
+        run: |
+          echo "::error title=ANNVERO Deploy Failed::Vercel deployment failed for commit ${GITHUB_SHA}."
+          echo "## ANNVERO deploy hatasi" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Durum: ${{ github.event.deployment_status.state }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ortam: ${{ github.event.deployment_status.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit: \`${{ github.event.deployment_status.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Aciklama: ${{ github.event.deployment_status.description }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Vercel: ${{ github.event.deployment_status.target_url }}" >> "$GITHUB_STEP_SUMMARY"
+          exit 1

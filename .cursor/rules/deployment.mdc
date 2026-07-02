@@ -1,0 +1,27 @@
+---
+description: ANNVERO otomatik deploy — hook tabanlı onaylı commit/push
+alwaysApply: true
+---
+
+# ANNVERO deployment
+
+## Otomatik akış (Source Control gerekmez)
+
+1. Agent dosya kaydettiğinde `.cursor/hooks/track-changes.mjs` deploy kuyruğunu günceller.
+2. Agent oturumu bittiğinde `stop` hook chat'e deploy özeti yazar; kullanıcı **deploy onayla** der.
+3. Onay sonrası çalıştır: `node .cursor/hooks/deploy-approved.mjs`
+4. `beforeShellExecution` hook commit/push öncesi kullanıcıdan onay ister.
+5. Push sonrası Vercel otomatik deploy eder.
+
+## Kurallar
+
+- Deploy için Source Control paneline yönlendirme yapma; chat onayı + hook yeterli.
+- Force push, hard reset, clean -f komutlarını asla çalıştırma (hook engeller).
+- `.env*` dosyalarını commit etme.
+- Push sonrası dashboard'daki `ANNVERO build: [hash]` etiketi GitHub commit hash'i ile eşleşmeli.
+- Build hash: `BuildVersionBadge` + `src/lib/buildInfo.js` + Vercel `VERCEL_GIT_COMMIT_SHA`.
+- Deploy hatası: GitHub Actions `deploy-monitor.yml` workflow'u failed olarak işaretlenir.
+
+## Manuel alternatif
+
+Command Palette → **Tasks: Run Task** → **ANNVERO: Deploy Onayla**
