@@ -10,10 +10,9 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --animate-annvero-support-glow: annvero-support-glow 2s ease-in-out infinite;
 }
 
-@keyframes annvero-support-glow {
+@keyframes annvero-support-pulse-keyframes {
   0%,
   100% {
     box-shadow:
@@ -29,6 +28,25 @@
       0 6px 10px -4px rgb(16 185 129 / 0.24),
       0 0 0 10px rgb(16 185 129 / 0);
     transform: scale(1.04);
+  }
+}
+
+.annvero-support-pulse {
+  animation: annvero-support-pulse-keyframes 2s ease-in-out infinite;
+  will-change: transform, box-shadow;
+}
+
+.annvero-support-pulse:hover {
+  animation: none;
+  box-shadow:
+    0 10px 15px -3px rgb(16 185 129 / 0.35),
+    0 4px 6px -4px rgb(16 185 129 / 0.22);
+  transform: scale(1.05);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .annvero-support-pulse {
+    animation: none;
   }
 }
 

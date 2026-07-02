@@ -463,7 +463,7 @@ export default function AnnveroSupportWidget() {
         className={`pointer-events-auto flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 text-white transition duration-300 focus:outline-none focus:ring-4 focus:ring-emerald-200 sm:h-16 sm:w-16 ${
           open
             ? "shadow-lg shadow-emerald-500/30 hover:scale-105 hover:from-emerald-600 hover:to-emerald-700"
-            : "animate-annvero-support-glow motion-reduce:animate-none hover:animate-none hover:scale-105 hover:from-emerald-600 hover:to-emerald-700 hover:shadow-lg hover:shadow-emerald-500/35"
+            : "annvero-support-pulse hover:from-emerald-600 hover:to-emerald-700"
         }`}
       >
         {open ? (
