@@ -287,8 +287,8 @@ export default function LandingPage() {
                   info@annvero.com
                 </p>
                 <p>
-                  <span className="font-semibold">Telefon:</span> +90 (212) 000
-                  00 00
+                  <span className="font-semibold">Telefon:</span> +90 532 363
+                  77 29
                 </p>
                 <p>
                   <span className="font-semibold">Adres:</span> İstanbul, Türkiye

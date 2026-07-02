@@ -2,12 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
-import { buildWhatsAppLink } from "@/src/ofis-takip/whatsapp";
 
-const SUPPORT_PHONE = "+905323637729";
+const WHATSAPP_PHONE = "905323637729";
+const WHATSAPP_LINK =
+  "https://wa.me/905323637729?text=Merhaba%2C%20ANNVERO%20hakk%C4%B1nda%20bilgi%20almak%20istiyorum.";
+const WHATSAPP_DEMO_LINK = `https://wa.me/${WHATSAPP_PHONE}?text=${encodeURIComponent(
+  "Merhaba ANNVERO ekibi, platform için demo talep etmek istiyorum.",
+)}`;
 const SUPPORT_PHONE_DISPLAY = "+90 532 363 77 29";
 const SUPPORT_EMAIL = "info@annvero.com";
-const WHATSAPP_DEFAULT_MESSAGE = "Merhaba, ANNVERO hakkında bilgi almak istiyorum.";
 
 const FAQ_ITEMS = [
   {
@@ -74,15 +77,8 @@ export default function AnnveroSupportWidget() {
   const panelRef = useRef(null);
   const buttonRef = useRef(null);
 
-  const whatsAppGeneralLink = buildWhatsAppLink(
-    SUPPORT_PHONE,
-    WHATSAPP_DEFAULT_MESSAGE,
-  );
-
-  const whatsAppDemoLink = buildWhatsAppLink(
-    SUPPORT_PHONE,
-    "Merhaba ANNVERO ekibi, platform için demo talep etmek istiyorum.",
-  );
+  const whatsAppGeneralLink = WHATSAPP_LINK;
+  const whatsAppDemoLink = WHATSAPP_DEMO_LINK;
 
   const resetPanel = useCallback(() => {
     setView("menu");
