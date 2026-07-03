@@ -5,9 +5,16 @@ Playwright tabanlı kalıcı Node servisi. Vercel'deki Next.js uygulaması bu se
 ## Railway deploy
 
 1. Yeni servis oluşturun ve **Root Directory** olarak `services/gib-automation` seçin.
-2. Railway `Dockerfile` ve `railway.toml` dosyalarını otomatik kullanır.
-3. Ortam değişkenlerini ekleyin (`GIB_AUTOMATION_SERVICE_TOKEN` vb.).
-4. Vercel tarafında `GIB_AUTOMATION_SERVICE_URL` değerini Railway public URL ile güncelleyin.
+2. **Settings → Config-as-code** alanında config dosyasını açıkça belirtin:
+   `/services/gib-automation/railway.json`
+   (Railway config dosyası root directory'yi takip etmez.)
+3. `railway.json` içinde `builder: "DOCKERFILE"` tanımlıdır; Nixpacks/Railpack devre dışı kalır.
+4. Deploy loglarında şu satırları görmelisiniz:
+   - `Using Detected Dockerfile`
+   - `==> Railway Docker build: annvero-gib-automation`
+   - `==> Base image: mcr.microsoft.com/playwright:v1.61.1-jammy`
+5. Ortam değişkenlerini ekleyin (`GIB_AUTOMATION_SERVICE_TOKEN` vb.).
+6. Vercel tarafında `GIB_AUTOMATION_SERVICE_URL` değerini Railway public URL ile güncelleyin.
 
 `PORT` Railway tarafından atanır; servis `process.env.PORT` üzerinden dinler.
 
