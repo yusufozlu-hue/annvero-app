@@ -282,7 +282,7 @@ export default function GibTebligatPanel() {
               <tr key={row.id} className="border-t border-gray-800">
                 <td className="p-3">{row.title}</td>
                 <td className="p-3">{row.reference_no || "—"}</td>
-                <td className="p-3">{formatTrDate(row.notification_date || row.created_at)}</td>
+                <td className="p-3">{formatTrDate(row.served_date || row.notification_date || row.created_at)}</td>
                 <td className="p-3">{row.status === "unread" ? "Okunmadı" : "Okundu"}</td>
               </tr>
             ))}

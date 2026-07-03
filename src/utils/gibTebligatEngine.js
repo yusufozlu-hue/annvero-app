@@ -1,4 +1,5 @@
 import { DEFAULT_GIB_REMINDER } from "@/src/config/resmiBildirimDefaults";
+import { buildOfficialNotificationDedupeKey } from "@/src/utils/officialNotificationSchema";
 
 export function validateVerificationCode(code = "") {
   const normalized = String(code || "").trim();
@@ -41,17 +42,14 @@ export function buildGibCheckPayload({
     .filter((item) => item?.title)
     .map((item) => ({
       company_id: companyId,
-      channel: "gib",
+      source: "gib",
+      notification_type: "tebligat",
       title: String(item.title).trim(),
-      summary: item.summary ? String(item.summary).trim() : "",
+      description: item.summary ? String(item.summary).trim() : "",
       reference_no: item.referenceNo ? String(item.referenceNo).trim() : "",
-      notification_date: item.notificationDate || null,
+      served_date: item.notificationDate || null,
       status: "unread",
-      metadata: {
-        verificationUsed: true,
-        source: "manual_check",
-      },
-      checked_at: checkedAt,
+      priority: "normal",
     }));
 
   return {
@@ -64,26 +62,9 @@ export function buildGibCheckPayload({
 }
 
 export function diffNewNotifications(existing = [], incoming = []) {
-  const existingKeys = new Set(
-    existing.map((row) =>
-      [
-        row.company_id,
-        row.reference_no || "",
-        row.title || "",
-        row.notification_date || "",
-      ].join("|")
-    )
-  );
+  const existingKeys = new Set(existing.map((row) => buildOfficialNotificationDedupeKey(row)));
 
-  return incoming.filter((row) => {
-    const key = [
-      row.company_id,
-      row.reference_no || "",
-      row.title || "",
-      row.notification_date || "",
-    ].join("|");
-    return !existingKeys.has(key);
-  });
+  return incoming.filter((row) => !existingKeys.has(buildOfficialNotificationDedupeKey(row)));
 }
 
 export function formatTrDate(value) {

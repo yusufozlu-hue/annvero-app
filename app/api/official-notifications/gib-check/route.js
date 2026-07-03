@@ -6,6 +6,7 @@ import {
   diffNewNotifications,
   validateVerificationCode,
 } from "@/src/utils/gibTebligatEngine";
+import { toOfficialNotificationDbRow } from "@/src/utils/officialNotificationSchema";
 
 async function performGibCheck(supabase, body = {}) {
   const companyId = String(body?.company_id || body?.companyId || "").trim();
@@ -27,13 +28,28 @@ async function performGibCheck(supabase, body = {}) {
     .from("official_notifications")
     .select("*")
     .eq("company_id", companyId)
-    .eq("channel", "gib");
+    .eq("source", "gib");
 
   if (existingError) {
     return { ok: false, status: 500, error: existingError.message };
   }
 
-  const newRows = diffNewNotifications(existingRows || [], checkPayload.notifications);
+  const newRows = diffNewNotifications(
+    existingRows || [],
+    checkPayload.notifications.map((item) =>
+      toOfficialNotificationDbRow({
+        company_id: companyId,
+        source: "gib",
+        notification_type: "tebligat",
+        title: item.title,
+        description: item.summary,
+        reference_no: item.referenceNo,
+        served_date: item.notificationDate,
+        status: "unread",
+        priority: "normal",
+      })
+    )
+  );
   let inserted = [];
 
   if (newRows.length) {

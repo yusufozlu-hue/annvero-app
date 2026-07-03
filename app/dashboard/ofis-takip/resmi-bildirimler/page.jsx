@@ -15,7 +15,7 @@ export default function ResmiBildirimlerHubPage() {
         setStats({
           total: rows.length,
           unread: rows.filter((row) => row.status === "unread").length,
-          gib: rows.filter((row) => row.channel === "gib").length,
+          gib: rows.filter((row) => (row.source || row.channel) === "gib").length,
         });
       })
       .catch(() => {});

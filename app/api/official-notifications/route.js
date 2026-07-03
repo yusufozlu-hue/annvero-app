@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import {
+  fromOfficialNotificationDbRow,
+  mapOfficialNotificationRows,
+  normalizeOfficialNotificationSource,
+  toOfficialNotificationDbRow,
+} from "@/src/utils/officialNotificationSchema";
 
 export async function GET(request) {
   const supabase = getSupabaseClient();
@@ -8,17 +14,19 @@ export async function GET(request) {
   }
 
   const channel = request.nextUrl.searchParams.get("channel");
+  const source = request.nextUrl.searchParams.get("source");
   const companyId = request.nextUrl.searchParams.get("companyId");
   const status = request.nextUrl.searchParams.get("status");
 
   let query = supabase
     .from("official_notifications")
     .select("*")
-    .order("notification_date", { ascending: false, nullsFirst: false })
+    .order("served_date", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false })
     .limit(500);
 
-  if (channel) query = query.eq("channel", channel);
+  const resolvedSource = source || channel;
+  if (resolvedSource) query = query.eq("source", normalizeOfficialNotificationSource(resolvedSource));
   if (companyId) query = query.eq("company_id", companyId);
   if (status) query = query.eq("status", status);
 
@@ -27,7 +35,7 @@ export async function GET(request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ data: data || [] });
+  return NextResponse.json({ data: mapOfficialNotificationRows(data || []) });
 }
 
 export async function POST(request) {
@@ -45,19 +53,8 @@ export async function POST(request) {
 
   const records = Array.isArray(body?.records) ? body.records : [body];
   const payload = records
-    .filter((item) => item?.company_id && item?.channel && item?.title)
-    .map((item) => ({
-      company_id: item.company_id,
-      channel: item.channel,
-      title: item.title,
-      summary: item.summary || null,
-      reference_no: item.reference_no || null,
-      notification_date: item.notification_date || null,
-      status: item.status || "unread",
-      metadata: item.metadata || {},
-      checked_at: item.checked_at || null,
-      updated_at: new Date().toISOString(),
-    }));
+    .filter((item) => item?.company_id && (item?.source || item?.channel) && item?.title)
+    .map((item) => toOfficialNotificationDbRow(item));
 
   if (!payload.length) {
     return NextResponse.json({ error: "Kayıt verisi zorunludur." }, { status: 400 });
@@ -68,7 +65,7 @@ export async function POST(request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ data: data || [] });
+  return NextResponse.json({ data: mapOfficialNotificationRows(data || []) });
 }
 
 export async function PATCH(request) {
@@ -93,8 +90,12 @@ export async function PATCH(request) {
   };
 
   if (body.status) patch.status = body.status;
-  if (body.summary !== undefined) patch.summary = body.summary;
   if (body.title !== undefined) patch.title = body.title;
+  if (body.description !== undefined) patch.description = body.description;
+  if (body.summary !== undefined) patch.description = body.summary;
+  if (body.priority !== undefined) patch.priority = body.priority;
+  if (body.file_url !== undefined) patch.file_url = body.file_url;
+  if (body.due_date !== undefined) patch.due_date = body.due_date;
 
   const { data, error } = await supabase
     .from("official_notifications")
@@ -107,5 +108,5 @@ export async function PATCH(request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ data });
+  return NextResponse.json({ data: fromOfficialNotificationDbRow(data) });
 }

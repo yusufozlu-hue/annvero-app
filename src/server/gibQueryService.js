@@ -2,6 +2,9 @@ import { GIB_QUERY_STATUS } from "@/src/config/gibQueryStatuses";
 import { decryptSecret } from "@/src/lib/gibCredentialsCrypto";
 import { diffNewNotifications } from "@/src/utils/gibTebligatEngine";
 import {
+  toOfficialNotificationDbRow,
+} from "@/src/utils/officialNotificationSchema";
+import {
   completeGibLoginAndFetchTebligat,
   startGibLoginSession,
 } from "@/src/server/gibPortalAutomation";
@@ -79,21 +82,23 @@ export async function persistNewOfficialNotifications(supabase, companyId, notif
     .from("official_notifications")
     .select("*")
     .eq("company_id", companyId)
-    .eq("channel", "gib");
+    .eq("source", "gib");
 
   if (existingError) throw new Error(existingError.message);
 
-  const incoming = notifications.map((item) => ({
-    company_id: companyId,
-    channel: "gib",
-    title: item.title,
-    summary: item.summary || "",
-    reference_no: item.reference_no || item.referenceNo || "",
-    notification_date: normalizeDate(item.notification_date || item.notificationDate),
-    status: "unread",
-    metadata: { source: "gib_automation" },
-    checked_at: new Date().toISOString(),
-  }));
+  const incoming = notifications.map((item) =>
+    toOfficialNotificationDbRow({
+      company_id: companyId,
+      source: "gib",
+      notification_type: "tebligat",
+      title: item.title,
+      description: item.summary || "",
+      reference_no: item.reference_no || item.referenceNo || "",
+      served_date: normalizeDate(item.notification_date || item.notificationDate),
+      status: "unread",
+      priority: "normal",
+    })
+  );
 
   const newRows = diffNewNotifications(existingRows || [], incoming);
   if (!newRows.length) {
