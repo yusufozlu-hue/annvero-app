@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getGibAutomationGuardResponse } from "@/src/lib/gibAutomationRouteGuard";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
 import { getGibEncryptionKeyGuardResponse } from "@/src/lib/gibCredentialsRouteGuard";
 import {
@@ -21,6 +22,9 @@ export async function POST(request) {
 
   const encryptionKeyError = getGibEncryptionKeyGuardResponse();
   if (encryptionKeyError) return encryptionKeyError;
+
+  const automationGuard = getGibAutomationGuardResponse();
+  if (automationGuard) return automationGuard;
 
   const supabaseGuard = getGibSupabaseGuardResponse("gib-tebligat:verify");
   if (supabaseGuard) return supabaseGuard;

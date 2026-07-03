@@ -1,18 +1,13 @@
 import { GIB_QUERY_STATUS } from "@/src/config/gibQueryStatuses";
+import { GIB_AUTOMATION_NOT_CONFIGURED_MESSAGE } from "@/src/lib/gibAutomationEnv";
 import { decryptSecret } from "@/src/lib/gibCredentialsCrypto";
+import {
+  GibAutomationNotConfiguredError,
+  startGibAutomationQuery,
+  verifyGibAutomationQuery,
+} from "@/src/server/gibAutomationClient";
 import { diffNewNotifications } from "@/src/utils/gibTebligatEngine";
-import {
-  toOfficialNotificationDbRow,
-} from "@/src/utils/officialNotificationSchema";
-import {
-  completeGibLoginAndFetchTebligat,
-  startGibLoginSession,
-} from "@/src/server/gibPortalAutomation";
-import {
-  clearBrowserSession,
-  storeBrowserSession,
-  takeBrowserSession,
-} from "@/src/server/gibBrowserSessionStore";
+import { toOfficialNotificationDbRow } from "@/src/utils/officialNotificationSchema";
 
 export async function loadCompanyGibCredentials(supabase, companyId) {
   const { data, error } = await supabase
@@ -47,18 +42,22 @@ export async function upsertCompanyQueryState(supabase, companyId, payload = {})
 }
 
 export async function createQuerySession(supabase, companyId, payload = {}) {
+  const row = {
+    company_id: companyId,
+    status: payload.status || "awaiting_verification",
+    result_status: payload.resultStatus || GIB_QUERY_STATUS.AWAITING_VERIFICATION,
+    storage_state: payload.storageState || null,
+    captcha_image_base64: payload.captchaImageBase64 || null,
+    error_message: payload.errorMessage || null,
+  };
+
+  if (payload.id) {
+    row.id = payload.id;
+  }
+
   const { data, error } = await supabase
     .from("gib_query_sessions")
-    .insert([
-      {
-        company_id: companyId,
-        status: payload.status || "awaiting_verification",
-        result_status: payload.resultStatus || GIB_QUERY_STATUS.AWAITING_VERIFICATION,
-        storage_state: payload.storageState || null,
-        captcha_image_base64: payload.captchaImageBase64 || null,
-        error_message: payload.errorMessage || null,
-      },
-    ])
+    .insert([row])
     .select()
     .single();
 
@@ -118,6 +117,13 @@ function normalizeDate(value) {
   return `${match[3]}-${match[2]}-${match[1]}`;
 }
 
+function isAutomationNotConfiguredError(error) {
+  return (
+    error instanceof GibAutomationNotConfiguredError ||
+    error?.message === GIB_AUTOMATION_NOT_CONFIGURED_MESSAGE
+  );
+}
+
 export async function startCompanyGibQuery(supabase, companyId) {
   const credentials = await loadCompanyGibCredentials(supabase, companyId);
 
@@ -138,18 +144,26 @@ export async function startCompanyGibQuery(supabase, companyId) {
     resultStatus: GIB_QUERY_STATUS.QUERYING,
   });
 
+  const sessionId = crypto.randomUUID();
+
   try {
-    const loginSession = await startGibLoginSession(credentials);
-    const session = await createQuerySession(supabase, companyId, {
-      status: "awaiting_verification",
-      resultStatus: GIB_QUERY_STATUS.AWAITING_VERIFICATION,
-      storageState: loginSession.storageState,
-      captchaImageBase64: loginSession.captchaImageBase64,
+    const loginSession = await startGibAutomationQuery({
+      sessionId,
+      companyId,
+      credentials,
     });
 
-    if (loginSession.bundle) {
-      storeBrowserSession(session.id, loginSession.bundle);
+    if (!loginSession?.ok) {
+      throw new Error(loginSession?.error || "GİB sorgusu başlatılamadı.");
     }
+
+    const session = await createQuerySession(supabase, companyId, {
+      id: sessionId,
+      status: "awaiting_verification",
+      resultStatus: GIB_QUERY_STATUS.AWAITING_VERIFICATION,
+      storageState: loginSession.storageState || null,
+      captchaImageBase64: loginSession.captchaImageBase64 || null,
+    });
 
     await upsertCompanyQueryState(supabase, companyId, {
       resultStatus: GIB_QUERY_STATUS.AWAITING_VERIFICATION,
@@ -163,15 +177,19 @@ export async function startCompanyGibQuery(supabase, companyId) {
       resultStatus: GIB_QUERY_STATUS.AWAITING_VERIFICATION,
     };
   } catch (error) {
+    const message = isAutomationNotConfiguredError(error)
+      ? GIB_AUTOMATION_NOT_CONFIGURED_MESSAGE
+      : error.message;
+
     await upsertCompanyQueryState(supabase, companyId, {
       resultStatus: GIB_QUERY_STATUS.SYSTEM_ERROR,
-      lastError: error.message,
+      lastError: message,
     });
 
     return {
       ok: false,
       resultStatus: GIB_QUERY_STATUS.SYSTEM_ERROR,
-      error: error.message,
+      error: message,
     };
   }
 }
@@ -189,15 +207,13 @@ export async function verifyCompanyGibQuery(supabase, sessionId, verificationCod
   });
 
   try {
-    const bundle = takeBrowserSession(sessionId);
-    const result = await completeGibLoginAndFetchTebligat({
-      storageState: session.storage_state,
+    const result = await verifyGibAutomationQuery({
+      sessionId,
       verificationCode,
-      bundle,
+      storageState: session.storage_state,
     });
 
-    if (!result.ok) {
-      clearBrowserSession(sessionId);
+    if (!result?.ok) {
       await supabase
         .from("gib_query_sessions")
         .update({
@@ -253,25 +269,28 @@ export async function verifyCompanyGibQuery(supabase, sessionId, verificationCod
       inserted: persistResult.inserted,
     };
   } catch (error) {
-    clearBrowserSession(sessionId);
+    const message = isAutomationNotConfiguredError(error)
+      ? GIB_AUTOMATION_NOT_CONFIGURED_MESSAGE
+      : error.message;
+
     await supabase
       .from("gib_query_sessions")
       .update({
         status: "failed",
         result_status: GIB_QUERY_STATUS.SYSTEM_ERROR,
-        error_message: error.message,
+        error_message: message,
       })
       .eq("id", sessionId);
 
     await upsertCompanyQueryState(supabase, companyId, {
       resultStatus: GIB_QUERY_STATUS.SYSTEM_ERROR,
-      lastError: error.message,
+      lastError: message,
     });
 
     return {
       ok: false,
       resultStatus: GIB_QUERY_STATUS.SYSTEM_ERROR,
-      error: error.message,
+      error: message,
     };
   }
 }

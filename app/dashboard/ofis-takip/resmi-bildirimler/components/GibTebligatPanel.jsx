@@ -175,8 +175,8 @@ export default function GibTebligatPanel() {
         <div>
           <h2 className="text-lg font-semibold">Firma Bazlı GİB e-Tebligat Sorgulama</h2>
           <p className="text-sm text-gray-400">
-            Playwright ile GİB portalına bağlanır, doğrulama kodunu sizden alır ve tebligatları
-            kaydeder.
+            Playwright tabanlı GİB robot servisi ile portal sorgusu yapılır; doğrulama kodunu
+            sizden alır ve tebligatları kaydeder.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

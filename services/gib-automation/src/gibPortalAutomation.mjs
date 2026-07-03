@@ -1,4 +1,4 @@
-import { GIB_QUERY_STATUS } from "@/src/config/gibQueryStatuses";
+import { GIB_QUERY_STATUS } from "./gibQueryStatuses.mjs";
 
 const GIB_LOGIN_URL = "https://dijital.gib.gov.tr/portal/login";
 const GIB_ETEBLIGAT_URL = "https://dijital.gib.gov.tr/portal/e-tebligat";
@@ -267,7 +267,9 @@ async function scrapeTebligatRows(page) {
 
     if (results.length) return results;
 
-    const cards = Array.from(document.querySelectorAll("[class*='tebligat' i], [class*='notification' i], li"));
+    const cards = Array.from(
+      document.querySelectorAll("[class*='tebligat' i], [class*='notification' i], li")
+    );
     for (const card of cards.slice(0, 20)) {
       const text = (card.textContent || "").trim();
       if (text.length < 8) continue;
@@ -284,5 +286,3 @@ async function scrapeTebligatRows(page) {
 
   return (rows || []).filter((row) => row.title);
 }
-
-export { GIB_LOGIN_URL, GIB_ETEBLIGAT_URL, isMockMode };
