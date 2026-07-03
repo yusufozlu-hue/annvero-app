@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
 import { getGibEncryptionKeyGuardResponse } from "@/src/lib/gibCredentialsRouteGuard";
+import {
+  getGibSupabaseAdmin,
+  getGibSupabaseGuardResponse,
+  logGibSupabaseDiagnostics,
+} from "@/src/lib/supabase/gibSupabase";
 import { startCompanyGibQuery } from "@/src/server/gibQueryService";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 export async function POST(request) {
@@ -16,10 +21,11 @@ export async function POST(request) {
   const encryptionKeyError = getGibEncryptionKeyGuardResponse();
   if (encryptionKeyError) return encryptionKeyError;
 
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const supabaseGuard = getGibSupabaseGuardResponse("gib-tebligat:query");
+  if (supabaseGuard) return supabaseGuard;
+
+  const supabase = getGibSupabaseAdmin();
+  logGibSupabaseDiagnostics("gib-tebligat:query");
 
   let body;
   try {

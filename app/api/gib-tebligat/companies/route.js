@@ -1,8 +1,18 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
 import { isCompanyActive } from "@/src/utils/companies";
 import { formatCompanyFromSupabaseRow } from "@/src/utils/companyNormalize";
+import {
+  GIB_CREDENTIALS_TABLE,
+  GIB_QUERY_STATE_TABLE,
+  getGibSupabaseAdmin,
+  getGibSupabaseGuardResponse,
+  logGibSupabaseDiagnostics,
+  logGibSupabaseError,
+} from "@/src/lib/supabase/gibSupabase";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   const { user } = await getServerSupabaseUser();
@@ -10,16 +20,36 @@ export async function GET() {
     return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
   }
 
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
+  const supabaseGuard = getGibSupabaseGuardResponse("gib-tebligat:companies");
+  if (supabaseGuard) return supabaseGuard;
+
+  const supabase = getGibSupabaseAdmin();
+  logGibSupabaseDiagnostics("gib-tebligat:companies", GIB_CREDENTIALS_TABLE);
+
+  const [
+    { data: companies, error: companiesError },
+    { data: credentials, error: credentialsError },
+    { data: queryStates, error: statesError },
+  ] = await Promise.all([
+    supabase.from("companies").select("*").order("created_at", { ascending: true }),
+    supabase.from(GIB_CREDENTIALS_TABLE).select("*"),
+    supabase.from(GIB_QUERY_STATE_TABLE).select("*"),
+  ]);
+
+  if (companiesError) {
+    logGibSupabaseError("gib-tebligat:companies", companiesError, "companies");
+    return NextResponse.json({ error: companiesError.message }, { status: 500 });
   }
 
-  const [{ data: companies }, { data: credentials }, { data: queryStates }] = await Promise.all([
-    supabase.from("companies").select("*").order("created_at", { ascending: true }),
-    supabase.from("company_gib_credentials").select("*"),
-    supabase.from("gib_company_query_state").select("*"),
-  ]);
+  if (credentialsError) {
+    logGibSupabaseError("gib-tebligat:companies", credentialsError, GIB_CREDENTIALS_TABLE);
+    return NextResponse.json({ error: credentialsError.message }, { status: 500 });
+  }
+
+  if (statesError) {
+    logGibSupabaseError("gib-tebligat:companies", statesError, GIB_QUERY_STATE_TABLE);
+    return NextResponse.json({ error: statesError.message }, { status: 500 });
+  }
 
   const credentialMap = new Map((credentials || []).map((row) => [row.company_id, row]));
   const stateMap = new Map((queryStates || []).map((row) => [row.company_id, row]));

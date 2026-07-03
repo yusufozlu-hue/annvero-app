@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
 import { encryptSecret, maskSecret } from "@/src/lib/gibCredentialsCrypto";
 import { getGibEncryptionKeyGuardResponse } from "@/src/lib/gibCredentialsRouteGuard";
+import {
+  GIB_CREDENTIALS_TABLE,
+  GIB_QUERY_STATE_TABLE,
+  getGibSupabaseAdmin,
+  getGibSupabaseGuardResponse,
+  logGibSupabaseDiagnostics,
+  logGibSupabaseError,
+} from "@/src/lib/supabase/gibSupabase";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(request) {
   const { user } = await getServerSupabaseUser();
@@ -15,23 +23,31 @@ export async function GET(request) {
   const encryptionKeyError = getGibEncryptionKeyGuardResponse();
   if (encryptionKeyError) return encryptionKeyError;
 
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const supabaseGuard = getGibSupabaseGuardResponse("gib-credentials:get");
+  if (supabaseGuard) return supabaseGuard;
+
+  const supabase = getGibSupabaseAdmin();
+  logGibSupabaseDiagnostics("gib-credentials:get", GIB_CREDENTIALS_TABLE);
 
   const companyId = request.nextUrl.searchParams.get("companyId");
 
-  let credentialsQuery = supabase.from("company_gib_credentials").select("*");
+  let credentialsQuery = supabase.from(GIB_CREDENTIALS_TABLE).select("*");
   if (companyId) credentialsQuery = credentialsQuery.eq("company_id", companyId);
 
-  const [{ data: credentials, error }, { data: queryStates }] = await Promise.all([
-    credentialsQuery,
-    supabase.from("gib_company_query_state").select("*"),
-  ]);
+  const [{ data: credentials, error }, { data: queryStates, error: stateError }] =
+    await Promise.all([
+      credentialsQuery,
+      supabase.from(GIB_QUERY_STATE_TABLE).select("*"),
+    ]);
 
   if (error) {
+    logGibSupabaseError("gib-credentials:get", error, GIB_CREDENTIALS_TABLE);
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  if (stateError) {
+    logGibSupabaseError("gib-credentials:get", stateError, GIB_QUERY_STATE_TABLE);
+    return NextResponse.json({ error: stateError.message }, { status: 500 });
   }
 
   const stateMap = new Map((queryStates || []).map((row) => [row.company_id, row]));
@@ -61,10 +77,11 @@ export async function POST(request) {
   const encryptionKeyError = getGibEncryptionKeyGuardResponse();
   if (encryptionKeyError) return encryptionKeyError;
 
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const supabaseGuard = getGibSupabaseGuardResponse("gib-credentials:post");
+  if (supabaseGuard) return supabaseGuard;
+
+  const supabase = getGibSupabaseAdmin();
+  logGibSupabaseDiagnostics("gib-credentials:post", GIB_CREDENTIALS_TABLE);
 
   let body;
   try {
@@ -87,11 +104,16 @@ export async function POST(request) {
     );
   }
 
-  const { data: existing } = await supabase
-    .from("company_gib_credentials")
+  const { data: existing, error: existingError } = await supabase
+    .from(GIB_CREDENTIALS_TABLE)
     .select("*")
     .eq("company_id", companyId)
     .maybeSingle();
+
+  if (existingError) {
+    logGibSupabaseError("gib-credentials:post", existingError, GIB_CREDENTIALS_TABLE);
+    return NextResponse.json({ error: existingError.message }, { status: 500 });
+  }
 
   if (!password && !existing?.encrypted_password && !keepExistingSecrets) {
     return NextResponse.json({ error: "GİB şifresi zorunludur." }, { status: 400 });
@@ -112,12 +134,13 @@ export async function POST(request) {
   };
 
   const { data, error } = await supabase
-    .from("company_gib_credentials")
+    .from(GIB_CREDENTIALS_TABLE)
     .upsert([payload], { onConflict: "company_id" })
     .select()
     .single();
 
   if (error) {
+    logGibSupabaseError("gib-credentials:post", error, GIB_CREDENTIALS_TABLE);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
@@ -140,10 +163,11 @@ export async function DELETE(request) {
     return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
   }
 
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const supabaseGuard = getGibSupabaseGuardResponse("gib-credentials:delete");
+  if (supabaseGuard) return supabaseGuard;
+
+  const supabase = getGibSupabaseAdmin();
+  logGibSupabaseDiagnostics("gib-credentials:delete", GIB_CREDENTIALS_TABLE);
 
   const companyId = request.nextUrl.searchParams.get("companyId");
   if (!companyId) {
@@ -151,11 +175,12 @@ export async function DELETE(request) {
   }
 
   const { error } = await supabase
-    .from("company_gib_credentials")
+    .from(GIB_CREDENTIALS_TABLE)
     .delete()
     .eq("company_id", companyId);
 
   if (error) {
+    logGibSupabaseError("gib-credentials:delete", error, GIB_CREDENTIALS_TABLE);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
