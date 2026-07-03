@@ -1,6 +1,7 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import AnnveroSupportWidget from "./components/AnnveroSupportWidget";
+import PwaRegister from "./components/PwaRegister";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -17,11 +18,32 @@ export const metadata: Metadata = {
   title: "ANNVERO | Muhasebe ve Vergi Yönetiminde Akıllı Dönüşüm",
   description:
     "ANNVERO ile muhasebe süreçlerinizi otomatikleştirin, vergisel risklerinizi azaltın ve mali operasyonlarınızı tek merkezden yönetin.",
-  icons: {
-    icon: "/annvero-icon.png",
-    shortcut: "/annvero-icon.png",
-    apple: "/annvero-icon.png",
+  applicationName: "ANNVERO",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "ANNVERO",
+    statusBarStyle: "black-translucent",
   },
+  formatDetection: {
+    telephone: false,
+  },
+  icons: {
+    icon: [
+      { url: "/icons/icon-192x192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icons/icon-512x512.png", sizes: "512x512", type: "image/png" },
+      { url: "/annvero-icon.png" },
+    ],
+    shortcut: "/annvero-icon.png",
+    apple: [{ url: "/icons/icon-192x192.png", sizes: "192x192", type: "image/png" }],
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#030712",
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -37,6 +59,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col">
         {children}
         <AnnveroSupportWidget />
+        <PwaRegister />
       </body>
     </html>
   );
