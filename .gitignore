@@ -43,3 +43,8 @@ next-env.d.ts
 # cursor deploy queue (local)
 .cursor/deploy-queue.json
 .cursor/hooks.log
+
+# local company data exports / backups
+annvero-companies-export-*.json
+*.backup.json
+*.export.json
