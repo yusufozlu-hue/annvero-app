@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "deploy:onayla": "node .cursor/hooks/deploy-approved.mjs"
+    "deploy:onayla": "node .cursor/hooks/deploy-approved.mjs",
+    "import:companies": "node scripts/import-companies-json.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
