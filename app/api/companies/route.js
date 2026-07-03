@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
 import {
+  COMPANIES_TABLE,
+  getCompaniesSchemaErrorMessage,
+  isCompaniesSchemaCacheError,
+} from "@/src/lib/supabase/companiesSchema";
+import {
   getServerSupabaseAdmin,
   getServerSupabaseAdminGuardResponse,
   logSupabaseQueryDiagnostics,
@@ -10,19 +15,23 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const COMPANIES_TABLE = "companies";
-
 function buildSupabaseErrorResponse(context, error) {
   logSupabaseQueryError(context, error, COMPANIES_TABLE, {
     usedKeyType: "service_role",
   });
 
+  const schemaCacheError = isCompaniesSchemaCacheError(error);
+
   return NextResponse.json(
     {
-      error: error?.message || "Firma kaydı işlenemedi.",
+      error: schemaCacheError
+        ? getCompaniesSchemaErrorMessage()
+        : error?.message || "Firma kaydı işlenemedi.",
       code: error?.code || null,
       details: error?.details || null,
-      hint: error?.hint || null,
+      hint: schemaCacheError
+        ? "supabase/migrations/007_companies_table.sql"
+        : error?.hint || null,
     },
     { status: 500 }
   );
