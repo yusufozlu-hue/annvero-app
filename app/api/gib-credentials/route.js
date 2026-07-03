@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
-import {
-  encryptSecret,
-  hasEncryptionKeyConfigured,
-  maskSecret,
-} from "@/src/lib/gibCredentialsCrypto";
+import { encryptSecret, maskSecret } from "@/src/lib/gibCredentialsCrypto";
+import { getGibEncryptionKeyGuardResponse } from "@/src/lib/gibCredentialsRouteGuard";
+
+export const runtime = "nodejs";
 
 export async function GET(request) {
   const { user } = await getServerSupabaseUser();
@@ -13,12 +12,8 @@ export async function GET(request) {
     return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
   }
 
-  if (!hasEncryptionKeyConfigured()) {
-    return NextResponse.json(
-      { error: "GIB_CREDENTIALS_ENCRYPTION_KEY yapılandırılmamış." },
-      { status: 500 }
-    );
-  }
+  const encryptionKeyError = getGibEncryptionKeyGuardResponse();
+  if (encryptionKeyError) return encryptionKeyError;
 
   const supabase = getSupabaseClient();
   if (!supabase) {
@@ -63,12 +58,8 @@ export async function POST(request) {
     return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
   }
 
-  if (!hasEncryptionKeyConfigured()) {
-    return NextResponse.json(
-      { error: "GIB_CREDENTIALS_ENCRYPTION_KEY yapılandırılmamış." },
-      { status: 500 }
-    );
-  }
+  const encryptionKeyError = getGibEncryptionKeyGuardResponse();
+  if (encryptionKeyError) return encryptionKeyError;
 
   const supabase = getSupabaseClient();
   if (!supabase) {

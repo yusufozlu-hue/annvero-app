@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
-import { hasEncryptionKeyConfigured } from "@/src/lib/gibCredentialsCrypto";
+import { getGibEncryptionKeyGuardResponse } from "@/src/lib/gibCredentialsRouteGuard";
 import { verifyCompanyGibQuery } from "@/src/server/gibQueryService";
 import { validateVerificationCode } from "@/src/utils/gibTebligatEngine";
 
@@ -14,12 +14,8 @@ export async function POST(request) {
     return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
   }
 
-  if (!hasEncryptionKeyConfigured()) {
-    return NextResponse.json(
-      { error: "GIB_CREDENTIALS_ENCRYPTION_KEY yapılandırılmamış." },
-      { status: 500 }
-    );
-  }
+  const encryptionKeyError = getGibEncryptionKeyGuardResponse();
+  if (encryptionKeyError) return encryptionKeyError;
 
   const supabase = getSupabaseClient();
   if (!supabase) {

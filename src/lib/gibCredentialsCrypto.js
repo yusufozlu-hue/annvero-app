@@ -1,27 +1,17 @@
 import crypto from "crypto";
+import {
+  getGibEncryptionKey,
+  hasGibEncryptionKeyConfigured,
+} from "@/src/lib/gibCredentialsEnv";
 
 const ALGORITHM = "aes-256-gcm";
-
-function getEncryptionKey() {
-  const raw = process.env.GIB_CREDENTIALS_ENCRYPTION_KEY || "";
-  if (!raw) {
-    throw new Error("GIB_CREDENTIALS_ENCRYPTION_KEY yapılandırılmamış.");
-  }
-
-  const key = Buffer.from(raw, "base64");
-  if (key.length !== 32) {
-    throw new Error("GIB_CREDENTIALS_ENCRYPTION_KEY 32 bayt base64 olmalıdır.");
-  }
-
-  return key;
-}
 
 export function encryptSecret(plainText = "") {
   const value = String(plainText || "");
   if (!value) return "";
 
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv(ALGORITHM, getEncryptionKey(), iv);
+  const cipher = crypto.createCipheriv(ALGORITHM, getGibEncryptionKey(), iv);
   const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
 
@@ -38,7 +28,7 @@ export function decryptSecret(payload = "") {
 
   const decipher = crypto.createDecipheriv(
     ALGORITHM,
-    getEncryptionKey(),
+    getGibEncryptionKey(),
     Buffer.from(ivB64, "base64")
   );
   decipher.setAuthTag(Buffer.from(tagB64, "base64"));
@@ -57,10 +47,5 @@ export function maskSecret(value = "") {
 }
 
 export function hasEncryptionKeyConfigured() {
-  try {
-    getEncryptionKey();
-    return true;
-  } catch {
-    return false;
-  }
+  return hasGibEncryptionKeyConfigured();
 }
