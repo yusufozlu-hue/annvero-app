@@ -11,6 +11,7 @@ import {
   downloadEmployeeTemplate,
   parseEmployeeExcelFile,
 } from "@/src/utils/employeeExcel";
+import GibCredentialsSection from "@/app/dashboard/ofis-takip/resmi-bildirimler/components/GibCredentialsSection";
 
 const EMPLOYEE_PAGE_SIZE = 20;
 
@@ -95,6 +96,7 @@ export default function CompanyManagement() {
 
     const validTabs = [
       "general",
+      "gib",
       "banks",
       "documents",
       "vehicles",
@@ -946,7 +948,7 @@ export default function CompanyManagement() {
 
   const tabs = [
     ["general", "Genel Bilgiler"],
-
+    ["gib", "GİB e-Tebligat"],
     ["banks", "Banka & Kredi Kartları"],
 
     ["documents", "Belge Serileri"],
@@ -1305,6 +1307,13 @@ export default function CompanyManagement() {
                 </button>
               ))}
             </div>
+
+            {activeTab === "gib" && (
+              <GibCredentialsSection
+                companyId={company.id}
+                companyName={company.companyName}
+              />
+            )}
 
             {activeTab === "general" && (
               <div className="space-y-6">
