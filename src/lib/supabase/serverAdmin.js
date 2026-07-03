@@ -20,40 +20,38 @@ export function extractSupabaseProjectRef(supabaseUrl = "") {
   }
 }
 
-function decodeJwtPayload(token = "") {
-  try {
-    const parts = String(token).split(".");
-    if (parts.length < 2) return null;
-    const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
-    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
-  } catch {
-    return null;
-  }
+export function getSupabaseApiKeyFormat(apiKey = "") {
+  const key = String(apiKey);
+  if (key.startsWith("sb_secret_")) return "secret";
+  if (key.startsWith("sb_publishable_")) return "publishable";
+  if (key.startsWith("eyJ")) return "jwt";
+  return "unknown";
 }
 
-export function validateSupabaseProjectMatch(supabaseUrl, apiKey) {
-  const urlRef = extractSupabaseProjectRef(supabaseUrl);
-  const payload = decodeJwtPayload(apiKey);
-  const keyRef = payload?.ref || null;
+function createSupabaseServerFetch(apiKey) {
+  const keyFormat = getSupabaseApiKeyFormat(apiKey);
 
-  if (!keyRef) {
-    return { ok: true, urlRef, keyRef: null };
-  }
+  return async (input, init = {}) => {
+    const headers = new Headers(init.headers);
 
-  if (keyRef !== urlRef) {
-    return { ok: false, urlRef, keyRef };
-  }
+    // New sb_* keys must not be sent as Authorization Bearer.
+    // supabase-js adds Bearer automatically; strip it for non-JWT keys.
+    if (keyFormat === "secret" || keyFormat === "publishable") {
+      headers.delete("Authorization");
+    }
 
-  return { ok: true, urlRef, keyRef };
+    return fetch(input, { ...init, headers });
+  };
 }
 
 export function getSupabaseConnectionDiagnostics({ table = null, apiKey = null, keyType = null } = {}) {
   const config = getSupabaseConfig();
   const runtimeUrl = readServerEnv(SUPABASE_URL_ENV);
   const serviceRoleKey = readServerEnv(SERVICE_ROLE_ENV);
-  const resolvedKeyType = keyType || (serviceRoleKey ? "service_role" : "anon");
   const resolvedKey = apiKey || serviceRoleKey || config?.anonKey || "";
+  const resolvedKeyFormat = getSupabaseApiKeyFormat(resolvedKey);
+  const resolvedKeyType =
+    keyType || (serviceRoleKey ? "service_role" : "anon");
 
   return {
     supabaseUrl: config?.supabaseUrl || runtimeUrl || "",
@@ -61,11 +59,9 @@ export function getSupabaseConnectionDiagnostics({ table = null, apiKey = null, 
     projectRef: extractSupabaseProjectRef(config?.supabaseUrl || runtimeUrl),
     table,
     keyType: resolvedKeyType,
+    keyFormat: resolvedKeyFormat,
     hasServiceRoleKey: Boolean(serviceRoleKey),
     anonKeyType: config ? getSupabaseAnonKeyType(config.anonKey) : "unknown",
-    projectMatch: config
-      ? validateSupabaseProjectMatch(config.supabaseUrl, resolvedKey)
-      : { ok: false, urlRef: "unknown", keyRef: null },
   };
 }
 
@@ -90,14 +86,18 @@ export function getServerSupabaseAdmin({ requireServiceRole = false } = {}) {
   }
 
   const apiKey = serviceRoleKey || config.anonKey;
-  const keyType = serviceRoleKey ? "service_role" : "anon";
-  const signature = `${config.supabaseUrl}:${keyType}:${apiKey.slice(0, 16)}`;
+  const keyFormat = getSupabaseApiKeyFormat(apiKey);
+  const signature = `${config.supabaseUrl}:service_role:${keyFormat}:${apiKey.slice(0, 20)}`;
 
   if (!cachedClient || cachedSignature !== signature) {
     cachedClient = createClient(config.supabaseUrl, apiKey, {
       auth: {
         persistSession: false,
         autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+      global: {
+        fetch: createSupabaseServerFetch(apiKey),
       },
     });
     cachedSignature = signature;
@@ -118,11 +118,14 @@ export function getServerSupabaseAdminGuardResponse(context, table) {
     );
   }
 
-  if (!diagnostics.projectMatch.ok) {
-    console.error(`[${context}] Supabase project mismatch`, diagnostics);
+  const serviceRoleKey = readServerEnv(SERVICE_ROLE_ENV);
+  const keyFormat = getSupabaseApiKeyFormat(serviceRoleKey);
+  if (keyFormat !== "secret" && keyFormat !== "jwt") {
+    console.error(`[${context}] Unsupported SUPABASE_SERVICE_ROLE_KEY format`, diagnostics);
     return Response.json(
       {
-        error: `Supabase proje uyumsuzluğu: URL ref=${diagnostics.projectMatch.urlRef}, key ref=${diagnostics.projectMatch.keyRef}`,
+        error:
+          "SUPABASE_SERVICE_ROLE_KEY geçersiz. sb_secret_... veya legacy eyJ... service role anahtarı kullanın.",
       },
       { status: 500 }
     );

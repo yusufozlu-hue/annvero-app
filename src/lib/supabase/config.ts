@@ -4,7 +4,7 @@ export type SupabaseConfig = {
   rawUrl: string;
 };
 
-export type SupabaseAnonKeyType = "jwt" | "publishable" | "unknown";
+export type SupabaseAnonKeyType = "jwt" | "publishable" | "secret" | "unknown";
 
 function normalizeEnvValue(value: string): string {
   return value.trim().replace(/^['"]|['"]$/g, "");
@@ -27,6 +27,10 @@ export function getSupabaseAnonKeyType(anonKey: string): SupabaseAnonKeyType {
 
   if (anonKey.startsWith("sb_publishable_")) {
     return "publishable";
+  }
+
+  if (anonKey.startsWith("sb_secret_")) {
+    return "secret";
   }
 
   return "unknown";
