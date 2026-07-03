@@ -2,8 +2,8 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { fetchCompanies, persistCompaniesToLocalStorage } from "@/src/utils/companies";
+import { deleteCompanyRecord, saveCompanyRecord } from "@/src/utils/companiesApi";
 import { emptyCompany, normalizeCompany } from "@/src/utils/companyNormalize";
 import {
   DEFAULT_ADVANCE_ACCOUNT,
@@ -245,28 +245,12 @@ export default function CompanyManagement() {
 
     setIsSaving(true);
 
-    const supabase = getSupabaseClient();
-    if (!supabase) {
-      showToast("İşlem yapılamadı. Lütfen tekrar deneyin.", "error");
-      setIsSaving(false);
-      return;
-    }
-
     try {
-      const { error } = await supabase.from("companies").upsert([
-        {
-          id: normalized.id,
-          company_name: normalized.companyName,
-          data: normalized,
-          updated_at: new Date().toISOString(),
-        },
-      ]);
-
-      if (error) {
-        console.error(error);
-        showToast("İşlem yapılamadı. Lütfen tekrar deneyin.", "error");
-        return;
-      }
+      await saveCompanyRecord({
+        id: normalized.id,
+        company_name: normalized.companyName,
+        data: normalized,
+      });
 
       const exists = companies.some((c) => c.id === normalized.id);
 
@@ -280,6 +264,13 @@ export default function CompanyManagement() {
       persistCompaniesToLocalStorage(updated);
 
       showToast("Firma kaydedildi", "success");
+    } catch (error) {
+      console.error("[CompanyManagement] saveCompany failed", {
+        companyId: normalized.id,
+        companyName: normalized.companyName,
+        message: error?.message || String(error),
+      });
+      showToast(error?.message || "Firma kaydedilemedi.", "error");
     } finally {
       setIsSaving(false);
     }
@@ -308,22 +299,8 @@ export default function CompanyManagement() {
 
     setIsDeleting(true);
 
-    const supabase = getSupabaseClient();
-    if (!supabase) {
-      console.error("Supabase istemcisi yapılandırılmamış.");
-      showToast("İşlem yapılamadı. Lütfen tekrar deneyin.", "error");
-      setIsDeleting(false);
-      return false;
-    }
-
     try {
-      const { error } = await supabase.from("companies").delete().eq("id", id);
-
-      if (error) {
-        console.error(error);
-        showToast("İşlem yapılamadı. Lütfen tekrar deneyin.", "error");
-        return false;
-      }
+      await deleteCompanyRecord(id);
 
       setCompanies(companies.filter((c) => c.id !== id));
 
@@ -333,6 +310,13 @@ export default function CompanyManagement() {
 
       showToast("Firma silindi", "success");
       return true;
+    } catch (error) {
+      console.error("[CompanyManagement] deleteCompany failed", {
+        companyId: id,
+        message: error?.message || String(error),
+      });
+      showToast(error?.message || "Firma silinemedi.", "error");
+      return false;
     } finally {
       setIsDeleting(false);
     }
