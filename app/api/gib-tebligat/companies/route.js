@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
-import { GIB_QUERY_STATUS } from "@/src/config/gibQueryStatuses";
 import { isCompanyActive } from "@/src/utils/companies";
 import { formatCompanyFromSupabaseRow } from "@/src/utils/companyNormalize";
 import {
@@ -14,17 +13,6 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const ERROR_RESULT_STATUSES = new Set([
-  GIB_QUERY_STATUS.SYSTEM_ERROR,
-  GIB_QUERY_STATUS.LOGIN_ERROR,
-]);
-
-function resolvePublicLastError(state) {
-  if (!state?.last_error) return null;
-  if (!ERROR_RESULT_STATUSES.has(state.result_status)) return null;
-  return state.last_error;
-}
 
 export async function GET() {
   const { user } = await getServerSupabaseUser();
@@ -86,7 +74,6 @@ export async function GET() {
         isGibActive: credential?.is_active !== false,
         lastQueryAt: state?.last_query_at || null,
         resultStatus: state?.result_status || null,
-        lastError: resolvePublicLastError(state),
       };
     });
 

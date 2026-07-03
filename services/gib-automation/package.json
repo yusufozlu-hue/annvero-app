@@ -4,8 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.mjs",
-    "postinstall": "npx playwright install chromium"
+    "start": "node server.mjs"
   },
   "dependencies": {
     "playwright": "^1.61.1"

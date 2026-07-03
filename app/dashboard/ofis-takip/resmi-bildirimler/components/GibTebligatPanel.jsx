@@ -8,6 +8,10 @@ import {
 } from "@/src/config/gibQueryStatuses";
 import { formatTrDate } from "@/src/utils/gibTebligatEngine";
 import {
+  logGibTechnicalError,
+  toGibUserFacingError,
+} from "@/src/utils/gibUserMessages";
+import {
   fetchGibCompanyRows,
   startGibQuery,
   verifyGibQuery,
@@ -20,11 +24,6 @@ import {
 
 const inputClassName =
   "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-white outline-none focus:border-violet-500";
-
-const ERROR_RESULT_STATUSES = new Set([
-  GIB_QUERY_STATUS.SYSTEM_ERROR,
-  GIB_QUERY_STATUS.LOGIN_ERROR,
-]);
 
 function patchCompanyRow(rows, companyId, patch) {
   return rows.map((row) => (row.companyId === companyId ? { ...row, ...patch } : row));
@@ -43,6 +42,11 @@ export default function GibTebligatPanel() {
   const [queryingCompanyId, setQueryingCompanyId] = useState(null);
 
   const showToast = (message, type = "success") => setToast({ message, type });
+
+  const showQueryError = (context, technicalDetail, resultStatus) => {
+    logGibTechnicalError(context, technicalDetail);
+    showToast(toGibUserFacingError(technicalDetail, resultStatus), "error");
+  };
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -75,19 +79,12 @@ export default function GibTebligatPanel() {
     return row.resultStatus || "—";
   };
 
-  const resolveLastError = (row) => {
-    const status = resolveStatusLabel(row);
-    if (!ERROR_RESULT_STATUSES.has(status)) return null;
-    return row.lastError || null;
-  };
-
   const beginCompanyQueryUi = (companyId) => {
     setToast(null);
     setQueryingCompanyId(companyId);
     setCompanyRows((rows) =>
       patchCompanyRow(rows, companyId, {
         resultStatus: GIB_QUERY_STATUS.QUERYING,
-        lastError: null,
         lastQueryAt: new Date().toISOString(),
       })
     );
@@ -113,7 +110,6 @@ export default function GibTebligatPanel() {
         setCompanyRows((rows) =>
           patchCompanyRow(rows, companyId, {
             resultStatus: GIB_QUERY_STATUS.AWAITING_VERIFICATION,
-            lastError: null,
           })
         );
         openVerificationModal({
@@ -124,13 +120,13 @@ export default function GibTebligatPanel() {
           bulkMode,
         });
       } else {
+        const resultStatus = result.resultStatus || GIB_QUERY_STATUS.SYSTEM_ERROR;
         setCompanyRows((rows) =>
           patchCompanyRow(rows, companyId, {
-            resultStatus: result.resultStatus || GIB_QUERY_STATUS.SYSTEM_ERROR,
-            lastError: result.error || result.resultStatus || null,
+            resultStatus,
           })
         );
-        showToast(result.error || result.resultStatus, "error");
+        showQueryError("query-start", result.error || result.resultStatus, resultStatus);
       }
       await loadData();
       return result;
@@ -138,10 +134,9 @@ export default function GibTebligatPanel() {
       setCompanyRows((rows) =>
         patchCompanyRow(rows, companyId, {
           resultStatus: GIB_QUERY_STATUS.SYSTEM_ERROR,
-          lastError: error.message,
         })
       );
-      showToast(error.message, "error");
+      showQueryError("query-start", error.message, GIB_QUERY_STATUS.SYSTEM_ERROR);
       await loadData();
       return null;
     } finally {
@@ -159,7 +154,6 @@ export default function GibTebligatPanel() {
     setCompanyRows((rows) =>
       patchCompanyRow(rows, companyId, {
         resultStatus: GIB_QUERY_STATUS.QUERYING,
-        lastError: null,
       })
     );
     setIsBusy(true);
@@ -194,10 +188,9 @@ export default function GibTebligatPanel() {
       setCompanyRows((rows) =>
         patchCompanyRow(rows, companyId, {
           resultStatus: GIB_QUERY_STATUS.SYSTEM_ERROR,
-          lastError: error.message,
         })
       );
-      showToast(error.message, "error");
+      showQueryError("query-verify", error.message, GIB_QUERY_STATUS.SYSTEM_ERROR);
       await loadData();
     } finally {
       setQueryingCompanyId(null);
@@ -284,7 +277,6 @@ export default function GibTebligatPanel() {
           <tbody>
             {companyRows.map((row) => {
               const statusLabel = resolveStatusLabel(row);
-              const lastError = resolveLastError(row);
               return (
                 <tr key={row.companyId} className="border-t border-gray-800">
                   <td className="p-3 font-medium">{row.companyName}</td>
@@ -302,20 +294,13 @@ export default function GibTebligatPanel() {
                   </td>
                   <td className="p-3">{formatTrDate(row.lastQueryAt)}</td>
                   <td className="p-3">
-                    <div className="space-y-1">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
-                          GIB_QUERY_STATUS_CLASS[statusLabel] || "bg-gray-800 text-gray-300"
-                        }`}
-                      >
-                        {statusLabel}
-                      </span>
-                      {lastError ? (
-                        <p className="max-w-xs text-xs text-red-300" title={lastError}>
-                          {lastError}
-                        </p>
-                      ) : null}
-                    </div>
+                    <span
+                      className={`inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ${
+                        GIB_QUERY_STATUS_CLASS[statusLabel] || "bg-gray-800 text-gray-300"
+                      }`}
+                    >
+                      {statusLabel}
+                    </span>
                   </td>
                   <td className="p-3">
                     <button

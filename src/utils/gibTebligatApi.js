@@ -1,3 +1,16 @@
+import { GIB_QUERY_STATUS } from "@/src/config/gibQueryStatuses";
+import {
+  logGibTechnicalError,
+  toGibUserFacingError,
+} from "@/src/utils/gibUserMessages";
+
+function throwGibQueryError(context, body, fallbackStatus) {
+  const technicalDetail = body.error || body.resultStatus || fallbackStatus;
+  const resultStatus = body.resultStatus || fallbackStatus;
+  logGibTechnicalError(context, technicalDetail, { body });
+  throw new Error(toGibUserFacingError(technicalDetail, resultStatus));
+}
+
 export async function fetchGibCompanyRows() {
   const response = await fetch("/api/gib-tebligat/companies", { cache: "no-store" });
   if (!response.ok) {
@@ -44,7 +57,7 @@ export async function startGibQuery(companyId) {
 
   const body = await response.json();
   if (!response.ok) {
-    throw new Error(body.error || body.resultStatus || "Sorgu başlatılamadı.");
+    throwGibQueryError("api-query", body, GIB_QUERY_STATUS.SYSTEM_ERROR);
   }
 
   return body;
@@ -59,7 +72,7 @@ export async function verifyGibQuery(sessionId, verificationCode) {
 
   const body = await response.json();
   if (!response.ok) {
-    throw new Error(body.error || body.resultStatus || "Doğrulama başarısız.");
+    throwGibQueryError("api-verify", body, GIB_QUERY_STATUS.SYSTEM_ERROR);
   }
 
   return body;
