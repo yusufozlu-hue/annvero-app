@@ -88,14 +88,38 @@ export default function DashboardPage() {
                 Ofis Takip
               </h2>
               <p className="relative mt-2 flex-1 text-sm leading-relaxed text-gray-400">
-                Günlük ofis iş yönetimi
+                Günlük ofis iş yönetimi, vergi takvimi ve resmi bildirim takibi.
               </p>
-              <Link
-                href="/ofis-takip"
-                className="relative mt-6 inline-flex w-fit items-center justify-center rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-violet-500"
-              >
-                Modüle Git
-              </Link>
+
+              <div className="relative mt-4 rounded-xl border border-violet-700/40 bg-violet-950/20 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-violet-200">
+                  Resmi Bildirim & Tebligat Takibi
+                </p>
+                <p className="mt-1 text-sm text-gray-400">
+                  GİB e-Tebligat kontrolü, hatırlatmalar ve SGK/UETS/KEP hazırlık alanları.
+                </p>
+                <Link
+                  href="/dashboard/ofis-takip/resmi-bildirimler"
+                  className="mt-3 inline-flex text-sm font-semibold text-violet-300 hover:text-violet-200"
+                >
+                  Resmi Bildirimlere Git →
+                </Link>
+              </div>
+
+              <div className="relative mt-4 flex flex-wrap gap-2">
+                <Link
+                  href="/ofis-takip"
+                  className="inline-flex w-fit items-center justify-center rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-violet-500"
+                >
+                  Ofis Takip
+                </Link>
+                <Link
+                  href="/dashboard/ofis-takip/resmi-bildirimler/gib"
+                  className="inline-flex w-fit items-center justify-center rounded-xl border border-violet-700 px-5 py-3 text-sm font-semibold text-violet-100 transition hover:bg-violet-950"
+                >
+                  GİB e-Tebligat
+                </Link>
+              </div>
             </div>
           </div>
 
