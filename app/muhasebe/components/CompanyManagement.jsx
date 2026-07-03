@@ -15,6 +15,17 @@ import GibCredentialsSection from "@/app/dashboard/ofis-takip/resmi-bildirimler/
 
 const EMPLOYEE_PAGE_SIZE = 20;
 
+const COMPANY_TAB_SAVE_MESSAGES = {
+  general: "Genel bilgiler kaydedildi",
+  gib: "GİB e-Tebligat bilgileri kaydedildi",
+  banks: "Banka ve kredi kartı bilgileri kaydedildi",
+  documents: "Belge serileri kaydedildi",
+  vehicles: "Araç bilgileri kaydedildi",
+  employees: "Personel bilgileri kaydedildi",
+  modules: "Modül tercihleri kaydedildi",
+  rules: "Özel kurallar kaydedildi",
+};
+
 const moduleLabels = {
   lucaExport: "Luca Export",
   bankaParser: "Banka Parser",
@@ -263,7 +274,10 @@ export default function CompanyManagement() {
       setSelectedId(normalized.id);
       persistCompaniesToLocalStorage(updated);
 
-      showToast("Firma kaydedildi", "success");
+      showToast(
+        COMPANY_TAB_SAVE_MESSAGES[activeTab] || "Firma kaydedildi",
+        "success"
+      );
     } catch (error) {
       console.error("[CompanyManagement] saveCompany failed", {
         companyId: normalized.id,
@@ -1296,6 +1310,7 @@ export default function CompanyManagement() {
               <GibCredentialsSection
                 companyId={company.id}
                 companyName={company.companyName}
+                onNotify={showToast}
               />
             )}
 

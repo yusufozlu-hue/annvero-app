@@ -1,0 +1,901 @@
+{
+  "exportedAt": "2026-07-03T13:04:39.859Z",
+  "origin": "https://www.annvero.com",
+  "summary": {
+    "localStorageSources": [
+      {
+        "key": "annvero_companies_v24",
+        "count": 7
+      }
+    ],
+    "sessionStorageSources": [],
+    "totalCompanies": 7
+  },
+  "companies": [
+    {
+      "id": "114f98b5-0411-45c5-a7c6-8061c9f06699",
+      "company_name": "ADH AVRASYA DİL HİZMETLERİ A.Ş",
+      "data": {
+        "id": "114f98b5-0411-45c5-a7c6-8061c9f06699",
+        "companyName": "ADH AVRASYA DİL HİZMETLERİ A.Ş",
+        "taxNumber": "0070636501",
+        "taxOffice": "ZİNCİRLİKUYU",
+        "address": "",
+        "notes": "",
+        "contactPerson": "KIVILCIM PARMAK",
+        "contactPhone": "+905327274842",
+        "whatsappPhone": "+905327274842",
+        "contactEmail": "k_parmak@adhtranslation.com",
+        "contacts": [
+          {
+            "id": "1bdaf463-260f-4723-9edc-48e3e09d890e",
+            "name": "kıvılcım",
+            "title": "",
+            "phone": "+905327274842",
+            "whatsapp": "+905327274842",
+            "email": "k_parmak@adhtranslation.com",
+            "note": "",
+            "isDefault": true
+          }
+        ],
+        "accountingSoftware": "LUCA",
+        "hotelSoftware": "NONE",
+        "hasForeignCurrency": true,
+        "isActive": true,
+        "enabledModules": {
+          "lucaExport": true,
+          "bankaParser": true,
+          "elektraweb": false,
+          "fifoFunds": false,
+          "payroll": false,
+          "taxControl": true,
+          "audit": true,
+          "officeManagement": true,
+          "policyExpense": true
+        },
+        "bankAccounts": [],
+        "creditCards": [],
+        "documentSeriesRules": [],
+        "vehicles": [],
+        "employees": [],
+        "accountingRules": {
+          "mtvExpenseAccount": "",
+          "posAccountCode": "",
+          "salaryAccountCode": "",
+          "advanceAccountCode": "",
+          "businessAdvanceAccountCode": "",
+          "policyExpenseMethod": "MONTHLY",
+          "exchangeDifferenceMethod": "PERIOD_END",
+          "transferToleranceDays": 1
+        }
+      },
+      "updated_at": "2026-07-03T13:04:39.818Z"
+    },
+    {
+      "id": "e8786ac0-81d8-4046-a180-9d38f7953f9b",
+      "company_name": "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
+      "data": {
+        "id": "e8786ac0-81d8-4046-a180-9d38f7953f9b",
+        "companyName": "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
+        "taxNumber": "1230052045",
+        "taxOffice": "ZİNCİRLİKUYU",
+        "address": "",
+        "notes": "",
+        "contactPerson": "KORAY GÖKSU",
+        "contactPhone": "+905326667250",
+        "whatsappPhone": "+905326667250",
+        "contactEmail": "kgoksu@aysu.com",
+        "contacts": [
+          {
+            "id": "99ed4022-d705-4442-a859-fed4f3700b58",
+            "name": "YUSUF ÖZLÜ",
+            "title": "SMMM",
+            "phone": "+905323637729",
+            "whatsapp": "+905323637729",
+            "email": "yusuf.ozlu@ismmmo.org.tr",
+            "note": "",
+            "isDefault": true
+          }
+        ],
+        "accountingSoftware": "LUCA",
+        "hotelSoftware": "NONE",
+        "hasForeignCurrency": true,
+        "isActive": true,
+        "enabledModules": {
+          "lucaExport": true,
+          "bankaParser": true,
+          "elektraweb": false,
+          "fifoFunds": true,
+          "payroll": false,
+          "taxControl": true,
+          "audit": true,
+          "officeManagement": true,
+          "policyExpense": true
+        },
+        "bankAccounts": [
+          {
+            "id": "a6b17b60-2200-443b-92a4-9adcfdc56666",
+            "bankName": "GARANTİ",
+            "accountName": "GARANTİ BEYOĞLU TİCARİR",
+            "iban": "TR17 0006 2001 6710 0006 2957 99",
+            "currency": "TL",
+            "accountType": "VADESIZ",
+            "lucaAccountCode": "102.01.G005",
+            "isPosAccount": false,
+            "isActive": true
+          }
+        ],
+        "creditCards": [
+          {
+            "id": "9aa968b7-7a70-46ff-9509-b341637dd91a",
+            "bankName": "GARANTİ",
+            "cardName": "SHOP&FLY",
+            "lastFourDigits": "4015",
+            "currency": "TL",
+            "trackingMethod": "AY_BAZLI_309_409",
+            "statementPeriodRule": "ONCEKI_AY",
+            "singleLucaAccountCode": "",
+            "lucaAccountCode": "",
+            "monthly309BaseAccount": "309.02",
+            "monthly309BaseAccountCode": "309.01",
+            "monthly409BaseAccount": "409.02",
+            "monthly409BaseAccountCode": "409.01",
+            "isActive": true
+          }
+        ],
+        "documentSeriesRules": [
+          {
+            "id": "453d252e-9cab-47f7-a870-05e78e8eb8ed",
+            "prefix": "AYD",
+            "documentType": "EA",
+            "description": "E-ARŞİV FATURA"
+          },
+          {
+            "id": "16a96336-9874-4e7c-9ce2-cbe6ae59d3cc",
+            "prefix": "AYS",
+            "documentType": "EF",
+            "description": "E-FATURA"
+          }
+        ],
+        "vehicles": [
+          {
+            "id": "e0f96ae0-cfce-4b93-863f-0f5d149dbe40",
+            "plate": "34 EDE 679",
+            "brand": "RENAULT",
+            "model": "CLIO",
+            "vehicleType": "BINEK",
+            "policyExpenseMethod": "AYLIK",
+            "lucaExpenseAccount": "",
+            "isActive": true
+          }
+        ],
+        "employees": [
+          {
+            "id": "f7253ec5-eac8-4335-824d-8c9b97246abb",
+            "fullName": "",
+            "tcNo": "",
+            "phone": "",
+            "email": "",
+            "position": "",
+            "department": "",
+            "hireDate": "",
+            "sgkCode": "",
+            "salaryAccountCode": "335",
+            "advanceAccountCode": "196",
+            "isActive": true
+          }
+        ],
+        "accountingRules": {
+          "mtvExpenseAccount": "770.04.002",
+          "posAccountCode": "",
+          "salaryAccountCode": "335.01.001",
+          "advanceAccountCode": "196",
+          "businessAdvanceAccountCode": "195",
+          "policyExpenseMethod": "MONTHLY",
+          "exchangeDifferenceMethod": "PERIOD_END",
+          "transferToleranceDays": 1
+        }
+      },
+      "updated_at": "2026-07-03T13:04:39.822Z"
+    },
+    {
+      "id": "a1b35ad3-8596-48cd-bbd0-0639cf3bb6cf",
+      "company_name": "GLENTUR TURİZM İNŞAAT GIDA SAN. VE TİC. A.Ş",
+      "data": {
+        "id": "a1b35ad3-8596-48cd-bbd0-0639cf3bb6cf",
+        "companyName": "GLENTUR TURİZM İNŞAAT GIDA SAN. VE TİC. A.Ş",
+        "taxNumber": "3961355811",
+        "taxOffice": "MECİDİYEKÖY",
+        "address": "",
+        "notes": "",
+        "contactPerson": "",
+        "contactPhone": "",
+        "whatsappPhone": "",
+        "contactEmail": "",
+        "contacts": [],
+        "accountingSoftware": "LOGO",
+        "hotelSoftware": "NONE",
+        "hasForeignCurrency": true,
+        "isActive": true,
+        "enabledModules": {
+          "lucaExport": true,
+          "bankaParser": true,
+          "elektraweb": false,
+          "fifoFunds": false,
+          "payroll": false,
+          "taxControl": true,
+          "audit": true,
+          "officeManagement": true,
+          "policyExpense": true
+        },
+        "bankAccounts": [],
+        "creditCards": [],
+        "documentSeriesRules": [],
+        "vehicles": [],
+        "employees": [],
+        "accountingRules": {
+          "mtvExpenseAccount": "",
+          "posAccountCode": "",
+          "salaryAccountCode": "",
+          "advanceAccountCode": "",
+          "businessAdvanceAccountCode": "",
+          "policyExpenseMethod": "MONTHLY",
+          "exchangeDifferenceMethod": "PERIOD_END",
+          "transferToleranceDays": 1
+        }
+      },
+      "updated_at": "2026-07-03T13:04:39.822Z"
+    },
+    {
+      "id": "84384297-270c-47cd-ac5a-d693ba80b84a",
+      "company_name": "MARE RESORT TURİZM VE OTELCİLİK TİCARET A.Ş",
+      "data": {
+        "id": "84384297-270c-47cd-ac5a-d693ba80b84a",
+        "companyName": "MARE RESORT TURİZM VE OTELCİLİK TİCARET A.Ş",
+        "taxNumber": "7570448645",
+        "taxOffice": "BODRUM",
+        "address": "",
+        "notes": "",
+        "contactPerson": "",
+        "contactPhone": "",
+        "whatsappPhone": "",
+        "contactEmail": "",
+        "contacts": [],
+        "accountingSoftware": "LUCA",
+        "hotelSoftware": "ELEKTRAWEB",
+        "hasForeignCurrency": true,
+        "isActive": true,
+        "enabledModules": {
+          "lucaExport": true,
+          "bankaParser": true,
+          "elektraweb": false,
+          "fifoFunds": false,
+          "payroll": false,
+          "taxControl": true,
+          "audit": true,
+          "officeManagement": true,
+          "policyExpense": true
+        },
+        "bankAccounts": [],
+        "creditCards": [],
+        "documentSeriesRules": [],
+        "vehicles": [],
+        "employees": [],
+        "accountingRules": {
+          "mtvExpenseAccount": "",
+          "posAccountCode": "",
+          "salaryAccountCode": "",
+          "advanceAccountCode": "",
+          "businessAdvanceAccountCode": "",
+          "policyExpenseMethod": "MONTHLY",
+          "exchangeDifferenceMethod": "PERIOD_END",
+          "transferToleranceDays": 1
+        }
+      },
+      "updated_at": "2026-07-03T13:04:39.822Z"
+    },
+    {
+      "id": "52d6e866-1f3f-4363-87df-f3d96bfadd92",
+      "company_name": "PERATAŞ İNŞAAT MİMARLIK VE GAYRİMENKUL TİCARET LTD. ŞTİ",
+      "data": {
+        "id": "52d6e866-1f3f-4363-87df-f3d96bfadd92",
+        "companyName": "PERATAŞ İNŞAAT MİMARLIK VE GAYRİMENKUL TİCARET LTD. ŞTİ",
+        "taxNumber": "7280372925",
+        "taxOffice": "BODRUM",
+        "address": "",
+        "notes": "",
+        "contactPerson": "",
+        "contactPhone": "",
+        "whatsappPhone": "",
+        "contactEmail": "",
+        "contacts": [],
+        "accountingSoftware": "LUCA",
+        "hotelSoftware": "NONE",
+        "hasForeignCurrency": true,
+        "isActive": true,
+        "enabledModules": {
+          "lucaExport": true,
+          "bankaParser": true,
+          "elektraweb": false,
+          "fifoFunds": false,
+          "payroll": false,
+          "taxControl": true,
+          "audit": true,
+          "officeManagement": true,
+          "policyExpense": true
+        },
+        "bankAccounts": [],
+        "creditCards": [],
+        "documentSeriesRules": [],
+        "vehicles": [],
+        "employees": [],
+        "accountingRules": {
+          "mtvExpenseAccount": "",
+          "posAccountCode": "",
+          "salaryAccountCode": "",
+          "advanceAccountCode": "",
+          "businessAdvanceAccountCode": "",
+          "policyExpenseMethod": "MONTHLY",
+          "exchangeDifferenceMethod": "PERIOD_END",
+          "transferToleranceDays": 1
+        }
+      },
+      "updated_at": "2026-07-03T13:04:39.822Z"
+    },
+    {
+      "id": "34653d5f-a16d-45e3-ab04-c59adddf20e3",
+      "company_name": "PERATAŞ TURİZM A.Ş",
+      "data": {
+        "id": "34653d5f-a16d-45e3-ab04-c59adddf20e3",
+        "companyName": "PERATAŞ TURİZM A.Ş",
+        "taxNumber": "7280827160",
+        "taxOffice": "ZİNCİRLİKUYU",
+        "address": "",
+        "notes": "",
+        "contactPerson": "",
+        "contactPhone": "",
+        "whatsappPhone": "",
+        "contactEmail": "",
+        "contacts": [],
+        "accountingSoftware": "LUCA",
+        "hotelSoftware": "YOK",
+        "hasForeignCurrency": true,
+        "isActive": true,
+        "enabledModules": {
+          "lucaExport": true,
+          "bankaParser": true,
+          "elektraweb": false,
+          "fifoFunds": false,
+          "payroll": false,
+          "taxControl": true,
+          "audit": true,
+          "officeManagement": true,
+          "policyExpense": true
+        },
+        "bankAccounts": [],
+        "creditCards": [],
+        "documentSeriesRules": [],
+        "vehicles": [],
+        "employees": [],
+        "accountingRules": {
+          "mtvExpenseAccount": "",
+          "posAccountCode": "",
+          "salaryAccountCode": "",
+          "advanceAccountCode": "",
+          "businessAdvanceAccountCode": "",
+          "policyExpenseMethod": "AYLIK",
+          "exchangeDifferenceMethod": "DONEM_SONU",
+          "transferToleranceDays": 1
+        }
+      },
+      "updated_at": "2026-07-03T13:04:39.822Z"
+    },
+    {
+      "id": "f52f04a9-4636-4996-8b81-1cf5563bd19e",
+      "company_name": "ZM ARAS ELEKTRİK İNŞAAT SAN. VE TİC. LTD. ŞTİ",
+      "data": {
+        "id": "f52f04a9-4636-4996-8b81-1cf5563bd19e",
+        "companyName": "ZM ARAS ELEKTRİK İNŞAAT SAN. VE TİC. LTD. ŞTİ",
+        "taxNumber": "9991469662",
+        "taxOffice": "KÜÇÜKKÖY",
+        "address": "",
+        "notes": "",
+        "contactPerson": "AYKUT OKÇU",
+        "contactPhone": "+905301679660",
+        "whatsappPhone": "+905301679660",
+        "contactEmail": "zmaraselektrik@gmail.com",
+        "contacts": [
+          {
+            "id": "9e7ee9ae-27ba-4e7e-a7e3-4d3914780f60",
+            "name": "AYKUT OKÇU",
+            "title": "",
+            "phone": "+905301679960",
+            "whatsapp": "+905301679960",
+            "email": "zmaraselektrik@gmail.com",
+            "note": "",
+            "isDefault": true
+          }
+        ],
+        "accountingSoftware": "LUCA",
+        "hotelSoftware": "YOK",
+        "hasForeignCurrency": false,
+        "isActive": true,
+        "enabledModules": {
+          "lucaExport": true,
+          "bankaParser": true,
+          "elektraweb": false,
+          "fifoFunds": false,
+          "payroll": false,
+          "taxControl": true,
+          "audit": true,
+          "officeManagement": true,
+          "policyExpense": true
+        },
+        "bankAccounts": [],
+        "creditCards": [],
+        "documentSeriesRules": [],
+        "vehicles": [],
+        "employees": [],
+        "accountingRules": {
+          "mtvExpenseAccount": "",
+          "posAccountCode": "",
+          "salaryAccountCode": "",
+          "advanceAccountCode": "",
+          "businessAdvanceAccountCode": "",
+          "policyExpenseMethod": "AYLIK",
+          "exchangeDifferenceMethod": "DONEM_SONU",
+          "transferToleranceDays": 1
+        }
+      },
+      "updated_at": "2026-07-03T13:04:39.822Z"
+    }
+  ],
+  "migrate_api_body": {
+    "companies": [
+      {
+        "id": "114f98b5-0411-45c5-a7c6-8061c9f06699",
+        "company_name": "ADH AVRASYA DİL HİZMETLERİ A.Ş",
+        "data": {
+          "id": "114f98b5-0411-45c5-a7c6-8061c9f06699",
+          "companyName": "ADH AVRASYA DİL HİZMETLERİ A.Ş",
+          "taxNumber": "0070636501",
+          "taxOffice": "ZİNCİRLİKUYU",
+          "address": "",
+          "notes": "",
+          "contactPerson": "KIVILCIM PARMAK",
+          "contactPhone": "+905327274842",
+          "whatsappPhone": "+905327274842",
+          "contactEmail": "k_parmak@adhtranslation.com",
+          "contacts": [
+            {
+              "id": "1bdaf463-260f-4723-9edc-48e3e09d890e",
+              "name": "kıvılcım",
+              "title": "",
+              "phone": "+905327274842",
+              "whatsapp": "+905327274842",
+              "email": "k_parmak@adhtranslation.com",
+              "note": "",
+              "isDefault": true
+            }
+          ],
+          "accountingSoftware": "LUCA",
+          "hotelSoftware": "NONE",
+          "hasForeignCurrency": true,
+          "isActive": true,
+          "enabledModules": {
+            "lucaExport": true,
+            "bankaParser": true,
+            "elektraweb": false,
+            "fifoFunds": false,
+            "payroll": false,
+            "taxControl": true,
+            "audit": true,
+            "officeManagement": true,
+            "policyExpense": true
+          },
+          "bankAccounts": [],
+          "creditCards": [],
+          "documentSeriesRules": [],
+          "vehicles": [],
+          "employees": [],
+          "accountingRules": {
+            "mtvExpenseAccount": "",
+            "posAccountCode": "",
+            "salaryAccountCode": "",
+            "advanceAccountCode": "",
+            "businessAdvanceAccountCode": "",
+            "policyExpenseMethod": "MONTHLY",
+            "exchangeDifferenceMethod": "PERIOD_END",
+            "transferToleranceDays": 1
+          }
+        },
+        "updated_at": "2026-07-03T13:04:39.818Z"
+      },
+      {
+        "id": "e8786ac0-81d8-4046-a180-9d38f7953f9b",
+        "company_name": "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
+        "data": {
+          "id": "e8786ac0-81d8-4046-a180-9d38f7953f9b",
+          "companyName": "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
+          "taxNumber": "1230052045",
+          "taxOffice": "ZİNCİRLİKUYU",
+          "address": "",
+          "notes": "",
+          "contactPerson": "KORAY GÖKSU",
+          "contactPhone": "+905326667250",
+          "whatsappPhone": "+905326667250",
+          "contactEmail": "kgoksu@aysu.com",
+          "contacts": [
+            {
+              "id": "99ed4022-d705-4442-a859-fed4f3700b58",
+              "name": "YUSUF ÖZLÜ",
+              "title": "SMMM",
+              "phone": "+905323637729",
+              "whatsapp": "+905323637729",
+              "email": "yusuf.ozlu@ismmmo.org.tr",
+              "note": "",
+              "isDefault": true
+            }
+          ],
+          "accountingSoftware": "LUCA",
+          "hotelSoftware": "NONE",
+          "hasForeignCurrency": true,
+          "isActive": true,
+          "enabledModules": {
+            "lucaExport": true,
+            "bankaParser": true,
+            "elektraweb": false,
+            "fifoFunds": true,
+            "payroll": false,
+            "taxControl": true,
+            "audit": true,
+            "officeManagement": true,
+            "policyExpense": true
+          },
+          "bankAccounts": [
+            {
+              "id": "a6b17b60-2200-443b-92a4-9adcfdc56666",
+              "bankName": "GARANTİ",
+              "accountName": "GARANTİ BEYOĞLU TİCARİR",
+              "iban": "TR17 0006 2001 6710 0006 2957 99",
+              "currency": "TL",
+              "accountType": "VADESIZ",
+              "lucaAccountCode": "102.01.G005",
+              "isPosAccount": false,
+              "isActive": true
+            }
+          ],
+          "creditCards": [
+            {
+              "id": "9aa968b7-7a70-46ff-9509-b341637dd91a",
+              "bankName": "GARANTİ",
+              "cardName": "SHOP&FLY",
+              "lastFourDigits": "4015",
+              "currency": "TL",
+              "trackingMethod": "AY_BAZLI_309_409",
+              "statementPeriodRule": "ONCEKI_AY",
+              "singleLucaAccountCode": "",
+              "lucaAccountCode": "",
+              "monthly309BaseAccount": "309.02",
+              "monthly309BaseAccountCode": "309.01",
+              "monthly409BaseAccount": "409.02",
+              "monthly409BaseAccountCode": "409.01",
+              "isActive": true
+            }
+          ],
+          "documentSeriesRules": [
+            {
+              "id": "453d252e-9cab-47f7-a870-05e78e8eb8ed",
+              "prefix": "AYD",
+              "documentType": "EA",
+              "description": "E-ARŞİV FATURA"
+            },
+            {
+              "id": "16a96336-9874-4e7c-9ce2-cbe6ae59d3cc",
+              "prefix": "AYS",
+              "documentType": "EF",
+              "description": "E-FATURA"
+            }
+          ],
+          "vehicles": [
+            {
+              "id": "e0f96ae0-cfce-4b93-863f-0f5d149dbe40",
+              "plate": "34 EDE 679",
+              "brand": "RENAULT",
+              "model": "CLIO",
+              "vehicleType": "BINEK",
+              "policyExpenseMethod": "AYLIK",
+              "lucaExpenseAccount": "",
+              "isActive": true
+            }
+          ],
+          "employees": [
+            {
+              "id": "f7253ec5-eac8-4335-824d-8c9b97246abb",
+              "fullName": "",
+              "tcNo": "",
+              "phone": "",
+              "email": "",
+              "position": "",
+              "department": "",
+              "hireDate": "",
+              "sgkCode": "",
+              "salaryAccountCode": "335",
+              "advanceAccountCode": "196",
+              "isActive": true
+            }
+          ],
+          "accountingRules": {
+            "mtvExpenseAccount": "770.04.002",
+            "posAccountCode": "",
+            "salaryAccountCode": "335.01.001",
+            "advanceAccountCode": "196",
+            "businessAdvanceAccountCode": "195",
+            "policyExpenseMethod": "MONTHLY",
+            "exchangeDifferenceMethod": "PERIOD_END",
+            "transferToleranceDays": 1
+          }
+        },
+        "updated_at": "2026-07-03T13:04:39.822Z"
+      },
+      {
+        "id": "a1b35ad3-8596-48cd-bbd0-0639cf3bb6cf",
+        "company_name": "GLENTUR TURİZM İNŞAAT GIDA SAN. VE TİC. A.Ş",
+        "data": {
+          "id": "a1b35ad3-8596-48cd-bbd0-0639cf3bb6cf",
+          "companyName": "GLENTUR TURİZM İNŞAAT GIDA SAN. VE TİC. A.Ş",
+          "taxNumber": "3961355811",
+          "taxOffice": "MECİDİYEKÖY",
+          "address": "",
+          "notes": "",
+          "contactPerson": "",
+          "contactPhone": "",
+          "whatsappPhone": "",
+          "contactEmail": "",
+          "contacts": [],
+          "accountingSoftware": "LOGO",
+          "hotelSoftware": "NONE",
+          "hasForeignCurrency": true,
+          "isActive": true,
+          "enabledModules": {
+            "lucaExport": true,
+            "bankaParser": true,
+            "elektraweb": false,
+            "fifoFunds": false,
+            "payroll": false,
+            "taxControl": true,
+            "audit": true,
+            "officeManagement": true,
+            "policyExpense": true
+          },
+          "bankAccounts": [],
+          "creditCards": [],
+          "documentSeriesRules": [],
+          "vehicles": [],
+          "employees": [],
+          "accountingRules": {
+            "mtvExpenseAccount": "",
+            "posAccountCode": "",
+            "salaryAccountCode": "",
+            "advanceAccountCode": "",
+            "businessAdvanceAccountCode": "",
+            "policyExpenseMethod": "MONTHLY",
+            "exchangeDifferenceMethod": "PERIOD_END",
+            "transferToleranceDays": 1
+          }
+        },
+        "updated_at": "2026-07-03T13:04:39.822Z"
+      },
+      {
+        "id": "84384297-270c-47cd-ac5a-d693ba80b84a",
+        "company_name": "MARE RESORT TURİZM VE OTELCİLİK TİCARET A.Ş",
+        "data": {
+          "id": "84384297-270c-47cd-ac5a-d693ba80b84a",
+          "companyName": "MARE RESORT TURİZM VE OTELCİLİK TİCARET A.Ş",
+          "taxNumber": "7570448645",
+          "taxOffice": "BODRUM",
+          "address": "",
+          "notes": "",
+          "contactPerson": "",
+          "contactPhone": "",
+          "whatsappPhone": "",
+          "contactEmail": "",
+          "contacts": [],
+          "accountingSoftware": "LUCA",
+          "hotelSoftware": "ELEKTRAWEB",
+          "hasForeignCurrency": true,
+          "isActive": true,
+          "enabledModules": {
+            "lucaExport": true,
+            "bankaParser": true,
+            "elektraweb": false,
+            "fifoFunds": false,
+            "payroll": false,
+            "taxControl": true,
+            "audit": true,
+            "officeManagement": true,
+            "policyExpense": true
+          },
+          "bankAccounts": [],
+          "creditCards": [],
+          "documentSeriesRules": [],
+          "vehicles": [],
+          "employees": [],
+          "accountingRules": {
+            "mtvExpenseAccount": "",
+            "posAccountCode": "",
+            "salaryAccountCode": "",
+            "advanceAccountCode": "",
+            "businessAdvanceAccountCode": "",
+            "policyExpenseMethod": "MONTHLY",
+            "exchangeDifferenceMethod": "PERIOD_END",
+            "transferToleranceDays": 1
+          }
+        },
+        "updated_at": "2026-07-03T13:04:39.822Z"
+      },
+      {
+        "id": "52d6e866-1f3f-4363-87df-f3d96bfadd92",
+        "company_name": "PERATAŞ İNŞAAT MİMARLIK VE GAYRİMENKUL TİCARET LTD. ŞTİ",
+        "data": {
+          "id": "52d6e866-1f3f-4363-87df-f3d96bfadd92",
+          "companyName": "PERATAŞ İNŞAAT MİMARLIK VE GAYRİMENKUL TİCARET LTD. ŞTİ",
+          "taxNumber": "7280372925",
+          "taxOffice": "BODRUM",
+          "address": "",
+          "notes": "",
+          "contactPerson": "",
+          "contactPhone": "",
+          "whatsappPhone": "",
+          "contactEmail": "",
+          "contacts": [],
+          "accountingSoftware": "LUCA",
+          "hotelSoftware": "NONE",
+          "hasForeignCurrency": true,
+          "isActive": true,
+          "enabledModules": {
+            "lucaExport": true,
+            "bankaParser": true,
+            "elektraweb": false,
+            "fifoFunds": false,
+            "payroll": false,
+            "taxControl": true,
+            "audit": true,
+            "officeManagement": true,
+            "policyExpense": true
+          },
+          "bankAccounts": [],
+          "creditCards": [],
+          "documentSeriesRules": [],
+          "vehicles": [],
+          "employees": [],
+          "accountingRules": {
+            "mtvExpenseAccount": "",
+            "posAccountCode": "",
+            "salaryAccountCode": "",
+            "advanceAccountCode": "",
+            "businessAdvanceAccountCode": "",
+            "policyExpenseMethod": "MONTHLY",
+            "exchangeDifferenceMethod": "PERIOD_END",
+            "transferToleranceDays": 1
+          }
+        },
+        "updated_at": "2026-07-03T13:04:39.822Z"
+      },
+      {
+        "id": "34653d5f-a16d-45e3-ab04-c59adddf20e3",
+        "company_name": "PERATAŞ TURİZM A.Ş",
+        "data": {
+          "id": "34653d5f-a16d-45e3-ab04-c59adddf20e3",
+          "companyName": "PERATAŞ TURİZM A.Ş",
+          "taxNumber": "7280827160",
+          "taxOffice": "ZİNCİRLİKUYU",
+          "address": "",
+          "notes": "",
+          "contactPerson": "",
+          "contactPhone": "",
+          "whatsappPhone": "",
+          "contactEmail": "",
+          "contacts": [],
+          "accountingSoftware": "LUCA",
+          "hotelSoftware": "YOK",
+          "hasForeignCurrency": true,
+          "isActive": true,
+          "enabledModules": {
+            "lucaExport": true,
+            "bankaParser": true,
+            "elektraweb": false,
+            "fifoFunds": false,
+            "payroll": false,
+            "taxControl": true,
+            "audit": true,
+            "officeManagement": true,
+            "policyExpense": true
+          },
+          "bankAccounts": [],
+          "creditCards": [],
+          "documentSeriesRules": [],
+          "vehicles": [],
+          "employees": [],
+          "accountingRules": {
+            "mtvExpenseAccount": "",
+            "posAccountCode": "",
+            "salaryAccountCode": "",
+            "advanceAccountCode": "",
+            "businessAdvanceAccountCode": "",
+            "policyExpenseMethod": "AYLIK",
+            "exchangeDifferenceMethod": "DONEM_SONU",
+            "transferToleranceDays": 1
+          }
+        },
+        "updated_at": "2026-07-03T13:04:39.822Z"
+      },
+      {
+        "id": "f52f04a9-4636-4996-8b81-1cf5563bd19e",
+        "company_name": "ZM ARAS ELEKTRİK İNŞAAT SAN. VE TİC. LTD. ŞTİ",
+        "data": {
+          "id": "f52f04a9-4636-4996-8b81-1cf5563bd19e",
+          "companyName": "ZM ARAS ELEKTRİK İNŞAAT SAN. VE TİC. LTD. ŞTİ",
+          "taxNumber": "9991469662",
+          "taxOffice": "KÜÇÜKKÖY",
+          "address": "",
+          "notes": "",
+          "contactPerson": "AYKUT OKÇU",
+          "contactPhone": "+905301679660",
+          "whatsappPhone": "+905301679660",
+          "contactEmail": "zmaraselektrik@gmail.com",
+          "contacts": [
+            {
+              "id": "9e7ee9ae-27ba-4e7e-a7e3-4d3914780f60",
+              "name": "AYKUT OKÇU",
+              "title": "",
+              "phone": "+905301679960",
+              "whatsapp": "+905301679960",
+              "email": "zmaraselektrik@gmail.com",
+              "note": "",
+              "isDefault": true
+            }
+          ],
+          "accountingSoftware": "LUCA",
+          "hotelSoftware": "YOK",
+          "hasForeignCurrency": false,
+          "isActive": true,
+          "enabledModules": {
+            "lucaExport": true,
+            "bankaParser": true,
+            "elektraweb": false,
+            "fifoFunds": false,
+            "payroll": false,
+            "taxControl": true,
+            "audit": true,
+            "officeManagement": true,
+            "policyExpense": true
+          },
+          "bankAccounts": [],
+          "creditCards": [],
+          "documentSeriesRules": [],
+          "vehicles": [],
+          "employees": [],
+          "accountingRules": {
+            "mtvExpenseAccount": "",
+            "posAccountCode": "",
+            "salaryAccountCode": "",
+            "advanceAccountCode": "",
+            "businessAdvanceAccountCode": "",
+            "policyExpenseMethod": "AYLIK",
+            "exchangeDifferenceMethod": "DONEM_SONU",
+            "transferToleranceDays": 1
+          }
+        },
+        "updated_at": "2026-07-03T13:04:39.822Z"
+      }
+    ]
+  },
+  "rawSources": [
+    {
+      "storageType": "localStorage",
+      "key": "annvero_companies_v24",
+      "count": 7
+    }
+  ]
+}

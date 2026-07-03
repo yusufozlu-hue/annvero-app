@@ -6,7 +6,15 @@ import { fetchGibCredentials, saveGibCredentials } from "@/src/utils/gibTebligat
 const inputClassName =
   "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-white outline-none focus:border-violet-500";
 
-export default function GibCredentialsSection({ companyId, companyName, onSaved }) {
+const GIB_SECURE_SAVE_MESSAGE =
+  "GİB e-Tebligat bilgileri güvenli şekilde kaydedildi";
+
+export default function GibCredentialsSection({
+  companyId,
+  companyName,
+  onNotify,
+  onSaved,
+}) {
   const [form, setForm] = useState({
     gibUserCode: "",
     password: "",
@@ -70,7 +78,11 @@ export default function GibCredentialsSection({ companyId, companyName, onSaved 
         keepExistingSecrets: hasExisting && !form.password && !form.parola,
       });
 
-      setMessage({ type: "success", text: "GİB bilgileri güvenli şekilde kaydedildi." });
+      if (onNotify) {
+        onNotify(GIB_SECURE_SAVE_MESSAGE, "success");
+      } else {
+        setMessage({ type: "success", text: GIB_SECURE_SAVE_MESSAGE });
+      }
       setHasExisting(true);
       setMasked({
         password: form.password ? "••••••••" : masked.password || "••••••••",
@@ -79,7 +91,11 @@ export default function GibCredentialsSection({ companyId, companyName, onSaved 
       setForm((current) => ({ ...current, password: "", parola: "" }));
       onSaved?.();
     } catch (error) {
-      setMessage({ type: "error", text: error.message });
+      if (onNotify) {
+        onNotify(error.message, "error");
+      } else {
+        setMessage({ type: "error", text: error.message });
+      }
     } finally {
       setIsSaving(false);
     }
