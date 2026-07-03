@@ -8,9 +8,15 @@ import {
   completeGibLoginAndFetchTebligat,
   startGibLoginSession,
 } from "./src/gibPortalAutomation.mjs";
+import {
+  collectRuntimeDiagnostics,
+  logStartupDiagnostics,
+} from "./src/runtimeDiagnostics.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const SERVICE_TOKEN = String(process.env.GIB_AUTOMATION_SERVICE_TOKEN || "").trim();
+
+let startupDiagnostics = null;
 
 function isAuthorized(req) {
   if (!SERVICE_TOKEN) return true;
@@ -20,7 +26,7 @@ function isAuthorized(req) {
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(payload));
+  res.end(JSON.stringify(payload, null, 2));
 }
 
 async function readJsonBody(req) {
@@ -127,20 +133,17 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const url = req.url?.split("?")[0] || "/";
+    const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
+    const pathname = url.pathname;
 
-    if (req.method === "GET" && url === "/health") {
-      sendJson(res, 200, {
-        ok: true,
-        service: "gib-automation",
-        runtime: "docker-playwright",
-        playwrightImage: "mcr.microsoft.com/playwright:v1.61.1-jammy",
-        version: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || "local",
-        build: {
-          builder: "DOCKERFILE",
-          node: process.version,
-        },
-      });
+    if (req.method === "GET" && pathname === "/health") {
+      const refresh = url.searchParams.get("refresh") === "1";
+      const diagnostics =
+        refresh || !startupDiagnostics
+          ? await collectRuntimeDiagnostics({ refreshLaunchTest: refresh })
+          : startupDiagnostics;
+
+      sendJson(res, diagnostics.ok ? 200 : 503, diagnostics);
       return;
     }
 
@@ -151,13 +154,13 @@ const server = http.createServer(async (req, res) => {
 
     const body = await readJsonBody(req);
 
-    if (url === "/query/start") {
+    if (pathname === "/query/start") {
       const result = await handleStart(body);
       sendJson(res, result.status, result.payload);
       return;
     }
 
-    if (url === "/query/verify") {
+    if (pathname === "/query/verify") {
       const result = await handleVerify(body);
       sendJson(res, result.status, result.payload);
       return;
@@ -169,6 +172,17 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`[gib-automation] listening on :${PORT}`);
+async function boot() {
+  startupDiagnostics = await collectRuntimeDiagnostics();
+  logStartupDiagnostics(startupDiagnostics);
+
+  server.listen(PORT, () => {
+    console.log(`[gib-automation] listening on :${PORT}`);
+    console.log(`[gib-automation] health check: http://127.0.0.1:${PORT}/health`);
+  });
+}
+
+boot().catch((error) => {
+  console.error("[gib-automation] fatal startup error", error);
+  process.exit(1);
 });

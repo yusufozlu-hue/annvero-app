@@ -45,14 +45,23 @@ export async function checkGibAutomationHealth() {
     const health = {
       ok: response.ok && payload.ok !== false,
       status: response.status,
+      verified: payload.verified === true,
       service: payload.service || null,
       runtime: payload.runtime || null,
-      playwrightImage: payload.playwrightImage || null,
-      version: payload.version || null,
-      build: payload.build || null,
+      image: payload.image || payload.playwrightImage || null,
+      deploy: payload.deploy || null,
+      playwright: payload.playwright || null,
+      commit: payload.commit || payload.version || null,
     };
 
     console.info("[gib-query] automation /health", health);
+
+    if (health.ok && !health.verified) {
+      console.warn(
+        "[gib-query] automation servisi online ancak Docker/Playwright doğrulaması başarısız.",
+        health
+      );
+    }
 
     if (health.ok && health.runtime !== "docker-playwright") {
       console.warn(

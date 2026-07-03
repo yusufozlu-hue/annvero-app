@@ -27,22 +27,42 @@ RAILWAY_DOCKERFILE_PATH=Dockerfile
 Başarılı Docker build logları:
 
 ```
-Using Detected Dockerfile
-FROM mcr.microsoft.com/playwright:v1.61.1-jammy
-Base image: mcr.microsoft.com/playwright:v1.61.1-jammy
-Railway builder: DOCKERFILE
+>>> Railway proof: Using Detected Dockerfile <<<
+>>> FROM mcr.microsoft.com/playwright:v1.61.1-jammy <<<
+Docker build chromium path: /ms-playwright/...
+>>> build-proof.json <<<
 ```
 
-**Görmemeniz gerekenler** (eski Node/Nixpacks deploy):
+Servis ayağa kalkınca runtime logları:
 
 ```
-Nixpacks
-Railpack
-node:22
-libglib-2.0.so.0: cannot open shared object
+[gib-automation] startup diagnostics
+runtime: docker-playwright
+image: mcr.microsoft.com/playwright:v1.61.1-jammy
+playwright.launchTest.ok: true
+verified: true
 ```
 
-Loglarda `mcr.microsoft.com/playwright` görünmüyorsa Root Directory veya `railway.json` path yanlıştır.
+`/health` yanıtı (deploy sonrası doğrulama):
+
+```json
+{
+  "ok": true,
+  "verified": true,
+  "runtime": "docker-playwright",
+  "image": "mcr.microsoft.com/playwright:v1.61.1-jammy",
+  "deploy": {
+    "builder": "DOCKERFILE",
+    "proof": "Using Detected Dockerfile — built from mcr.microsoft.com/playwright:v1.61.1-jammy"
+  },
+  "playwright": {
+    "executablePath": "/ms-playwright/...",
+    "launchTest": { "ok": true }
+  }
+}
+```
+
+Canlı launch testini yeniden çalıştırmak için: `GET /health?refresh=1`
 
 ### 3. Ortam değişkenleri
 
@@ -60,7 +80,7 @@ GIB_AUTOMATION_SERVICE_URL=https://your-service.up.railway.app
 GIB_AUTOMATION_SERVICE_TOKEN=shared-secret
 ```
 
-`/health` yanıtında `runtime: "docker-playwright"` ve `playwrightImage: "mcr.microsoft.com/playwright:v1.61.1-jammy"` beklenir.
+`/health` yanıtında `verified: true`, `runtime: "docker-playwright"` ve `playwright.launchTest.ok: true` beklenir.
 
 ## Yerel geliştirme
 
