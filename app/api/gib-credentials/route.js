@@ -8,7 +8,7 @@ import {
   getGibSupabaseAdmin,
   getGibSupabaseGuardResponse,
   logGibSupabaseDiagnostics,
-  logGibSupabaseError,
+  logGibSupabaseConnectionError,
 } from "@/src/lib/supabase/gibSupabase";
 
 export const runtime = "nodejs";
@@ -41,12 +41,12 @@ export async function GET(request) {
     ]);
 
   if (error) {
-    logGibSupabaseError("gib-credentials:get", error, GIB_CREDENTIALS_TABLE);
+    logGibSupabaseConnectionError("gib-credentials:get", error, GIB_CREDENTIALS_TABLE);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
   if (stateError) {
-    logGibSupabaseError("gib-credentials:get", stateError, GIB_QUERY_STATE_TABLE);
+    logGibSupabaseConnectionError("gib-credentials:get", stateError, GIB_QUERY_STATE_TABLE);
     return NextResponse.json({ error: stateError.message }, { status: 500 });
   }
 
@@ -111,7 +111,7 @@ export async function POST(request) {
     .maybeSingle();
 
   if (existingError) {
-    logGibSupabaseError("gib-credentials:post", existingError, GIB_CREDENTIALS_TABLE);
+    logGibSupabaseConnectionError("gib-credentials:post", existingError, GIB_CREDENTIALS_TABLE);
     return NextResponse.json({ error: existingError.message }, { status: 500 });
   }
 
@@ -140,7 +140,7 @@ export async function POST(request) {
     .single();
 
   if (error) {
-    logGibSupabaseError("gib-credentials:post", error, GIB_CREDENTIALS_TABLE);
+    logGibSupabaseConnectionError("gib-credentials:post", error, GIB_CREDENTIALS_TABLE);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
@@ -180,7 +180,7 @@ export async function DELETE(request) {
     .eq("company_id", companyId);
 
   if (error) {
-    logGibSupabaseError("gib-credentials:delete", error, GIB_CREDENTIALS_TABLE);
+    logGibSupabaseConnectionError("gib-credentials:delete", error, GIB_CREDENTIALS_TABLE);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

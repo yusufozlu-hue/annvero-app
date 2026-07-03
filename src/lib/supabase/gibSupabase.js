@@ -22,5 +22,19 @@ export function logGibSupabaseDiagnostics(context, table = GIB_CREDENTIALS_TABLE
 }
 
 export function logGibSupabaseError(context, error, table = GIB_CREDENTIALS_TABLE) {
-  logSupabaseQueryError(context, error, table);
+  logSupabaseQueryError(context, error, table, { usedKeyType: "service_role" });
+}
+
+export function logGibSupabaseConnectionError(context, error, table = GIB_CREDENTIALS_TABLE) {
+  logGibSupabaseError(context, error, table);
+
+  const message = String(error?.message || error || "");
+  if (/invalid api key/i.test(message)) {
+    console.error(`[${context}] GİB Supabase bağlantı hatası: Invalid API key`, {
+      table,
+      usedKeyType: "service_role",
+      hint:
+        "Service role anahtarı reddedildi. /api/debug/supabase-env çıktısındaki projectRef, keyPrefixType ve keyLength değerlerini kontrol edin.",
+    });
+  }
 }
