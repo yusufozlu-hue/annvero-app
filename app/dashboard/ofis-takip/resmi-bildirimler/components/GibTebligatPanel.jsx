@@ -21,6 +21,15 @@ import {
 const inputClassName =
   "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-white outline-none focus:border-violet-500";
 
+const ERROR_RESULT_STATUSES = new Set([
+  GIB_QUERY_STATUS.SYSTEM_ERROR,
+  GIB_QUERY_STATUS.LOGIN_ERROR,
+]);
+
+function patchCompanyRow(rows, companyId, patch) {
+  return rows.map((row) => (row.companyId === companyId ? { ...row, ...patch } : row));
+}
+
 export default function GibTebligatPanel() {
   const [companyRows, setCompanyRows] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -31,6 +40,7 @@ export default function GibTebligatPanel() {
   const [verificationCode, setVerificationCode] = useState("");
   const [bulkQueue, setBulkQueue] = useState([]);
   const [bulkIndex, setBulkIndex] = useState(0);
+  const [queryingCompanyId, setQueryingCompanyId] = useState(null);
 
   const showToast = (message, type = "success") => setToast({ message, type });
 
@@ -61,7 +71,26 @@ export default function GibTebligatPanel() {
 
   const resolveStatusLabel = (row) => {
     if (!row.hasGibCredentials) return GIB_QUERY_STATUS.MISSING_CREDENTIALS;
+    if (row.companyId === queryingCompanyId) return GIB_QUERY_STATUS.QUERYING;
     return row.resultStatus || "—";
+  };
+
+  const resolveLastError = (row) => {
+    const status = resolveStatusLabel(row);
+    if (!ERROR_RESULT_STATUSES.has(status)) return null;
+    return row.lastError || null;
+  };
+
+  const beginCompanyQueryUi = (companyId) => {
+    setToast(null);
+    setQueryingCompanyId(companyId);
+    setCompanyRows((rows) =>
+      patchCompanyRow(rows, companyId, {
+        resultStatus: GIB_QUERY_STATUS.QUERYING,
+        lastError: null,
+        lastQueryAt: new Date().toISOString(),
+      })
+    );
   };
 
   const openVerificationModal = (payload) => {
@@ -75,11 +104,18 @@ export default function GibTebligatPanel() {
   };
 
   const handleQueryCompany = async (companyId, bulkMode = false) => {
+    beginCompanyQueryUi(companyId);
     setIsBusy(true);
     try {
       const result = await startGibQuery(companyId);
       if (result.resultStatus === GIB_QUERY_STATUS.AWAITING_VERIFICATION) {
         const company = companyRows.find((row) => row.companyId === companyId);
+        setCompanyRows((rows) =>
+          patchCompanyRow(rows, companyId, {
+            resultStatus: GIB_QUERY_STATUS.AWAITING_VERIFICATION,
+            lastError: null,
+          })
+        );
         openVerificationModal({
           sessionId: result.sessionId,
           companyId,
@@ -88,15 +124,28 @@ export default function GibTebligatPanel() {
           bulkMode,
         });
       } else {
+        setCompanyRows((rows) =>
+          patchCompanyRow(rows, companyId, {
+            resultStatus: result.resultStatus || GIB_QUERY_STATUS.SYSTEM_ERROR,
+            lastError: result.error || result.resultStatus || null,
+          })
+        );
         showToast(result.error || result.resultStatus, "error");
       }
       await loadData();
       return result;
     } catch (error) {
+      setCompanyRows((rows) =>
+        patchCompanyRow(rows, companyId, {
+          resultStatus: GIB_QUERY_STATUS.SYSTEM_ERROR,
+          lastError: error.message,
+        })
+      );
       showToast(error.message, "error");
       await loadData();
       return null;
     } finally {
+      setQueryingCompanyId(null);
       setIsBusy(false);
     }
   };
@@ -104,6 +153,15 @@ export default function GibTebligatPanel() {
   const handleVerify = async () => {
     if (!activeSession?.sessionId) return;
 
+    const companyId = activeSession.companyId;
+    setToast(null);
+    setQueryingCompanyId(companyId);
+    setCompanyRows((rows) =>
+      patchCompanyRow(rows, companyId, {
+        resultStatus: GIB_QUERY_STATUS.QUERYING,
+        lastError: null,
+      })
+    );
     setIsBusy(true);
     try {
       const result = await verifyGibQuery(activeSession.sessionId, verificationCode);
@@ -133,9 +191,16 @@ export default function GibTebligatPanel() {
         }
       }
     } catch (error) {
+      setCompanyRows((rows) =>
+        patchCompanyRow(rows, companyId, {
+          resultStatus: GIB_QUERY_STATUS.SYSTEM_ERROR,
+          lastError: error.message,
+        })
+      );
       showToast(error.message, "error");
       await loadData();
     } finally {
+      setQueryingCompanyId(null);
       setIsBusy(false);
     }
   };
@@ -219,6 +284,7 @@ export default function GibTebligatPanel() {
           <tbody>
             {companyRows.map((row) => {
               const statusLabel = resolveStatusLabel(row);
+              const lastError = resolveLastError(row);
               return (
                 <tr key={row.companyId} className="border-t border-gray-800">
                   <td className="p-3 font-medium">{row.companyName}</td>
@@ -236,13 +302,20 @@ export default function GibTebligatPanel() {
                   </td>
                   <td className="p-3">{formatTrDate(row.lastQueryAt)}</td>
                   <td className="p-3">
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                        GIB_QUERY_STATUS_CLASS[statusLabel] || "bg-gray-800 text-gray-300"
-                      }`}
-                    >
-                      {statusLabel}
-                    </span>
+                    <div className="space-y-1">
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
+                          GIB_QUERY_STATUS_CLASS[statusLabel] || "bg-gray-800 text-gray-300"
+                        }`}
+                      >
+                        {statusLabel}
+                      </span>
+                      {lastError ? (
+                        <p className="max-w-xs text-xs text-red-300" title={lastError}>
+                          {lastError}
+                        </p>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="p-3">
                     <button

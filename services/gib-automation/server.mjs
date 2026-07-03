@@ -130,7 +130,17 @@ const server = http.createServer(async (req, res) => {
     const url = req.url?.split("?")[0] || "/";
 
     if (req.method === "GET" && url === "/health") {
-      sendJson(res, 200, { ok: true, service: "gib-automation" });
+      sendJson(res, 200, {
+        ok: true,
+        service: "gib-automation",
+        runtime: "docker-playwright",
+        playwrightImage: "mcr.microsoft.com/playwright:v1.61.1-jammy",
+        version: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || "local",
+        build: {
+          builder: "DOCKERFILE",
+          node: process.version,
+        },
+      });
       return;
     }
 

@@ -6,6 +6,11 @@ import {
   startGibAutomationQuery,
   verifyGibAutomationQuery,
 } from "@/src/server/gibAutomationClient";
+import {
+  checkGibAutomationHealth,
+  isLibglibError,
+  logLibglibStaleDeployWarning,
+} from "@/src/server/gibAutomationHealth";
 import { diffNewNotifications } from "@/src/utils/gibTebligatEngine";
 import { toOfficialNotificationDbRow } from "@/src/utils/officialNotificationSchema";
 
@@ -30,15 +35,35 @@ export async function loadCompanyGibCredentials(supabase, companyId) {
 export async function upsertCompanyQueryState(supabase, companyId, payload = {}) {
   const row = {
     company_id: companyId,
-    last_query_at: payload.lastQueryAt || new Date().toISOString(),
-    result_status: payload.resultStatus || GIB_QUERY_STATUS.SYSTEM_ERROR,
-    last_error: payload.lastError || null,
+    last_query_at: payload.lastQueryAt ?? new Date().toISOString(),
+    result_status: payload.resultStatus ?? GIB_QUERY_STATUS.SYSTEM_ERROR,
+    last_error: Object.prototype.hasOwnProperty.call(payload, "lastError")
+      ? payload.lastError
+      : null,
     updated_at: new Date().toISOString(),
   };
 
   const { error } = await supabase.from("gib_company_query_state").upsert([row]);
   if (error) throw new Error(error.message);
   return row;
+}
+
+export async function resetCompanyQueryStateForNewQuery(supabase, companyId) {
+  await upsertCompanyQueryState(supabase, companyId, {
+    resultStatus: GIB_QUERY_STATUS.QUERYING,
+    lastError: null,
+    lastQueryAt: new Date().toISOString(),
+  });
+
+  await supabase
+    .from("gib_query_sessions")
+    .update({
+      status: "superseded",
+      error_message: null,
+      result_status: GIB_QUERY_STATUS.QUERYING,
+    })
+    .eq("company_id", companyId)
+    .in("status", ["awaiting_verification", "failed"]);
 }
 
 export async function createQuerySession(supabase, companyId, payload = {}) {
@@ -124,6 +149,13 @@ function isAutomationNotConfiguredError(error) {
   );
 }
 
+function handleAutomationFailure(message, health = null) {
+  if (isLibglibError(message)) {
+    logLibglibStaleDeployWarning(message, health);
+  }
+  return message;
+}
+
 export async function startCompanyGibQuery(supabase, companyId) {
   const credentials = await loadCompanyGibCredentials(supabase, companyId);
 
@@ -140,9 +172,8 @@ export async function startCompanyGibQuery(supabase, companyId) {
     };
   }
 
-  await upsertCompanyQueryState(supabase, companyId, {
-    resultStatus: GIB_QUERY_STATUS.QUERYING,
-  });
+  const health = await checkGibAutomationHealth();
+  await resetCompanyQueryStateForNewQuery(supabase, companyId);
 
   const sessionId = crypto.randomUUID();
 
@@ -163,10 +194,12 @@ export async function startCompanyGibQuery(supabase, companyId) {
       resultStatus: GIB_QUERY_STATUS.AWAITING_VERIFICATION,
       storageState: loginSession.storageState || null,
       captchaImageBase64: loginSession.captchaImageBase64 || null,
+      errorMessage: null,
     });
 
     await upsertCompanyQueryState(supabase, companyId, {
       resultStatus: GIB_QUERY_STATUS.AWAITING_VERIFICATION,
+      lastError: null,
     });
 
     return {
@@ -175,11 +208,13 @@ export async function startCompanyGibQuery(supabase, companyId) {
       companyId,
       captchaImage: loginSession.captchaImageBase64,
       resultStatus: GIB_QUERY_STATUS.AWAITING_VERIFICATION,
+      automationHealth: health,
     };
   } catch (error) {
-    const message = isAutomationNotConfiguredError(error)
+    const rawMessage = isAutomationNotConfiguredError(error)
       ? GIB_AUTOMATION_NOT_CONFIGURED_MESSAGE
       : error.message;
+    const message = handleAutomationFailure(rawMessage, health);
 
     await upsertCompanyQueryState(supabase, companyId, {
       resultStatus: GIB_QUERY_STATUS.SYSTEM_ERROR,
@@ -190,6 +225,7 @@ export async function startCompanyGibQuery(supabase, companyId) {
       ok: false,
       resultStatus: GIB_QUERY_STATUS.SYSTEM_ERROR,
       error: message,
+      automationHealth: health,
     };
   }
 }
@@ -204,7 +240,10 @@ export async function verifyCompanyGibQuery(supabase, sessionId, verificationCod
 
   await upsertCompanyQueryState(supabase, companyId, {
     resultStatus: GIB_QUERY_STATUS.QUERYING,
+    lastError: null,
   });
+
+  const health = await checkGibAutomationHealth();
 
   try {
     const result = await verifyGibAutomationQuery({
@@ -214,24 +253,29 @@ export async function verifyCompanyGibQuery(supabase, sessionId, verificationCod
     });
 
     if (!result?.ok) {
+      const errorMessage = handleAutomationFailure(
+        result.error || GIB_QUERY_STATUS.LOGIN_ERROR,
+        health
+      );
+
       await supabase
         .from("gib_query_sessions")
         .update({
           status: "failed",
-          result_status: result.error || GIB_QUERY_STATUS.LOGIN_ERROR,
-          error_message: result.error || GIB_QUERY_STATUS.LOGIN_ERROR,
+          result_status: GIB_QUERY_STATUS.LOGIN_ERROR,
+          error_message: errorMessage,
         })
         .eq("id", sessionId);
 
       await upsertCompanyQueryState(supabase, companyId, {
-        resultStatus: result.error || GIB_QUERY_STATUS.LOGIN_ERROR,
-        lastError: result.error || GIB_QUERY_STATUS.LOGIN_ERROR,
+        resultStatus: GIB_QUERY_STATUS.LOGIN_ERROR,
+        lastError: errorMessage,
       });
 
       return {
         ok: false,
-        resultStatus: result.error || GIB_QUERY_STATUS.LOGIN_ERROR,
-        error: result.error || GIB_QUERY_STATUS.LOGIN_ERROR,
+        resultStatus: GIB_QUERY_STATUS.LOGIN_ERROR,
+        error: errorMessage,
       };
     }
 
@@ -269,9 +313,10 @@ export async function verifyCompanyGibQuery(supabase, sessionId, verificationCod
       inserted: persistResult.inserted,
     };
   } catch (error) {
-    const message = isAutomationNotConfiguredError(error)
+    const rawMessage = isAutomationNotConfiguredError(error)
       ? GIB_AUTOMATION_NOT_CONFIGURED_MESSAGE
       : error.message;
+    const message = handleAutomationFailure(rawMessage, health);
 
     await supabase
       .from("gib_query_sessions")
