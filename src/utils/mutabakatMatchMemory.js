@@ -73,6 +73,23 @@ export function saveMutabakatManualMatch(bankRow = {}, muavinRow = {}, context =
   }
 
   writeAllRecords(records);
+
+  if (typeof window !== "undefined") {
+    import("@/src/utils/bankaMutabakatV2")
+      .then(({ persistLearnedBankRule }) =>
+        persistLearnedBankRule({
+          companyId,
+          bankId,
+          bankDescriptionPattern: bankDescription,
+          ledgerAccountCode: String(muavinRow.hesapKodu || "").trim(),
+          ledgerAccountName: String(muavinRow.hesapAdi || "").trim(),
+          transactionType: bankRow.yon || "",
+          documentType: "manual_match",
+        })
+      )
+      .catch(() => {});
+  }
+
   return payload;
 }
 

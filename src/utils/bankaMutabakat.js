@@ -1172,3 +1172,116 @@ export function buildSuggestedLucaExcelRows(suggestedRows = []) {
     "Belge Türü": row.belgeTuru,
   }));
 }
+
+export function buildManualMatchResult(bankRow, muavinRow, context = {}) {
+  const scored = scoreMatchPair(bankRow, muavinRow, context);
+  const bankAmount = getSignedAmount(bankRow, "bank").amount;
+  const muavinAmount = getSignedAmount(muavin, "muavin").amount;
+  const similarity = scored?.similarity ?? descriptionSimilarity(bankRow.aciklama, muavin.aciklama);
+  const score = Math.max(scored?.score || 92, 92);
+
+  return buildResultRow({
+    id: `manual-${bankRow.id}-${muavinRow.id}-${Date.now()}`,
+    durum: MUTABAKAT_DURUM.ESLESTI,
+    bankaTarihi: bankRow.tarih,
+    muavinTarihi: muavin.tarih,
+    bankaAciklama: bankRow.aciklama,
+    muavinAciklama: muavin.aciklama,
+    bankaTutari: bankAmount,
+    muavinTutari: muavinAmount,
+    fark: Number((bankAmount - muavinAmount).toFixed(2)),
+    guvenSkoru: score,
+    aciklamaBenzerligi: Number(similarity.toFixed(2)),
+    oneri: "Manuel eşleştirme yapıldı.",
+    eslesmeYontemi: scored?.method || "manuel",
+    needsManualApproval: false,
+    manualApproved: true,
+    isError: Math.abs(bankAmount - muavinAmount) > 0.01,
+    isMatched: true,
+    bankRow,
+    muavinRow,
+  });
+}
+
+export function applyManualMatchToAnalysis(analysis, bankRow, muavinRow, context = {}) {
+  const rows = analysis?.rows || [];
+  const newRow = buildManualMatchResult(bankRow, muavinRow, context);
+  const nextRows = rows.filter((row) => {
+    const bankOnly = row.bankRow?.id === bankRow.id && !row.muavinRow;
+    const muavinOnly = row.muavinRow?.id === muavinRow.id && !row.bankRow;
+    const duplicatePair =
+      row.bankRow?.id === bankRow.id && row.muavinRow?.id === muavinRow.id;
+    return !bankOnly && !muavinOnly && !duplicatePair;
+  });
+
+  nextRows.push(newRow);
+  const grouped = groupMutabakatRows(nextRows);
+
+  return {
+    ...analysis,
+    rows: nextRows,
+    grouped,
+    summary: recalculateMutabakatSummary(nextRows, grouped, analysis.summary),
+  };
+}
+
+export function removeManualMatchFromAnalysis(analysis, resultRow, context = {}) {
+  const { bankId = "DIGER", company = {}, firmaId = "" } = context;
+  if (!resultRow?.bankRow && !resultRow?.muavinRow) return analysis;
+
+  const rows = (analysis?.rows || []).filter((row) => row.id !== resultRow.id);
+  const replacements = [];
+
+  if (resultRow.bankRow) {
+    const bank = resultRow.bankRow;
+    const bankAmount = getSignedAmount(bank, "bank").amount;
+    replacements.push(
+      buildResultRow({
+        id: `unmatched-bank-${bank.id}-${Date.now()}`,
+        durum: MUTABAKAT_DURUM.BANKADA_VAR,
+        bankaTarihi: bank.tarih,
+        bankaAciklama: bank.aciklama,
+        bankaTutari: bankAmount,
+        fark: bankAmount,
+        oneri: "Manuel eşleşme kaldırıldı — bankada kalan hareket.",
+        isError: true,
+        isMatched: false,
+        bankRow: bank,
+        suggestedLucaRows: buildMissingMuavinLucaSuggestion(bank, {
+          bankId,
+          company,
+          firmaId,
+        }),
+      })
+    );
+  }
+
+  if (resultRow.muavinRow) {
+    const muavin = resultRow.muavinRow;
+    const muavinAmount = getSignedAmount(muavin, "muavin").amount;
+    replacements.push(
+      buildResultRow({
+        id: `unmatched-muavin-${muavin.id}-${Date.now()}`,
+        durum: MUTABAKAT_DURUM.MUAVINDE_VAR,
+        muavinTarihi: muavin.tarih,
+        muavinAciklama: muavin.aciklama,
+        muavinTutari: muavinAmount,
+        fark: -muavinAmount,
+        oneri: "Manuel eşleşme kaldırıldı — muavinde kalan kayıt.",
+        isError: true,
+        isMatched: false,
+        muavinRow: muavin,
+      })
+    );
+  }
+
+  const nextRows = [...rows, ...replacements];
+  const grouped = groupMutabakatRows(nextRows);
+
+  return {
+    ...analysis,
+    rows: nextRows,
+    grouped,
+    summary: recalculateMutabakatSummary(nextRows, grouped, analysis.summary),
+  };
+}
