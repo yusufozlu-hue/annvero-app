@@ -1,15 +1,5 @@
-/**
- * Eski Supabase erişimi olmadan firma verisi kurtarma script'i.
- *
- * Kullanım:
- * 1) Canlı sitede veya localhost'ta Firma Yönetimi kullandığınız tarayıcıda F12 -> Console
- * 2) Bu dosyanın tamamını yapıştırıp Enter
- * 3) Çıkan companies_export_json değerini kopyalayın
- * 4) supabase/scripts/import_companies_from_local_json.sql içinde '[]'::jsonb yerine yapıştırın
- *    veya POST /api/companies/migrate endpoint'ine { companies: [...] } olarak gönderin
- */
-(function exportAnnveroCompaniesFromLocalStorage() {
-  const STORAGE_KEYS = [
+(function exportAnnveroCompaniesFromBrowserStorage() {
+  const COMPANY_STORAGE_KEYS = [
     "annvero_companies_v24",
     "annvero_companies_v23",
     "annvero_companies_v22",
@@ -17,60 +7,206 @@
     "annvero_companies_v2",
   ];
 
-  function readCompaniesFromKey(key) {
-    const raw = localStorage.getItem(key);
-    if (!raw) return [];
+  const OFIS_TAKIP_STORAGE_KEY = "annvero-ofis-takip-v1";
 
+  function readJson(storage, key) {
     try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
+      const raw = storage.getItem(key);
+      if (!raw) return null;
+      return JSON.parse(raw);
     } catch {
-      return [];
+      return null;
     }
   }
 
-  let sourceKey = null;
-  let companies = [];
+  function getCompanyName(company) {
+    return String(company?.companyName || company?.name || company?.title || company?.unvan || "").trim();
+  }
 
-  for (const key of STORAGE_KEYS) {
-    const rows = readCompaniesFromKey(key);
-    if (rows.length > 0) {
-      sourceKey = key;
-      companies = rows;
-      break;
+  function normalizeCompanyRecord(company, source) {
+    if (!company || typeof company !== "object") return null;
+
+    const id = String(company.id || company.companyId || company.firmaId || company.mukellefId || "").trim();
+    const companyName = getCompanyName(company);
+
+    if (!id || !companyName) return null;
+
+    const data = { ...company, id, companyName };
+
+    return {
+      id,
+      company_name: companyName,
+      data,
+      updated_at: new Date().toISOString(),
+      _export_source: source,
+    };
+  }
+
+  function readCompaniesFromArray(value, source) {
+    if (!Array.isArray(value)) return [];
+
+    return value
+      .map((row) => normalizeCompanyRecord(row, source))
+      .filter(Boolean);
+  }
+
+  function collectFromKnownKeys(storageType, storage) {
+    const found = [];
+
+    for (const key of COMPANY_STORAGE_KEYS) {
+      const rows = readCompaniesFromArray(readJson(storage, key), `${storageType}:${key}`);
+      if (rows.length) {
+        found.push({ key, storageType, rows });
+      }
     }
+
+    const ofisState = readJson(storage, OFIS_TAKIP_STORAGE_KEY);
+    if (ofisState && Array.isArray(ofisState.mukellefler)) {
+      const legacyRows = ofisState.mukellefler
+        .map((row, index) =>
+          normalizeCompanyRecord(
+            {
+              id: row.id || row.companyId || row.mukellefId || `legacy-ofis-${index + 1}`,
+              companyName: row.unvan || row.companyName || row.name || row.title,
+              ...row,
+            },
+            `${storageType}:${OFIS_TAKIP_STORAGE_KEY}:mukellefler`
+          )
+        )
+        .filter(Boolean);
+
+      if (legacyRows.length) {
+        found.push({
+          key: `${OFIS_TAKIP_STORAGE_KEY}:mukellefler`,
+          storageType,
+          rows: legacyRows,
+        });
+      }
+    }
+
+    return found;
   }
 
-  if (!companies.length) {
-    console.warn("localStorage'da firma kaydı bulunamadı.", { checkedKeys: STORAGE_KEYS });
-    return { found: false, checkedKeys: STORAGE_KEYS };
+  function collectFromAnnveroKeyScan(storageType, storage) {
+    const found = [];
+
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (!key || !/annvero/i.test(key)) continue;
+      if (COMPANY_STORAGE_KEYS.includes(key) || key === OFIS_TAKIP_STORAGE_KEY) continue;
+
+      const parsed = readJson(storage, key);
+      if (Array.isArray(parsed)) {
+        const rows = readCompaniesFromArray(parsed, `${storageType}:scan:${key}`);
+        if (rows.length) found.push({ key, storageType, rows });
+        continue;
+      }
+
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.companies)) {
+        const rows = readCompaniesFromArray(parsed.companies, `${storageType}:scan:${key}:companies`);
+        if (rows.length) found.push({ key: `${key}:companies`, storageType, rows });
+      }
+    }
+
+    return found;
   }
 
-  const payload = companies
-    .filter((company) => company?.id && (company.companyName || company.name || company.title))
-    .map((company) => {
-      const companyName = String(company.companyName || company.name || company.title || "").trim();
-      const data = { ...company, companyName };
+  function mergeByCompanyId(groups) {
+    const map = new Map();
 
-      return {
-        id: String(company.id),
-        company_name: companyName,
-        data,
-        updated_at: new Date().toISOString(),
-      };
+    for (const group of groups) {
+      for (const row of group.rows) {
+        const existing = map.get(row.id);
+        if (!existing) {
+          map.set(row.id, row);
+          continue;
+        }
+
+        map.set(row.id, {
+          ...existing,
+          company_name: existing.company_name || row.company_name,
+          data: { ...row.data, ...existing.data, companyName: existing.company_name || row.company_name },
+          _export_source: `${existing._export_source} | ${row._export_source}`,
+        });
+      }
+    }
+
+    return Array.from(map.values()).sort((a, b) =>
+      a.company_name.localeCompare(b.company_name, "tr", { sensitivity: "base" })
+    );
+  }
+
+  function downloadJson(filename, payload) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json;charset=utf-8",
     });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
 
-  console.info("Kaynak localStorage key:", sourceKey);
-  console.info("Dışa aktarılan firma sayısı:", payload.length);
-  console.info("Migrate API body:", { companies: payload });
-  console.info("SQL import JSON (companies_export_json):");
-  console.log(JSON.stringify(payload));
+  const localGroups = [
+    ...collectFromKnownKeys("localStorage", localStorage),
+    ...collectFromAnnveroKeyScan("localStorage", localStorage),
+  ];
 
-  return {
-    found: true,
-    sourceKey,
-    count: payload.length,
-    companies_export_json: payload,
-    migrate_api_body: { companies: payload },
+  const sessionGroups = [
+    ...collectFromKnownKeys("sessionStorage", sessionStorage),
+    ...collectFromAnnveroKeyScan("sessionStorage", sessionStorage),
+  ];
+
+  const mergedCompanies = mergeByCompanyId([...localGroups, ...sessionGroups]);
+
+  const exportPayload = {
+    exportedAt: new Date().toISOString(),
+    origin: window.location.origin,
+    summary: {
+      localStorageSources: localGroups.map((group) => ({
+        key: group.key,
+        count: group.rows.length,
+      })),
+      sessionStorageSources: sessionGroups.map((group) => ({
+        key: group.key,
+        count: group.rows.length,
+      })),
+      totalCompanies: mergedCompanies.length,
+    },
+    companies: mergedCompanies.map(({ _export_source, ...row }) => row),
+    migrate_api_body: {
+      companies: mergedCompanies.map(({ _export_source, ...row }) => row),
+    },
+    rawSources: [...localGroups, ...sessionGroups].map((group) => ({
+      storageType: group.storageType,
+      key: group.key,
+      count: group.rows.length,
+    })),
   };
+
+  if (!mergedCompanies.length) {
+    console.warn("ANNVERO firma kaydı bulunamadı.", {
+      checkedCompanyKeys: COMPANY_STORAGE_KEYS,
+      checkedOfisKey: OFIS_TAKIP_STORAGE_KEY,
+      scannedPattern: "localStorage/sessionStorage keys matching /annvero/i",
+    });
+    return exportPayload;
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filename = `annvero-companies-export-${stamp}.json`;
+
+  downloadJson(filename, exportPayload);
+
+  console.info("ANNVERO firma export tamamlandı.");
+  console.info("İndirilen dosya:", filename);
+  console.info("Toplam firma:", mergedCompanies.length);
+  console.info("Kaynaklar:", exportPayload.rawSources);
+  console.info("SQL/API için doğrudan dizi:", exportPayload.companies);
+  console.info("Migrate API body:", exportPayload.migrate_api_body);
+
+  return exportPayload;
 })();
