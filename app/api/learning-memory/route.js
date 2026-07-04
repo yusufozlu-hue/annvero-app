@@ -9,7 +9,6 @@ const editableFields = [
   "counter_account_name",
   "document_type",
   "transaction_type",
-  "description_format",
   "source_module",
   "raw_description",
   "clean_description",
@@ -19,6 +18,33 @@ const editableFields = [
   "is_active",
 ];
 
+const OPTIONAL_SCHEMA_CACHE_FIELDS = [
+  "description_format",
+  "raw_description",
+  "clean_description",
+  "cari_name",
+  "user_correction",
+  "learned_at",
+];
+
+function withoutFields(payload = {}, fields = []) {
+  const next = { ...payload };
+  for (const field of fields) {
+    delete next[field];
+  }
+  return next;
+}
+
+function isSchemaCacheColumnError(error) {
+  const text = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`;
+  return (
+    error?.code === "PGRST204" ||
+    /schema cache/i.test(text) ||
+    /could not find .* column/i.test(text) ||
+    /column .* does not exist/i.test(text)
+  );
+}
+
 function buildRecordPayload(record = {}) {
   const payload = { updated_at: new Date().toISOString() };
 
@@ -26,6 +52,13 @@ function buildRecordPayload(record = {}) {
     if (record[field] !== undefined) {
       payload[field] = record[field];
     }
+  }
+
+  if (
+    record.description_format !== undefined &&
+    payload.clean_description === undefined
+  ) {
+    payload.clean_description = record.description_format;
   }
 
   return payload;
@@ -102,10 +135,9 @@ export async function POST(request) {
     counter_account_name: record.counter_account_name || "",
     document_type: record.document_type || "DK",
     transaction_type: record.transaction_type || "",
-    description_format: record.description_format || "",
     source_module: record.source_module || "manual",
     raw_description: record.raw_description || "",
-    clean_description: record.clean_description || "",
+    clean_description: record.clean_description || record.description_format || "",
     cari_name: record.cari_name || "",
     user_correction: record.user_correction || "",
     learned_at: record.learned_at || new Date().toISOString(),
@@ -115,11 +147,20 @@ export async function POST(request) {
     updated_at: new Date().toISOString(),
   };
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("learning_memory")
     .insert([insertPayload])
     .select("*")
     .maybeSingle();
+
+  if (error && isSchemaCacheColumnError(error)) {
+    const fallbackPayload = withoutFields(insertPayload, OPTIONAL_SCHEMA_CACHE_FIELDS);
+    ({ data, error } = await supabase
+      .from("learning_memory")
+      .insert([fallbackPayload])
+      .select("*")
+      .maybeSingle());
+  }
 
   if (error) {
     console.error(error);
@@ -153,12 +194,22 @@ export async function PATCH(request) {
   if (record?.id) {
     const payload = buildRecordPayload(record);
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("learning_memory")
       .update(payload)
       .eq("id", record.id)
       .select("*")
       .maybeSingle();
+
+    if (error && isSchemaCacheColumnError(error)) {
+      const fallbackPayload = withoutFields(payload, OPTIONAL_SCHEMA_CACHE_FIELDS);
+      ({ data, error } = await supabase
+        .from("learning_memory")
+        .update(fallbackPayload)
+        .eq("id", record.id)
+        .select("*")
+        .maybeSingle());
+    }
 
     if (error) {
       console.error(error);

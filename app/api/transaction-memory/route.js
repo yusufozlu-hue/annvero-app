@@ -12,6 +12,33 @@ import {
 const TABLE = "unrecognized_transactions";
 const MEMORY_TABLE = "learning_memory";
 
+const LEARNING_MEMORY_OPTIONAL_FIELDS = [
+  "description_format",
+  "raw_description",
+  "clean_description",
+  "cari_name",
+  "user_correction",
+  "learned_at",
+];
+
+function withoutFields(payload = {}, fields = []) {
+  const next = { ...payload };
+  for (const field of fields) {
+    delete next[field];
+  }
+  return next;
+}
+
+function isSchemaCacheColumnError(error) {
+  const text = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`;
+  return (
+    error?.code === "PGRST204" ||
+    /schema cache/i.test(text) ||
+    /could not find .* column/i.test(text) ||
+    /column .* does not exist/i.test(text)
+  );
+}
+
 function getClient() {
   const supabase = getSupabaseClient();
   if (!supabase) {
@@ -213,7 +240,9 @@ export async function POST(request) {
     }
 
     const insertMemory = {
-      ...memoryPayload,
+      ...withoutFields(memoryPayload, ["description_format"]),
+      clean_description:
+        memoryPayload.clean_description || memoryPayload.description_format || "",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -227,8 +256,8 @@ export async function POST(request) {
       .select("*")
       .maybeSingle());
 
-    // Yeni kolonlar henüz migrate edilmemişse çekirdek alanlarla dene.
-    if (memoryError) {
+    // PostgREST schema cache eskiyse veya yeni kolonlar görünmüyorsa çekirdek alanlarla dene.
+    if (memoryError && isSchemaCacheColumnError(memoryError)) {
       const legacyPayload = {
         company_id: memoryPayload.company_id,
         keyword: memoryPayload.keyword,
@@ -238,7 +267,6 @@ export async function POST(request) {
         counter_account_name: memoryPayload.counter_account_name,
         document_type: memoryPayload.document_type,
         transaction_type: memoryPayload.transaction_type,
-        description_format: memoryPayload.description_format,
         source_module: memoryPayload.source_module,
         usage_count: 0,
         is_active: true,
@@ -249,6 +277,15 @@ export async function POST(request) {
       ({ data: memoryRow, error: memoryError } = await supabase
         .from(MEMORY_TABLE)
         .insert([legacyPayload])
+        .select("*")
+        .maybeSingle());
+    }
+
+    if (memoryError && isSchemaCacheColumnError(memoryError)) {
+      const minimalPayload = withoutFields(insertMemory, LEARNING_MEMORY_OPTIONAL_FIELDS);
+      ({ data: memoryRow, error: memoryError } = await supabase
+        .from(MEMORY_TABLE)
+        .insert([minimalPayload])
         .select("*")
         .maybeSingle());
     }
