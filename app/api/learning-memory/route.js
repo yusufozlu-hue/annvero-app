@@ -1,67 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
-
-const editableFields = [
-  "keyword",
-  "account_code",
-  "account_name",
-  "counter_account_code",
-  "counter_account_name",
-  "document_type",
-  "transaction_type",
-  "source_module",
-  "raw_description",
-  "clean_description",
-  "cari_name",
-  "user_correction",
-  "learned_at",
-  "is_active",
-];
-
-const OPTIONAL_SCHEMA_CACHE_FIELDS = [
-  "description_format",
-  "raw_description",
-  "clean_description",
-  "cari_name",
-  "user_correction",
-  "learned_at",
-];
-
-function withoutFields(payload = {}, fields = []) {
-  const next = { ...payload };
-  for (const field of fields) {
-    delete next[field];
-  }
-  return next;
-}
-
-function isSchemaCacheColumnError(error) {
-  const text = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`;
-  return (
-    error?.code === "PGRST204" ||
-    /schema cache/i.test(text) ||
-    /could not find .* column/i.test(text) ||
-    /column .* does not exist/i.test(text)
-  );
-}
+import {
+  buildSafeLearningMemoryPayload,
+  isLearningMemorySchemaError,
+  LEARNING_MEMORY_SCHEMA_MESSAGE,
+} from "@/src/utils/learningMemorySafePayload";
 
 function buildRecordPayload(record = {}) {
-  const payload = { updated_at: new Date().toISOString() };
-
-  for (const field of editableFields) {
-    if (record[field] !== undefined) {
-      payload[field] = record[field];
-    }
-  }
-
-  if (
-    record.description_format !== undefined &&
-    payload.clean_description === undefined
-  ) {
-    payload.clean_description = record.description_format;
-  }
-
-  return payload;
+  return buildSafeLearningMemoryPayload(record);
 }
 
 export async function GET(request) {
@@ -126,26 +72,15 @@ export async function POST(request) {
     );
   }
 
-  const insertPayload = {
-    company_id: record.company_id,
+  const insertPayload = buildSafeLearningMemoryPayload({
+    ...record,
     keyword: String(record.keyword).trim(),
-    account_code: record.account_code || "",
-    account_name: record.account_name || "",
-    counter_account_code: record.counter_account_code || "",
-    counter_account_name: record.counter_account_name || "",
     document_type: record.document_type || "DK",
-    transaction_type: record.transaction_type || "",
-    source_module: record.source_module || "manual",
-    raw_description: record.raw_description || "",
-    clean_description: record.clean_description || record.description_format || "",
-    cari_name: record.cari_name || "",
-    user_correction: record.user_correction || "",
     learned_at: record.learned_at || new Date().toISOString(),
-    usage_count: Number(record.usage_count || 0),
-    is_active: record.is_active !== false,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
+    status: record.status || "active",
+  });
+
+  console.log("learning memory safe payload", insertPayload);
 
   let { data, error } = await supabase
     .from("learning_memory")
@@ -153,18 +88,16 @@ export async function POST(request) {
     .select("*")
     .maybeSingle();
 
-  if (error && isSchemaCacheColumnError(error)) {
-    const fallbackPayload = withoutFields(insertPayload, OPTIONAL_SCHEMA_CACHE_FIELDS);
-    ({ data, error } = await supabase
-      .from("learning_memory")
-      .insert([fallbackPayload])
-      .select("*")
-      .maybeSingle());
-  }
-
   if (error) {
     console.error(error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: isLearningMemorySchemaError(error)
+          ? LEARNING_MEMORY_SCHEMA_MESSAGE
+          : error.message,
+      },
+      { status: 500 }
+    );
   }
 
   return NextResponse.json({ data });
@@ -194,6 +127,10 @@ export async function PATCH(request) {
   if (record?.id) {
     const payload = buildRecordPayload(record);
 
+    if (!Object.keys(payload).length) {
+      return NextResponse.json({ data: null, skipped: true });
+    }
+
     let { data, error } = await supabase
       .from("learning_memory")
       .update(payload)
@@ -201,19 +138,16 @@ export async function PATCH(request) {
       .select("*")
       .maybeSingle();
 
-    if (error && isSchemaCacheColumnError(error)) {
-      const fallbackPayload = withoutFields(payload, OPTIONAL_SCHEMA_CACHE_FIELDS);
-      ({ data, error } = await supabase
-        .from("learning_memory")
-        .update(fallbackPayload)
-        .eq("id", record.id)
-        .select("*")
-        .maybeSingle());
-    }
-
     if (error) {
       console.error(error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json(
+        {
+          error: isLearningMemorySchemaError(error)
+            ? LEARNING_MEMORY_SCHEMA_MESSAGE
+            : error.message,
+        },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({ data });
@@ -230,33 +164,7 @@ export async function PATCH(request) {
     const increment = Number(item?.increment ?? 1);
 
     if (!id || increment <= 0) continue;
-
-    const { data: current, error: readError } = await supabase
-      .from("learning_memory")
-      .select("usage_count")
-      .eq("id", id)
-      .maybeSingle();
-
-    if (readError) {
-      console.error(readError);
-      continue;
-    }
-
-    const { error: updateError } = await supabase
-      .from("learning_memory")
-      .update({
-        usage_count: Number(current?.usage_count || 0) + increment,
-        last_used_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", id);
-
-    if (updateError) {
-      console.error(updateError);
-      continue;
-    }
-
-    results.push({ id, increment });
+    results.push({ id, increment, skipped: true });
   }
 
   return NextResponse.json({ updated: results });

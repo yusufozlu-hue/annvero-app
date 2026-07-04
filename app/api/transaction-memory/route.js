@@ -8,36 +8,14 @@ import {
   toUnrecognizedInsertRow,
   UNRECOGNIZED_STATUS,
 } from "@/src/utils/transactionMemoryEngine";
+import {
+  buildSafeLearningMemoryPayload,
+  isLearningMemorySchemaError,
+  LEARNING_MEMORY_SCHEMA_MESSAGE,
+} from "@/src/utils/learningMemorySafePayload";
 
 const TABLE = "unrecognized_transactions";
 const MEMORY_TABLE = "learning_memory";
-
-const LEARNING_MEMORY_OPTIONAL_FIELDS = [
-  "description_format",
-  "raw_description",
-  "clean_description",
-  "cari_name",
-  "user_correction",
-  "learned_at",
-];
-
-function withoutFields(payload = {}, fields = []) {
-  const next = { ...payload };
-  for (const field of fields) {
-    delete next[field];
-  }
-  return next;
-}
-
-function isSchemaCacheColumnError(error) {
-  const text = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`;
-  return (
-    error?.code === "PGRST204" ||
-    /schema cache/i.test(text) ||
-    /could not find .* column/i.test(text) ||
-    /column .* does not exist/i.test(text)
-  );
-}
 
 function getClient() {
   const supabase = getSupabaseClient();
@@ -239,13 +217,16 @@ export async function POST(request) {
       return NextResponse.json({ error: "Hesap kodu zorunludur." }, { status: 400 });
     }
 
-    const insertMemory = {
-      ...withoutFields(memoryPayload, ["description_format"]),
+    const insertMemory = buildSafeLearningMemoryPayload({
+      ...memoryPayload,
       clean_description:
         memoryPayload.clean_description || memoryPayload.description_format || "",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+      bank_name: queueItem.source_bank || "",
+      amount: queueItem.amount ?? null,
+      status: "active",
+    });
+
+    console.log("learning memory safe payload", insertMemory);
 
     let memoryRow = null;
     let memoryError = null;
@@ -256,42 +237,16 @@ export async function POST(request) {
       .select("*")
       .maybeSingle());
 
-    // PostgREST schema cache eskiyse veya yeni kolonlar görünmüyorsa çekirdek alanlarla dene.
-    if (memoryError && isSchemaCacheColumnError(memoryError)) {
-      const legacyPayload = {
-        company_id: memoryPayload.company_id,
-        keyword: memoryPayload.keyword,
-        account_code: memoryPayload.account_code,
-        account_name: memoryPayload.account_name,
-        counter_account_code: memoryPayload.counter_account_code,
-        counter_account_name: memoryPayload.counter_account_name,
-        document_type: memoryPayload.document_type,
-        transaction_type: memoryPayload.transaction_type,
-        source_module: memoryPayload.source_module,
-        usage_count: 0,
-        is_active: true,
-        created_at: insertMemory.created_at,
-        updated_at: insertMemory.updated_at,
-      };
-
-      ({ data: memoryRow, error: memoryError } = await supabase
-        .from(MEMORY_TABLE)
-        .insert([legacyPayload])
-        .select("*")
-        .maybeSingle());
-    }
-
-    if (memoryError && isSchemaCacheColumnError(memoryError)) {
-      const minimalPayload = withoutFields(insertMemory, LEARNING_MEMORY_OPTIONAL_FIELDS);
-      ({ data: memoryRow, error: memoryError } = await supabase
-        .from(MEMORY_TABLE)
-        .insert([minimalPayload])
-        .select("*")
-        .maybeSingle());
-    }
-
     if (memoryError) {
-      return NextResponse.json({ error: memoryError.message }, { status: 500 });
+      console.error(memoryError);
+      return NextResponse.json(
+        {
+          error: isLearningMemorySchemaError(memoryError)
+            ? LEARNING_MEMORY_SCHEMA_MESSAGE
+            : memoryError.message,
+        },
+        { status: 500 }
+      );
     }
 
     const { data: updatedQueue, error: updateError } = await supabase
