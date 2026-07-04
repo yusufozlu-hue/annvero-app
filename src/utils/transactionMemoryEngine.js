@@ -213,12 +213,16 @@ const NOISE_TOKENS = new Set([
   "ODEME",
   "ÖDEME",
   "TAHSILAT",
-  "POS",
   "KART",
   "NO",
   "REF",
   "REFNO",
 ]);
+
+/** Banka GL hesapları — öğrenme önerisi bu satırlara yazılmaz */
+export function isLikelyBankGlAccount(code = "") {
+  return /^(100|101|102|103|108|109)(\.|$)/.test(String(code || "").trim());
+}
 
 export function cleanTransactionDescription(raw = "") {
   return String(raw || "")
@@ -244,35 +248,59 @@ export function extractTransactionKeyword(raw = "") {
 }
 
 export function isUnrecognizedStandardRow(row = {}) {
-  if (row?.hafizaEslesme) return false;
+  // Hafızadan tam eşleşen satırlar kuyruğa düşmez
+  if (row?.hafizaEslesme && String(row.hesapKodu || "").trim()) {
+    return false;
+  }
+
+  // Banka GL satırı (102/103 vb.) karşı hesap sorununu temsil etmez
+  if (isLikelyBankGlAccount(row.hesapKodu)) {
+    return false;
+  }
 
   const hesapKodu = String(row.hesapKodu || "").trim();
+  const belgeTuru = String(row.belgeTuru || "").trim().toUpperCase();
   const risk = String(row.riskDurumu || "").trim().toUpperCase();
   const note = normalizeParserText(
     `${row.kontrolNotu || ""} ${row.warning || ""} ${row.uyari || ""}`
   );
 
-  if (!hesapKodu) return true;
-  if (risk === "HESAP_EKSIK") return true;
-  if (
+  const missingAccount = !hesapKodu || risk === "HESAP_EKSIK";
+  const unclearDocument = !belgeTuru;
+  const notedUnknown =
     note.includes("BULUNAMAD") ||
     note.includes("ESLESMEDI") ||
     note.includes("TANINMAD") ||
-    note.includes("HESAP EKSIK")
-  ) {
-    return true;
-  }
+    note.includes("HESAP EKSIK") ||
+    note.includes("CARI BULUNAMAD");
 
-  return false;
+  // İlk kez görülen: hafıza eşleşmesi yok ve hesap/belge eksik
+  const firstSeenUnresolved = !row?.hafizaEslesme && (missingAccount || unclearDocument);
+
+  return missingAccount || unclearDocument || notedUnknown || firstSeenUnresolved;
 }
 
+/**
+ * Duplicate engeli: firma + anahtar kelime + tarih + tutar
+ * (source_row_id parse oturumları arasında değişebilir)
+ */
 export function buildUnrecognizedFingerprint(item = {}) {
+  const raw =
+    item.rawDescription ||
+    item.raw_description ||
+    item.cleanDescription ||
+    item.clean_description ||
+    "";
+  const keyword =
+    item.keyword ||
+    extractTransactionKeyword(raw);
+  const amount = Number(item.amount ?? 0);
+
   return [
     item.companyId || item.company_id || "",
-    item.sourceRowId || item.source_row_id || "",
-    item.rawDescription || item.raw_description || "",
+    keyword,
     item.transactionDate || item.transaction_date || "",
-    String(item.amount ?? ""),
+    Number.isFinite(amount) ? amount.toFixed(2) : "0.00",
   ]
     .map((part) => normalizeParserText(part))
     .join("|");
@@ -292,23 +320,31 @@ export function mapStandardRowToUnrecognizedCandidate(row = {}, context = {}) {
         ? Number(row.alacak)
         : Number(row.tutar || row.amount || 0);
 
+  const cleanDescription = cleanTransactionDescription(rawDescription);
+  const keyword = extractTransactionKeyword(cleanDescription);
+
   return {
     companyId: context.companyId || row.firmaId || "",
     sourceModule: String(context.sourceModule || row.kaynakTipi || "banka").toLowerCase(),
     sourceBank: context.sourceBank || row.kaynakAdi || "",
-    sourceRowId: String(row.id || row.sourceRowId || ""),
+    sourceRowId: String(row.id || row._movementId || row.sourceRowId || ""),
     transactionDate: row.fisTarihi || row.evrakTarihi || row.tarih || "",
     amount: Number.isFinite(amount) ? amount : 0,
     direction: Number(row.borc || 0) > 0 ? "BORC" : "ALACAK",
     rawDescription,
-    cleanDescription: rawDescription,
-    keyword: extractTransactionKeyword(rawDescription),
+    cleanDescription,
+    keyword,
     transactionType: row.kaynakTipi || context.sourceModule || "BANKA",
+    suggestedAccountCode: row.suggestedAccountCode || "",
+    suggestedAccountName: row.suggestedAccountName || "",
+    suggestedDocumentType: row.suggestedDocumentType || row.belgeTuru || "",
+    suggestedCari: row.suggestedCari || row.cariUnvan || "",
     metadata: {
       belgeNo: row.belgeNo || "",
       evrakNo: row.evrakNo || "",
       riskDurumu: row.riskDurumu || "",
       kontrolNotu: row.kontrolNotu || "",
+      firmaId: context.companyId || row.firmaId || "",
     },
   };
 }
@@ -326,7 +362,7 @@ export function collectUnrecognizedFromStandardRows(rows = [], context = {}) {
     const fingerprint = buildUnrecognizedFingerprint(candidate);
     if (seen.has(fingerprint)) continue;
     seen.add(fingerprint);
-    items.push(candidate);
+    items.push({ ...candidate, fingerprint });
   }
 
   return items;
@@ -339,14 +375,24 @@ function scoreKeywordMatch(keyword, haystack) {
 
   if (text === key) return 100;
   if (text.includes(key)) return 80 + Math.min(key.length, 15);
-  if (key.includes(text) && text.length >= 4) return 70;
+  if (key.includes(text) && text.length >= 3) return 70;
 
   const keyTokens = key.split(/\s+/).filter(Boolean);
-  const textTokens = new Set(text.split(/\s+/).filter(Boolean));
-  const overlap = keyTokens.filter((token) => textTokens.has(token)).length;
+  const textTokens = text.split(/\s+/).filter(Boolean);
+  const textSet = new Set(textTokens);
 
+  // Tek kelimelik markalar: GOOGLE, SPOTIFY, SGK, BOOKING...
+  if (keyTokens.length === 1) {
+    const token = keyTokens[0];
+    if (token.length >= 3 && (textSet.has(token) || text.includes(token))) {
+      return 85;
+    }
+    return 0;
+  }
+
+  const overlap = keyTokens.filter((token) => textSet.has(token) || text.includes(token)).length;
   if (!overlap) return 0;
-  return Math.round((overlap / keyTokens.length) * 60);
+  return Math.round((overlap / keyTokens.length) * 75);
 }
 
 export function findLearningSuggestion(candidate = {}, learningMemory = []) {
@@ -412,9 +458,10 @@ export function buildLearnPayloadFromQueueItem(item = {}, draft = {}) {
   const cleanDescription = cleanTransactionDescription(
     draft.cleanDescription ?? item.clean_description ?? item.cleanDescription ?? rawDescription
   );
-  const keyword = String(
-    draft.keyword ?? item.keyword ?? extractTransactionKeyword(cleanDescription || rawDescription)
-  ).trim();
+  const keywordSource =
+    draft.keyword ?? item.keyword ?? cleanDescription ?? rawDescription;
+  const keyword =
+    extractTransactionKeyword(keywordSource) || String(keywordSource || "").trim();
 
   const accountCode = String(draft.accountCode ?? item.account_code ?? item.suggested_account_code ?? "").trim();
   const accountName = String(draft.accountName ?? item.account_name ?? item.suggested_account_name ?? "").trim();

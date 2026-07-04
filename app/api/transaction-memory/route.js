@@ -3,6 +3,7 @@ import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import {
   applySuggestionsToCandidates,
   buildLearnPayloadFromQueueItem,
+  buildUnrecognizedFingerprint,
   mapUnrecognizedDbRow,
   toUnrecognizedInsertRow,
   UNRECOGNIZED_STATUS,
@@ -86,43 +87,76 @@ export async function POST(request) {
     }
 
     const enriched = applySuggestionsToCandidates(items, learningMemory);
-    const insertRows = enriched.map(toUnrecognizedInsertRow);
 
-    const existingQuery = supabase
+    const { data: existingRows, error: existingError } = await supabase
       .from(TABLE)
-      .select("id, company_id, source_row_id, raw_description, transaction_date, amount")
-      .eq("status", UNRECOGNIZED_STATUS.PENDING)
-      .eq("company_id", companyId);
+      .select("*")
+      .eq("company_id", companyId)
+      .in("status", [UNRECOGNIZED_STATUS.PENDING, UNRECOGNIZED_STATUS.LEARNED]);
 
-    const { data: existingRows } = await existingQuery;
-    const existingKeys = new Set(
-      (existingRows || []).map((row) =>
-        [
-          row.company_id,
-          row.source_row_id || "",
-          row.raw_description || "",
-          row.transaction_date || "",
-          String(row.amount ?? ""),
-        ].join("|")
-      )
-    );
+    if (existingError) {
+      return NextResponse.json({ error: existingError.message }, { status: 500 });
+    }
 
-    const freshRows = insertRows.filter((row) => {
-      const key = [
-        row.company_id,
-        row.source_row_id || "",
-        row.raw_description || "",
-        row.transaction_date || "",
-        String(row.amount ?? ""),
-      ].join("|");
-      return !existingKeys.has(key);
-    });
+    const existingByFingerprint = new Map();
+    for (const row of existingRows || []) {
+      const fingerprint = buildUnrecognizedFingerprint(row);
+      if (!existingByFingerprint.has(fingerprint)) {
+        existingByFingerprint.set(fingerprint, row);
+      }
+    }
+
+    const freshRows = [];
+    let skipped = 0;
+    let updated = 0;
+
+    for (const item of enriched) {
+      const insertRow = toUnrecognizedInsertRow(item);
+      const fingerprint =
+        item.fingerprint || buildUnrecognizedFingerprint(insertRow);
+      const existing = existingByFingerprint.get(fingerprint);
+
+      if (existing) {
+        skipped += 1;
+
+        // Bekleyen kaydın önerilerini güncelle (duplicate insert yok)
+        if (
+          existing.status === UNRECOGNIZED_STATUS.PENDING &&
+          (insertRow.suggested_account_code || insertRow.suggested_document_type)
+        ) {
+          const { error: updateError } = await supabase
+            .from(TABLE)
+            .update({
+              suggested_account_code:
+                insertRow.suggested_account_code || existing.suggested_account_code,
+              suggested_account_name:
+                insertRow.suggested_account_name || existing.suggested_account_name,
+              suggested_document_type:
+                insertRow.suggested_document_type || existing.suggested_document_type,
+              suggested_cari: insertRow.suggested_cari || existing.suggested_cari,
+              suggested_memory_id:
+                insertRow.suggested_memory_id || existing.suggested_memory_id,
+              suggestion_score:
+                insertRow.suggestion_score ?? existing.suggestion_score,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", existing.id);
+
+          if (!updateError) updated += 1;
+        }
+        continue;
+      }
+
+      freshRows.push(insertRow);
+      existingByFingerprint.set(fingerprint, insertRow);
+    }
 
     if (!freshRows.length) {
       return NextResponse.json({
         ok: true,
         inserted: 0,
-        skipped: insertRows.length,
+        updated,
+        skipped,
         message: "Yeni tanınmayan işlem yok.",
       });
     }
@@ -139,7 +173,8 @@ export async function POST(request) {
     return NextResponse.json({
       ok: true,
       inserted: (data || []).length,
-      skipped: insertRows.length - (data || []).length,
+      updated,
+      skipped,
       data: (data || []).map(mapUnrecognizedDbRow),
     });
   }

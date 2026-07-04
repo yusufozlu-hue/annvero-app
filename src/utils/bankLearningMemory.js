@@ -1,5 +1,24 @@
 import { normalizeParserText } from "@/src/utils/textNormalize";
 import { finalizeStandardLucaRow, KAYNAK_TIPI } from "@/src/utils/standardLucaRow";
+import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
+
+const KNOWN_BANK_TOKENS = new Set([
+  "GARANTI",
+  "VAKIFBANK",
+  "VAKIF",
+  "TEB",
+  "KUVEYT",
+  "KUVEYTTURK",
+  "ZIRAAT",
+  "ISBANKASI",
+  "ISBANK",
+  "YAPIKREDI",
+  "AKBANK",
+  "HALKBANK",
+  "DENIZBANK",
+  "QNB",
+  "FINANSBANK",
+]);
 
 export const LEARNING_MEMORY_APPLIED_LABEL = "Öğrenen hafızadan eşleşti";
 
@@ -84,30 +103,56 @@ function memoryMatchesKaynakAdi(record, row, context) {
   const recordBank = normalizeKaynakTipi(record.account_name || "");
 
   if (!recordBank || !rowBank) return true;
-  return rowBank === recordBank;
+
+  // account_name çoğu zaman hesap adı (Reklam Giderleri); yalnızca banka adı ise filtrele
+  const recordTokens = recordBank.split(/\s+/).filter(Boolean);
+  const looksLikeBank = recordTokens.some((token) => KNOWN_BANK_TOKENS.has(token));
+  if (!looksLikeBank) return true;
+
+  return rowBank === recordBank || rowBank.includes(recordBank) || recordBank.includes(rowBank);
 }
 
-function memoryMatchesSearchKey(record, row) {
+function scoreMemorySearchKey(record, row) {
   const keyword = normalizeKaynakTipi(record.keyword);
   const cleanDescription = normalizeKaynakTipi(record.clean_description || "");
   const rawDescription = normalizeKaynakTipi(record.raw_description || "");
   const rowKey = normalizeKaynakTipi(buildBankLucaLearningMemorySearchKey(row));
 
-  if (!rowKey) return false;
+  if (!rowKey) return 0;
 
   const candidates = [keyword, cleanDescription, rawDescription].filter(Boolean);
-  if (!candidates.length) return false;
+  let best = 0;
 
-  return candidates.some((candidate) => {
-    if (rowKey === candidate) return true;
-    if (rowKey.includes(candidate) || candidate.includes(rowKey)) return true;
+  for (const candidate of candidates) {
+    if (rowKey === candidate) {
+      best = Math.max(best, 100);
+      continue;
+    }
+    if (rowKey.includes(candidate)) {
+      best = Math.max(best, 85 + Math.min(candidate.length, 10));
+      continue;
+    }
+    if (candidate.includes(rowKey) && rowKey.length >= 3) {
+      best = Math.max(best, 70);
+      continue;
+    }
 
-    const candidateTokens = candidate.split(/\s+/).filter((token) => token.length > 2);
-    if (!candidateTokens.length) return false;
+    const candidateTokens = candidate.split(/\s+/).filter((token) => token.length >= 2);
+    if (!candidateTokens.length) continue;
+
+    if (candidateTokens.length === 1) {
+      const token = candidateTokens[0];
+      if (rowKey.includes(token)) best = Math.max(best, 85);
+      continue;
+    }
 
     const overlap = candidateTokens.filter((token) => rowKey.includes(token)).length;
-    return overlap >= Math.min(2, candidateTokens.length);
-  });
+    if (overlap > 0) {
+      best = Math.max(best, Math.round((overlap / candidateTokens.length) * 80));
+    }
+  }
+
+  return best;
 }
 
 export function findBankLucaLearningMemoryMatch(row, learningMemory = [], context = {}) {
@@ -123,11 +168,9 @@ export function findBankLucaLearningMemoryMatch(row, learningMemory = [], contex
     if (record.company_id !== firmaId) continue;
     if (!memoryMatchesKaynakTipi(record, row, context)) continue;
     if (!memoryMatchesKaynakAdi(record, row, context)) continue;
-    if (!memoryMatchesSearchKey(record, row)) continue;
 
-    const score =
-      normalizeKaynakTipi(record.keyword).length +
-      (memoryMatchesKaynakAdi(record, row, context) ? 10 : 0);
+    const score = scoreMemorySearchKey(record, row);
+    if (score < 45) continue;
 
     if (!best || score >= bestScore) {
       best = record;
@@ -160,26 +203,41 @@ export function applyLearningMemoryToStandardLucaRows(
     const match = findBankLucaLearningMemoryMatch(row, learningMemory, context);
     if (!match) return row;
 
+    const existingAccount = String(row.hesapKodu || "").trim();
+    // Banka GL satırını (102/103) öğrenilen gider hesabıyla ezme
+    if (existingAccount && isLikelyBankGlAccount(existingAccount)) {
+      return row;
+    }
+
+    const learnedAccount = String(match.account_code || "").trim();
+    const learnedDocument = String(match.document_type || row.belgeTuru || "DK")
+      .trim()
+      .toUpperCase();
+    const learnedCari = String(
+      match.cari_name || match.counter_account_name || ""
+    ).trim();
+    const learnedDescription =
+      String(match.clean_description || match.description_format || "").trim() ||
+      row.detayAciklama;
+
     const matchedRow = finalizeStandardLucaRow({
       ...row,
-      hesapKodu: String(match.account_code || row.hesapKodu || "").trim(),
-      belgeTuru: String(match.document_type || row.belgeTuru || "DK")
-        .trim()
-        .toUpperCase(),
-      detayAciklama:
-        String(match.description_format || "").trim() || row.detayAciklama,
-      fisAciklama:
-        String(match.counter_account_name || "").trim() || row.fisAciklama,
-      aciklama:
-        String(match.description_format || "").trim() ||
-        row.detayAciklama ||
-        row.fisAciklama,
+      hesapKodu: learnedAccount || existingAccount,
+      hesapAdi: String(match.account_name || row.hesapAdi || "").trim(),
+      belgeTuru: learnedDocument,
+      detayAciklama: learnedDescription,
+      fisAciklama: learnedCari || row.fisAciklama,
+      cariUnvan: learnedCari || row.cariUnvan,
+      aciklama: learnedDescription || row.detayAciklama || row.fisAciklama,
       kontrolNotu: appendLearningMemoryNote(row.kontrolNotu),
       hafizaEslesme: true,
       matchedMemoryId: match.id,
+      suggestedAccountCode: learnedAccount,
+      suggestedAccountName: match.account_name || "",
+      suggestedDocumentType: learnedDocument,
+      suggestedCari: learnedCari,
     });
 
-    console.log("LEARNING MEMORY APPLIED", matchedRow);
     return matchedRow;
   });
 }

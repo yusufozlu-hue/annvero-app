@@ -62,7 +62,7 @@ import {
   recordLearningMemoryUsage,
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
-import { collectUnrecognizedFromStandardRows } from "@/src/utils/transactionMemoryEngine";
+import { buildUnrecognizedQueueItems } from "@/src/utils/bankParserLearningPipeline";
 import { queueUnrecognizedTransactions } from "@/src/utils/transactionMemoryApi";
 import {
   applyStandardLucaRowEditDraft,
@@ -232,14 +232,13 @@ export default function BankaParserPage() {
   useEffect(() => {
     if (!selectedCompanyId || !computedStandardLucaRows.length) return;
 
-    const unrecognized = collectUnrecognizedFromStandardRows(
-      computedStandardLucaRows,
-      {
-        companyId: selectedCompanyId,
-        sourceModule: "banka",
-        sourceBank: selectedBank,
-      }
-    );
+    // Tüm banka parser'ları (Garanti, Vakıfbank, TEB, Ziraat, Kuveyt) aynı kuyruk akışını kullanır
+    const unrecognized = buildUnrecognizedQueueItems(computedStandardLucaRows, {
+      companyId: selectedCompanyId,
+      sourceModule: "banka",
+      sourceBank: selectedBank,
+      learningMemory,
+    });
 
     if (!unrecognized.length) return;
 
@@ -247,11 +246,13 @@ export default function BankaParserPage() {
 
     queueUnrecognizedTransactions(unrecognized)
       .then((result) => {
-        if (cancelled || !result?.inserted) return;
-        showToast(
-          `${result.inserted} tanınmayan işlem Öğrenme Merkezi'ne eklendi`,
-          "success"
-        );
+        if (cancelled) return;
+        if (result?.inserted > 0) {
+          showToast(
+            `${result.inserted} tanınmayan işlem Öğrenme Merkezi'ne eklendi`,
+            "success"
+          );
+        }
       })
       .catch((error) => {
         if (cancelled) return;
@@ -261,7 +262,7 @@ export default function BankaParserPage() {
     return () => {
       cancelled = true;
     };
-  }, [computedStandardLucaRows, selectedCompanyId, selectedBank]);
+  }, [computedStandardLucaRows, selectedCompanyId, selectedBank, learningMemory]);
 
   const filteredStandardLucaRows = useMemo(
     () =>
