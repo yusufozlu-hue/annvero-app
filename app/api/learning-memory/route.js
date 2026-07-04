@@ -23,10 +23,7 @@ export async function GET(request) {
     );
   }
 
-  let query = supabase
-    .from("learning_memory")
-    .select("*")
-    .order("learned_at", { ascending: false });
+  let query = supabase.from("learning_memory").select("*");
 
   if (companyId) {
     query = query.eq("company_id", companyId);
@@ -36,13 +33,30 @@ export async function GET(request) {
     query = query.neq("status", "passive");
   }
 
-  const { data, error } = await query;
+  let { data, error } = await query.order("learned_at", { ascending: false });
+
+  if (error && isLearningMemorySchemaError(error)) {
+    let fallbackQuery = supabase.from("learning_memory").select("*");
+    if (companyId) {
+      fallbackQuery = fallbackQuery.eq("company_id", companyId);
+    }
+
+    ({ data, error } = await fallbackQuery);
+  }
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ data: data || [] });
+  const rows = includeInactive
+    ? data || []
+    : (data || []).filter(
+        (row) =>
+          row?.is_active !== false &&
+          String(row?.status || "active").toLowerCase() !== "passive"
+      );
+
+  return NextResponse.json({ data: rows });
 }
 
 export async function POST(request) {

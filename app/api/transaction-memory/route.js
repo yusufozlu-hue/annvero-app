@@ -33,9 +33,18 @@ function getClient() {
 async function loadLearningMemory(supabase, companyId) {
   let query = supabase.from(MEMORY_TABLE).select("*").neq("status", "passive");
   if (companyId) query = query.eq("company_id", companyId);
-  const { data, error } = await query;
+  let { data, error } = await query;
+  if (error && isLearningMemorySchemaError(error)) {
+    let fallbackQuery = supabase.from(MEMORY_TABLE).select("*");
+    if (companyId) fallbackQuery = fallbackQuery.eq("company_id", companyId);
+    ({ data, error } = await fallbackQuery);
+  }
   if (error) throw new Error(error.message);
-  return data || [];
+  return (data || []).filter(
+    (row) =>
+      row?.is_active !== false &&
+      String(row?.status || "active").toLowerCase() !== "passive"
+  );
 }
 
 export async function GET(request) {
