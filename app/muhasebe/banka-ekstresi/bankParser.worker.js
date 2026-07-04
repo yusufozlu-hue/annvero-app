@@ -94,6 +94,8 @@ self.onmessage = async (event) => {
     postProgress(BANK_PARSE_STAGES.LUCA, "Luca satırları oluşturuluyor");
     await yieldToWorker();
 
+    console.log("loaded learning memory count", context.learningMemory?.length || 0);
+
     const result = buildBankParserResultFromNormalizedRows({
       normalizedRows,
       selectedBank: context.selectedBank,

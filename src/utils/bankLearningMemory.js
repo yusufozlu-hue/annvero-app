@@ -2,24 +2,6 @@ import { normalizeParserText } from "@/src/utils/textNormalize";
 import { finalizeStandardLucaRow, KAYNAK_TIPI } from "@/src/utils/standardLucaRow";
 import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
 
-const KNOWN_BANK_TOKENS = new Set([
-  "GARANTI",
-  "VAKIFBANK",
-  "VAKIF",
-  "TEB",
-  "KUVEYT",
-  "KUVEYTTURK",
-  "ZIRAAT",
-  "ISBANKASI",
-  "ISBANK",
-  "YAPIKREDI",
-  "AKBANK",
-  "HALKBANK",
-  "DENIZBANK",
-  "QNB",
-  "FINANSBANK",
-]);
-
 export const LEARNING_MEMORY_APPLIED_LABEL = "Öğrenen hafızadan eşleşti";
 
 export function buildBankLucaLearningMemorySearchKey(row = {}) {
@@ -89,30 +71,70 @@ function normalizeKaynakTipi(value) {
     .trim();
 }
 
-function memoryMatchesKaynakTipi(record, row, context) {
+function tokenSet(value = "") {
+  return new Set(
+    normalizeKaynakTipi(value)
+      .split(/\s+/)
+      .filter((token) => token.length >= 2)
+  );
+}
+
+function tokenOverlapScore(left = "", right = "") {
+  const leftTokens = tokenSet(left);
+  const rightTokens = tokenSet(right);
+  if (!leftTokens.size || !rightTokens.size) return 0;
+
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) overlap += 1;
+  }
+
+  return overlap / Math.max(leftTokens.size, rightTokens.size);
+}
+
+function levenshteinSimilarity(left = "", right = "") {
+  const a = normalizeKaynakTipi(left);
+  const b = normalizeKaynakTipi(right);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = Array.from({ length: b.length + 1 }, () => 0);
+
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + cost
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) previous[j] = current[j];
+  }
+
+  const distance = previous[b.length];
+  return 1 - distance / Math.max(a.length, b.length);
+}
+
+function getContextScores(record, row, context) {
   const rowTip = normalizeKaynakTipi(
     row.kaynakTipi || context.kaynakTipi || KAYNAK_TIPI.BANKA
   );
   const recordTip = normalizeKaynakTipi(
     record.transaction_type || record.source_module || ""
   );
-
-  if (!recordTip) return true;
-  return rowTip === recordTip;
-}
-
-function memoryMatchesKaynakAdi(record, row, context) {
   const rowBank = normalizeKaynakTipi(row.kaynakAdi || context.kaynakAdi || "");
-  const recordBank = normalizeKaynakTipi(record.bank_name || record.account_name || "");
+  const recordBank = normalizeKaynakTipi(record.bank_name || "");
+  const companyId = context.firmaId || context.companyId || row.firmaId || "";
+  const recordCompany = record.company_id || "";
 
-  if (!recordBank || !rowBank) return true;
+  const companyBoost = !recordCompany ? 8 : recordCompany === companyId ? 15 : -10;
+  const bankBoost = !recordBank ? 6 : rowBank && recordBank === rowBank ? 15 : -8;
+  const typeBoost = !recordTip ? 4 : rowTip && recordTip === rowTip ? 8 : -4;
 
-  // account_name çoğu zaman hesap adı (Reklam Giderleri); yalnızca banka adı ise filtrele
-  const recordTokens = recordBank.split(/\s+/).filter(Boolean);
-  const looksLikeBank = recordTokens.some((token) => KNOWN_BANK_TOKENS.has(token));
-  if (!looksLikeBank) return true;
-
-  return rowBank === recordBank || rowBank.includes(recordBank) || recordBank.includes(rowBank);
+  return { companyBoost, bankBoost, typeBoost };
 }
 
 function scoreMemorySearchKey(record, row) {
@@ -129,47 +151,51 @@ function scoreMemorySearchKey(record, row) {
 
   if (!rowKey) return 0;
 
-  const candidates = [
-    keyword,
-    cleanDescription,
-    rawDescription,
-    bankName,
-    transactionType,
-    accountName,
-    cariName,
-  ].filter(Boolean);
+  const candidates = [keyword, cleanDescription, rawDescription].filter(Boolean);
   let best = 0;
+  let bestDebug = {
+    memoryKeyword: keyword,
+    memoryCleanDescription: cleanDescription,
+    normalizedMemory: "",
+    score: 0,
+  };
 
   for (const candidate of candidates) {
+    let score = 0;
     if (rowKey === candidate) {
-      best = Math.max(best, 100);
-      continue;
-    }
-    if (rowKey.includes(candidate)) {
-      best = Math.max(best, 85 + Math.min(candidate.length, 10));
-      continue;
-    }
-    if (candidate.includes(rowKey) && rowKey.length >= 3) {
-      best = Math.max(best, 70);
-      continue;
-    }
-
-    const candidateTokens = candidate.split(/\s+/).filter((token) => token.length >= 2);
-    if (!candidateTokens.length) continue;
-
-    if (candidateTokens.length === 1) {
-      const token = candidateTokens[0];
-      if (rowKey.includes(token)) best = Math.max(best, 85);
-      continue;
+      score = 100;
+    } else if (rowKey.includes(candidate) || candidate.includes(rowKey)) {
+      score = 92;
+    } else if (keyword && (rowKey.includes(keyword) || keyword.includes(rowKey))) {
+      score = 88;
+    } else {
+      const overlap = tokenOverlapScore(rowKey, candidate);
+      const fuzzy = levenshteinSimilarity(rowKey, candidate);
+      score = Math.round(Math.max(overlap, fuzzy) * 100);
     }
 
-    const overlap = candidateTokens.filter((token) => rowKey.includes(token)).length;
-    if (overlap > 0) {
-      best = Math.max(best, Math.round((overlap / candidateTokens.length) * 80));
+    if (score > best) {
+      best = score;
+      bestDebug = {
+        memoryKeyword: keyword,
+        memoryCleanDescription: cleanDescription,
+        normalizedMemory: candidate,
+        score,
+      };
     }
   }
 
-  return best;
+  // Context fields are not primary descriptions; they only help confidence.
+  if (bankName && rowKey.includes(bankName)) best += 5;
+  if (transactionType && rowKey.includes(transactionType)) best += 3;
+  if (accountName && rowKey.includes(accountName)) best += 3;
+  if (cariName && rowKey.includes(cariName)) best += 5;
+
+  return {
+    score: Math.min(100, best),
+    rowKey,
+    ...bestDebug,
+  };
 }
 
 export function findBankLucaLearningMemoryMatch(row, learningMemory = [], context = {}) {
@@ -183,12 +209,30 @@ export function findBankLucaLearningMemoryMatch(row, learningMemory = [], contex
   for (const record of learningMemory) {
     if (record?.is_active === false) continue;
     if (String(record?.status || "active").toLowerCase() === "passive") continue;
-    if (record.company_id !== firmaId) continue;
-    if (!memoryMatchesKaynakTipi(record, row, context)) continue;
-    if (!memoryMatchesKaynakAdi(record, row, context)) continue;
 
-    const score = scoreMemorySearchKey(record, row);
-    if (score < 45) continue;
+    const baseScore = scoreMemorySearchKey(record, row);
+    const contextScores = getContextScores(record, row, context);
+    const score = Math.max(
+      0,
+      Math.min(
+        100,
+        baseScore.score +
+          contextScores.companyBoost +
+          contextScores.bankBoost +
+          contextScores.typeBoost
+      )
+    );
+
+    console.log("memory match check", {
+      rowDescription: buildBankLucaLearningMemorySearchKey(row),
+      normalizedRow: baseScore.rowKey,
+      memoryKeyword: baseScore.memoryKeyword,
+      memoryCleanDescription: baseScore.memoryCleanDescription,
+      normalizedMemory: baseScore.normalizedMemory,
+      score,
+    });
+
+    if (baseScore.score < 65 && score < 65) continue;
 
     if (!best || score >= bestScore) {
       best = { ...record, _matchScore: score };
@@ -243,12 +287,20 @@ export function applyLearningMemoryToStandardLucaRows(
       hesapKodu: learnedAccount || existingAccount,
       hesapAdi: String(match.account_name || row.hesapAdi || "").trim(),
       belgeTuru: learnedDocument,
+      account_code: learnedAccount || existingAccount,
+      account_name: String(match.account_name || row.hesapAdi || "").trim(),
+      document_type: learnedDocument,
+      cari_name: learnedCari,
+      transaction_type: match.transaction_type || row.kaynakTipi || "",
       detayAciklama: learnedDescription,
       fisAciklama: learnedCari || row.fisAciklama,
       cariUnvan: learnedCari || row.cariUnvan,
       aciklama: learnedDescription || row.detayAciklama || row.fisAciklama,
       kontrolNotu: appendLearningMemoryNote(row.kontrolNotu),
       hafizaEslesme: true,
+      memory_match: true,
+      match_source: "learning_memory",
+      confidence_score: match._matchScore || 100,
       matchedMemoryId: match.id,
       suggestedAccountCode: learnedAccount,
       suggestedAccountName: match.account_name || "",

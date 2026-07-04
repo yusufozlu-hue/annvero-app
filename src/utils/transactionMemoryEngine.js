@@ -262,7 +262,10 @@ export function extractTransactionKeyword(raw = "") {
 
 export function isUnrecognizedStandardRow(row = {}) {
   // Hafızadan tam eşleşen satırlar kuyruğa düşmez
-  if (row?.hafizaEslesme && String(row.hesapKodu || "").trim()) {
+  if (
+    (row?.memory_match || row?.hafizaEslesme || row?.match_source === "learning_memory") &&
+    String(row.hesapKodu || row.account_code || "").trim()
+  ) {
     return false;
   }
 
@@ -379,6 +382,14 @@ export function collectUnrecognizedFromStandardRows(rows = [], context = {}) {
   const items = [];
 
   for (const row of rows) {
+    if (row?.memory_match || row?.match_source === "learning_memory") {
+      const wouldQueue = isUnrecognizedStandardRow(row);
+      if (wouldQueue) {
+        console.error("matched memory row queued by mistake", row);
+      }
+      continue;
+    }
+
     if (!isUnrecognizedStandardRow(row)) continue;
 
     const candidate = mapStandardRowToUnrecognizedCandidate(row, context);
