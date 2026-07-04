@@ -204,6 +204,11 @@ const links = [
   },
   { title: "Fiş Kontrol", href: "/muhasebe/fis-kontrol", Icon: ShieldCheckIcon },
   { title: "AI Kontrol", href: "/muhasebe/ai-kontrol", Icon: SparklesIcon },
+  {
+    title: "İşlem Hafızası",
+    href: "/muhasebe/islem-hafizasi",
+    Icon: BrainIcon,
+  },
   { title: "Öğrenen Hafıza", href: "/muhasebe/ogrenen-hafiza", Icon: BrainIcon },
   { title: "Elektraweb", href: "/muhasebe/elektraweb", Icon: RefreshCwIcon },
 ];

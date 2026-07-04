@@ -89,10 +89,25 @@ function memoryMatchesKaynakAdi(record, row, context) {
 
 function memoryMatchesSearchKey(record, row) {
   const keyword = normalizeKaynakTipi(record.keyword);
+  const cleanDescription = normalizeKaynakTipi(record.clean_description || "");
+  const rawDescription = normalizeKaynakTipi(record.raw_description || "");
   const rowKey = normalizeKaynakTipi(buildBankLucaLearningMemorySearchKey(row));
 
-  if (!keyword || !rowKey) return false;
-  return rowKey === keyword || rowKey.includes(keyword) || keyword.includes(rowKey);
+  if (!rowKey) return false;
+
+  const candidates = [keyword, cleanDescription, rawDescription].filter(Boolean);
+  if (!candidates.length) return false;
+
+  return candidates.some((candidate) => {
+    if (rowKey === candidate) return true;
+    if (rowKey.includes(candidate) || candidate.includes(rowKey)) return true;
+
+    const candidateTokens = candidate.split(/\s+/).filter((token) => token.length > 2);
+    if (!candidateTokens.length) return false;
+
+    const overlap = candidateTokens.filter((token) => rowKey.includes(token)).length;
+    return overlap >= Math.min(2, candidateTokens.length);
+  });
 }
 
 export function findBankLucaLearningMemoryMatch(row, learningMemory = [], context = {}) {

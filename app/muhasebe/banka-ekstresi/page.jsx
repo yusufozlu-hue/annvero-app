@@ -62,6 +62,8 @@ import {
   recordLearningMemoryUsage,
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
+import { collectUnrecognizedFromStandardRows } from "@/src/utils/transactionMemoryEngine";
+import { queueUnrecognizedTransactions } from "@/src/utils/transactionMemoryApi";
 import {
   applyStandardLucaRowEditDraft,
   MEMORY_MATCH_LABEL,
@@ -226,6 +228,40 @@ export default function BankaParserPage() {
   useEffect(() => {
     setStandardLucaRows(computedStandardLucaRows);
   }, [computedStandardLucaRows]);
+
+  useEffect(() => {
+    if (!selectedCompanyId || !computedStandardLucaRows.length) return;
+
+    const unrecognized = collectUnrecognizedFromStandardRows(
+      computedStandardLucaRows,
+      {
+        companyId: selectedCompanyId,
+        sourceModule: "banka",
+        sourceBank: selectedBank,
+      }
+    );
+
+    if (!unrecognized.length) return;
+
+    let cancelled = false;
+
+    queueUnrecognizedTransactions(unrecognized)
+      .then((result) => {
+        if (cancelled || !result?.inserted) return;
+        showToast(
+          `${result.inserted} tanınmayan işlem Öğrenme Merkezi'ne eklendi`,
+          "success"
+        );
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error("[banka-ekstresi] unrecognized queue failed", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [computedStandardLucaRows, selectedCompanyId, selectedBank]);
 
   const filteredStandardLucaRows = useMemo(
     () =>
@@ -658,7 +694,21 @@ export default function BankaParserPage() {
       )}
       <MuhasebeMenu />
 
-      <h1 className="mb-10 text-4xl font-bold">Banka Parser Merkezi</h1>
+      <div className="mb-10 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-4xl font-bold">Banka Parser Merkezi</h1>
+          <p className="mt-2 text-sm text-gray-400">
+            Tanınmayan işlemler otomatik olarak{" "}
+            <Link
+              href="/muhasebe/islem-hafizasi"
+              className="font-semibold text-indigo-300 hover:text-indigo-200"
+            >
+              İşlem Hafızası / Öğrenme Merkezi
+            </Link>
+            &apos;ne düşer.
+          </p>
+        </div>
+      </div>
 
       <div className="grid max-w-7xl gap-6">
         <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">

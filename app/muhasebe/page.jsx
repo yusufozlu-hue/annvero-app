@@ -322,6 +322,11 @@ const categories = [
         href: "/muhasebe/kural-motoru",
       },
       {
+        title: "İşlem Hafızası / Öğrenme Merkezi",
+        desc: "Tanınmayan banka işlemlerini düzeltin; sistem benzer açıklamaları öğrenir.",
+        href: "/muhasebe/islem-hafizasi",
+      },
+      {
         title: "Öğrenen Hafıza",
         desc: "Ön izlemede kaydedilen firma bazlı düzeltmeleri yönetin.",
         href: "/muhasebe/ogrenen-hafiza",

@@ -11,6 +11,11 @@ const editableFields = [
   "transaction_type",
   "description_format",
   "source_module",
+  "raw_description",
+  "clean_description",
+  "cari_name",
+  "user_correction",
+  "learned_at",
   "is_active",
 ];
 
@@ -99,6 +104,11 @@ export async function POST(request) {
     transaction_type: record.transaction_type || "",
     description_format: record.description_format || "",
     source_module: record.source_module || "manual",
+    raw_description: record.raw_description || "",
+    clean_description: record.clean_description || "",
+    cari_name: record.cari_name || "",
+    user_correction: record.user_correction || "",
+    learned_at: record.learned_at || new Date().toISOString(),
     usage_count: Number(record.usage_count || 0),
     is_active: record.is_active !== false,
     created_at: new Date().toISOString(),
