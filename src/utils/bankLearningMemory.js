@@ -83,7 +83,13 @@ export function mapLearningMemoryRecordToItem(record, draft = {}, originalRow = 
 }
 
 function normalizeKaynakTipi(value) {
-  return normalizeParserText(value || "");
+  return normalizeParserText(value || "")
+    .replace(/\bTR\d{2}[A-Z0-9]{10,30}\b/g, " ")
+    .replace(/\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/g, " ")
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ")
+    .replace(/\b\d{6,}\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function memoryMatchesKaynakTipi(record, row, context) {
@@ -116,11 +122,21 @@ function scoreMemorySearchKey(record, row) {
   const keyword = normalizeKaynakTipi(record.keyword);
   const cleanDescription = normalizeKaynakTipi(record.clean_description || "");
   const rawDescription = normalizeKaynakTipi(record.raw_description || "");
+  const accountName = normalizeKaynakTipi(record.account_name || "");
+  const cariName = normalizeKaynakTipi(
+    record.cari_name || record.counter_account_name || ""
+  );
   const rowKey = normalizeKaynakTipi(buildBankLucaLearningMemorySearchKey(row));
 
   if (!rowKey) return 0;
 
-  const candidates = [keyword, cleanDescription, rawDescription].filter(Boolean);
+  const candidates = [
+    keyword,
+    cleanDescription,
+    rawDescription,
+    accountName,
+    cariName,
+  ].filter(Boolean);
   let best = 0;
 
   for (const candidate of candidates) {
@@ -173,7 +189,7 @@ export function findBankLucaLearningMemoryMatch(row, learningMemory = [], contex
     if (score < 45) continue;
 
     if (!best || score >= bestScore) {
-      best = record;
+      best = { ...record, _matchScore: score };
       bestScore = score;
     }
   }
@@ -236,6 +252,13 @@ export function applyLearningMemoryToStandardLucaRows(
       suggestedAccountName: match.account_name || "",
       suggestedDocumentType: learnedDocument,
       suggestedCari: learnedCari,
+      suggestionScore: match._matchScore || 100,
+      suggestionConfidence:
+        (match._matchScore || 100) >= 85
+          ? "yüksek"
+          : (match._matchScore || 0) >= 65
+            ? "orta"
+            : "düşük",
     });
 
     return matchedRow;

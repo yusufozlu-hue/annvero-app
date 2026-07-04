@@ -15,6 +15,7 @@ import {
 import { applyLearningMemoryToStandardLucaRows } from "@/src/utils/bankLearningMemory";
 import { buildUnrecognizedQueueItems } from "@/src/utils/bankParserLearningPipeline";
 import { applyAccountMemoryV1RecordsToRows } from "@/src/utils/accountMemoryV1";
+import { applySmartBankSuggestionsToRows } from "@/src/utils/bankSmartSuggestions";
 
 export const BANK_PARSE_STAGES = {
   READING: "Dosya okunuyor",
@@ -238,7 +239,7 @@ export function buildBankParserResultFromNormalizedRows({
     }
   );
 
-  const standardLucaRows = applyAccountMemoryV1RecordsToRows(
+  const memoryRows = applyAccountMemoryV1RecordsToRows(
     learningRows,
     accountMemoryRecords,
     {
@@ -246,6 +247,12 @@ export function buildBankParserResultFromNormalizedRows({
       kaynakAdi: selectedBank,
     }
   );
+
+  const standardLucaRows = applySmartBankSuggestionsToRows(memoryRows, {
+    companyPlans,
+    selectedBank,
+    selectedCompanyId,
+  });
 
   const unrecognizedItems = buildUnrecognizedQueueItems(standardLucaRows, {
     companyId: selectedCompanyId,

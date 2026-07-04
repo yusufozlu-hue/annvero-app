@@ -217,6 +217,11 @@ const NOISE_TOKENS = new Set([
   "NO",
   "REF",
   "REFNO",
+  "ISLEM",
+  "TARIH",
+  "SAAT",
+  "FIS",
+  "DEKONT",
 ]);
 
 /** Banka GL hesapları — öğrenme önerisi bu satırlara yazılmaz */
@@ -226,6 +231,13 @@ export function isLikelyBankGlAccount(code = "") {
 
 export function cleanTransactionDescription(raw = "") {
   return String(raw || "")
+    .replace(/\bTR\d{2}[A-Z0-9]{10,30}\b/gi, " ")
+    .replace(/\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/g, " ")
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ")
+    .replace(/\b\d{2}:\d{2}(:\d{2})?\b/g, " ")
+    .replace(/\b\d{6,}\b/g, " ")
+    .replace(/\bREF\s*NO\s*[:#-]?\s*\S+/gi, " ")
+    .replace(/\bDEKONT\s*NO\s*[:#-]?\s*\S+/gi, " ")
     .replace(/\s+/g, " ")
     .replace(/[|]+/g, " ")
     .trim();
@@ -241,6 +253,7 @@ export function extractTransactionKeyword(raw = "") {
     .filter(Boolean)
     .filter((token) => !NOISE_TOKENS.has(token))
     .filter((token) => !/^\d{4,}$/.test(token))
+    .filter((token) => !/^TR\d+/i.test(token))
     .filter((token) => token.length > 1);
 
   if (!tokens.length) return base;
@@ -261,12 +274,22 @@ export function isUnrecognizedStandardRow(row = {}) {
   const hesapKodu = String(row.hesapKodu || "").trim();
   const belgeTuru = String(row.belgeTuru || "").trim().toUpperCase();
   const risk = String(row.riskDurumu || "").trim().toUpperCase();
+  const suggestionScore = Number(row.suggestionScore || 0);
+  const hasStrongSuggestion =
+    Boolean(row.smartSuggestionApplied || row.suggestedMemoryId || row.hafizaEslesme) &&
+    suggestionScore >= 70 &&
+    String(row.suggestedAccountCode || row.hesapKodu || "").trim();
   const note = normalizeParserText(
     `${row.kontrolNotu || ""} ${row.warning || ""} ${row.uyari || ""}`
   );
 
   const missingAccount = !hesapKodu || risk === "HESAP_EKSIK";
   const unclearDocument = !belgeTuru;
+  const resolvedBySuggestion =
+    hasStrongSuggestion && !missingAccount && (!unclearDocument || row.suggestedDocumentType);
+
+  if (resolvedBySuggestion) return false;
+
   const notedUnknown =
     note.includes("BULUNAMAD") ||
     note.includes("ESLESMEDI") ||
@@ -277,7 +300,7 @@ export function isUnrecognizedStandardRow(row = {}) {
   // İlk kez görülen: hafıza eşleşmesi yok ve hesap/belge eksik
   const firstSeenUnresolved = !row?.hafizaEslesme && (missingAccount || unclearDocument);
 
-  return missingAccount || unclearDocument || notedUnknown || firstSeenUnresolved;
+  return missingAccount || unclearDocument || (notedUnknown && !hasStrongSuggestion) || firstSeenUnresolved;
 }
 
 /**
@@ -299,7 +322,6 @@ export function buildUnrecognizedFingerprint(item = {}) {
   return [
     item.companyId || item.company_id || "",
     keyword,
-    item.transactionDate || item.transaction_date || "",
     Number.isFinite(amount) ? amount.toFixed(2) : "0.00",
   ]
     .map((part) => normalizeParserText(part))
@@ -339,12 +361,15 @@ export function mapStandardRowToUnrecognizedCandidate(row = {}, context = {}) {
     suggestedAccountName: row.suggestedAccountName || "",
     suggestedDocumentType: row.suggestedDocumentType || row.belgeTuru || "",
     suggestedCari: row.suggestedCari || row.cariUnvan || "",
+    suggestionScore: row.suggestionScore ?? null,
     metadata: {
       belgeNo: row.belgeNo || "",
       evrakNo: row.evrakNo || "",
       riskDurumu: row.riskDurumu || "",
       kontrolNotu: row.kontrolNotu || "",
       firmaId: context.companyId || row.firmaId || "",
+      suggestionConfidence: row.suggestionConfidence || "",
+      smartSuggestionRuleId: row.smartSuggestionRuleId || "",
     },
   };
 }
@@ -411,7 +436,9 @@ export function findLearningSuggestion(candidate = {}, learningMemory = []) {
       scoreKeywordMatch(record.keyword, keyword),
       scoreKeywordMatch(record.keyword, description),
       scoreKeywordMatch(record.clean_description || "", description),
-      scoreKeywordMatch(record.raw_description || "", description)
+      scoreKeywordMatch(record.raw_description || "", description),
+      scoreKeywordMatch(record.account_name || "", description),
+      scoreKeywordMatch(record.cari_name || record.counter_account_name || "", description)
     );
 
     if (score < 45) continue;
@@ -430,6 +457,8 @@ export function findLearningSuggestion(candidate = {}, learningMemory = []) {
     documentType: best.document_type || "DK",
     cariName: best.cari_name || best.counter_account_name || "",
     score: bestScore,
+    confidence:
+      bestScore >= 85 ? "yüksek" : bestScore >= 65 ? "orta" : "düşük",
     keyword: best.keyword || "",
   };
 }
@@ -447,6 +476,10 @@ export function applySuggestionsToCandidates(candidates = [], learningMemory = [
       suggestedCari: suggestion.cariName,
       suggestedMemoryId: suggestion.memoryId,
       suggestionScore: suggestion.score,
+      metadata: {
+        ...(item.metadata || {}),
+        suggestionConfidence: suggestion.confidence,
+      },
     };
   });
 }
