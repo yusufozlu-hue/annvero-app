@@ -30,6 +30,10 @@ function writeAllRecords(records) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
 }
 
+export function loadAccountMemoryV1Records() {
+  return readAllRecords();
+}
+
 function resolveCompanyId(row, context = {}) {
   return String(context.firmaId || context.companyId || row.firmaId || "").trim();
 }
@@ -141,13 +145,12 @@ export function saveAccountMemoryFromEdit(row = {}, context = {}) {
   return payload;
 }
 
-export function findAccountMemoryMatch(row = {}, context = {}) {
+export function findAccountMemoryMatchInRecords(records = [], row = {}, context = {}) {
   const companyId = resolveCompanyId(row, context);
   const rowDescription = getRowDescription(row);
 
   if (!companyId || !rowDescription) return null;
 
-  const records = readAllRecords();
   let best = null;
   let bestScore = 0;
 
@@ -185,11 +188,19 @@ export function findAccountMemoryMatch(row = {}, context = {}) {
   };
 }
 
-export function applyAccountMemoryV1ToRows(rows = [], context = {}) {
+export function findAccountMemoryMatch(row = {}, context = {}) {
+  return findAccountMemoryMatchInRecords(readAllRecords(), row, context);
+}
+
+export function applyAccountMemoryV1RecordsToRows(
+  rows = [],
+  records = [],
+  context = {}
+) {
   if (!rows.length || !resolveCompanyId(rows[0], context)) return rows;
 
   return rows.map((row) => {
-    const match = findAccountMemoryMatch(row, context);
+    const match = findAccountMemoryMatchInRecords(records, row, context);
     if (!match) return row;
 
     const { record, confidence } = match;
@@ -210,6 +221,10 @@ export function applyAccountMemoryV1ToRows(rows = [], context = {}) {
       accountMemoryId: record.id,
     });
   });
+}
+
+export function applyAccountMemoryV1ToRows(rows = [], context = {}) {
+  return applyAccountMemoryV1RecordsToRows(rows, readAllRecords(), context);
 }
 
 export { buildExportWarningConfirmMessage } from "@/src/utils/previewExportValidation";

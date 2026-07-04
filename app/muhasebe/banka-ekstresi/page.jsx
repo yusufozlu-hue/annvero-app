@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import * as XLSX from "xlsx";
 import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
@@ -31,9 +30,7 @@ import {
 } from "@/src/utils/companyCenter";
 import { loadAccountingRulesFromStorage } from "@/src/utils/accountingRuleEngine";
 import {
-  bankMovementsToStandardLucaRows,
   buildStandardLucaTransferPayload,
-  ensureStandardLucaRowIds,
   filterStandardLucaRows,
   finalizeStandardLucaRow,
   KAYNAK_TIPI,
@@ -41,18 +38,11 @@ import {
 } from "@/src/utils/standardLucaRow";
 import { exportStandardLucaExcel } from "@/src/utils/exportStandardLucaExcel";
 import {
-  applyAccountMemoryV1ToRows,
+  loadAccountMemoryV1Records,
   saveAccountMemoryFromEdit,
 } from "@/src/utils/accountMemoryV1";
 import { buildExportWarningConfirmMessage } from "@/src/utils/previewExportValidation";
 import {
-  formatParserDate,
-  mapParsedRowsToStandardMovements,
-  normalizeParserText,
-} from "@/src/utils/bankMovementMapper";
-import { enrichTebParsedRows } from "@/src/utils/tebHavaleGrouping";
-import {
-  applyLearningMemoryToStandardLucaRows,
   buildBankStandardLucaLearningMemoryPayload,
   mapLearningMemoryRecordToItem,
 } from "@/src/utils/bankLearningMemory";
@@ -62,16 +52,12 @@ import {
   recordLearningMemoryUsage,
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
-import { buildUnrecognizedQueueItems } from "@/src/utils/bankParserLearningPipeline";
 import { queueUnrecognizedTransactions } from "@/src/utils/transactionMemoryApi";
 import {
   applyStandardLucaRowEditDraft,
   MEMORY_MATCH_LABEL,
 } from "@/src/utils/previewRowEdit";
 import { hasBankMovementError } from "@/src/utils/tableSearch";
-import { parseGarantiEkstre } from "../../../parsers/garantiParser";
-import { parseVakifbankEkstre } from "../../../parsers/vakifbankParser";
-import { bankaKurallari } from "../../../parsers/bankaKurallari";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -82,29 +68,26 @@ const BANK_PREVIEW_FILTERS = [
   { id: "missingDocumentType", label: "Belge Türü Eksik" },
 ];
 
-function yieldToUi() {
-  return new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
-}
-
-async function mapInChunks(items, mapper, chunkSize = 250) {
-  const result = [];
-  for (let index = 0; index < items.length; index += chunkSize) {
-    const chunk = items.slice(index, index + chunkSize);
-    for (const item of chunk) {
-      result.push(mapper(item));
-    }
-    await yieldToUi();
-  }
-  return result;
-}
+const BANK_PARSE_STAGES = {
+  READING: "Dosya okunuyor",
+  PARSING: "Parser çalışıyor",
+  LUCA: "Luca satırları oluşturuluyor",
+  LEARNING: "Öğrenme sistemi kontrol ediliyor",
+};
 
 export default function BankaParserPage() {
   const fileInputRef = useRef(null);
+  const workerRef = useRef(null);
+  const workerRequestIdRef = useRef(0);
+  const timeoutWarningRef = useRef(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileName, setFileName] = useState("");
   const [isParsing, setIsParsing] = useState(false);
+  const [parserProgress, setParserProgress] = useState({
+    stage: "",
+    detail: "",
+    timeoutWarning: false,
+  });
   const [rawCount, setRawCount] = useState(0);
   const [parsedNormalizedRows, setParsedNormalizedRows] = useState([]);
   const [movementRows, setMovementRows] = useState([]);
@@ -220,70 +203,14 @@ export default function BankaParserPage() {
     [selectedCompanyId, accountPlans, movementRows]
   );
 
-  const computedStandardLucaRows = useMemo(
-    () => {
-      const baseRows = bankMovementsToStandardLucaRows(movementRows, {
-        firmaId: selectedCompanyId,
-        kaynakAdi: selectedBank,
-      });
-
-      return applyAccountMemoryV1ToRows(
-        applyLearningMemoryToStandardLucaRows(
-          ensureStandardLucaRowIds(baseRows),
-          learningMemory,
-          {
-            firmaId: selectedCompanyId,
-            kaynakTipi: KAYNAK_TIPI.BANKA,
-            kaynakAdi: selectedBank,
-          }
-        ),
-        {
-          firmaId: selectedCompanyId,
-          kaynakAdi: selectedBank,
-        }
-      );
-    },
-    [movementRows, selectedCompanyId, selectedBank, learningMemory]
-  );
-
   useEffect(() => {
-    setStandardLucaRows(computedStandardLucaRows);
-  }, [computedStandardLucaRows]);
-
-  useEffect(() => {
-    if (!selectedCompanyId || !computedStandardLucaRows.length) return;
-
-    // Tüm banka parser'ları (Garanti, Vakıfbank, TEB, Ziraat, Kuveyt) aynı kuyruk akışını kullanır
-    const unrecognized = buildUnrecognizedQueueItems(computedStandardLucaRows, {
-      companyId: selectedCompanyId,
-      sourceModule: "banka",
-      sourceBank: selectedBank,
-      learningMemory,
-    });
-
-    if (!unrecognized.length) return;
-
-    let cancelled = false;
-
-    queueUnrecognizedTransactions(unrecognized)
-      .then((result) => {
-        if (cancelled) return;
-        if (result?.inserted > 0) {
-          showToast(
-            `${result.inserted} tanınmayan işlem Öğrenme Merkezi'ne eklendi`,
-            "success"
-          );
-        }
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        console.error("[banka-ekstresi] unrecognized queue failed", error);
-      });
-
     return () => {
-      cancelled = true;
+      if (timeoutWarningRef.current) {
+        clearTimeout(timeoutWarningRef.current);
+      }
+      workerRef.current?.terminate();
     };
-  }, [computedStandardLucaRows, selectedCompanyId, selectedBank, learningMemory]);
+  }, []);
 
   const filteredStandardLucaRows = useMemo(
     () =>
@@ -302,167 +229,6 @@ export default function BankaParserPage() {
     movementRows.forEach((row) => map.set(row.id, row));
     return map;
   }, [movementRows]);
-
-  const parseMoney = (value) => {
-    if (typeof value === "number") return value;
-
-    const text = String(value || "")
-      .replaceAll("TL", "")
-      .replace(/\./g, "")
-      .replace(",", ".")
-      .replace(/[^\d.-]/g, "");
-
-    const number = Number(text);
-    return Number.isNaN(number) ? 0 : number;
-  };
-
-  const findHeaderRowIndex = (rows) =>
-    rows.findIndex((row) => {
-      const text = row.map((cell) => normalizeParserText(cell)).join(" ");
-      return text.includes("TARIH") && text.includes("ACIKLAMA");
-    });
-
-  const getCell = (row, headers, names) => {
-    const list = Array.isArray(names) ? names : [names];
-
-    for (const name of list) {
-      const wanted = normalizeParserText(name).replace(/\s+/g, "");
-      const index = headers.findIndex((header) =>
-        normalizeParserText(header).replace(/\s+/g, "").includes(wanted)
-      );
-
-      if (index >= 0) return row[index];
-    }
-
-    return "";
-  };
-
-  const parseGenericBankEkstre = (sheetRows, bankaAdi) => {
-    if (!sheetRows || sheetRows.length === 0) return [];
-
-    const headerIndex = findHeaderRowIndex(sheetRows);
-    const headers = headerIndex >= 0 ? sheetRows[headerIndex] : sheetRows[0];
-    const dataRows = sheetRows.slice((headerIndex >= 0 ? headerIndex : 0) + 1);
-
-    return dataRows
-      .filter((row) => row && row.some((cell) => String(cell || "").trim()))
-      .map((row, index) => {
-        const tarih =
-          getCell(row, headers, ["TARİH", "TARIH", "İŞLEM TARİHİ", "ISLEM TARIHI"]) ||
-          row[0] ||
-          "";
-
-        const aciklama =
-          getCell(row, headers, ["AÇIKLAMA", "ACIKLAMA", "İŞLEM", "ISLEM"]) ||
-          row[1] ||
-          "";
-
-        const unvan =
-          getCell(row, headers, [
-            "ÜNVAN",
-            "UNVAN",
-            "ALICI",
-            "ALICI ÜNVAN",
-            "ALICI UNVAN",
-            "KARSI HESAP",
-            "KARŞI HESAP",
-          ]) || "";
-
-        const dekontNo =
-          getCell(row, headers, ["DEKONT", "DEKONT NO", "FİŞ NO", "FIS NO", "İŞLEM NO", "ISLEM NO"]) ||
-          "";
-
-        let borc = parseMoney(getCell(row, headers, ["BORÇ", "BORC", "ÇIKIŞ", "CIKIS"]));
-        let alacak = parseMoney(getCell(row, headers, ["ALACAK", "GİRİŞ", "GIRIS"]));
-        let tutar = parseMoney(getCell(row, headers, ["TUTAR", "İŞLEM TUTARI", "ISLEM TUTARI"]));
-
-        if (!borc && !alacak && tutar) {
-          if (tutar > 0) alacak = Math.abs(tutar);
-          else borc = Math.abs(tutar);
-        }
-
-        if (!tutar) {
-          tutar = alacak > 0 ? alacak : -borc;
-        }
-
-        const bakiye = parseMoney(getCell(row, headers, ["BAKİYE", "BAKIYE"]));
-
-        const yon = tutar > 0 ? "GIRIS" : "CIKIS";
-
-        if (!tarih || !aciklama || !tutar) return null;
-
-        return {
-          banka: bankaAdi,
-          tarih,
-          dekontNo: dekontNo || `${bankaAdi}-${index + 1}`,
-          aciklama,
-          unvan,
-          borc: yon === "GIRIS" ? Math.abs(tutar) : 0,
-          alacak: yon === "CIKIS" ? Math.abs(tutar) : 0,
-          bakiye,
-          tutar,
-          yon,
-          islemTipi: "DIGER",
-        };
-      })
-      .filter(Boolean);
-  };
-
-  const normalizeStandardRow = (row) => {
-    const tutar = Number(row.tutar ?? row.Tutar ?? 0);
-    const borc = Number(row.borc ?? row.Borc ?? 0);
-    const alacak = Number(row.alacak ?? row.Alacak ?? 0);
-
-    let yon = row.yon || row.Yon || "";
-
-    if (!yon) {
-      if (borc > 0) yon = "GIRIS";
-      else if (alacak > 0) yon = "CIKIS";
-      else yon = tutar > 0 ? "GIRIS" : "CIKIS";
-    }
-
-    return {
-      banka: row.banka || row.Banka || selectedBank,
-      tarih: row.tarih || row.Tarih || "",
-      dekontNo: row.dekontNo || row.FisNo || row.Dekont || "",
-      aciklama: row.aciklama || row.Aciklama || row.HamAciklama || "",
-      unvan: row.unvan || row.Unvan || "",
-      borc: borc || (yon === "GIRIS" ? Math.abs(tutar) : 0),
-      alacak: alacak || (yon === "CIKIS" ? Math.abs(tutar) : 0),
-      bakiye: row.bakiye || row.Bakiye || "",
-      tutar: tutar || (yon === "GIRIS" ? Math.abs(borc) : -Math.abs(alacak)),
-      yon,
-      islemTipi: row.islemTipi || row.IslemTipi || "DIGER",
-    };
-  };
-
-  const enrichParsedRows = (parsedRows) =>
-    mapParsedRowsToStandardMovements(parsedRows, {
-      selectedCompany,
-      companyPlans,
-      companyRules,
-      selectedBank,
-      legacyRules: bankaKurallari,
-      learningMemory,
-      accountingRules,
-      selectedCompanyId,
-    });
-
-  const applyPreviewRows = async (parsedRows) => {
-    await yieldToUi();
-    const rows = await new Promise((resolve, reject) => {
-      setTimeout(() => {
-        try {
-          resolve(enrichParsedRows(parsedRows));
-        } catch (error) {
-          reject(error);
-        }
-      }, 0);
-    });
-    setMovementRows(rows);
-    await yieldToUi();
-    await recordLearningMemoryUsage(rows);
-  };
 
   const handleApplyAccountSuggestion = async (row, suggestion) => {
     const updatedRow = applySuggestionToMovement(
@@ -664,58 +430,84 @@ export default function BankaParserPage() {
     resetFileInput();
   };
 
-  const readWorkbookFromFile = async (file) => {
+  const queueUnrecognizedFromWorker = async (unrecognizedItems = []) => {
+    if (!unrecognizedItems.length) return 0;
+
     try {
-      const data = await file.arrayBuffer();
-      await yieldToUi();
-
-      return await new Promise((resolve, reject) => {
-        setTimeout(() => {
-          try {
-            resolve(
-              XLSX.read(data, {
-                cellDates: true,
-                type: "array",
-              })
-            );
-          } catch (error) {
-            reject(error);
-          }
-        }, 0);
-      });
-    } catch (arrayBufferError) {
-      const text = await file.text();
-      await yieldToUi();
-
-      return await new Promise((resolve, reject) => {
-        setTimeout(() => {
-          try {
-            resolve(
-              XLSX.read(text, {
-                type: "string",
-                cellDates: true,
-              })
-            );
-          } catch (error) {
-            reject(error || arrayBufferError);
-          }
-        }, 0);
-      });
+      const result = await queueUnrecognizedTransactions(unrecognizedItems);
+      return Number(result?.inserted || 0);
+    } catch (error) {
+      console.error("[banka-ekstresi] unrecognized queue failed", error);
+      return 0;
     }
   };
 
-  const parseSheetRowsForBank = (sheetRows, bank) => {
-    if (bank === "GARANTI") return parseGarantiEkstre(sheetRows);
-    if (bank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
-    if (bank === "TEB") {
-      return enrichTebParsedRows(parseGenericBankEkstre(sheetRows, "TEB"));
-    }
-    if (bank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
-    if (bank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
-    return [];
+  const parseFileInWorker = async (file) => {
+    const requestId = workerRequestIdRef.current + 1;
+    workerRequestIdRef.current = requestId;
+
+    workerRef.current?.terminate();
+    const worker = new Worker(new URL("./bankParser.worker.js", import.meta.url), {
+      type: "module",
+    });
+    workerRef.current = worker;
+
+    const arrayBuffer = await file.arrayBuffer();
+
+    return await new Promise((resolve, reject) => {
+      worker.onmessage = (event) => {
+        const message = event.data || {};
+
+        if (message.type === "progress") {
+          setParserProgress((current) => ({
+            ...current,
+            stage: message.stage || current.stage,
+            detail: message.detail || "",
+          }));
+          return;
+        }
+
+        if (message.requestId !== requestId) return;
+
+        worker.terminate();
+        if (workerRef.current === worker) workerRef.current = null;
+
+        if (message.type === "success") {
+          resolve(message);
+          return;
+        }
+
+        reject(new Error(message.error || "Dosya işlenirken hata oluştu."));
+      };
+
+      worker.onerror = (error) => {
+        console.error("[banka-ekstresi] worker error", error);
+        worker.terminate();
+        if (workerRef.current === worker) workerRef.current = null;
+        reject(new Error("Dosya işleme worker'ı beklenmeyen şekilde durdu."));
+      };
+
+      worker.postMessage(
+        {
+          requestId,
+          arrayBuffer,
+          context: {
+            selectedBank,
+            selectedCompany,
+            companyPlans,
+            companyRules,
+            learningMemory,
+            accountMemoryRecords: loadAccountMemoryV1Records(),
+            accountingRules,
+            selectedCompanyId,
+          },
+        },
+        [arrayBuffer]
+      );
+    });
   };
 
-  /** Excel okuma + parse yalnızca Ön İzleme Oluştur ile */
+  /** Excel okuma + parser pipeline yalnızca Ön İzleme Oluştur ile worker'da çalışır */
   const handleCreatePreview = async () => {
     if (isParsing) return;
 
@@ -730,56 +522,34 @@ export default function BankaParserPage() {
     }
 
     setIsParsing(true);
-    await yieldToUi();
+    setParserProgress({
+      stage: BANK_PARSE_STAGES.READING,
+      detail: "Worker hazırlanıyor",
+      timeoutWarning: false,
+    });
+
+    timeoutWarningRef.current = setTimeout(() => {
+      setParserProgress((current) => ({
+        ...current,
+        timeoutWarning: true,
+      }));
+    }, 20000);
 
     try {
-      const workbook = await readWorkbookFromFile(selectedFile);
-      await yieldToUi();
+      const result = await parseFileInWorker(selectedFile);
 
-      const firstSheetName = workbook.SheetNames?.[0];
-      if (!firstSheetName) {
-        throw new Error("Excel dosyasında sayfa bulunamadı.");
-      }
+      setRawCount(result.rawCount || 0);
+      setParsedNormalizedRows(result.normalizedRows || []);
+      setMovementRows(result.movementRows || []);
+      setStandardLucaRows(result.standardLucaRows || []);
 
-      const worksheet = workbook.Sheets[firstSheetName];
-      const sheetRows = await new Promise((resolve, reject) => {
-        setTimeout(() => {
-          try {
-            resolve(
-              XLSX.utils.sheet_to_json(worksheet, {
-                header: 1,
-                defval: "",
-              })
-            );
-          } catch (error) {
-            reject(error);
-          }
-        }, 0);
-      });
-
-      setRawCount(sheetRows.length);
-      await yieldToUi();
-
-      const parsedRows = await new Promise((resolve, reject) => {
-        setTimeout(() => {
-          try {
-            resolve(parseSheetRowsForBank(sheetRows, selectedBank));
-          } catch (error) {
-            reject(error);
-          }
-        }, 0);
-      });
-
-      await yieldToUi();
-
-      const normalizedRows = await mapInChunks(parsedRows, normalizeStandardRow);
-      setParsedNormalizedRows(normalizedRows);
-      await yieldToUi();
-
-      await applyPreviewRows(normalizedRows);
+      await recordLearningMemoryUsage(result.movementRows || []);
+      const queuedCount = await queueUnrecognizedFromWorker(result.unrecognizedItems || []);
 
       showToast(
-        `${normalizedRows.length} işlem satırı ön izlemeye alındı.`,
+        queuedCount > 0
+          ? `${(result.normalizedRows || []).length} işlem satırı ön izlemeye alındı. ${queuedCount} tanınmayan işlem Öğrenme Merkezi'ne eklendi.`
+          : `${(result.normalizedRows || []).length} işlem satırı ön izlemeye alındı.`,
         "success"
       );
     } catch (error) {
@@ -791,7 +561,16 @@ export default function BankaParserPage() {
         "error"
       );
     } finally {
+      if (timeoutWarningRef.current) {
+        clearTimeout(timeoutWarningRef.current);
+        timeoutWarningRef.current = null;
+      }
       setIsParsing(false);
+      setParserProgress((current) => ({
+        ...current,
+        stage: "",
+        detail: "",
+      }));
     }
   };
 
@@ -976,7 +755,26 @@ export default function BankaParserPage() {
               aria-live="polite"
               className="mt-4 rounded-xl border border-indigo-500/30 bg-indigo-950/40 px-4 py-3 text-sm text-indigo-100"
             >
-              Dosya okunuyor, lütfen bekleyin…
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-indigo-300" />
+                <span className="font-semibold">
+                  {parserProgress.stage || BANK_PARSE_STAGES.READING}
+                </span>
+                {parserProgress.detail ? (
+                  <span className="text-indigo-200/80">{parserProgress.detail}</span>
+                ) : null}
+              </div>
+              {parserProgress.timeoutWarning ? (
+                <p className="mt-2 text-xs text-amber-200">
+                  İşlem 20 saniyeyi geçti. Büyük dosya arka planda işlenmeye devam
+                  ediyor; sayfayı kullanabilirsiniz.
+                </p>
+              ) : (
+                <p className="mt-2 text-xs text-indigo-200/70">
+                  Excel okuma, parser, Luca satırları ve öğrenme kontrolü Web Worker
+                  içinde çalışıyor.
+                </p>
+              )}
             </div>
           ) : null}
 
@@ -994,7 +792,7 @@ export default function BankaParserPage() {
             disabled={isParsing || !selectedFile}
             className="rounded-xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isParsing ? "Dosya okunuyor…" : "Ön İzleme Oluştur"}
+            {isParsing ? parserProgress.stage || "İşleniyor…" : "Ön İzleme Oluştur"}
           </button>
 
           <button
