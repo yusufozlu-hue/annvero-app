@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
 import MuhasebeMenu from "../components/MuhasebeMenu";
@@ -82,8 +82,29 @@ const BANK_PREVIEW_FILTERS = [
   { id: "missingDocumentType", label: "Belge Türü Eksik" },
 ];
 
+function yieldToUi() {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
+async function mapInChunks(items, mapper, chunkSize = 250) {
+  const result = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    const chunk = items.slice(index, index + chunkSize);
+    for (const item of chunk) {
+      result.push(mapper(item));
+    }
+    await yieldToUi();
+  }
+  return result;
+}
+
 export default function BankaParserPage() {
+  const fileInputRef = useRef(null);
+  const [selectedFile, setSelectedFile] = useState(null);
   const [fileName, setFileName] = useState("");
+  const [isParsing, setIsParsing] = useState(false);
   const [rawCount, setRawCount] = useState(0);
   const [parsedNormalizedRows, setParsedNormalizedRows] = useState([]);
   const [movementRows, setMovementRows] = useState([]);
@@ -428,8 +449,18 @@ export default function BankaParserPage() {
     });
 
   const applyPreviewRows = async (parsedRows) => {
-    const rows = enrichParsedRows(parsedRows);
+    await yieldToUi();
+    const rows = await new Promise((resolve, reject) => {
+      setTimeout(() => {
+        try {
+          resolve(enrichParsedRows(parsedRows));
+        } catch (error) {
+          reject(error);
+        }
+      }, 0);
+    });
     setMovementRows(rows);
+    await yieldToUi();
     await recordLearningMemoryUsage(rows);
   };
 
@@ -602,75 +633,166 @@ export default function BankaParserPage() {
     logStandardLucaReport("banka-transfer", standardLucaRows);
   };
 
-  const handleFile = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setFileName(file.name);
-    setRawCount(0);
-    setMovementRows([]);
-
-    let workbook;
-
-    try {
-      const data = await file.arrayBuffer();
-
-      workbook = XLSX.read(data, {
-        cellDates: true,
-        type: "array",
-      });
-    } catch {
-      try {
-        const text = await file.text();
-
-        workbook = XLSX.read(text, {
-          type: "string",
-          cellDates: true,
-        });
-      } catch {
-        alert(
-          "Bu dosya Excel olarak okunamadı. Lütfen dosyayı Excel'de açıp .xlsx olarak Farklı Kaydet yapıp tekrar yükle."
-        );
-        return;
-      }
+  const resetFileInput = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
     }
-
-    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-
-    const sheetRows = XLSX.utils.sheet_to_json(worksheet, {
-      header: 1,
-      defval: "",
-    });
-
-    setRawCount(sheetRows.length);
-
-    let parsedRows = [];
-
-    if (selectedBank === "GARANTI") parsedRows = parseGarantiEkstre(sheetRows);
-    if (selectedBank === "VAKIFBANK") parsedRows = parseVakifbankEkstre(sheetRows);
-    if (selectedBank === "TEB") {
-      parsedRows = enrichTebParsedRows(parseGenericBankEkstre(sheetRows, "TEB"));
-    }
-    if (selectedBank === "KUVEYT") parsedRows = parseGenericBankEkstre(sheetRows, "KUVEYT");
-    if (selectedBank === "ZIRAAT") parsedRows = parseGenericBankEkstre(sheetRows, "ZIRAAT");
-
-    const normalizedRows = parsedRows.map(normalizeStandardRow);
-    setParsedNormalizedRows(normalizedRows);
-    await applyPreviewRows(normalizedRows);
   };
 
+  const clearPreviewState = () => {
+    setRawCount(0);
+    setParsedNormalizedRows([]);
+    setMovementRows([]);
+    setStandardLucaRows([]);
+    setExportValidation(null);
+  };
+
+  /** Dosya seçimi: yalnızca state; parse başlamaz */
+  const handleFileSelect = (event) => {
+    const file = event.target.files?.[0] || null;
+
+    if (!file) {
+      setSelectedFile(null);
+      setFileName("");
+      resetFileInput();
+      return;
+    }
+
+    setSelectedFile(file);
+    setFileName(file.name);
+    clearPreviewState();
+    resetFileInput();
+  };
+
+  const readWorkbookFromFile = async (file) => {
+    try {
+      const data = await file.arrayBuffer();
+      await yieldToUi();
+
+      return await new Promise((resolve, reject) => {
+        setTimeout(() => {
+          try {
+            resolve(
+              XLSX.read(data, {
+                cellDates: true,
+                type: "array",
+              })
+            );
+          } catch (error) {
+            reject(error);
+          }
+        }, 0);
+      });
+    } catch (arrayBufferError) {
+      const text = await file.text();
+      await yieldToUi();
+
+      return await new Promise((resolve, reject) => {
+        setTimeout(() => {
+          try {
+            resolve(
+              XLSX.read(text, {
+                type: "string",
+                cellDates: true,
+              })
+            );
+          } catch (error) {
+            reject(error || arrayBufferError);
+          }
+        }, 0);
+      });
+    }
+  };
+
+  const parseSheetRowsForBank = (sheetRows, bank) => {
+    if (bank === "GARANTI") return parseGarantiEkstre(sheetRows);
+    if (bank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
+    if (bank === "TEB") {
+      return enrichTebParsedRows(parseGenericBankEkstre(sheetRows, "TEB"));
+    }
+    if (bank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
+    if (bank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
+    return [];
+  };
+
+  /** Excel okuma + parse yalnızca Ön İzleme Oluştur ile */
   const handleCreatePreview = async () => {
+    if (isParsing) return;
+
     if (!selectedCompanyId) {
-      alert("Önce firma seçmelisin.");
+      showToast("Önce firma seçmelisin.", "error");
       return;
     }
 
-    if (parsedNormalizedRows.length === 0) {
-      alert("Önce banka ekstresi yüklemelisin.");
+    if (!selectedFile) {
+      showToast("Önce banka ekstresi dosyası seçmelisin.", "error");
       return;
     }
 
-    await applyPreviewRows(parsedNormalizedRows);
+    setIsParsing(true);
+    await yieldToUi();
+
+    try {
+      const workbook = await readWorkbookFromFile(selectedFile);
+      await yieldToUi();
+
+      const firstSheetName = workbook.SheetNames?.[0];
+      if (!firstSheetName) {
+        throw new Error("Excel dosyasında sayfa bulunamadı.");
+      }
+
+      const worksheet = workbook.Sheets[firstSheetName];
+      const sheetRows = await new Promise((resolve, reject) => {
+        setTimeout(() => {
+          try {
+            resolve(
+              XLSX.utils.sheet_to_json(worksheet, {
+                header: 1,
+                defval: "",
+              })
+            );
+          } catch (error) {
+            reject(error);
+          }
+        }, 0);
+      });
+
+      setRawCount(sheetRows.length);
+      await yieldToUi();
+
+      const parsedRows = await new Promise((resolve, reject) => {
+        setTimeout(() => {
+          try {
+            resolve(parseSheetRowsForBank(sheetRows, selectedBank));
+          } catch (error) {
+            reject(error);
+          }
+        }, 0);
+      });
+
+      await yieldToUi();
+
+      const normalizedRows = await mapInChunks(parsedRows, normalizeStandardRow);
+      setParsedNormalizedRows(normalizedRows);
+      await yieldToUi();
+
+      await applyPreviewRows(normalizedRows);
+
+      showToast(
+        `${normalizedRows.length} işlem satırı ön izlemeye alındı.`,
+        "success"
+      );
+    } catch (error) {
+      console.error("[banka-ekstresi] preview failed", error);
+      clearPreviewState();
+      showToast(
+        error?.message ||
+          "Dosya okunamadı. Excel'de açıp .xlsx olarak kaydedip tekrar deneyin.",
+        "error"
+      );
+    } finally {
+      setIsParsing(false);
+    }
   };
 
   return (
@@ -719,11 +841,13 @@ export default function BankaParserPage() {
 
           <select
             value={selectedCompanyId}
+            disabled={isParsing}
             onChange={(e) => {
               setSelectedCompanyId(e.target.value);
               setMovementRows([]);
+              setStandardLucaRows([]);
             }}
-            className="mb-6 min-w-[320px] rounded-xl border border-gray-700 bg-gray-950 p-3 text-white"
+            className="mb-6 min-w-[320px] rounded-xl border border-gray-700 bg-gray-950 p-3 text-white disabled:opacity-60"
           >
             <CompanySelectOptions companies={companies} />
           </select>
@@ -794,13 +918,15 @@ export default function BankaParserPage() {
 
           <select
             value={selectedBank}
+            disabled={isParsing}
             onChange={(e) => {
               setSelectedBank(e.target.value);
-              setMovementRows([]);
+              setSelectedFile(null);
               setFileName("");
-              setRawCount(0);
+              clearPreviewState();
+              resetFileInput();
             }}
-            className="mb-6 min-w-[320px] rounded-xl border border-gray-700 bg-gray-950 p-3 text-white"
+            className="mb-6 min-w-[320px] rounded-xl border border-gray-700 bg-gray-950 p-3 text-white disabled:opacity-60"
           >
             <option value="GARANTI">Garanti Bankası</option>
             <option value="VAKIFBANK">Vakıfbank</option>
@@ -810,43 +936,72 @@ export default function BankaParserPage() {
           </select>
 
           <p className="mb-6 text-gray-400">
-            Banka ekstresi Excel dosyasını yükleyin.
+            Banka ekstresi Excel dosyasını seçin. Okuma ve parse işlemi yalnızca{" "}
+            <span className="font-semibold text-gray-300">Ön İzleme Oluştur</span>{" "}
+            ile başlar.
           </p>
 
-          <div className="flex items-center gap-4">
-            <label className="cursor-pointer rounded-lg bg-blue-600 px-5 py-2 font-medium hover:bg-blue-700">
+          <div className="flex flex-wrap items-center gap-4">
+            <label
+              className={`cursor-pointer rounded-lg bg-blue-600 px-5 py-2 font-medium hover:bg-blue-700 ${
+                isParsing ? "pointer-events-none opacity-60" : ""
+              }`}
+            >
               Dosya Seç
               <input
+                ref={fileInputRef}
                 type="file"
                 accept=".xlsx,.xls,.csv"
-                onChange={handleFile}
+                onChange={handleFileSelect}
+                disabled={isParsing}
                 className="hidden"
               />
             </label>
 
-            <span className="text-gray-400">
-              {fileName || "Henüz dosya seçilmedi"}
+            <span className="text-sm text-gray-300">
+              {fileName ? (
+                <>
+                  Seçili dosya:{" "}
+                  <span className="font-semibold text-white">{fileName}</span>
+                </>
+              ) : (
+                <span className="text-gray-400">Henüz dosya seçilmedi</span>
+              )}
             </span>
           </div>
 
-          {rawCount > 0 && (
+          {isParsing ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="mt-4 rounded-xl border border-indigo-500/30 bg-indigo-950/40 px-4 py-3 text-sm text-indigo-100"
+            >
+              Dosya okunuyor, lütfen bekleyin…
+            </div>
+          ) : null}
+
+          {rawCount > 0 && !isParsing ? (
             <p className="mt-4 text-sm text-green-400">
               Ham dosyadan {rawCount} satır okundu.
             </p>
-          )}
+          ) : null}
         </div>
 
         <div className="flex flex-wrap gap-4">
           <button
+            type="button"
             onClick={handleCreatePreview}
-            className="rounded-xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700"
+            disabled={isParsing || !selectedFile}
+            className="rounded-xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Ön İzleme Oluştur
+            {isParsing ? "Dosya okunuyor…" : "Ön İzleme Oluştur"}
           </button>
 
           <button
+            type="button"
             onClick={exportExcel}
-            className="rounded-xl bg-green-600 px-6 py-3 font-semibold hover:bg-green-700"
+            disabled={isParsing}
+            className="rounded-xl bg-green-600 px-6 py-3 font-semibold hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Luca Excel Oluştur
           </button>
