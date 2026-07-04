@@ -26,14 +26,14 @@ export async function GET(request) {
   let query = supabase
     .from("learning_memory")
     .select("*")
-    .order("usage_count", { ascending: false });
+    .order("learned_at", { ascending: false });
 
   if (companyId) {
     query = query.eq("company_id", companyId);
   }
 
   if (!includeInactive) {
-    query = query.eq("is_active", true);
+    query = query.neq("status", "passive");
   }
 
   const { data, error } = await query;
@@ -164,7 +164,40 @@ export async function PATCH(request) {
     const increment = Number(item?.increment ?? 1);
 
     if (!id || increment <= 0) continue;
-    results.push({ id, increment, skipped: true });
+
+    const { data: current, error: readError } = await supabase
+      .from("learning_memory")
+      .select("match_count")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (readError) {
+      if (isLearningMemorySchemaError(readError)) {
+        results.push({ id, increment, skipped: true });
+        continue;
+      }
+      console.error(readError);
+      continue;
+    }
+
+    const { error: updateError } = await supabase
+      .from("learning_memory")
+      .update({
+        match_count: Number(current?.match_count || 0) + increment,
+        last_matched_at: new Date().toISOString(),
+      })
+      .eq("id", id);
+
+    if (updateError) {
+      if (isLearningMemorySchemaError(updateError)) {
+        results.push({ id, increment, skipped: true });
+        continue;
+      }
+      console.error(updateError);
+      continue;
+    }
+
+    results.push({ id, increment });
   }
 
   return NextResponse.json({ updated: results });

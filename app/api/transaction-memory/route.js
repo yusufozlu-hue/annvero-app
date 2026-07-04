@@ -31,7 +31,7 @@ function getClient() {
 }
 
 async function loadLearningMemory(supabase, companyId) {
-  let query = supabase.from(MEMORY_TABLE).select("*").eq("is_active", true);
+  let query = supabase.from(MEMORY_TABLE).select("*").neq("status", "passive");
   if (companyId) query = query.eq("company_id", companyId);
   const { data, error } = await query;
   if (error) throw new Error(error.message);

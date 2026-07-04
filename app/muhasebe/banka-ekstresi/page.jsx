@@ -543,7 +543,7 @@ export default function BankaParserPage() {
       setMovementRows(result.movementRows || []);
       setStandardLucaRows(result.standardLucaRows || []);
 
-      await recordLearningMemoryUsage(result.movementRows || []);
+      await recordLearningMemoryUsage(result.standardLucaRows || []);
       const queuedCount = await queueUnrecognizedFromWorker(result.unrecognizedItems || []);
 
       showToast(

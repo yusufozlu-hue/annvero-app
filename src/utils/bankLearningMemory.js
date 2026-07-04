@@ -41,23 +41,19 @@ export function buildBankStandardLucaLearningMemoryPayload(
 
   return {
     company_id: companyId,
-    source_module: String(originalRow.kaynakTipi || KAYNAK_TIPI.BANKA).toLowerCase(),
+    bank_name: String(originalRow.kaynakAdi || "").trim(),
     keyword: aramaAnahtari,
     account_code: String(draft.accountCode || "").trim(),
-    counter_account_code: String(
-      draft.originalAccountCode || originalRow.hesapKodu || ""
-    ).trim(),
-    account_name: String(originalRow.kaynakAdi || "").trim(),
-    counter_account_name: String(
-      draft.fisAciklama || originalRow.fisAciklama || ""
-    ).trim(),
+    account_name: String(draft.accountName || originalRow.hesapAdi || "").trim(),
+    cari_name: String(draft.fisAciklama || originalRow.cariUnvan || "").trim(),
     document_type: String(draft.documentType || "DK").trim(),
     transaction_type: String(originalRow.kaynakTipi || KAYNAK_TIPI.BANKA).trim(),
-    description_format: String(
+    clean_description: String(
       draft.detayAciklama || originalRow.detayAciklama || ""
     ).trim(),
-    usage_count: 0,
-    is_active: true,
+    raw_description: String(originalRow.detayAciklama || originalRow.fisAciklama || "").trim(),
+    learned_at: new Date().toISOString(),
+    status: "active",
   };
 }
 
@@ -78,7 +74,8 @@ export function mapLearningMemoryRecordToItem(record, draft = {}, originalRow = 
       draft.detayAciklama || record.description_format || originalRow.detayAciklama,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
-    isActive: record.is_active !== false,
+    isActive:
+      record.status === "passive" ? false : record.is_active !== false,
   };
 }
 
@@ -97,7 +94,7 @@ function memoryMatchesKaynakTipi(record, row, context) {
     row.kaynakTipi || context.kaynakTipi || KAYNAK_TIPI.BANKA
   );
   const recordTip = normalizeKaynakTipi(
-    record.source_module || record.transaction_type || ""
+    record.transaction_type || record.source_module || ""
   );
 
   if (!recordTip) return true;
@@ -106,7 +103,7 @@ function memoryMatchesKaynakTipi(record, row, context) {
 
 function memoryMatchesKaynakAdi(record, row, context) {
   const rowBank = normalizeKaynakTipi(row.kaynakAdi || context.kaynakAdi || "");
-  const recordBank = normalizeKaynakTipi(record.account_name || "");
+  const recordBank = normalizeKaynakTipi(record.bank_name || record.account_name || "");
 
   if (!recordBank || !rowBank) return true;
 
@@ -122,6 +119,8 @@ function scoreMemorySearchKey(record, row) {
   const keyword = normalizeKaynakTipi(record.keyword);
   const cleanDescription = normalizeKaynakTipi(record.clean_description || "");
   const rawDescription = normalizeKaynakTipi(record.raw_description || "");
+  const bankName = normalizeKaynakTipi(record.bank_name || "");
+  const transactionType = normalizeKaynakTipi(record.transaction_type || "");
   const accountName = normalizeKaynakTipi(record.account_name || "");
   const cariName = normalizeKaynakTipi(
     record.cari_name || record.counter_account_name || ""
@@ -134,6 +133,8 @@ function scoreMemorySearchKey(record, row) {
     keyword,
     cleanDescription,
     rawDescription,
+    bankName,
+    transactionType,
     accountName,
     cariName,
   ].filter(Boolean);
@@ -181,6 +182,7 @@ export function findBankLucaLearningMemoryMatch(row, learningMemory = [], contex
 
   for (const record of learningMemory) {
     if (record?.is_active === false) continue;
+    if (String(record?.status || "active").toLowerCase() === "passive") continue;
     if (record.company_id !== firmaId) continue;
     if (!memoryMatchesKaynakTipi(record, row, context)) continue;
     if (!memoryMatchesKaynakAdi(record, row, context)) continue;
@@ -252,6 +254,7 @@ export function applyLearningMemoryToStandardLucaRows(
       suggestedAccountName: match.account_name || "",
       suggestedDocumentType: learnedDocument,
       suggestedCari: learnedCari,
+      suggestedTransactionType: match.transaction_type || row.kaynakTipi || "",
       suggestionScore: match._matchScore || 100,
       suggestionConfidence:
         (match._matchScore || 100) >= 85
