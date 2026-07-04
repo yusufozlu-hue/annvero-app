@@ -32,6 +32,7 @@ function getClient() {
 
 async function loadLearningMemory(supabase, companyId) {
   let query = supabase.from(MEMORY_TABLE).select("*").neq("status", "passive");
+  query = query.neq("status", "deleted");
   if (companyId) query = query.eq("company_id", companyId);
   let { data, error } = await query;
   if (error && isLearningMemorySchemaError(error)) {
@@ -43,7 +44,9 @@ async function loadLearningMemory(supabase, companyId) {
   return (data || []).filter(
     (row) =>
       row?.is_active !== false &&
-      String(row?.status || "active").toLowerCase() !== "passive"
+      !["passive", "deleted"].includes(
+        String(row?.status || "active").toLowerCase()
+      )
   );
 }
 

@@ -10,11 +10,14 @@ import {
   buildLearningMemoryUpdatePayload,
   filterLearningMemoryRows,
   formatLearningMemoryDate,
+  getLearningMemoryBankOptions,
+  getLearningMemoryDocumentTypeOptions,
   getLearningMemoryKaynakTipiOptions,
+  getLearningMemoryStats,
+  LEARNING_MEMORY_STATUS_LABELS,
   mapLearningMemoryRecordToListRow,
 } from "@/src/utils/learningMemoryAdmin";
 import {
-  deleteLearningMemoryRecord,
   fetchAllLearningMemory,
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
@@ -30,6 +33,10 @@ export default function OgrenenHafizaPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [kaynakTipiFilter, setKaynakTipiFilter] = useState("TUMU");
+  const [accountCodeFilter, setAccountCodeFilter] = useState("");
+  const [documentTypeFilter, setDocumentTypeFilter] = useState("TUMU");
+  const [bankFilter, setBankFilter] = useState("TUMU");
+  const [statusFilter, setStatusFilter] = useState("TUMU");
   const [editingRecordId, setEditingRecordId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -81,14 +88,36 @@ export default function OgrenenHafizaPage() {
         search,
         companyId: selectedCompanyId,
         kaynakTipi: kaynakTipiFilter,
+        accountCode: accountCodeFilter,
+        documentType: documentTypeFilter,
+        bankName: bankFilter,
+        status: statusFilter,
       }),
-    [records, search, selectedCompanyId, kaynakTipiFilter]
+    [
+      records,
+      search,
+      selectedCompanyId,
+      kaynakTipiFilter,
+      accountCodeFilter,
+      documentTypeFilter,
+      bankFilter,
+      statusFilter,
+    ]
   );
 
   const kaynakTipiOptions = useMemo(
     () => getLearningMemoryKaynakTipiOptions(records),
     [records]
   );
+
+  const documentTypeOptions = useMemo(
+    () => getLearningMemoryDocumentTypeOptions(records),
+    [records]
+  );
+
+  const bankOptions = useMemo(() => getLearningMemoryBankOptions(records), [records]);
+
+  const stats = useMemo(() => getLearningMemoryStats(records), [records]);
 
   const closeEditPanel = () => {
     if (isSaving) return;
@@ -152,7 +181,9 @@ export default function OgrenenHafizaPage() {
     const confirmed = window.confirm("Bu hafıza kaydını silmek istediğinize emin misiniz?");
     if (!confirmed) return;
 
-    const ok = await deleteLearningMemoryRecord(row.id);
+    const ok = await updateLearningMemoryRecord(row.id, {
+      status: "deleted",
+    });
 
     if (!ok) {
       showToast("Kayıt silinemedi", "error");
@@ -188,16 +219,28 @@ export default function OgrenenHafizaPage() {
       <h1 className="mb-2 text-4xl font-bold">Öğrenen Hafıza</h1>
       <p className="mb-8 text-gray-400">
         Ön izlemede kaydedilen firma bazlı düzeltmeleri yönetin. Pasif kayıtlar parser
-        sonrası uygulanmaz.
+        sonrası uygulanmaz; silinen kayıtlar yönetim geçmişinde kalır.
       </p>
 
-      <div className="mb-6 grid grid-cols-1 gap-4 rounded-2xl border border-gray-800 bg-gray-900 p-4 lg:grid-cols-4">
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <StatCard label="Toplam öğrenilen kayıt" value={stats.total} />
+        <StatCard label="Aktif kayıt" value={stats.active} tone="emerald" />
+        <StatCard label="Pasif kayıt" value={stats.passive} tone="amber" />
+        <StatCard label="Bu ay eşleşen kayıt" value={stats.matchedThisMonth} tone="indigo" />
+        <StatCard
+          label="En çok eşleşen kayıt"
+          value={stats.topMatched?.matchCount || 0}
+          detail={stats.topMatched?.aramaAnahtari || "Kayıt yok"}
+        />
+      </div>
+
+      <div className="mb-6 grid grid-cols-1 gap-4 rounded-2xl border border-gray-800 bg-gray-900 p-4 lg:grid-cols-6">
         <label className="block lg:col-span-2">
           <span className="mb-1 block text-sm text-gray-400">Arama</span>
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Firma, anahtar, hesap, açıklama..."
+            placeholder="Açıklama, keyword, cari, hesap adı..."
             className={inputClassName}
           />
         </label>
@@ -215,7 +258,63 @@ export default function OgrenenHafizaPage() {
         </label>
 
         <label className="block">
-          <span className="mb-1 block text-sm text-gray-400">Kaynak Tipi</span>
+          <span className="mb-1 block text-sm text-gray-400">Hesap Kodu</span>
+          <input
+            value={accountCodeFilter}
+            onChange={(event) => setAccountCodeFilter(event.target.value)}
+            placeholder="120, 770..."
+            className={inputClassName}
+          />
+        </label>
+
+        <label className="block">
+          <span className="mb-1 block text-sm text-gray-400">Belge Tipi</span>
+          <select
+            value={documentTypeFilter}
+            onChange={(event) => setDocumentTypeFilter(event.target.value)}
+            className={inputClassName}
+          >
+            <option value="TUMU">Tümü</option>
+            {documentTypeOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="mb-1 block text-sm text-gray-400">Banka</span>
+          <select
+            value={bankFilter}
+            onChange={(event) => setBankFilter(event.target.value)}
+            className={inputClassName}
+          >
+            <option value="TUMU">Tümü</option>
+            {bankOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="mb-1 block text-sm text-gray-400">Durum</span>
+          <select
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+            className={inputClassName}
+          >
+            <option value="TUMU">Tümü</option>
+            <option value="active">Aktif</option>
+            <option value="passive">Pasif</option>
+            <option value="deleted">Silindi</option>
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="mb-1 block text-sm text-gray-400">İşlem Tipi</span>
           <select
             value={kaynakTipiFilter}
             onChange={(event) => setKaynakTipiFilter(event.target.value)}
@@ -229,6 +328,24 @@ export default function OgrenenHafizaPage() {
             ))}
           </select>
         </label>
+
+        <div className="flex items-end">
+          <button
+            type="button"
+            onClick={() => {
+              setSearch("");
+              setSelectedCompanyId("");
+              setAccountCodeFilter("");
+              setDocumentTypeFilter("TUMU");
+              setBankFilter("TUMU");
+              setStatusFilter("TUMU");
+              setKaynakTipiFilter("TUMU");
+            }}
+            className="w-full rounded-lg border border-gray-700 px-4 py-2 text-sm font-semibold text-gray-200 hover:bg-gray-800"
+          >
+            Filtreleri Temizle
+          </button>
+        </div>
       </div>
 
       <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
@@ -249,20 +366,19 @@ export default function OgrenenHafizaPage() {
           <p className="text-gray-400">Kayıt bulunamadı.</p>
         ) : (
           <div className="overflow-auto">
-            <table className="w-full min-w-[1600px] text-sm">
+            <table className="w-full min-w-[1500px] text-sm">
               <thead className="bg-gray-800">
                 <tr>
-                  <th className="p-3 text-left">Firma</th>
-                  <th className="p-3 text-left">Kaynak Tipi</th>
-                  <th className="p-3 text-left">Banka</th>
                   <th className="p-3 text-left">Açıklama / Keyword</th>
                   <th className="p-3 text-left">Hesap Kodu</th>
                   <th className="p-3 text-left">Hesap Adı</th>
                   <th className="p-3 text-left">Belge Türü</th>
                   <th className="p-3 text-left">Cari</th>
-                  <th className="p-3 text-left">Eşleşme</th>
-                  <th className="p-3 text-left">Son Kullanım</th>
-                  <th className="p-3 text-left">Aktif/Pasif</th>
+                  <th className="p-3 text-left">Banka</th>
+                  <th className="p-3 text-left">Durum</th>
+                  <th className="p-3 text-left">Eşleşme Sayısı</th>
+                  <th className="p-3 text-left">Son Kullanım Tarihi</th>
+                  <th className="p-3 text-left">Öğrenme Tarihi</th>
                   <th className="p-3 text-center">İşlem</th>
                 </tr>
               </thead>
@@ -270,30 +386,22 @@ export default function OgrenenHafizaPage() {
                 {filteredRows.map((row) => (
                   <Fragment key={row.id}>
                     <tr className="border-t border-gray-800">
-                      <td className="p-3">{row.firmaAdi}</td>
-                      <td className="p-3">{row.kaynakTipi}</td>
-                      <td className="p-3">{row.kaynakAdi}</td>
                       <td className="p-3 max-w-[280px]">
                         <div className="font-medium text-gray-100">{row.aramaAnahtari || "—"}</div>
                         <div className="mt-1 text-xs text-gray-400">{row.aciklama}</div>
+                        <div className="mt-1 text-[11px] text-gray-500">{row.firmaAdi}</div>
                       </td>
                       <td className="p-3 font-mono text-xs">{row.hesapKodu || "—"}</td>
                       <td className="p-3">{row.hesapAdi || "—"}</td>
                       <td className="p-3">{row.belgeTuru || "—"}</td>
                       <td className="p-3">{row.cari || "—"}</td>
+                      <td className="p-3">{row.kaynakAdi}</td>
+                      <td className="p-3">
+                        <StatusBadge status={row.status} />
+                      </td>
                       <td className="p-3">{row.matchCount}</td>
                       <td className="p-3">{formatLearningMemoryDate(row.lastMatchedAt)}</td>
-                      <td className="p-3">
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                            row.isActive
-                              ? "bg-emerald-950 text-emerald-300 ring-1 ring-emerald-700/60"
-                              : "bg-gray-800 text-gray-400 ring-1 ring-gray-700"
-                          }`}
-                        >
-                          {row.isActive ? "Aktif" : "Pasif"}
-                        </span>
-                      </td>
+                      <td className="p-3">{formatLearningMemoryDate(row.learnedAt)}</td>
                       <td className="p-3">
                         <div className="flex flex-wrap justify-center gap-2">
                           <button
@@ -310,20 +418,22 @@ export default function OgrenenHafizaPage() {
                           >
                             {row.isActive ? "Pasif Yap" : "Aktif Yap"}
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => deleteRecord(row)}
-                            className="rounded-lg border border-red-800/60 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-950/40"
-                          >
-                            Sil
-                          </button>
+                          {row.status !== "deleted" ? (
+                            <button
+                              type="button"
+                              onClick={() => deleteRecord(row)}
+                              className="rounded-lg border border-red-800/60 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-950/40"
+                            >
+                              Sil
+                            </button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
 
                     {editingRecordId === row.id && editDraft ? (
                       <tr className="border-t border-gray-800 bg-gray-950/60">
-                        <td colSpan={12} className="p-4">
+                        <td colSpan={11} className="p-4">
                           <div className="rounded-xl border border-indigo-700/40 p-4">
                             <h3 className="mb-4 text-lg font-semibold">Kayıt Düzenle</h3>
                             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -395,7 +505,7 @@ export default function OgrenenHafizaPage() {
                               </Field>
                               <Field label="Aktif/Pasif">
                                 <select
-                                  value={editDraft.status === "passive" ? "passive" : "active"}
+                                  value={editDraft.status || "active"}
                                   onChange={(event) =>
                                     updateDraftField(
                                       "status",
@@ -406,6 +516,7 @@ export default function OgrenenHafizaPage() {
                                 >
                                   <option value="active">Aktif</option>
                                   <option value="passive">Pasif</option>
+                                  <option value="deleted">Silindi</option>
                                 </select>
                               </Field>
                             </div>
@@ -453,5 +564,41 @@ function Field({ label, children, className = "" }) {
       <span className="mb-1 block text-sm text-gray-400">{label}</span>
       {children}
     </label>
+  );
+}
+
+function StatCard({ label, value, detail = "", tone = "gray" }) {
+  const toneClass =
+    tone === "emerald"
+      ? "border-emerald-800/60 bg-emerald-950/30 text-emerald-200"
+      : tone === "amber"
+        ? "border-amber-800/60 bg-amber-950/30 text-amber-200"
+        : tone === "indigo"
+          ? "border-indigo-800/60 bg-indigo-950/30 text-indigo-200"
+          : "border-gray-800 bg-gray-900 text-gray-200";
+
+  return (
+    <div className={`rounded-2xl border p-4 ${toneClass}`}>
+      <div className="text-sm text-gray-400">{label}</div>
+      <div className="mt-2 text-3xl font-bold text-white">{value}</div>
+      {detail ? <div className="mt-1 truncate text-xs text-gray-400">{detail}</div> : null}
+    </div>
+  );
+}
+
+function StatusBadge({ status }) {
+  const normalizedStatus = String(status || "active").toLowerCase();
+  const label = LEARNING_MEMORY_STATUS_LABELS[normalizedStatus] || normalizedStatus;
+  const className =
+    normalizedStatus === "active"
+      ? "bg-emerald-950 text-emerald-300 ring-emerald-700/60"
+      : normalizedStatus === "passive"
+        ? "bg-amber-950 text-amber-300 ring-amber-700/60"
+        : "bg-red-950 text-red-300 ring-red-800/60";
+
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${className}`}>
+      {label}
+    </span>
   );
 }

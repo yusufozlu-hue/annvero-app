@@ -1,5 +1,11 @@
 import { formatDateTime } from "@/src/utils/companyCenter";
 
+export const LEARNING_MEMORY_STATUS_LABELS = {
+  active: "Aktif",
+  passive: "Pasif",
+  deleted: "Silindi",
+};
+
 export function buildLearningMemoryDescription(record = {}) {
   const fisAciklama = String(record.cari_name || record.counter_account_name || "").trim();
   const detayAciklama = String(
@@ -30,10 +36,13 @@ export function mapLearningMemoryRecordToListRow(record, companyName = "") {
     detayAciklama: record.clean_description || record.description_format || "",
     matchCount: Number(record.match_count || 0),
     lastMatchedAt: record.last_matched_at || "",
+    learnedAt: record.learned_at || record.created_at || "",
     sonGuncelleme: record.updated_at || record.learned_at || record.created_at || "",
     status: record.status || (record.is_active === false ? "passive" : "active"),
     isActive:
-      record.status === "passive" ? false : record.is_active !== false,
+      ["passive", "deleted"].includes(String(record.status || "").toLowerCase())
+        ? false
+        : record.is_active !== false,
     raw: record,
   };
 }
@@ -51,6 +60,10 @@ export function buildLearningMemoryEditDraft(record = {}) {
 }
 
 export function buildLearningMemoryUpdatePayload(draft = {}) {
+  const status = ["active", "passive", "deleted"].includes(draft.status)
+    ? draft.status
+    : "active";
+
   return {
     keyword: String(draft.keyword || "").trim(),
     account_code: String(draft.account_code || "").trim(),
@@ -58,7 +71,7 @@ export function buildLearningMemoryUpdatePayload(draft = {}) {
     document_type: String(draft.document_type || "DK").trim(),
     cari_name: String(draft.cari_name || "").trim(),
     clean_description: String(draft.clean_description || "").trim(),
-    status: draft.status === "passive" ? "passive" : "active",
+    status,
   };
 }
 
@@ -74,12 +87,30 @@ export function normalizeKaynakTipiFilter(value) {
     .replaceAll("İ", "I");
 }
 
+function normalizeFilterText(value) {
+  return String(value || "")
+    .trim()
+    .toLocaleLowerCase("tr");
+}
+
 export function filterLearningMemoryRows(
   rows = [],
-  { search = "", companyId = "", kaynakTipi = "" } = {}
+  {
+    search = "",
+    companyId = "",
+    kaynakTipi = "",
+    accountCode = "",
+    documentType = "",
+    bankName = "",
+    status = "",
+  } = {}
 ) {
-  const query = search.trim().toLocaleLowerCase("tr");
+  const query = normalizeFilterText(search);
   const kaynakFilter = normalizeKaynakTipiFilter(kaynakTipi);
+  const accountCodeQuery = normalizeFilterText(accountCode);
+  const documentFilter = normalizeFilterText(documentType);
+  const bankFilter = normalizeFilterText(bankName);
+  const statusFilter = normalizeFilterText(status);
 
   return rows.filter((row) => {
     if (companyId && row.firmaId !== companyId) return false;
@@ -91,6 +122,34 @@ export function filterLearningMemoryRows(
       ) {
         return false;
       }
+    }
+
+    if (accountCodeQuery && !normalizeFilterText(row.hesapKodu).includes(accountCodeQuery)) {
+      return false;
+    }
+
+    if (
+      documentFilter &&
+      documentFilter !== "tumu" &&
+      normalizeFilterText(row.belgeTuru) !== documentFilter
+    ) {
+      return false;
+    }
+
+    if (
+      bankFilter &&
+      bankFilter !== "tumu" &&
+      normalizeFilterText(row.kaynakAdi) !== bankFilter
+    ) {
+      return false;
+    }
+
+    if (
+      statusFilter &&
+      statusFilter !== "tumu" &&
+      normalizeFilterText(row.status) !== statusFilter
+    ) {
+      return false;
     }
 
     if (!query) return true;
@@ -115,17 +174,58 @@ export function filterLearningMemoryRows(
   });
 }
 
-export function getLearningMemoryKaynakTipiOptions(rows = []) {
+function getUniqueSortedValues(rows = [], getter) {
   const values = new Set();
 
   rows.forEach((row) => {
-    const kaynak = String(row.kaynakTipi || "").trim();
-    if (kaynak && kaynak !== "-") {
-      values.add(kaynak);
+    const value = String(getter(row) || "").trim();
+    if (value && value !== "-") {
+      values.add(value);
     }
   });
 
   return Array.from(values).sort((left, right) =>
     left.localeCompare(right, "tr")
   );
+}
+
+export function getLearningMemoryKaynakTipiOptions(rows = []) {
+  return getUniqueSortedValues(rows, (row) => row.kaynakTipi);
+}
+
+export function getLearningMemoryDocumentTypeOptions(rows = []) {
+  return getUniqueSortedValues(rows, (row) => row.belgeTuru);
+}
+
+export function getLearningMemoryBankOptions(rows = []) {
+  return getUniqueSortedValues(rows, (row) => row.kaynakAdi);
+}
+
+export function getLearningMemoryStats(rows = []) {
+  const visibleRows = rows.filter(
+    (row) => String(row.status || "active").toLowerCase() !== "deleted"
+  );
+  const now = new Date();
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
+  const matchedThisMonth = visibleRows.filter((row) => {
+    if (!row.lastMatchedAt) return false;
+    const date = new Date(row.lastMatchedAt);
+    if (Number.isNaN(date.getTime())) return false;
+    return date.getFullYear() === currentYear && date.getMonth() === currentMonth;
+  });
+  const topMatched = visibleRows.reduce((best, row) => {
+    if (!best || Number(row.matchCount || 0) > Number(best.matchCount || 0)) {
+      return row;
+    }
+    return best;
+  }, null);
+
+  return {
+    total: visibleRows.length,
+    active: visibleRows.filter((row) => row.status === "active").length,
+    passive: visibleRows.filter((row) => row.status === "passive").length,
+    matchedThisMonth: matchedThisMonth.length,
+    topMatched,
+  };
 }

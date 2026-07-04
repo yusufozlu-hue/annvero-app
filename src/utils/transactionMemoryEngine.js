@@ -441,7 +441,9 @@ export function findLearningSuggestion(candidate = {}, learningMemory = []) {
 
   for (const record of learningMemory) {
     if (record?.is_active === false) continue;
-    if (String(record?.status || "active").toLowerCase() === "passive") continue;
+    if (["passive", "deleted"].includes(String(record?.status || "active").toLowerCase())) {
+      continue;
+    }
     if (companyId && record.company_id && record.company_id !== companyId) continue;
 
     const score = Math.max(

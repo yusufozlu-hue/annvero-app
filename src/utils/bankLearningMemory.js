@@ -57,7 +57,9 @@ export function mapLearningMemoryRecordToItem(record, draft = {}, originalRow = 
     createdAt: record.created_at,
     updatedAt: record.updated_at,
     isActive:
-      record.status === "passive" ? false : record.is_active !== false,
+      ["passive", "deleted"].includes(String(record.status || "").toLowerCase())
+        ? false
+        : record.is_active !== false,
   };
 }
 
@@ -208,7 +210,9 @@ export function findBankLucaLearningMemoryMatch(row, learningMemory = [], contex
 
   for (const record of learningMemory) {
     if (record?.is_active === false) continue;
-    if (String(record?.status || "active").toLowerCase() === "passive") continue;
+    if (["passive", "deleted"].includes(String(record?.status || "active").toLowerCase())) {
+      continue;
+    }
 
     const baseScore = scoreMemorySearchKey(record, row);
     const contextScores = getContextScores(record, row, context);

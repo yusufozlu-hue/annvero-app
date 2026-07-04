@@ -31,6 +31,7 @@ export async function GET(request) {
 
   if (!includeInactive) {
     query = query.neq("status", "passive");
+    query = query.neq("status", "deleted");
   }
 
   let { data, error } = await query.order("learned_at", { ascending: false });
@@ -53,7 +54,9 @@ export async function GET(request) {
     : (data || []).filter(
         (row) =>
           row?.is_active !== false &&
-          String(row?.status || "active").toLowerCase() !== "passive"
+          !["passive", "deleted"].includes(
+            String(row?.status || "active").toLowerCase()
+          )
       );
 
   return NextResponse.json({ data: rows });
