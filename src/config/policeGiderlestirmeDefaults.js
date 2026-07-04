@@ -13,13 +13,9 @@ export const ARAC_SAHIPLIK = {
   KIRALIK: "kiralik",
 };
 
-export const KDV_DURUMU = {
-  DAHIL: "dahil",
-  HARIC: "haric",
-};
-
 export const DEFAULT_GIDER_HESABI = "770";
 export const DEFAULT_GELECEK_DONEM_HESABI = "180";
+export const DEFAULT_GELECEK_YIL_HESABI = "280";
 export const DEFAULT_KKEG_HESAP = "689";
 
 export const DEFAULT_BINEK_KISIT_ORANI = 100;

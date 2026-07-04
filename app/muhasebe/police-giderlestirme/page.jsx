@@ -11,7 +11,6 @@ import {
   DEFAULT_GELECEK_DONEM_HESABI,
   DEFAULT_GIDER_HESABI,
   GIDERLESTIRME_TIPI,
-  KDV_DURUMU,
 } from "@/src/config/policeGiderlestirmeDefaults";
 import { normalizeCompanyRecord } from "@/src/utils/companyCenter";
 import { getCompanyDisplayName } from "@/src/utils/companies";
@@ -90,7 +89,6 @@ export default function PoliceGiderlestirmePage() {
     bitis: "",
     toplamTutar: "",
     aracTipi: ARAC_TIPI.BINEK,
-    kdvDurumu: KDV_DURUMU.DAHIL,
     giderHesabi: "",
     gelecekDonemHesabi: "",
     aciklama: "trafik sigortası",
@@ -161,6 +159,7 @@ export default function PoliceGiderlestirmePage() {
   const handleAddManualPolice = () => {
     const entry = createManualPoliceEntry({
       ...manualForm,
+      donemYili,
       giderHesabi: manualForm.giderHesabi || defaultGiderHesabi,
       gelecekDonemHesabi: manualForm.gelecekDonemHesabi || defaultGelecekDonemHesabi,
     });
@@ -436,14 +435,14 @@ export default function PoliceGiderlestirmePage() {
               onChange={(event) => setManualForm((f) => ({ ...f, plaka: event.target.value }))}
             />
             <input
-              type="date"
               className={inputClassName}
+              placeholder="Başlangıç tarihi (01.06 veya 01.06.2026)"
               value={manualForm.baslangic}
               onChange={(event) => setManualForm((f) => ({ ...f, baslangic: event.target.value }))}
             />
             <input
-              type="date"
               className={inputClassName}
+              placeholder="Bitiş tarihi (01/06 veya 01/06/2027)"
               value={manualForm.bitis}
               onChange={(event) => setManualForm((f) => ({ ...f, bitis: event.target.value }))}
             />
@@ -462,14 +461,6 @@ export default function PoliceGiderlestirmePage() {
             >
               <option value={ARAC_TIPI.BINEK}>Binek</option>
               <option value={ARAC_TIPI.TICARI}>Ticari</option>
-            </select>
-            <select
-              className={inputClassName}
-              value={manualForm.kdvDurumu}
-              onChange={(event) => setManualForm((f) => ({ ...f, kdvDurumu: event.target.value }))}
-            >
-              <option value={KDV_DURUMU.DAHIL}>KDV Dahil</option>
-              <option value={KDV_DURUMU.HARIC}>KDV Hariç</option>
             </select>
             <input
               className={inputClassName}
@@ -529,25 +520,33 @@ export default function PoliceGiderlestirmePage() {
         )}
 
         {summary && (
-          <section className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
-            {[
-              { label: "Toplam Poliçe", value: formatMoney(summary.toplamPoliceTutari) },
-              { label: "Bu Dönem Gider", value: formatMoney(summary.buDonemGider) },
-              { label: "Gelecek Dönem", value: formatMoney(summary.gelecekDonemGider) },
-              { label: "Kabul Edilen", value: formatMoney(summary.kabulEdilenGider) },
-              { label: "KKEG", value: formatMoney(summary.kkegTutari) },
-              { label: "Binek Poliçe", value: summary.binekPoliceSayisi },
-              { label: "Ticari Poliçe", value: summary.ticariPoliceSayisi },
-            ].map((card) => (
-              <div
-                key={card.label}
-                className="rounded-xl border border-gray-800 bg-gray-900/60 p-4"
-              >
-                <p className="text-xs text-gray-500">{card.label}</p>
-                <p className="mt-1 text-lg font-semibold">{card.value}</p>
+          <>
+            <section className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
+              {[
+                { label: "Toplam Poliçe", value: formatMoney(summary.toplamPoliceTutari) },
+                { label: "Cari Yıl Gideri / 770", value: formatMoney(summary.buDonemGider) },
+                { label: "Aynı Yıl Gelecek Ay / 180", value: formatMoney(summary.gelecekAyGider) },
+                { label: "Sonraki Mali Yıl / 280", value: formatMoney(summary.gelecekYilGider) },
+                { label: "Toplam Kontrol", value: formatMoney(summary.dagitimToplami) },
+                { label: "Kabul Edilen", value: formatMoney(summary.kabulEdilenGider) },
+                { label: "KKEG", value: formatMoney(summary.kkegTutari) },
+                { label: "Poliçe Sayısı", value: `${summary.binekPoliceSayisi}/${summary.ticariPoliceSayisi}` },
+              ].map((card) => (
+                <div
+                  key={card.label}
+                  className="rounded-xl border border-gray-800 bg-gray-900/60 p-4"
+                >
+                  <p className="text-xs text-gray-500">{card.label}</p>
+                  <p className="mt-1 text-lg font-semibold">{card.value}</p>
+                </div>
+              ))}
+            </section>
+            {!summary.kontrolEsit ? (
+              <div className="mt-4 rounded-xl border border-red-700 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+                Poliçe toplamı ile dağıtım toplamı eşleşmiyor.
               </div>
-            ))}
-          </section>
+            ) : null}
+          </>
         )}
 
         {(lucaGiderlestirme?.enabled || lucaKkeg?.enabled) && (
@@ -581,6 +580,7 @@ export default function PoliceGiderlestirmePage() {
                     <th className="px-2 py-2">Poliçe</th>
                     <th className="px-2 py-2">Tarih</th>
                     <th className="px-2 py-2">Dönem</th>
+                    <th className="px-2 py-2">Sınıf</th>
                     <th className="px-2 py-2">Giderleşecek</th>
                     <th className="px-2 py-2">Kabul</th>
                     <th className="px-2 py-2">KKEG</th>
@@ -605,6 +605,13 @@ export default function PoliceGiderlestirmePage() {
                             updatePreviewRow(row.id, { donem: event.target.value })
                           }
                         />
+                      </td>
+                      <td className="px-2 py-2">
+                        {row.giderSinifi === "gelecek_yil"
+                          ? "280"
+                          : row.giderSinifi === "gelecek_ay"
+                            ? "180"
+                            : "770"}
                       </td>
                       <td className="px-2 py-2">
                         <input

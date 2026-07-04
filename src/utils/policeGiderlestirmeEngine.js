@@ -3,10 +3,10 @@ import {
   ARAC_TIPI,
   DEFAULT_BINEK_KISIT_ORANI,
   DEFAULT_GELECEK_DONEM_HESABI,
+  DEFAULT_GELECEK_YIL_HESABI,
   DEFAULT_GIDER_HESABI,
   DEFAULT_KKEG_HESAP,
   GIDERLESTIRME_TIPI,
-  KDV_DURUMU,
   buildBinekKkegFisAciklama,
   buildGiderlestirmeFisAciklama,
 } from "@/src/config/policeGiderlestirmeDefaults";
@@ -21,6 +21,24 @@ function compactText(value) {
 
 function roundMoney(value) {
   return Number(Number(value || 0).toFixed(2));
+}
+
+function normalizePolicyDateInput(value, fallbackYear = new Date().getFullYear()) {
+  if (value instanceof Date || typeof value === "number") return formatDateTR(value);
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  const shortMatch = text.match(/^(\d{1,2})[./](\d{1,2})$/);
+  if (shortMatch) {
+    return formatDateTR(`${shortMatch[1]}.${shortMatch[2]}.${fallbackYear}`);
+  }
+
+  const fullMatch = text.match(/^(\d{1,2})[./](\d{1,2})[./](\d{2,4})$/);
+  if (fullMatch) {
+    return formatDateTR(`${fullMatch[1]}.${fullMatch[2]}.${fullMatch[3]}`);
+  }
+
+  return formatDateTR(text);
 }
 
 function normalizeAracTipi(value) {
@@ -68,12 +86,6 @@ function daysBetweenInclusive(start, end) {
   const endDate = parseDateTR(end);
   if (!startDate || !endDate || endDate < startDate) return 0;
   return Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1;
-}
-
-function normalizeKdvAmount(tutar, kdvDurumu) {
-  const amount = roundMoney(tutar);
-  if (kdvDurumu === KDV_DURUMU.HARIC) return amount;
-  return roundMoney(amount / 1.2);
 }
 
 function formatDonemLabel(year, month) {
@@ -133,14 +145,6 @@ export function parsePoliceListSheet(sheetRows = []) {
         getSheetCell(row, headers, ["TUTAR", "TOPLAM TUTAR", "POLİÇE TUTARI", "PRIM"])
       );
 
-      const kdvText = String(
-        getSheetCell(row, headers, ["KDV", "KDV DURUMU", "KDV DAHİL"]) || ""
-      ).toLowerCase();
-
-      const kdvDurumu = kdvText.includes("HARIC") || kdvText.includes("HARİÇ")
-        ? KDV_DURUMU.HARIC
-        : KDV_DURUMU.DAHIL;
-
       const giderHesabi = String(
         getSheetCell(row, headers, ["GİDER HESABI", "GIDER HESABI", "HESAP KODU"]) || ""
       ).trim();
@@ -163,10 +167,9 @@ export function parsePoliceListSheet(sheetRows = []) {
         id: `police-${index + 1}`,
         policeNo: policeNo || `POL-${index + 1}`,
         plaka,
-        baslangic: formatDateTR(baslangic),
-        bitis: formatDateTR(bitis),
+        baslangic: normalizePolicyDateInput(baslangic),
+        bitis: normalizePolicyDateInput(bitis),
         toplamTutar,
-        kdvDurumu,
         giderHesabi,
         gelecekDonemHesabi,
         aracTipi,
@@ -266,7 +269,7 @@ export function buildMonthlyAllocations(police, donemYili) {
   const gunSayisi = daysBetweenInclusive(police.baslangic, police.bitis);
   if (gunSayisi <= 0) return [];
 
-  const netTutar = normalizeKdvAmount(police.toplamTutar, police.kdvDurumu);
+  const netTutar = roundMoney(police.toplamTutar);
   const startDate = parseDateTR(police.baslangic);
   const endDate = parseDateTR(police.bitis);
   if (!startDate || !endDate) return [];
@@ -292,10 +295,6 @@ export function buildMonthlyAllocations(police, donemYili) {
     }
 
     cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
-  }
-
-  if (donemYili) {
-    return allocations.filter((item) => String(item.year) === String(donemYili));
   }
 
   return allocations;
@@ -362,6 +361,7 @@ export function buildPolicePreviewRows(policeList = [], params = {}) {
     kisitLimit = 0,
     defaultGiderHesabi = DEFAULT_GIDER_HESABI,
     defaultGelecekDonemHesabi = DEFAULT_GELECEK_DONEM_HESABI,
+    defaultGelecekYilHesabi = DEFAULT_GELECEK_YIL_HESABI,
   } = params;
 
   const previewRows = [];
@@ -373,7 +373,7 @@ export function buildPolicePreviewRows(policeList = [], params = {}) {
     if (!startDate || !endDate) continue;
 
     const gunSayisi = daysBetweenInclusive(police.baslangic, police.bitis);
-    const netTutar = normalizeKdvAmount(police.toplamTutar, police.kdvDurumu);
+    const netTutar = roundMoney(police.toplamTutar);
 
     let cursor = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
     const lastMonth = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
@@ -417,8 +417,22 @@ export function buildPolicePreviewRows(policeList = [], params = {}) {
         donem: period.donem,
         donemYili: period.year,
         giderlesecekTutar: period.giderlesecekTutar,
-        giderHesabi: police.giderHesabi || defaultGiderHesabi,
+        giderSinifi:
+          String(period.year) > String(donemYili)
+            ? "gelecek_yil"
+            : String(period.year) === String(donemYili) &&
+                Number(period.month || 0) > new Date().getMonth() + 1
+              ? "gelecek_ay"
+              : "cari_yil",
+        giderHesabi:
+          String(period.year) > String(donemYili)
+            ? defaultGelecekYilHesabi
+            : String(period.year) === String(donemYili) &&
+                Number(period.month || 0) > new Date().getMonth() + 1
+              ? police.gelecekDonemHesabi || defaultGelecekDonemHesabi
+              : police.giderHesabi || defaultGiderHesabi,
         gelecekDonemHesabi: police.gelecekDonemHesabi || defaultGelecekDonemHesabi,
+        gelecekYilHesabi: defaultGelecekYilHesabi,
         aciklama: buildGiderlestirmeFisAciklama(period.donem, police.plaka, police.aciklama),
         kkegDurumu: police.aracTipi === ARAC_TIPI.BINEK && police.kisitTabi,
         manuallyEdited: false,
@@ -426,10 +440,6 @@ export function buildPolicePreviewRows(policeList = [], params = {}) {
 
       previewRows.push(applyBinekKisit(baseRow, { kisitOrani, kisitLimit }));
     }
-  }
-
-  if (donemYili) {
-    return previewRows.filter((row) => String(row.donemYili) === String(donemYili));
   }
 
   return previewRows;
@@ -451,11 +461,10 @@ export function recalculatePolicePreviewRows(rows = [], params = {}) {
 }
 
 export function recalculatePoliceSummary(previewRows = [], policeList = [], params = {}) {
-  const donemYili = String(params.donemYili || new Date().getFullYear());
-
   let toplamPoliceTutari = 0;
   let buDonemGider = 0;
-  let gelecekDonemGider = 0;
+  let gelecekAyGider = 0;
+  let gelecekYilGider = 0;
   let kabulEdilenGider = 0;
   let kkegTutari = 0;
   let binekPoliceSayisi = 0;
@@ -464,7 +473,7 @@ export function recalculatePoliceSummary(previewRows = [], policeList = [], para
   const seenPolice = new Set();
 
   for (const police of policeList) {
-    toplamPoliceTutari += normalizeKdvAmount(police.toplamTutar, police.kdvDurumu);
+    toplamPoliceTutari += roundMoney(police.toplamTutar);
     if (seenPolice.has(police.id)) continue;
     seenPolice.add(police.id);
     if (police.aracTipi === ARAC_TIPI.TICARI) ticariPoliceSayisi += 1;
@@ -472,24 +481,29 @@ export function recalculatePoliceSummary(previewRows = [], policeList = [], para
   }
 
   for (const row of previewRows) {
-    buDonemGider += roundMoney(row.giderlesecekTutar);
+    if (row.giderSinifi === "gelecek_yil") {
+      gelecekYilGider += roundMoney(row.giderlesecekTutar);
+    } else if (row.giderSinifi === "gelecek_ay") {
+      gelecekAyGider += roundMoney(row.giderlesecekTutar);
+    } else {
+      buDonemGider += roundMoney(row.giderlesecekTutar);
+    }
     kabulEdilenGider += roundMoney(row.kabulEdilenGider);
     kkegTutari += roundMoney(row.kkegTutari);
   }
 
-  for (const police of policeList) {
-    const allMonthly = buildMonthlyAllocationsForPolice(police);
-    for (const item of allMonthly) {
-      if (String(item.year) !== donemYili) {
-        gelecekDonemGider += item.giderlesecekTutar;
-      }
-    }
-  }
+  const dagitimToplami = roundMoney(buDonemGider + gelecekAyGider + gelecekYilGider);
+  const kontrolFarki = roundMoney(toplamPoliceTutari - dagitimToplami);
 
   return {
     toplamPoliceTutari: roundMoney(toplamPoliceTutari),
     buDonemGider: roundMoney(buDonemGider),
-    gelecekDonemGider: roundMoney(gelecekDonemGider),
+    gelecekDonemGider: roundMoney(gelecekAyGider + gelecekYilGider),
+    gelecekAyGider: roundMoney(gelecekAyGider),
+    gelecekYilGider: roundMoney(gelecekYilGider),
+    dagitimToplami,
+    kontrolFarki,
+    kontrolEsit: Math.abs(kontrolFarki) < 0.02,
     kabulEdilenGider: roundMoney(kabulEdilenGider),
     kkegTutari: roundMoney(kkegTutari),
     binekPoliceSayisi,
@@ -501,7 +515,7 @@ function buildMonthlyAllocationsForPolice(police) {
   const gunSayisi = daysBetweenInclusive(police.baslangic, police.bitis);
   if (gunSayisi <= 0) return [];
 
-  const netTutar = normalizeKdvAmount(police.toplamTutar, police.kdvDurumu);
+  const netTutar = roundMoney(police.toplamTutar);
   const startDate = parseDateTR(police.baslangic);
   const endDate = parseDateTR(police.bitis);
   if (!startDate || !endDate) return [];
@@ -653,6 +667,7 @@ export function runPoliceGiderlestirmePipeline({
   kisitLimit = 0,
   defaultGiderHesabi = DEFAULT_GIDER_HESABI,
   defaultGelecekDonemHesabi = DEFAULT_GELECEK_DONEM_HESABI,
+  defaultGelecekYilHesabi = DEFAULT_GELECEK_YIL_HESABI,
   firmaId = "",
 }) {
   const aracMap = buildAracMap(aracList);
@@ -668,6 +683,7 @@ export function runPoliceGiderlestirmePipeline({
     kisitLimit,
     defaultGiderHesabi,
     defaultGelecekDonemHesabi,
+    defaultGelecekYilHesabi,
   };
 
   const previewRows = buildPolicePreviewRows(enrichedPolice, params);
@@ -702,10 +718,9 @@ export function createManualPoliceEntry(form = {}) {
     id: `manual-${Date.now()}`,
     policeNo: form.policeNo || `POL-${Date.now()}`,
     plaka: form.plaka,
-    baslangic: formatDateTR(form.baslangic),
-    bitis: formatDateTR(form.bitis),
+    baslangic: normalizePolicyDateInput(form.baslangic, form.donemYili),
+    bitis: normalizePolicyDateInput(form.bitis, form.donemYili),
     toplamTutar: parseMoneyTR(form.toplamTutar),
-    kdvDurumu: form.kdvDurumu || KDV_DURUMU.DAHIL,
     giderHesabi: form.giderHesabi || "",
     gelecekDonemHesabi: form.gelecekDonemHesabi || "",
     aracTipi: form.aracTipi || ARAC_TIPI.BINEK,

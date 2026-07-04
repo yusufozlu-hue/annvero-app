@@ -57,8 +57,11 @@ export function buildPoliceOzetSheetRows(summary = {}, meta = {}) {
     ["Giderleştirme Tipi", meta.giderlestirmeTipi || ""],
     [],
     ["Toplam Poliçe Tutarı", summary.toplamPoliceTutari ?? 0],
-    ["Bu Dönem Giderleşen", summary.buDonemGider ?? 0],
-    ["Gelecek Dönem Gideri", summary.gelecekDonemGider ?? 0],
+    ["Cari Yıl Gideri / 770", summary.buDonemGider ?? 0],
+    ["Aynı Yıl Gelecek Ay / 180", summary.gelecekAyGider ?? 0],
+    ["Sonraki Mali Yıl / 280", summary.gelecekYilGider ?? 0],
+    ["Toplam Kontrol", summary.dagitimToplami ?? 0],
+    ["Kontrol Farkı", summary.kontrolFarki ?? 0],
     ["Kabul Edilen Gider", summary.kabulEdilenGider ?? 0],
     ["KKEG Tutarı", summary.kkegTutari ?? 0],
     ["Binek Araç Poliçe Sayısı", summary.binekPoliceSayisi ?? 0],
@@ -70,6 +73,7 @@ export function buildDonemDagilimSheetRows(previewRows = []) {
   return [
     [
       "Dönem",
+      "Sınıf",
       "Plaka",
       "Poliçe No",
       "Araç Tipi",
@@ -81,6 +85,11 @@ export function buildDonemDagilimSheetRows(previewRows = []) {
     ],
     ...previewRows.map((row) => [
       row.donem,
+      row.giderSinifi === "gelecek_yil"
+        ? "280 Gelecek Yıllara Ait Gider"
+        : row.giderSinifi === "gelecek_ay"
+          ? "180 Gelecek Aylara Ait Gider"
+          : "770 Cari Yıl Gideri",
       row.plaka,
       row.policeNo,
       row.aracTipi,
