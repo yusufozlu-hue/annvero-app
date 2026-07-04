@@ -13,6 +13,194 @@ export const UNRECOGNIZED_STATUS_LABEL = {
   dismissed: "Yok sayıldı",
 };
 
+/** Tanınmama nedenleri (UI badge / istatistik) */
+export const ISSUE_TYPE = {
+  MISSING_CARI: "missing_cari",
+  MISSING_ACCOUNT: "missing_account",
+  UNCLEAR_DOCUMENT: "unclear_document",
+  FIRST_SEEN: "first_seen",
+};
+
+export const ISSUE_TYPE_META = {
+  [ISSUE_TYPE.MISSING_CARI]: {
+    id: ISSUE_TYPE.MISSING_CARI,
+    label: "Cari bulunamadı",
+    className: "bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/40",
+  },
+  [ISSUE_TYPE.MISSING_ACCOUNT]: {
+    id: ISSUE_TYPE.MISSING_ACCOUNT,
+    label: "Hesap bulunamadı",
+    className: "bg-sky-500/15 text-sky-200 ring-1 ring-sky-500/40",
+  },
+  [ISSUE_TYPE.UNCLEAR_DOCUMENT]: {
+    id: ISSUE_TYPE.UNCLEAR_DOCUMENT,
+    label: "Belge tipi belirsiz",
+    className: "bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-500/40",
+  },
+  [ISSUE_TYPE.FIRST_SEEN]: {
+    id: ISSUE_TYPE.FIRST_SEEN,
+    label: "İlk kez görülen",
+    className: "bg-red-500/15 text-red-200 ring-1 ring-red-500/40",
+  },
+};
+
+export function resolveRowIssues(row = {}) {
+  const account =
+    String(row.accountCode || row.suggestedAccountCode || "").trim();
+  const cari = String(row.cariName || row.suggestedCari || "").trim();
+  const documentType = String(
+    row.documentType || row.suggestedDocumentType || ""
+  )
+    .trim()
+    .toUpperCase();
+  const risk = String(row.metadata?.riskDurumu || "").trim().toUpperCase();
+  const hasMemoryHint = Boolean(
+    row.suggestedMemoryId || (Number(row.suggestionScore) || 0) >= 45
+  );
+
+  const issues = [];
+
+  if (!hasMemoryHint) {
+    issues.push(ISSUE_TYPE.FIRST_SEEN);
+  }
+
+  if (!account || risk === "HESAP_EKSIK") {
+    issues.push(ISSUE_TYPE.MISSING_ACCOUNT);
+  }
+
+  if (!cari) {
+    issues.push(ISSUE_TYPE.MISSING_CARI);
+  }
+
+  if (!documentType || documentType === "DK") {
+    // Öneri yoksa ve yalnızca varsayılan DK ise belge tipi belirsiz sayılır
+    if (!row.suggestedDocumentType && !row.documentType) {
+      issues.push(ISSUE_TYPE.UNCLEAR_DOCUMENT);
+    } else if (!row.suggestedDocumentType && !hasMemoryHint) {
+      issues.push(ISSUE_TYPE.UNCLEAR_DOCUMENT);
+    }
+  }
+
+  if (!issues.length) {
+    issues.push(ISSUE_TYPE.FIRST_SEEN);
+  }
+
+  return issues;
+}
+
+export function getPrimaryIssue(row = {}) {
+  const issues = resolveRowIssues(row);
+  const priority = [
+    ISSUE_TYPE.FIRST_SEEN,
+    ISSUE_TYPE.MISSING_ACCOUNT,
+    ISSUE_TYPE.MISSING_CARI,
+    ISSUE_TYPE.UNCLEAR_DOCUMENT,
+  ];
+
+  for (const key of priority) {
+    if (issues.includes(key)) return key;
+  }
+
+  return issues[0] || ISSUE_TYPE.FIRST_SEEN;
+}
+
+export function buildUnrecognizedStats(rows = []) {
+  const pending = rows.filter((row) => row.status === UNRECOGNIZED_STATUS.PENDING);
+
+  return {
+    total: pending.length,
+    missingCari: pending.filter((row) =>
+      resolveRowIssues(row).includes(ISSUE_TYPE.MISSING_CARI)
+    ).length,
+    missingAccount: pending.filter((row) =>
+      resolveRowIssues(row).includes(ISSUE_TYPE.MISSING_ACCOUNT)
+    ).length,
+    unclearDocument: pending.filter((row) =>
+      resolveRowIssues(row).includes(ISSUE_TYPE.UNCLEAR_DOCUMENT)
+    ).length,
+    firstSeen: pending.filter((row) =>
+      resolveRowIssues(row).includes(ISSUE_TYPE.FIRST_SEEN)
+    ).length,
+  };
+}
+
+export function parseTransactionDateValue(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) {
+    return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+  }
+
+  const tr = text.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/);
+  if (tr) {
+    return new Date(Number(tr[3]), Number(tr[2]) - 1, Number(tr[1]));
+  }
+
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function filterUnrecognizedRows(rows = [], filters = {}) {
+  const {
+    search = "",
+    status = "pending",
+    bank = "",
+    transactionType = "",
+    issueType = "",
+    dateFrom = "",
+    dateTo = "",
+  } = filters;
+
+  const query = String(search || "").trim().toLocaleLowerCase("tr-TR");
+  const fromDate = dateFrom ? new Date(`${dateFrom}T00:00:00`) : null;
+  const toDate = dateTo ? new Date(`${dateTo}T23:59:59`) : null;
+
+  return rows.filter((row) => {
+    if (status && status !== "all" && row.status !== status) return false;
+
+    if (bank && String(row.sourceBank || "") !== bank) return false;
+
+    if (
+      transactionType &&
+      String(row.transactionType || "").toUpperCase() !==
+        String(transactionType).toUpperCase()
+    ) {
+      return false;
+    }
+
+    if (issueType) {
+      const issues = resolveRowIssues(row);
+      if (!issues.includes(issueType)) return false;
+    }
+
+    if (fromDate || toDate) {
+      const rowDate = parseTransactionDateValue(row.transactionDate);
+      if (!rowDate) return false;
+      if (fromDate && rowDate < fromDate) return false;
+      if (toDate && rowDate > toDate) return false;
+    }
+
+    if (!query) return true;
+
+    const haystack = [
+      row.rawDescription,
+      row.cleanDescription,
+      row.keyword,
+      row.suggestedAccountCode,
+      row.suggestedAccountName,
+      row.suggestedCari,
+      row.sourceBank,
+      row.transactionType,
+    ]
+      .join(" ")
+      .toLocaleLowerCase("tr-TR");
+
+    return haystack.includes(query);
+  });
+}
+
 const NOISE_TOKENS = new Set([
   "TR",
   "TL",
