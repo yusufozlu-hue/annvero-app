@@ -188,6 +188,11 @@ const links = [
     Icon: ShieldCheckIcon,
   },
   {
+    title: "Beyanname Tahakkuk",
+    href: "/muhasebe/beyanname-tahakkuk",
+    Icon: LandmarkIcon,
+  },
+  {
     title: "E-Defter Kontrol",
     href: "/muhasebe/e-defter-kontrol",
     Icon: ShieldCheckIcon,

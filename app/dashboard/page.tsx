@@ -6,6 +6,10 @@ import AuthUserBar from "@/src/components/AuthUserBar";
 import { useAdminAccess } from "@/src/hooks/useAdminAccess";
 import BuildVersionBadge from "@/app/components/BuildVersionBadge";
 import MevzuatHapNotlariDashboardCard from "@/src/components/MevzuatHapNotlariDashboardCard";
+import {
+  buildDeclarationDashboardStats,
+  loadDeclarationAccrualRecords,
+} from "@/src/utils/beyannameTahakkukEngine";
 
 type MenuItem = {
   label: string;
@@ -31,6 +35,13 @@ type DashboardLearningStats = {
   learnedRules: number | null;
   learnedToday: number | null;
   highConfidenceMatches: number | null;
+};
+
+type DeclarationDashboardStats = {
+  pending: number;
+  paidThisMonth: number;
+  underpaidWarnings: number;
+  lateFeeFindings: number;
 };
 
 type DashboardMemoryRow = {
@@ -115,6 +126,7 @@ const menuGroups: MenuGroup[] = [
     title: "Vergi & Beyanname",
     items: [
       { label: "KDV Matrah Kontrol", href: "/muhasebe/kdv-matrah-kontrol" },
+      { label: "Beyanname / Tahakkuk", href: "/muhasebe/beyanname-tahakkuk" },
       { label: "Poliçe Giderleştirme", href: "/muhasebe/police-giderlestirme" },
       { label: "Resmi Bildirimler", href: "/dashboard/ofis-takip/resmi-bildirimler" },
     ],
@@ -187,6 +199,13 @@ const emptyLearningStats: DashboardLearningStats = {
   highConfidenceMatches: null,
 };
 
+const emptyDeclarationStats: DeclarationDashboardStats = {
+  pending: 0,
+  paidThisMonth: 0,
+  underpaidWarnings: 0,
+  lateFeeFindings: 0,
+};
+
 const workflowItems = [
   { label: "Banka ekstreleri alındı", value: "42", status: "Tamamlandı" },
   { label: "Fiş satırları oluşturuldu", value: "1.920", status: "İşleniyor" },
@@ -209,6 +228,7 @@ const recentActivities = [
 
 const quickActions = [
   { label: "Ekstre Yükle", href: "/muhasebe/banka-ekstresi" },
+  { label: "Tahakkuk Kaydı", href: "/muhasebe/beyanname-tahakkuk" },
   { label: "Fiş Kontrol Et", href: "/muhasebe/fis-kontrol" },
   { label: "Firma Aç", href: "/muhasebe/firma-yonetimi" },
   { label: "Hap Not Ekle", href: "/admin/mevzuat-hap-notlari" },
@@ -222,6 +242,8 @@ export default function DashboardPage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [learningStats, setLearningStats] =
     useState<DashboardLearningStats>(emptyLearningStats);
+  const [declarationStats, setDeclarationStats] =
+    useState<DeclarationDashboardStats>(emptyDeclarationStats);
 
   useEffect(() => {
     let active = true;
@@ -284,6 +306,10 @@ export default function DashboardPage() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    setDeclarationStats(buildDeclarationDashboardStats(loadDeclarationAccrualRecords()));
   }, []);
 
   const kpiCards = useMemo<KpiCard[]>(
@@ -402,6 +428,41 @@ export default function DashboardPage() {
           {kpiCards.map((card) => (
             <KpiTile key={card.label} card={card} />
           ))}
+        </section>
+
+        <section className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <KpiTile
+            card={{
+              label: "Bekleyen Beyanname/Tahakkuk",
+              value: formatStatValue(declarationStats.pending),
+              helper: "Ödeme bekleyen tahakkuk kayıtları",
+              tone: "cyan",
+            }}
+          />
+          <KpiTile
+            card={{
+              label: "Bu Ay Ödenenler",
+              value: formatStatValue(declarationStats.paidThisMonth),
+              helper: "Bu ay banka ödemesiyle kapananlar",
+              tone: "emerald",
+            }}
+          />
+          <KpiTile
+            card={{
+              label: "Eksik Ödeme Uyarıları",
+              value: formatStatValue(declarationStats.underpaidWarnings),
+              helper: "Tahakkuk tutarının altında kalan ödemeler",
+              tone: "amber",
+            }}
+          />
+          <KpiTile
+            card={{
+              label: "Gecikme Zammı Tespitleri",
+              value: formatStatValue(declarationStats.lateFeeFindings),
+              helper: "Tahakkuk üstü fark dağıtımları",
+              tone: "violet",
+            }}
+          />
         </section>
 
         <section className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[1.45fr_0.9fr]">

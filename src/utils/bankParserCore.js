@@ -16,6 +16,7 @@ import { applyLearningMemoryToStandardLucaRows } from "@/src/utils/bankLearningM
 import { buildUnrecognizedQueueItems } from "@/src/utils/bankParserLearningPipeline";
 import { applyAccountMemoryV1RecordsToRows } from "@/src/utils/accountMemoryV1";
 import { applySmartBankSuggestionsToRows } from "@/src/utils/bankSmartSuggestions";
+import { applyDeclarationAccrualDistributionToRows } from "@/src/utils/beyannameTahakkukEngine";
 
 export const BANK_PARSE_STAGES = {
   READING: "Dosya okunuyor",
@@ -183,6 +184,7 @@ export function buildBankParserResult({
   learningMemory,
   accountMemoryRecords,
   accountingRules,
+  declarationAccrualRecords,
   selectedCompanyId,
 }) {
   const normalizedRows = parsedRows.map((row) =>
@@ -198,6 +200,7 @@ export function buildBankParserResult({
     learningMemory,
     accountMemoryRecords,
     accountingRules,
+    declarationAccrualRecords,
     selectedCompanyId,
   });
 }
@@ -211,6 +214,7 @@ export function buildBankParserResultFromNormalizedRows({
   learningMemory,
   accountMemoryRecords,
   accountingRules,
+  declarationAccrualRecords,
   selectedCompanyId,
 }) {
   const movementRows = mapParsedRowsToStandardMovements(normalizedRows, {
@@ -248,11 +252,22 @@ export function buildBankParserResultFromNormalizedRows({
     }
   );
 
-  const standardLucaRows = applySmartBankSuggestionsToRows(memoryRows, {
+  const smartRows = applySmartBankSuggestionsToRows(memoryRows, {
     companyPlans,
     selectedBank,
     selectedCompanyId,
   });
+
+  const declarationResult = applyDeclarationAccrualDistributionToRows(
+    smartRows,
+    declarationAccrualRecords,
+    {
+      companyId: selectedCompanyId,
+      selectedBank,
+    }
+  );
+
+  const standardLucaRows = declarationResult.rows;
 
   const unrecognizedItems = buildUnrecognizedQueueItems(standardLucaRows, {
     companyId: selectedCompanyId,
@@ -266,6 +281,7 @@ export function buildBankParserResultFromNormalizedRows({
     movementRows,
     standardLucaRows,
     unrecognizedItems,
+    declarationSummary: declarationResult.summary,
   };
 }
 

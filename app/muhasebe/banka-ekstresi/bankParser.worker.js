@@ -105,6 +105,7 @@ self.onmessage = async (event) => {
       learningMemory: context.learningMemory,
       accountMemoryRecords: context.accountMemoryRecords,
       accountingRules: context.accountingRules,
+      declarationAccrualRecords: context.declarationAccrualRecords,
       selectedCompanyId: context.selectedCompanyId,
     });
 

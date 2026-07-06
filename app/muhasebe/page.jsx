@@ -303,6 +303,11 @@ const categories = [
         href: "/muhasebe/kdv-matrah-kontrol",
       },
       {
+        title: "Beyanname / Tahakkuk Dağılım Merkezi",
+        desc: "Vergi ve SGK ödemelerini tahakkuk alt hesaplarına dağıtır.",
+        href: "/muhasebe/beyanname-tahakkuk",
+      },
+      {
         title: "E-Defter Kontrol Merkezi",
         desc: "E-defter berat öncesi fiş, yevmiye, ters bakiye ve dönem sonu kayıt kontrolleri.",
         href: "/muhasebe/e-defter-kontrol",

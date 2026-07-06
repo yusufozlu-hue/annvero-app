@@ -58,6 +58,10 @@ import {
   MEMORY_MATCH_LABEL,
 } from "@/src/utils/previewRowEdit";
 import { hasBankMovementError } from "@/src/utils/tableSearch";
+import {
+  loadDeclarationAccrualRecords,
+  saveDeclarationAccrualRecords,
+} from "@/src/utils/beyannameTahakkukEngine";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -95,6 +99,7 @@ export default function BankaParserPage() {
   const [ruleEngine, setRuleEngine] = useState({});
   const [learningMemory, setLearningMemory] = useState([]);
   const [accountingRules, setAccountingRules] = useState([]);
+  const [declarationAccrualRecords, setDeclarationAccrualRecords] = useState([]);
   const [previewSearch, setPreviewSearch] = useState("");
   const [previewQuickFilter, setPreviewQuickFilter] = useState("all");
   const [toast, setToast] = useState(null);
@@ -134,6 +139,7 @@ export default function BankaParserPage() {
       setAccountPlans(loadAccountPlansFromStorage());
       setRuleEngine(loadRuleEngineFromStorage());
       setAccountingRules(loadAccountingRulesFromStorage());
+      setDeclarationAccrualRecords(loadDeclarationAccrualRecords());
       refreshCompanies();
     };
 
@@ -399,6 +405,28 @@ export default function BankaParserPage() {
     logStandardLucaReport("banka-transfer", standardLucaRows);
   };
 
+  const markAppliedDeclarationsPaid = (declarationSummary) => {
+    const ids = declarationSummary?.appliedDeclarationIds || [];
+    const lateFeeIds = declarationSummary?.lateFeeDeclarationIds || [];
+    const underpaidIds = declarationSummary?.underpaidDeclarationIds || [];
+    if (!ids.length && !underpaidIds.length) return;
+
+    const nextRecords = loadDeclarationAccrualRecords().map((record) =>
+      ids.includes(record.id) || underpaidIds.includes(record.id)
+        ? {
+            ...record,
+            isPaid: ids.includes(record.id) ? true : record.isPaid,
+            lateFeeDetected: record.lateFeeDetected || lateFeeIds.includes(record.id),
+            underpaidWarning: record.underpaidWarning || underpaidIds.includes(record.id),
+            updatedAt: new Date().toISOString(),
+          }
+        : record
+    );
+
+    saveDeclarationAccrualRecords(nextRecords);
+    setDeclarationAccrualRecords(nextRecords);
+  };
+
   const resetFileInput = () => {
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -499,6 +527,7 @@ export default function BankaParserPage() {
             learningMemory,
             accountMemoryRecords: loadAccountMemoryV1Records(),
             accountingRules,
+            declarationAccrualRecords,
             selectedCompanyId,
           },
         },
@@ -542,6 +571,7 @@ export default function BankaParserPage() {
       setParsedNormalizedRows(result.normalizedRows || []);
       setMovementRows(result.movementRows || []);
       setStandardLucaRows(result.standardLucaRows || []);
+      markAppliedDeclarationsPaid(result.declarationSummary);
 
       await recordLearningMemoryUsage(result.standardLucaRows || []);
       const queuedCount = await queueUnrecognizedFromWorker(result.unrecognizedItems || []);
