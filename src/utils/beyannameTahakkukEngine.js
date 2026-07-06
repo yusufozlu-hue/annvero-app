@@ -3,6 +3,8 @@ import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
 import { normalizeParserText } from "@/src/utils/textNormalize";
 
 export const BEYANNAME_TAHAKKUK_STORAGE_KEY = "annvero_beyanname_tahakkuk_v1";
+export const BEYANNAME_ACCOUNT_MAPPING_STORAGE_KEY =
+  "annvero_beyanname_account_mappings_v1";
 
 export const BEYANNAME_TYPES = [
   "KDV",
@@ -15,33 +17,44 @@ export const BEYANNAME_TYPES = [
 ];
 
 export const LATE_FEE_ACCOUNT = {
-  code: "689.01.001",
-  name: "Gecikme Zammı ve Faiz Giderleri",
+  code: "770.01.900",
+  name: "Gecikme Zammı / Faiz Gideri",
 };
 
 export const DEFAULT_DECLARATION_DISTRIBUTIONS = {
-  KDV: [{ accountCode: "360.02.001", accountName: "Ödenecek KDV", amount: "" }],
-  KDV2: [{ accountCode: "360.02.002", accountName: "Ödenecek KDV2", amount: "" }],
+  KDV: [
+    { accountCode: "360.01.010", accountName: "Ödenecek KDV", amount: "", description: "KDV", isLateFee: false },
+    { accountCode: "770.01.900", accountName: "Gecikme Zammı / Faiz Gideri", amount: "", description: "Gecikme zammı", isLateFee: true },
+  ],
+  KDV2: [
+    { accountCode: "360.01.011", accountName: "Ödenecek KDV2", amount: "", description: "KDV2", isLateFee: false },
+    { accountCode: "770.01.900", accountName: "Gecikme Zammı / Faiz Gideri", amount: "", description: "Gecikme zammı", isLateFee: true },
+  ],
   MUHSGK: [
-    { accountCode: "360.01.001", accountName: "Ücret Gelir Vergisi", amount: "" },
-    { accountCode: "360.01.002", accountName: "Ücret Damga Vergisi", amount: "" },
-    { accountCode: "360.01.003", accountName: "Kira Stopajı", amount: "" },
-    { accountCode: "360.01.004", accountName: "SMM Stopajı", amount: "" },
-    { accountCode: "360.01.005", accountName: "Diğer Stopajlar", amount: "" },
+    { accountCode: "360.01.001", accountName: "Ücret Gelir Vergisi", amount: "", description: "Ücret gelir vergisi", isLateFee: false },
+    { accountCode: "360.01.002", accountName: "Ücret Damga Vergisi", amount: "", description: "Ücret damga vergisi", isLateFee: false },
+    { accountCode: "360.01.003", accountName: "Kira Stopajı", amount: "", description: "Kira stopajı", isLateFee: false },
+    { accountCode: "360.01.004", accountName: "SMM Stopajı", amount: "", description: "SMM stopajı", isLateFee: false },
+    { accountCode: "360.01.005", accountName: "Diğer Stopajlar", amount: "", description: "Diğer stopajlar", isLateFee: false },
+    { accountCode: "770.01.900", accountName: "Gecikme Zammı / Faiz Gideri", amount: "", description: "Gecikme zammı", isLateFee: true },
   ],
   SGK: [
-    { accountCode: "361.01.001", accountName: "Ödenecek SGK Primleri", amount: "" },
-    { accountCode: "361.01.002", accountName: "Ödenecek İşsizlik Primleri", amount: "" },
-    { accountCode: "361.03.001", accountName: "Ödenecek SGDP Primleri", amount: "" },
+    { accountCode: "361.01.001", accountName: "Ödenecek SGK Primleri", amount: "", description: "SGK primi", isLateFee: false },
+    { accountCode: "361.01.002", accountName: "Ödenecek İşsizlik Primleri", amount: "", description: "İşsizlik primi", isLateFee: false },
+    { accountCode: "361.03.001", accountName: "Ödenecek SGDP Primleri", amount: "", description: "SGDP primi", isLateFee: false },
+    { accountCode: "770.01.900", accountName: "Gecikme Zammı / Faiz Gideri", amount: "", description: "Gecikme zammı", isLateFee: true },
   ],
   "Konaklama Vergisi": [
-    { accountCode: "360.03.001", accountName: "Ödenecek Konaklama Vergisi", amount: "" },
+    { accountCode: "360.01.020", accountName: "Ödenecek Konaklama Vergisi", amount: "", description: "Konaklama vergisi", isLateFee: false },
+    { accountCode: "770.01.900", accountName: "Gecikme Zammı / Faiz Gideri", amount: "", description: "Gecikme zammı", isLateFee: true },
   ],
   "Turizm Payı": [
-    { accountCode: "360.04.001", accountName: "Ödenecek Turizm Payı", amount: "" },
+    { accountCode: "360.01.021", accountName: "Ödenecek Turizm Payı", amount: "", description: "Turizm payı", isLateFee: false },
+    { accountCode: "770.01.900", accountName: "Gecikme Zammı / Faiz Gideri", amount: "", description: "Gecikme zammı", isLateFee: true },
   ],
   "Damga Vergisi": [
-    { accountCode: "360.01.002", accountName: "Ödenecek Damga Vergisi", amount: "" },
+    { accountCode: "360.01.030", accountName: "Ödenecek Damga Vergisi", amount: "", description: "Damga vergisi", isLateFee: false },
+    { accountCode: "770.01.900", accountName: "Gecikme Zammı / Faiz Gideri", amount: "", description: "Gecikme zammı", isLateFee: true },
   ],
 };
 
@@ -53,17 +66,39 @@ function safeParseJson(value, fallback) {
   }
 }
 
-function roundMoney(value) {
+export function parseDeclarationAmount(value) {
   if (typeof value === "string") {
     const normalized = value
       .replaceAll("TL", "")
       .replace(/\./g, "")
       .replace(",", ".")
       .replace(/[^\d.-]/g, "");
-    return Math.round((Number(normalized) || 0) * 100) / 100;
+    return Number(normalized) || 0;
   }
 
-  return Math.round((Number(value) || 0) * 100) / 100;
+  return Number(value) || 0;
+}
+
+function roundMoney(value) {
+  return Math.round(parseDeclarationAmount(value) * 100) / 100;
+}
+
+function normalizeDistributionLine(row = {}) {
+  return {
+    accountCode: String(row.accountCode || "").trim(),
+    accountName: String(row.accountName || "").trim(),
+    amount: row.amount === "" || row.amount === null || row.amount === undefined ? "" : roundMoney(row.amount),
+    description: String(row.description || row.accountName || "").trim(),
+    isLateFee: Boolean(row.isLateFee),
+  };
+}
+
+export function getDefaultDeclarationDistributions(type, mappings = {}, companyId = "") {
+  const companyMappings = mappings?.[companyId]?.[type];
+  const source = companyMappings?.length
+    ? companyMappings
+    : DEFAULT_DECLARATION_DISTRIBUTIONS[type] || [];
+  return source.map((row) => ({ ...normalizeDistributionLine(row), amount: "" }));
 }
 
 export function formatPeriodFromPaymentDate(value) {
@@ -106,11 +141,7 @@ export function detectDeclarationPaymentType(description = "") {
 export function buildDeclarationRecord(input = {}) {
   const type = input.type || "KDV";
   const distributions = (input.distributions || DEFAULT_DECLARATION_DISTRIBUTIONS[type] || [])
-    .map((row) => ({
-      accountCode: String(row.accountCode || "").trim(),
-      accountName: String(row.accountName || "").trim(),
-      amount: roundMoney(row.amount),
-    }))
+    .map(normalizeDistributionLine)
     .filter((row) => row.accountCode && row.amount > 0);
   const totalPayment =
     roundMoney(input.totalPayment) ||
@@ -144,6 +175,19 @@ export function saveDeclarationAccrualRecords(records = []) {
   window.localStorage.setItem(BEYANNAME_TAHAKKUK_STORAGE_KEY, JSON.stringify(records));
 }
 
+export function loadDeclarationAccountMappings() {
+  if (typeof window === "undefined") return {};
+  return safeParseJson(
+    window.localStorage.getItem(BEYANNAME_ACCOUNT_MAPPING_STORAGE_KEY) || "{}",
+    {}
+  );
+}
+
+export function saveDeclarationAccountMappings(mappings = {}) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(BEYANNAME_ACCOUNT_MAPPING_STORAGE_KEY, JSON.stringify(mappings));
+}
+
 export function getDeclarationRecordsForCompany(records = [], companyId = "") {
   return (records || []).filter((record) => !companyId || record.companyId === companyId);
 }
@@ -172,11 +216,24 @@ function appendNote(note, addition) {
   return [note, addition].filter(Boolean).join(" | ");
 }
 
+function getLateFeeLine(declaration = {}) {
+  return (
+    (declaration.distributions || []).find((row) => row.isLateFee) || {
+      accountCode: LATE_FEE_ACCOUNT.code,
+      accountName: LATE_FEE_ACCOUNT.name,
+      description: "Gecikme zammı",
+    }
+  );
+}
+
 function buildDistributedRows({ baseRow, declaration, amount, period, type }) {
   const description = buildDeclarationPaymentDescription(period, type);
   const rows = [];
 
   declaration.distributions.forEach((distribution, index) => {
+    const lineDescription = distribution.description
+      ? `${description} - ${distribution.description}`
+      : description;
     rows.push(
       finalizeStandardLucaRow({
         ...baseRow,
@@ -186,21 +243,29 @@ function buildDistributedRows({ baseRow, declaration, amount, period, type }) {
         borc: distribution.amount,
         alacak: "",
         fisAciklama: description,
-        detayAciklama: description,
-        aciklama: description,
+        detayAciklama: lineDescription,
+        aciklama: lineDescription,
         kontrolNotu: appendNote(baseRow.kontrolNotu, "Beyanname/tahakkuk dağılımı uygulandı"),
       })
     );
   });
 
-  const difference = roundMoney(amount - Number(declaration.totalPayment || 0));
+  const distributedTotal = roundMoney(
+    (declaration.distributions || []).reduce(
+      (sum, row) => sum + Number(row.amount || 0),
+      0
+    )
+  );
+  const allocatedTotal = Math.max(Number(declaration.totalPayment || 0), distributedTotal);
+  const difference = roundMoney(amount - allocatedTotal);
   if (difference > 0.01) {
+    const lateFeeLine = getLateFeeLine(declaration);
     rows.push(
       finalizeStandardLucaRow({
         ...baseRow,
         id: `${baseRow.id || "decl"}-late-fee`,
-        hesapKodu: LATE_FEE_ACCOUNT.code,
-        hesapAdi: LATE_FEE_ACCOUNT.name,
+        hesapKodu: lateFeeLine.accountCode,
+        hesapAdi: lateFeeLine.accountName,
         borc: difference,
         alacak: "",
         fisAciklama: description,
@@ -343,60 +408,118 @@ export function buildDeclarationDashboardStats(records = []) {
 }
 
 export function runDeclarationAccrualDistributionScenario() {
-  const record = buildDeclarationRecord({
-    companyId: "test-company",
-    period: "2026/05",
-    type: "KDV",
-    totalPayment: 50000,
-    distributions: [
-      { accountCode: "360.02.001", accountName: "Ödenecek KDV", amount: 50000 },
-    ],
-  });
-
-  const rows = [
+  function buildPaymentRows({ id, type, amount, date = "10.06.2026" }) {
+    return [
     finalizeStandardLucaRow({
-      id: "kdv-bank",
+        id: `${id}-bank`,
       firmaId: "test-company",
       kaynakTipi: "BANKA",
       kaynakAdi: "VAKIFBANK",
-      fisNo: "1",
-      fisTarihi: "10.06.2026",
+        fisNo: id,
+        fisTarihi: date,
       hesapKodu: "102.01.001",
       hesapAdi: "Banka",
-      alacak: 50250,
-      detayAciklama: "KDV ÖDEMESİ",
-      fisAciklama: "KDV ÖDEMESİ",
-      _movementId: "kdv-payment",
+        alacak: amount,
+        detayAciklama: `${type} ÖDEMESİ`,
+        fisAciklama: `${type} ÖDEMESİ`,
+        _movementId: `${id}-payment`,
     }),
     finalizeStandardLucaRow({
-      id: "kdv-counter",
+        id: `${id}-counter`,
       firmaId: "test-company",
       kaynakTipi: "BANKA",
       kaynakAdi: "VAKIFBANK",
-      fisNo: "1",
-      fisTarihi: "10.06.2026",
+        fisNo: id,
+        fisTarihi: date,
       hesapKodu: "360",
       hesapAdi: "Ödenecek Vergiler",
-      borc: 50250,
-      detayAciklama: "KDV ÖDEMESİ",
-      fisAciklama: "KDV ÖDEMESİ",
-      _movementId: "kdv-payment",
+        borc: amount,
+        detayAciklama: `${type} ÖDEMESİ`,
+        fisAciklama: `${type} ÖDEMESİ`,
+        _movementId: `${id}-payment`,
+    }),
+  ];
+  }
+
+  const records = [
+    buildDeclarationRecord({
+      companyId: "test-company",
+      period: "2026/05",
+      type: "KDV",
+      totalPayment: 50000,
+      distributions: [
+        { accountCode: "360.01.010", accountName: "Ödenecek KDV", amount: 50000 },
+      ],
+    }),
+    buildDeclarationRecord({
+      companyId: "test-company",
+      period: "2026/05",
+      type: "MUHSGK",
+      totalPayment: 30000,
+      distributions: [
+        { accountCode: "360.01.001", accountName: "Ücret Gelir Vergisi", amount: 18000 },
+        { accountCode: "360.01.002", accountName: "Ücret Damga Vergisi", amount: 2000 },
+        { accountCode: "360.01.003", accountName: "Kira Stopajı", amount: 10000 },
+      ],
+    }),
+    buildDeclarationRecord({
+      companyId: "test-company",
+      period: "2026/05",
+      type: "SGK",
+      totalPayment: 42000,
+      distributions: [
+        { accountCode: "361.01.001", accountName: "Ödenecek SGK Primleri", amount: 35000 },
+        { accountCode: "361.01.002", accountName: "Ödenecek İşsizlik Primleri", amount: 5000 },
+        { accountCode: "361.03.001", accountName: "Ödenecek SGDP Primleri", amount: 2000 },
+      ],
     }),
   ];
 
-  const result = applyDeclarationAccrualDistributionToRows(rows, [record], {
-    companyId: "test-company",
-  });
+  const kdvFull = applyDeclarationAccrualDistributionToRows(
+    buildPaymentRows({ id: "kdv-full", type: "KDV", amount: 50000 }),
+    [records[0]],
+    { companyId: "test-company" }
+  );
+  const kdvLateFee = applyDeclarationAccrualDistributionToRows(
+    buildPaymentRows({ id: "kdv-late", type: "KDV", amount: 50250 }),
+    [records[0]],
+    { companyId: "test-company" }
+  );
+  const muhsgk = applyDeclarationAccrualDistributionToRows(
+    buildPaymentRows({ id: "muhsgk", type: "MUHSGK", amount: 30000 }),
+    [records[1]],
+    { companyId: "test-company" }
+  );
+  const sgk = applyDeclarationAccrualDistributionToRows(
+    buildPaymentRows({ id: "sgk", type: "SGK", amount: 42000 }),
+    [records[2]],
+    { companyId: "test-company" }
+  );
+  const underpaid = applyDeclarationAccrualDistributionToRows(
+    buildPaymentRows({ id: "kdv-underpaid", type: "KDV", amount: 49000 }),
+    [records[0]],
+    { companyId: "test-company" }
+  );
+  const overpaid = applyDeclarationAccrualDistributionToRows(
+    buildPaymentRows({ id: "kdv-overpaid", type: "KDV", amount: 51000 }),
+    [records[0]],
+    { companyId: "test-company" }
+  );
 
   return {
-    inputPayment: 50250,
-    declarationTotal: 50000,
-    outputRows: result.rows.length,
-    kdvAccountAmount:
-      result.rows.find((row) => row.hesapKodu === "360.02.001")?.borc || 0,
-    lateFeeAmount:
-      result.rows.find((row) => row.hesapKodu === LATE_FEE_ACCOUNT.code)?.borc || 0,
-    description:
-      result.rows.find((row) => row.hesapKodu === "360.02.001")?.detayAciklama || "",
+    kdvFullPayment: {
+      matchedCount: kdvFull.summary.matchedCount,
+      amount: kdvFull.rows.find((row) => row.hesapKodu === "360.01.010")?.borc || 0,
+    },
+    kdvLateFeePayment: {
+      matchedCount: kdvLateFee.summary.matchedCount,
+      lateFeeCount: kdvLateFee.summary.lateFeeCount,
+      lateFeeAmount: kdvLateFee.rows.find((row) => row.hesapKodu === LATE_FEE_ACCOUNT.code)?.borc || 0,
+      description: kdvLateFee.rows.find((row) => row.hesapKodu === "360.01.010")?.detayAciklama || "",
+    },
+    muhsgkMultiAccountRows: muhsgk.rows.filter((row) => String(row.hesapKodu || "").startsWith("360.01.")).length,
+    sgkMultiAccountRows: sgk.rows.filter((row) => String(row.hesapKodu || "").startsWith("361.")).length,
+    underpaidWarnings: underpaid.summary.underpaidCount,
+    excessivePaymentWarnings: overpaid.summary.lateFeeCount,
   };
 }

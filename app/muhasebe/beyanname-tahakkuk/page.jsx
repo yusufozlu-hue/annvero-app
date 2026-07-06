@@ -6,10 +6,13 @@ import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import {
   BEYANNAME_TYPES,
-  DEFAULT_DECLARATION_DISTRIBUTIONS,
   buildDeclarationDashboardStats,
   buildDeclarationRecord,
+  getDefaultDeclarationDistributions,
+  loadDeclarationAccountMappings,
   loadDeclarationAccrualRecords,
+  parseDeclarationAmount,
+  saveDeclarationAccountMappings,
   saveDeclarationAccrualRecords,
 } from "@/src/utils/beyannameTahakkukEngine";
 
@@ -23,14 +26,14 @@ function formatMoney(value) {
   });
 }
 
-function buildDefaultForm(companyId = "") {
+function buildDefaultForm(companyId = "", mappings = {}) {
   const type = "KDV";
   return {
     companyId,
     period: "",
     type,
     totalPayment: "",
-    distributions: DEFAULT_DECLARATION_DISTRIBUTIONS[type].map((row) => ({ ...row })),
+    distributions: getDefaultDeclarationDistributions(type, mappings, companyId),
     description: "",
     dueDate: "",
     isPaid: false,
@@ -40,9 +43,13 @@ function buildDefaultForm(companyId = "") {
 export default function BeyannameTahakkukPage() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompanyList();
   const [records, setRecords] = useState(() => loadDeclarationAccrualRecords());
+  const [accountMappings, setAccountMappings] = useState(() =>
+    loadDeclarationAccountMappings()
+  );
   const [editingId, setEditingId] = useState("");
-  const [form, setForm] = useState(() => buildDefaultForm(selectedCompanyId));
+  const [form, setForm] = useState(() => buildDefaultForm(selectedCompanyId, accountMappings));
   const [toast, setToast] = useState("");
+  const [mappingType, setMappingType] = useState("KDV");
 
   const filteredRecords = useMemo(
     () => records.filter((record) => !selectedCompanyId || record.companyId === selectedCompanyId),
@@ -52,8 +59,34 @@ export default function BeyannameTahakkukPage() {
   const stats = useMemo(() => buildDeclarationDashboardStats(filteredRecords), [filteredRecords]);
 
   const selectedTotal = useMemo(
-    () => form.distributions.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+    () =>
+      form.distributions
+        .filter((row) => !row.isLateFee)
+        .reduce((sum, row) => sum + parseDeclarationAmount(row.amount), 0),
     [form.distributions]
+  );
+
+  const lateFeeTotal = useMemo(
+    () =>
+      form.distributions
+        .filter((row) => row.isLateFee)
+        .reduce((sum, row) => sum + parseDeclarationAmount(row.amount), 0),
+    [form.distributions]
+  );
+
+  const totalPaymentValue = parseDeclarationAmount(form.totalPayment || selectedTotal);
+  const fullDistributionTotal = selectedTotal + lateFeeTotal;
+  const distributionWarning = useMemo(() => {
+    const diff = fullDistributionTotal - totalPaymentValue;
+    if (Math.abs(diff) < 0.01) return "";
+    if (diff < 0) return `Eksik dağılım: ${formatMoney(Math.abs(diff))} TL`;
+    if (lateFeeTotal > 0) return `Gecikme zammı farkı: ${formatMoney(lateFeeTotal)} TL`;
+    return `Fazla dağılım: ${formatMoney(diff)} TL`;
+  }, [fullDistributionTotal, totalPaymentValue, lateFeeTotal]);
+
+  const mappingRows = useMemo(
+    () => getDefaultDeclarationDistributions(mappingType, accountMappings, selectedCompanyId),
+    [mappingType, accountMappings, selectedCompanyId]
   );
 
   const persistRecords = (nextRecords) => {
@@ -69,7 +102,7 @@ export default function BeyannameTahakkukPage() {
     setForm((prev) => ({
       ...prev,
       type,
-      distributions: (DEFAULT_DECLARATION_DISTRIBUTIONS[type] || []).map((row) => ({ ...row })),
+      distributions: getDefaultDeclarationDistributions(type, accountMappings, selectedCompanyId),
     }));
   };
 
@@ -87,9 +120,36 @@ export default function BeyannameTahakkukPage() {
       ...prev,
       distributions: [
         ...prev.distributions,
-        { accountCode: "", accountName: "", amount: "" },
+        { accountCode: "", accountName: "", amount: "", description: "", isLateFee: false },
       ],
     }));
+  };
+
+  const updateMappingRow = (index, field, value) => {
+    const currentRows = mappingRows.map((row) => ({ ...row }));
+    currentRows[index] = { ...currentRows[index], [field]: value };
+    const nextMappings = {
+      ...accountMappings,
+      [selectedCompanyId]: {
+        ...(accountMappings[selectedCompanyId] || {}),
+        [mappingType]: currentRows,
+      },
+    };
+    setAccountMappings(nextMappings);
+    saveDeclarationAccountMappings(nextMappings);
+  };
+
+  const resetMappingRows = () => {
+    const nextMappings = {
+      ...accountMappings,
+      [selectedCompanyId]: {
+        ...(accountMappings[selectedCompanyId] || {}),
+        [mappingType]: undefined,
+      },
+    };
+    delete nextMappings[selectedCompanyId][mappingType];
+    setAccountMappings(nextMappings);
+    saveDeclarationAccountMappings(nextMappings);
   };
 
   const removeDistribution = (index) => {
@@ -101,7 +161,7 @@ export default function BeyannameTahakkukPage() {
 
   const resetForm = () => {
     setEditingId("");
-    setForm(buildDefaultForm(selectedCompanyId));
+    setForm(buildDefaultForm(selectedCompanyId, accountMappings));
   };
 
   const saveRecord = () => {
@@ -211,7 +271,15 @@ export default function BeyannameTahakkukPage() {
               value={selectedCompanyId}
               onChange={(event) => {
                 setSelectedCompanyId(event.target.value);
-                updateForm("companyId", event.target.value);
+                setForm((prev) => ({
+                  ...prev,
+                  companyId: event.target.value,
+                  distributions: getDefaultDeclarationDistributions(
+                    prev.type,
+                    accountMappings,
+                    event.target.value
+                  ),
+                }));
               }}
               className={inputClassName}
             >
@@ -288,7 +356,7 @@ export default function BeyannameTahakkukPage() {
 
           <div className="space-y-3">
             {form.distributions.map((row, index) => (
-              <div key={index} className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_2fr_1fr_auto]">
+              <div key={index} className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_2fr_1fr_2fr_120px_auto]">
                 <input
                   value={row.accountCode}
                   onChange={(event) => updateDistribution(index, "accountCode", event.target.value)}
@@ -307,6 +375,20 @@ export default function BeyannameTahakkukPage() {
                   placeholder="0,00"
                   className={inputClassName}
                 />
+                <input
+                  value={row.description || ""}
+                  onChange={(event) => updateDistribution(index, "description", event.target.value)}
+                  placeholder="Satır açıklaması"
+                  className={inputClassName}
+                />
+                <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-xs text-gray-200">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(row.isLateFee)}
+                    onChange={(event) => updateDistribution(index, "isLateFee", event.target.checked)}
+                  />
+                  Gecikme
+                </label>
                 <button
                   type="button"
                   onClick={() => removeDistribution(index)}
@@ -328,9 +410,87 @@ export default function BeyannameTahakkukPage() {
             {editingId ? "Güncelle" : "Kaydet"}
           </button>
           <span className="text-sm text-gray-400">
-            Dağılım toplamı: {formatMoney(selectedTotal)} TL
+            Dağılım toplamı: {formatMoney(fullDistributionTotal)} TL
           </span>
+          {distributionWarning ? (
+            <span className="rounded-full border border-amber-700/50 bg-amber-950/40 px-3 py-1 text-xs font-semibold text-amber-200">
+              {distributionWarning}
+            </span>
+          ) : (
+            <span className="rounded-full border border-emerald-700/50 bg-emerald-950/40 px-3 py-1 text-xs font-semibold text-emerald-200">
+              Dağılım tahakkuk toplamıyla eşit
+            </span>
+          )}
         </div>
+      </section>
+
+      <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/70 p-5 shadow-xl shadow-black/20">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold">Firma Bazlı Hesap Eşleştirme</h2>
+            <p className="mt-1 text-sm text-gray-400">
+              Firmanın hesap planına göre varsayılan hesap kodlarını özelleştirin.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={resetMappingRows}
+            disabled={!selectedCompanyId}
+            className="rounded-xl border border-white/10 px-4 py-2 text-sm font-semibold text-gray-200 hover:bg-white/10 disabled:opacity-50"
+          >
+            Varsayılana Dön
+          </button>
+        </div>
+
+        <div className="mb-4 max-w-xs">
+          <Field label="Ödeme Türü">
+            <select
+              value={mappingType}
+              onChange={(event) => setMappingType(event.target.value)}
+              className={inputClassName}
+            >
+              {BEYANNAME_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {type}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        {!selectedCompanyId ? (
+          <p className="text-sm text-amber-200">Hesap eşleştirme için önce firma seçin.</p>
+        ) : (
+          <div className="space-y-3">
+            {mappingRows.map((row, index) => (
+              <div key={`${mappingType}-${index}`} className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_2fr_2fr_120px]">
+                <input
+                  value={row.accountCode}
+                  onChange={(event) => updateMappingRow(index, "accountCode", event.target.value)}
+                  className={inputClassName}
+                />
+                <input
+                  value={row.accountName}
+                  onChange={(event) => updateMappingRow(index, "accountName", event.target.value)}
+                  className={inputClassName}
+                />
+                <input
+                  value={row.description || ""}
+                  onChange={(event) => updateMappingRow(index, "description", event.target.value)}
+                  className={inputClassName}
+                />
+                <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-xs text-gray-200">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(row.isLateFee)}
+                    onChange={(event) => updateMappingRow(index, "isLateFee", event.target.checked)}
+                  />
+                  Gecikme
+                </label>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="rounded-2xl border border-white/10 bg-gray-900/70 p-5 shadow-xl shadow-black/20">
