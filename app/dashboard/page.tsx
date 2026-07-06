@@ -178,6 +178,18 @@ const menuGroups: MenuGroup[] = [
     ],
   },
   {
+    title: "Otomasyon Merkezi",
+    items: [
+      { label: "Akışlar", href: "/otomasyon?view=flows" },
+      { label: "Tetikleyiciler", href: "/otomasyon?view=triggers" },
+      { label: "Görev Kuyruğu", href: "/otomasyon?view=queue" },
+      { label: "Sistem Logları", href: "/otomasyon?view=logs" },
+      { label: "Hata Yönetimi", href: "/otomasyon?view=errors" },
+      { label: "Zamanlanmış İşlemler", href: "/otomasyon?view=schedules" },
+      { label: "Entegrasyonlar", href: "/otomasyon?view=integrations" },
+    ],
+  },
+  {
     title: "AI Ofis Asistanı",
     items: [
       { label: "Evrak Havuzu", href: "/ai-ofis-asistani?view=pool" },
