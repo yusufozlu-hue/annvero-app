@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import AuthUserBar from "@/src/components/AuthUserBar";
 import { useAdminAccess } from "@/src/hooks/useAdminAccess";
@@ -263,6 +264,7 @@ const quickActions = [
 
 export default function DashboardPage() {
   const { isAdmin } = useAdminAccess();
+  const pathname = usePathname();
   const [openMenu, setOpenMenu] = useState<string>("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [learningStats, setLearningStats] =
@@ -337,6 +339,13 @@ export default function DashboardPage() {
     setDeclarationStats(buildDeclarationDashboardStats(loadDeclarationAccrualRecords()));
   }, []);
 
+  useEffect(() => {
+    const activeGroup = menuGroups.find((group) => isMenuGroupActive(group, pathname));
+    if (activeGroup?.items?.length) {
+      setOpenMenu(activeGroup.title);
+    }
+  }, [pathname]);
+
   const kpiCards = useMemo<KpiCard[]>(
     () => [
       {
@@ -380,31 +389,34 @@ export default function DashboardPage() {
       </button>
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 w-[302px] border-r border-slate-800/80 bg-[#071527]/95 shadow-2xl shadow-black/40 backdrop-blur-xl transition-transform lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 w-[302px] border-r border-blue-950/50 bg-[#040b18] shadow-[inset_-1px_0_0_rgba(59,130,246,0.08),0_0_48px_rgba(15,23,42,0.65)] backdrop-blur-xl transition-transform lg:translate-x-0 ${
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
         <div className="flex h-full flex-col">
-          <div className="border-b border-slate-800 px-5 py-5">
+          <div className="border-b border-slate-800/80 bg-gradient-to-r from-[#061225] to-[#040b18] px-5 py-5">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.28em] text-cyan-300">
+                <p className="text-[10px] font-bold uppercase tracking-[0.32em] text-blue-300/90">
                   ANNVERO
                 </p>
                 <h1 className="mt-1 text-lg font-bold text-white">Operasyon Paneli</h1>
               </div>
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-cyan-500/10 text-lg font-black text-cyan-200 ring-1 ring-cyan-400/30">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-cyan-500/10 text-lg font-black text-cyan-100 shadow-[0_0_24px_rgba(59,130,246,0.25)] ring-1 ring-blue-400/30">
                 A
               </div>
             </div>
           </div>
 
-          <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
-            {menuGroups.map((group) => (
+          <nav className="sidebar-premium-nav flex-1 overflow-y-auto px-2 py-3">
+            {menuGroups.map((group, index) => (
               <SidebarGroup
                 key={group.title}
                 group={group}
                 open={openMenu === group.title}
+                active={isMenuGroupActive(group, pathname)}
+                pathname={pathname}
+                showDivider={index > 0}
                 onToggle={() =>
                   setOpenMenu((current) => (current === group.title ? "" : group.title))
                 }
@@ -606,56 +618,314 @@ function isSameLocalDay(value: string | null | undefined, day: Date) {
   );
 }
 
+function normalizeMenuPath(href = "") {
+  return href.split("?")[0].replace(/\/$/, "") || "/";
+}
+
+function isMenuGroupActive(group: MenuGroup, pathname: string) {
+  const current = normalizeMenuPath(pathname);
+  if (group.href && normalizeMenuPath(group.href) === current) return true;
+  return (group.items || []).some((item) => {
+    const target = normalizeMenuPath(item.href);
+    return current === target || current.startsWith(`${target}/`);
+  });
+}
+
+function isMenuItemActive(href: string, pathname: string) {
+  const current = normalizeMenuPath(pathname);
+  const target = normalizeMenuPath(href);
+  return current === target || current.startsWith(`${target}/`);
+}
+
+function MenuGroupIcon({ title }: { title: string }) {
+  const iconMap: Record<string, { bg: string; ring: string; glyph: ReactNode }> = {
+    Dashboard: {
+      bg: "from-blue-500/25 to-cyan-500/10",
+      ring: "ring-blue-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z" />
+        </svg>
+      ),
+    },
+    Firmalar: {
+      bg: "from-violet-500/25 to-fuchsia-500/10",
+      ring: "ring-violet-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M4 21V5a1 1 0 0 1 1-1h5v16M10 8h4M10 12h4M15 4h4a1 1 0 0 1 1 1v16" />
+        </svg>
+      ),
+    },
+    "Muhasebe Modülü": {
+      bg: "from-emerald-500/25 to-teal-500/10",
+      ring: "ring-emerald-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M7 4h10v16H7zM9 8h6M9 12h6M9 16h4" />
+        </svg>
+      ),
+    },
+    "Fiş Üretim Merkezi": {
+      bg: "from-amber-500/25 to-orange-500/10",
+      ring: "ring-amber-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M8 3h8l2 4H6l2-4Zm-2 6h12v12H6V9Zm3 3h6M9 15h4" />
+        </svg>
+      ),
+    },
+    "Banka Merkezi": {
+      bg: "from-sky-500/25 to-blue-500/10",
+      ring: "ring-sky-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M3 10 12 4l9 6M5 10v8M9 10v8M15 10v8M19 10v8M4 18h16" />
+        </svg>
+      ),
+    },
+    "Kontrol & Denetim": {
+      bg: "from-rose-500/25 to-red-500/10",
+      ring: "ring-rose-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M12 3 4 7v6c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V7l-8-4Zm0 6 2 2-3 3-2-2 1-1 1 1 2-2Z" />
+        </svg>
+      ),
+    },
+    "Fatura Merkezi": {
+      bg: "from-lime-500/25 to-green-500/10",
+      ring: "ring-lime-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M7 3h7l5 5v13H7V3Zm7 0v5h5M9 12h6M9 16h4" />
+        </svg>
+      ),
+    },
+    "e-Defter Merkezi": {
+      bg: "from-cyan-500/25 to-blue-500/10",
+      ring: "ring-cyan-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M6 4h9l5 5v11H6V4Zm9 0v5h5M8 12h8M8 16h6" />
+        </svg>
+      ),
+    },
+    "Finansal Analiz": {
+      bg: "from-indigo-500/25 to-violet-500/10",
+      ring: "ring-indigo-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M4 19V5M4 19h16M8 15l3-4 3 2 4-6" />
+        </svg>
+      ),
+    },
+    "Vergi & Beyanname": {
+      bg: "from-yellow-500/25 to-amber-500/10",
+      ring: "ring-yellow-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M12 3 4 7v2h16V7l-8-4Zm-8 8v6h16v-6H4Zm4 2h2v2H8v-2Zm4 0h4v2h-4v-2Z" />
+        </svg>
+      ),
+    },
+    "Kurgan Risk Analizi": {
+      bg: "from-red-500/25 to-orange-500/10",
+      ring: "ring-red-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M12 9v4m0 4h.01M10.3 4.3h3.4L20 19H4l6.3-14.7Z" />
+        </svg>
+      ),
+    },
+    "İK / Personel Merkezi": {
+      bg: "from-fuchsia-500/25 to-pink-500/10",
+      ring: "ring-fuchsia-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M16 11a4 4 0 1 0-8 0M4 20a8 8 0 0 1 16 0" />
+        </svg>
+      ),
+    },
+    "Ticaret Sicil / Operasyon Merkezi": {
+      bg: "from-teal-500/25 to-emerald-500/10",
+      ring: "ring-teal-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M8 4h8v4H8V4Zm-1 6h10v10H7V10Zm2 2v6M11 12v6M15 12v6" />
+        </svg>
+      ),
+    },
+    "Hesaplama Araçları": {
+      bg: "from-purple-500/25 to-violet-500/10",
+      ring: "ring-purple-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2 4h2v2H9V7Zm4 0h2v2h-2V7ZM9 11h2v2H9v-2Zm4 0h2v2h-2v-2ZM9 15h2v2H9v-2Zm4 0h2v2h-2v-2Z" />
+        </svg>
+      ),
+    },
+    "Mevzuat & Mali Gündem": {
+      bg: "from-orange-500/25 to-amber-500/10",
+      ring: "ring-orange-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M6 4h12v16H6V4Zm2 4h8M8 12h8M8 16h5" />
+        </svg>
+      ),
+    },
+    "Rapor Merkezi": {
+      bg: "from-slate-400/20 to-slate-500/10",
+      ring: "ring-slate-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M6 18V8l4 3 4-5 4 3v9H6Z" />
+        </svg>
+      ),
+    },
+    "Otomasyon Merkezi": {
+      bg: "from-orange-500/25 to-red-500/10",
+      ring: "ring-orange-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M12 2v4m0 12v4M4.9 4.9l2.8 2.8m8.6 8.6 2.8 2.8M2 12h4m12 0h4M4.9 19.1l2.8-2.8m8.6-8.6 2.8-2.8" />
+        </svg>
+      ),
+    },
+    "AI Ofis Asistanı": {
+      bg: "from-cyan-500/25 to-blue-500/10",
+      ring: "ring-cyan-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M12 3a7 7 0 0 1 7 7c0 2.8-1.6 5.2-4 6.3V19a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2v-2.7C6.6 15.2 5 12.8 5 10a7 7 0 0 1 7-7Z" />
+        </svg>
+      ),
+    },
+    "AI Asistan": {
+      bg: "from-violet-500/25 to-purple-500/10",
+      ring: "ring-violet-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M9 3h6l1 4h4v12H4V7h4l1-4Zm1 10h4" />
+        </svg>
+      ),
+    },
+    Ayarlar: {
+      bg: "from-slate-500/20 to-slate-600/10",
+      ring: "ring-slate-400/35",
+      glyph: (
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm8.7 4a7.1 7.1 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7.3 7.3 0 0 0-1.7-1L16 2h-4l-.5 2.9a7.3 7.3 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.1 7.1 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.3 7.3 0 0 0 1.7 1L12 22h4l.5-2.9a7.3 7.3 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6a7.1 7.1 0 0 0 .1-1Z" />
+        </svg>
+      ),
+    },
+  };
+
+  const config = iconMap[title] || {
+    bg: "from-blue-500/20 to-slate-500/10",
+    ring: "ring-blue-400/30",
+    glyph: (
+      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="12" cy="12" r="4" />
+      </svg>
+    ),
+  };
+
+  return (
+    <span
+      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${config.bg} text-slate-100 ring-1 ${config.ring}`}
+    >
+      {config.glyph}
+    </span>
+  );
+}
+
+function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      className={`h-4 w-4 shrink-0 text-slate-500 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden
+    >
+      <path d="M5 7.5 10 12.5 15 7.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function SidebarGroup({
   group,
   open,
+  active,
+  pathname,
+  showDivider,
   onToggle,
   onNavigate,
 }: {
   group: MenuGroup;
   open: boolean;
+  active: boolean;
+  pathname: string;
+  showDivider: boolean;
   onToggle: () => void;
   onNavigate: () => void;
 }) {
+  const headerClass = active
+    ? "bg-gradient-to-r from-blue-600/90 via-blue-600/75 to-cyan-600/55 text-white shadow-[0_8px_24px_rgba(37,99,235,0.28)] ring-1 ring-blue-400/35"
+    : "text-slate-200 hover:bg-white/[0.04] hover:text-white hover:shadow-[0_0_18px_rgba(59,130,246,0.12)]";
+
   if (!group.items?.length) {
     return (
-      <Link
-        href={group.href || "/dashboard"}
-        onClick={onNavigate}
-        className="flex items-center justify-between rounded-2xl px-3 py-3 text-sm font-semibold text-slate-200 transition hover:bg-cyan-500/10 hover:text-cyan-100"
-      >
-        {group.title}
-      </Link>
+      <div className={showDivider ? "border-t border-slate-800/70 pt-2" : ""}>
+        <Link
+          href={group.href || "/dashboard"}
+          onClick={onNavigate}
+          className={`group mb-1 flex items-center gap-3 rounded-xl px-2.5 py-2.5 transition-all duration-200 ${headerClass}`}
+        >
+          <MenuGroupIcon title={group.title} />
+          <span className="flex-1 text-[15px] font-bold tracking-tight">{group.title}</span>
+        </Link>
+      </div>
     );
   }
 
   return (
-    <div>
+    <div className={showDivider ? "border-t border-slate-800/70 pt-2" : ""}>
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left text-sm font-semibold text-slate-200 transition hover:bg-cyan-500/10 hover:text-cyan-100"
+        className={`group mb-1 flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition-all duration-200 ${headerClass}`}
       >
-        <span>{group.title}</span>
-        <span className={`text-slate-500 transition ${open ? "rotate-90" : ""}`}>›</span>
+        <MenuGroupIcon title={group.title} />
+        <span className="flex-1 text-[15px] font-bold tracking-tight">{group.title}</span>
+        <ChevronIcon open={open} />
       </button>
       {open ? (
-        <div className="mt-1 space-y-1 border-l border-slate-800/80 pl-3">
-          {group.items.map((item) => (
-            <Link
-              key={`${group.title}-${item.label}`}
-              href={item.href}
-              onClick={onNavigate}
-              className="flex items-center justify-between rounded-xl px-3 py-2 text-sm text-slate-400 transition hover:bg-slate-800/70 hover:text-white"
-            >
-              <span>{item.label}</span>
-              {item.badge ? (
-                <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-semibold text-slate-400">
-                  {item.badge}
-                </span>
-              ) : null}
-            </Link>
-          ))}
+        <div className="mb-2 space-y-0.5 border-b border-slate-800/50 pb-2 pl-2">
+          {group.items.map((item) => {
+            const itemActive = isMenuItemActive(item.href, pathname);
+            return (
+              <Link
+                key={`${group.title}-${item.label}`}
+                href={item.href}
+                onClick={onNavigate}
+                className={`group/item relative flex items-center justify-between rounded-lg py-2 pl-8 pr-3 text-[13px] transition-colors duration-150 ${
+                  itemActive
+                    ? "text-white before:bg-cyan-400"
+                    : "text-slate-500 hover:text-white before:bg-slate-600 group-hover/item:before:bg-slate-400"
+                } before:absolute before:left-3 before:top-1/2 before:h-1.5 before:w-1.5 before:-translate-y-1/2 before:rounded-full before:content-['']`}
+              >
+                <span>{item.label}</span>
+                {item.badge ? (
+                  <span className="rounded-full bg-slate-800/90 px-2 py-0.5 text-[10px] font-semibold text-slate-400">
+                    {item.badge}
+                  </span>
+                ) : null}
+              </Link>
+            );
+          })}
         </div>
       ) : null}
     </div>
