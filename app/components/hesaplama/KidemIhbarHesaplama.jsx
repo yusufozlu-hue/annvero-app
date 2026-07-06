@@ -1,12 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
 import {
   CALCULATION_SCOPE,
   CALCULATION_SCOPE_OPTIONS,
   DEFAULT_SEVERANCE_YEAR,
 } from "@/src/config/severanceNoticeParameters";
 import { calculateSeveranceNotice } from "@/src/utils/kidemIhbarHesaplama";
+import { readKidemIhbarPrefill } from "@/src/utils/ikPersonelEngine";
 import {
   formatTurkishMoney,
   parseTurkishAmount,
@@ -99,6 +102,16 @@ export default function KidemIhbarHesaplama() {
   const [ceilingInput, setCeilingInput] = useState("");
   const [cumulativeTaxInput, setCumulativeTaxInput] = useState("0");
   const [showDetails, setShowDetails] = useState(false);
+
+  useEffect(() => {
+    const prefill = readKidemIhbarPrefill();
+    if (!prefill) return;
+    if (!startDate && prefill.startDate) setStartDate(prefill.startDate);
+    if (!endDate && prefill.endDate) setEndDate(prefill.endDate);
+    if (!lastGrossInput && prefill.lastGrossSalary) {
+      setLastGrossInput(formatTurkishMoney(prefill.lastGrossSalary));
+    }
+  }, []);
 
   const formatBlur = (setter, raw) => {
     if (!raw.trim()) return;

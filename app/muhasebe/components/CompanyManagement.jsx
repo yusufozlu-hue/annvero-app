@@ -13,6 +13,7 @@ import {
 } from "@/src/utils/employeeExcel";
 import GibCredentialsSection from "@/app/dashboard/ofis-takip/resmi-bildirimler/components/GibCredentialsSection";
 import TicaretSicilCompanyPanel from "@/src/components/TicaretSicilCompanyPanel";
+import IkPersonelCompanyPanel from "@/src/components/IkPersonelCompanyPanel";
 
 const EMPLOYEE_PAGE_SIZE = 20;
 
@@ -119,6 +120,11 @@ export default function CompanyManagement() {
       "ticaretOperations",
       "ticaretDocuments",
       "ticaretReminders",
+      "ikPersonnel",
+      "ikMovements",
+      "ikLeaves",
+      "ikSgk",
+      "ikPayrollRisks",
     ];
     const requestedTab = new URLSearchParams(window.location.search).get("tab");
 
@@ -968,6 +974,12 @@ export default function CompanyManagement() {
     ["ticaretOperations", "Operasyonlar"],
     ["ticaretDocuments", "Evraklar"],
     ["ticaretReminders", "Hatırlatmalar"],
+
+    ["ikPersonnel", "Personeller"],
+    ["ikMovements", "Personel Hareketleri"],
+    ["ikLeaves", "İzinler"],
+    ["ikSgk", "SGK Kontrolleri"],
+    ["ikPayrollRisks", "Bordro Riskleri"],
   ];
 
   const ticaretSicilTabs = new Set([
@@ -975,6 +987,14 @@ export default function CompanyManagement() {
     "ticaretOperations",
     "ticaretDocuments",
     "ticaretReminders",
+  ]);
+
+  const ikPersonelTabs = new Set([
+    "ikPersonnel",
+    "ikMovements",
+    "ikLeaves",
+    "ikSgk",
+    "ikPayrollRisks",
   ]);
 
   const sortCompaniesByName = (a, b) =>
@@ -2426,7 +2446,31 @@ export default function CompanyManagement() {
               />
             )}
 
-            {!ticaretSicilTabs.has(activeTab) ? (
+            {activeTab === "ikPersonnel" && (
+              <IkPersonelCompanyPanel company={company} setCompany={setCompany} view="personnel" />
+            )}
+
+            {activeTab === "ikMovements" && (
+              <IkPersonelCompanyPanel company={company} setCompany={setCompany} view="movements" />
+            )}
+
+            {activeTab === "ikLeaves" && (
+              <IkPersonelCompanyPanel company={company} setCompany={setCompany} view="leaves" />
+            )}
+
+            {activeTab === "ikSgk" && (
+              <IkPersonelCompanyPanel company={company} setCompany={setCompany} view="sgk" />
+            )}
+
+            {activeTab === "ikPayrollRisks" && (
+              <IkPersonelCompanyPanel
+                company={company}
+                setCompany={setCompany}
+                view="risks"
+              />
+            )}
+
+            {!ticaretSicilTabs.has(activeTab) && !ikPersonelTabs.has(activeTab) ? (
               <div className="mt-8 flex justify-end">
                 <button
                   type="button"

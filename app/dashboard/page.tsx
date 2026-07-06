@@ -139,11 +139,12 @@ const menuGroups: MenuGroup[] = [
     ],
   },
   {
-    title: "İK & Personel",
+    title: "İK / Personel Merkezi",
     items: [
-      { label: "Maaş Hesaplama", href: "/hesaplama-araclari/maas-hesaplama" },
-      { label: "Toplu Kıdem İhbar", href: "/muhasebe/toplu-kidem-ihbar" },
+      { label: "Personel Operasyon Merkezi", href: "/ik-personel" },
+      { label: "Firma Yönetimi", href: "/muhasebe/firma-yonetimi" },
       { label: "Kıdem İhbar", href: "/hesaplama-araclari/kidem-ihbar" },
+      { label: "Toplu Kıdem İhbar", href: "/muhasebe/toplu-kidem-ihbar" },
     ],
   },
   {
