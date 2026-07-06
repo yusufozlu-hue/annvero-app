@@ -169,6 +169,12 @@ function findSmartRule(description = "") {
   const text = normalizeSmartText(description);
   if (!text) return null;
 
+  // POS komisyonları işletmeye göre masraf, pazarlama veya banka kesintisi
+  // olarak öğretilebilir; kesin öğrenme kaydı yoksa kuyruğa düşsün.
+  if (/\bPOS\b/.test(text) && /\bKOMISYON\b/.test(text)) {
+    return null;
+  }
+
   return SMART_RULES.find((rule) => rule.patterns.some((pattern) => pattern.test(text))) || null;
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import AuthUserBar from "@/src/components/AuthUserBar";
 import { useAdminAccess } from "@/src/hooks/useAdminAccess";
 import BuildVersionBadge from "@/app/components/BuildVersionBadge";
@@ -24,6 +24,26 @@ type KpiCard = {
   value: string;
   helper: string;
   tone: "cyan" | "emerald" | "amber" | "violet";
+};
+
+type DashboardLearningStats = {
+  pendingUnknown: number | null;
+  learnedRules: number | null;
+  learnedToday: number | null;
+  highConfidenceMatches: number | null;
+};
+
+type DashboardMemoryRow = {
+  status?: string;
+  learned_at?: string;
+};
+
+type DashboardQueueRow = {
+  suggestionScore?: number | string;
+  suggestion_score?: number | string;
+  metadata?: {
+    suggestionConfidence?: string;
+  };
 };
 
 const menuGroups: MenuGroup[] = [
@@ -160,32 +180,12 @@ const menuGroups: MenuGroup[] = [
   },
 ];
 
-const kpiCards: KpiCard[] = [
-  {
-    label: "Aktif Firma",
-    value: "24",
-    helper: "Son 30 günde işlem gören firma",
-    tone: "cyan",
-  },
-  {
-    label: "İşlenen Ekstre",
-    value: "1.284",
-    helper: "Banka merkezi işlem hacmi",
-    tone: "emerald",
-  },
-  {
-    label: "Kontrol Bekleyen",
-    value: "18",
-    helper: "Fiş ve beyan kontrol kuyruğu",
-    tone: "amber",
-  },
-  {
-    label: "Risk Uyarısı",
-    value: "7",
-    helper: "Öncelikli inceleme önerisi",
-    tone: "violet",
-  },
-];
+const emptyLearningStats: DashboardLearningStats = {
+  pendingUnknown: null,
+  learnedRules: null,
+  learnedToday: null,
+  highConfidenceMatches: null,
+};
 
 const workflowItems = [
   { label: "Banka ekstreleri alındı", value: "42", status: "Tamamlandı" },
@@ -220,6 +220,101 @@ export default function DashboardPage() {
   const { isAdmin } = useAdminAccess();
   const [openMenu, setOpenMenu] = useState<string>("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [learningStats, setLearningStats] =
+    useState<DashboardLearningStats>(emptyLearningStats);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadLearningStats() {
+      try {
+        const [pendingResponse, allQueueResponse, memoryResponse] = await Promise.all([
+          fetch("/api/transaction-memory?status=pending", { cache: "no-store" }),
+          fetch("/api/transaction-memory?status=all", { cache: "no-store" }),
+          fetch("/api/learning-memory?includeInactive=1", { cache: "no-store" }),
+        ]);
+
+        const [pendingPayload, allQueuePayload, memoryPayload] = await Promise.all([
+          pendingResponse.json().catch(() => ({})),
+          allQueueResponse.json().catch(() => ({})),
+          memoryResponse.json().catch(() => ({})),
+        ]);
+
+        if (!active) return;
+
+        const pendingRows: DashboardQueueRow[] = Array.isArray(pendingPayload.data)
+          ? pendingPayload.data
+          : [];
+        const allQueueRows: DashboardQueueRow[] = Array.isArray(allQueuePayload.data)
+          ? allQueuePayload.data
+          : [];
+        const memoryRows: DashboardMemoryRow[] = Array.isArray(memoryPayload.data)
+          ? memoryPayload.data
+          : [];
+        const today = new Date();
+
+        setLearningStats({
+          pendingUnknown: pendingResponse.ok ? pendingRows.length : null,
+          learnedRules: memoryResponse.ok
+            ? memoryRows.filter(
+                (row) =>
+                  !["passive", "deleted"].includes(
+                    String(row.status || "active").toLowerCase()
+                  )
+              ).length
+            : null,
+          learnedToday: memoryResponse.ok
+            ? memoryRows.filter((row) => isSameLocalDay(row.learned_at, today)).length
+            : null,
+          highConfidenceMatches: allQueueResponse.ok
+            ? allQueueRows.filter(
+                (row) =>
+                  Number(row.suggestionScore || row.suggestion_score || 0) >= 85 ||
+                  row.metadata?.suggestionConfidence === "yüksek"
+              ).length
+            : null,
+        });
+      } catch (error) {
+        console.error("[dashboard] learning stats failed", error);
+        if (active) setLearningStats(emptyLearningStats);
+      }
+    }
+
+    loadLearningStats();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const kpiCards = useMemo<KpiCard[]>(
+    () => [
+      {
+        label: "Tanınmayan İşlem Sayısı",
+        value: formatStatValue(learningStats.pendingUnknown),
+        helper: "Öğrenme Merkezi bekleyen kuyruğu",
+        tone: "cyan",
+      },
+      {
+        label: "Öğrenilen Kural Sayısı",
+        value: formatStatValue(learningStats.learnedRules),
+        helper: "Aktif learning_memory kayıtları",
+        tone: "emerald",
+      },
+      {
+        label: "Bugün Öğretilenler",
+        value: formatStatValue(learningStats.learnedToday),
+        helper: "Bugün kaydedilen hafıza kuralları",
+        tone: "amber",
+      },
+      {
+        label: "Yüksek Güvenli Eşleşmeler",
+        value: formatStatValue(learningStats.highConfidenceMatches),
+        helper: "Skoru yüksek öneri/eşleşme kayıtları",
+        tone: "violet",
+      },
+    ],
+    [learningStats]
+  );
 
   return (
     <div className="min-h-screen bg-[#06111f] text-slate-100">
@@ -406,6 +501,22 @@ export default function DashboardPage() {
         ) : null}
       </main>
     </div>
+  );
+}
+
+function formatStatValue(value: number | null) {
+  if (value === null || value === undefined) return "-";
+  return value.toLocaleString("tr-TR");
+}
+
+function isSameLocalDay(value: string | null | undefined, day: Date) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  return (
+    date.getFullYear() === day.getFullYear() &&
+    date.getMonth() === day.getMonth() &&
+    date.getDate() === day.getDate()
   );
 }
 

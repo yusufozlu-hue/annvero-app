@@ -10,6 +10,13 @@ function buildRecordPayload(record = {}) {
   return buildSafeLearningMemoryPayload(record);
 }
 
+function withLearningMemoryAliases(row = {}) {
+  return {
+    ...row,
+    usage_count: row.usage_count ?? row.match_count ?? 0,
+  };
+}
+
 export async function GET(request) {
   const companyId = request.nextUrl.searchParams.get("companyId");
   const includeInactive =
@@ -59,7 +66,7 @@ export async function GET(request) {
           )
       );
 
-  return NextResponse.json({ data: rows });
+  return NextResponse.json({ data: rows.map(withLearningMemoryAliases) });
 }
 
 export async function POST(request) {
@@ -117,7 +124,7 @@ export async function POST(request) {
     );
   }
 
-  return NextResponse.json({ data });
+  return NextResponse.json({ data: withLearningMemoryAliases(data) });
 }
 
 export async function PATCH(request) {
@@ -167,7 +174,7 @@ export async function PATCH(request) {
       );
     }
 
-    return NextResponse.json({ data });
+    return NextResponse.json({ data: withLearningMemoryAliases(data) });
   }
 
   if (updates.length === 0) {

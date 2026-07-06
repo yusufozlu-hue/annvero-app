@@ -34,7 +34,7 @@ export function mapLearningMemoryRecordToListRow(record, companyName = "") {
     aciklama: buildLearningMemoryDescription(record),
     fisAciklama: record.cari_name || record.counter_account_name || "",
     detayAciklama: record.clean_description || record.description_format || "",
-    matchCount: Number(record.match_count || 0),
+    matchCount: Number(record.match_count ?? record.usage_count ?? 0),
     lastMatchedAt: record.last_matched_at || "",
     learnedAt: record.learned_at || record.created_at || "",
     sonGuncelleme: record.updated_at || record.learned_at || record.created_at || "",
