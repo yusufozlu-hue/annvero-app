@@ -178,6 +178,18 @@ const menuGroups: MenuGroup[] = [
     ],
   },
   {
+    title: "AI Ofis Asistanı",
+    items: [
+      { label: "Evrak Havuzu", href: "/ai-ofis-asistani?view=pool" },
+      { label: "Mail Gelen Kutusu", href: "/ai-ofis-asistani?view=mail" },
+      { label: "AI Sınıflandırma", href: "/ai-ofis-asistani?view=classification" },
+      { label: "Firma Eşleştirme", href: "/ai-ofis-asistani?view=matching" },
+      { label: "Görevler", href: "/ai-ofis-asistani?view=tasks" },
+      { label: "Hatırlatmalar", href: "/ai-ofis-asistani?view=reminders" },
+      { label: "İşlem Geçmişi", href: "/ai-ofis-asistani?view=history" },
+    ],
+  },
+  {
     title: "AI Asistan",
     items: [
       { label: "AI Kontrol", href: "/muhasebe/ai-kontrol" },
