@@ -4,6 +4,7 @@ import Link from "next/link";
 import AuthUserBar from "@/src/components/AuthUserBar";
 import { useAdminAccess } from "@/src/hooks/useAdminAccess";
 import BuildVersionBadge from "@/app/components/BuildVersionBadge";
+import MevzuatHapNotlariDashboardCard from "@/src/components/MevzuatHapNotlariDashboardCard";
 
 export default function DashboardPage() {
   const { isAdmin } = useAdminAccess();
@@ -61,9 +62,17 @@ export default function DashboardPage() {
                 >
                   Parametre Yönetimi
                 </Link>
+                <Link
+                  href="/admin/mevzuat-hap-notlari"
+                  className="relative mt-3 inline-flex w-fit items-center justify-center rounded-xl border border-amber-700 px-5 py-3 text-sm font-semibold text-amber-100 transition hover:bg-amber-950"
+                >
+                  Hap Not Yönetimi
+                </Link>
               </div>
             </div>
           ) : null}
+
+          <MevzuatHapNotlariDashboardCard />
 
           <div className="relative rounded-3xl bg-gradient-to-br from-violet-500/60 via-violet-500/10 to-transparent p-[1.5px]">
             <div className="relative flex h-full flex-col overflow-hidden rounded-[22px] bg-gray-900/90 p-6 shadow-xl shadow-black/30 backdrop-blur-xl">
