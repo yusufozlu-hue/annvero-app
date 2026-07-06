@@ -16,10 +16,15 @@ function rowToExcelLine(row) {
     row.kaynak,
     row.grup,
     row.durum,
+    row.hataTuru,
     row.riskScore,
+    row.riskLevel,
     row.riskBand,
+    row.onerilenKontrol,
+    row.cozumDurumu,
     row.duzeltildiMi ? "Evet" : "Hayır",
     (row.issues || []).join(" | "),
+    row.smartExplanation,
     row.not,
     row.kontrolDurumu,
   ];
@@ -39,10 +44,15 @@ const HEADERS = [
   "Kaynak",
   "Grup",
   "Durum",
+  "Hata Türü",
   "Risk Puanı",
+  "Risk Seviyesi",
   "Risk Bandı",
+  "Önerilen Kontrol",
+  "Çözüm Durumu",
   "Düzeltildi mi",
   "Sorunlar",
+  "Akıllı Açıklama",
   "Not",
   "Kontrol Durumu",
 ];
@@ -59,7 +69,11 @@ export function buildEDefterOzetRows(summary = {}, meta = {}) {
     [],
     ["Toplam Fiş", summary.toplamFis ?? 0],
     ["Toplam Satır", summary.toplamSatir ?? 0],
+    ["Yüklenen Defter", summary.yuklenenDefterSayisi ?? 0],
     ["Kritik Hata", summary.kritikHata ?? 0],
+    ["Uyarı", summary.uyariSayisi ?? 0],
+    ["Teknik Hata", summary.teknikHata ?? 0],
+    ["Vergisel Risk", summary.vergiselRisk ?? 0],
     ["Yüksek Risk", summary.yuksekRisk ?? 0],
     ["Mükerrer Risk", summary.mukerrerRisk ?? 0],
     ["Ters Bakiye", summary.tersBakiye ?? 0],
@@ -119,4 +133,11 @@ export function exportEDefterReportWorkbook({
 
   XLSX.writeFile(workbook, `${fileName}.xlsx`);
   return { ok: true };
+}
+
+export function prepareEDefterPdfReport() {
+  return {
+    ready: false,
+    message: "PDF rapor üretimi sonraki aşamada eklenecek.",
+  };
 }
