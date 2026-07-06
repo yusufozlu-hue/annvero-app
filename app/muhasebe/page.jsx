@@ -312,6 +312,11 @@ const categories = [
         desc: "E-defter berat öncesi fiş, yevmiye, ters bakiye ve dönem sonu kayıt kontrolleri.",
         href: "/muhasebe/e-defter-kontrol",
       },
+      {
+        title: "KURGAN / Risk Denetim Merkezi",
+        desc: "Mizan, muavin, banka ve beyanname verilerinden vergisel risk tespiti.",
+        href: "/muhasebe/risk-denetim-merkezi",
+      },
     ],
   },
   {

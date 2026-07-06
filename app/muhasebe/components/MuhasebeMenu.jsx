@@ -208,6 +208,11 @@ const links = [
     Icon: FileTextIcon,
   },
   { title: "Fiş Kontrol", href: "/muhasebe/fis-kontrol", Icon: ShieldCheckIcon },
+  {
+    title: "Risk / Denetim",
+    href: "/muhasebe/risk-denetim-merkezi",
+    Icon: ShieldCheckIcon,
+  },
   { title: "AI Kontrol", href: "/muhasebe/ai-kontrol", Icon: SparklesIcon },
   {
     title: "İşlem Hafızası",
