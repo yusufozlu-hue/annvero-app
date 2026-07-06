@@ -7,7 +7,7 @@ import { useState } from "react";
 const navLinks = [
   { label: "Ana Sayfa", href: "/" },
   { label: "Hizmetler", href: "/#hizmetler" },
-  { label: "Vergi Rehberi", href: "/#vergi-rehberi" },
+  { label: "Mali Gündem", href: "/mevzuat-hap-notlari" },
   { label: "Hesaplama Araçları", href: "/hesaplama-araclari" },
   { label: "Hakkımızda", href: "/#hakkimizda" },
   { label: "İletişim", href: "/#iletisim" },

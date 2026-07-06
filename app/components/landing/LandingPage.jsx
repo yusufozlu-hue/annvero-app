@@ -1,5 +1,6 @@
 import Link from "next/link";
 import PublicHeader from "./PublicHeader";
+import PublicMevzuatHapNotlariSection from "./PublicMevzuatHapNotlariSection";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
 
 const services = [
@@ -29,7 +30,7 @@ const services = [
       "Firma, personel, araç ve belge süreçlerini tek merkezden yönetin.",
   },
   {
-    title: "AI Destekli Kontrol",
+    title: "Akıllı Kontrol",
     description:
       "Öğrenen hafıza ve akıllı kontrollerle hataları erken yakalayın.",
   },
@@ -42,29 +43,6 @@ const calculators = [
   "SGK Prim Hesaplama",
   "Binek Araç Gider Kısıtlaması",
   "Finansman Gider Kısıtlaması",
-];
-
-const taxGuideItems = [
-  {
-    title: "2026 Kurumlar Vergisi Güncellemeleri",
-    date: "Mart 2026",
-    tag: "Kurumlar",
-  },
-  {
-    title: "KDV Beyannamesi Hazırlık Rehberi",
-    date: "Şubat 2026",
-    tag: "KDV",
-  },
-  {
-    title: "SGK Teşvik ve Prim Uygulamaları",
-    date: "Ocak 2026",
-    tag: "SGK",
-  },
-  {
-    title: "Binek Araç Gider Kısıtlaması Özet",
-    date: "Aralık 2025",
-    tag: "Gider",
-  },
 ];
 
 export default function LandingPage() {
@@ -214,42 +192,7 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <section id="vergi-rehberi" className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
-          <div className="max-w-2xl">
-            <p className="text-sm font-semibold uppercase tracking-wider text-violet-700">
-              Vergi Rehberi
-            </p>
-            <h2 className="mt-3 text-3xl font-bold text-slate-900 sm:text-4xl">
-              Güncel Vergi Rehberi
-            </h2>
-            <p className="mt-4 text-slate-600">
-              Mevzuat değişiklikleri ve pratik uygulama notları için placeholder
-              içerik alanı.
-            </p>
-          </div>
-
-          <div className="mt-12 grid grid-cols-1 gap-6 md:grid-cols-2">
-            {taxGuideItems.map((item) => (
-              <article
-                key={item.title}
-                className="rounded-3xl border border-dashed border-violet-200 bg-white p-6"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700">
-                    {item.tag}
-                  </span>
-                  <span className="text-sm text-slate-500">{item.date}</span>
-                </div>
-                <h3 className="mt-4 text-lg font-semibold text-slate-900">
-                  {item.title}
-                </h3>
-                <p className="mt-3 text-sm text-slate-500">
-                  İçerik yakında eklenecek.
-                </p>
-              </article>
-            ))}
-          </div>
-        </section>
+        <PublicMevzuatHapNotlariSection />
 
         <section id="hakkimizda" className="border-t border-violet-100 bg-white py-20">
           <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-2 lg:px-8">
