@@ -147,10 +147,10 @@ const menuGroups: MenuGroup[] = [
     ],
   },
   {
-    title: "Ticaret Sicil Merkezi",
+    title: "Ticaret Sicil / Operasyon Merkezi",
     items: [
+      { label: "Operasyon Merkezi", href: "/ticaret-sicil" },
       { label: "Firma Yönetimi", href: "/muhasebe/firma-yonetimi" },
-      { label: "Ticaret Sicil Hazırlık", href: "/dashboard", badge: "Yakında" },
     ],
   },
   {

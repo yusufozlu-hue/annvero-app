@@ -12,6 +12,7 @@ import {
   parseEmployeeExcelFile,
 } from "@/src/utils/employeeExcel";
 import GibCredentialsSection from "@/app/dashboard/ofis-takip/resmi-bildirimler/components/GibCredentialsSection";
+import TicaretSicilCompanyPanel from "@/src/components/TicaretSicilCompanyPanel";
 
 const EMPLOYEE_PAGE_SIZE = 20;
 
@@ -114,6 +115,10 @@ export default function CompanyManagement() {
       "employees",
       "modules",
       "rules",
+      "ticaretSicil",
+      "ticaretOperations",
+      "ticaretDocuments",
+      "ticaretReminders",
     ];
     const requestedTab = new URLSearchParams(window.location.search).get("tab");
 
@@ -958,7 +963,19 @@ export default function CompanyManagement() {
     ["modules", "Modüller"],
 
     ["rules", "Özel Kurallar"],
+
+    ["ticaretSicil", "Ticaret Sicil"],
+    ["ticaretOperations", "Operasyonlar"],
+    ["ticaretDocuments", "Evraklar"],
+    ["ticaretReminders", "Hatırlatmalar"],
   ];
+
+  const ticaretSicilTabs = new Set([
+    "ticaretSicil",
+    "ticaretOperations",
+    "ticaretDocuments",
+    "ticaretReminders",
+  ]);
 
   const sortCompaniesByName = (a, b) =>
     (a.companyName || "").localeCompare(b.companyName || "", "tr", {
@@ -2369,16 +2386,58 @@ export default function CompanyManagement() {
               </div>
             )}
 
-            <div className="mt-8 flex justify-end">
-              <button
-                type="button"
-                onClick={saveCompany}
-                disabled={isSaving}
-                className="rounded-lg bg-indigo-600 px-6 py-3 font-semibold hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isSaving ? "Kaydediliyor..." : "Kaydet"}
-              </button>
-            </div>
+            {activeTab === "ticaretSicil" && (
+              <TicaretSicilCompanyPanel
+                companyId={company.id}
+                companyName={company.companyName}
+                companyAddress={company.address}
+                companyTaxNumber={company.taxNumber}
+                view="profile"
+              />
+            )}
+
+            {activeTab === "ticaretOperations" && (
+              <TicaretSicilCompanyPanel
+                companyId={company.id}
+                companyName={company.companyName}
+                companyAddress={company.address}
+                companyTaxNumber={company.taxNumber}
+                view="operations"
+              />
+            )}
+
+            {activeTab === "ticaretDocuments" && (
+              <TicaretSicilCompanyPanel
+                companyId={company.id}
+                companyName={company.companyName}
+                companyAddress={company.address}
+                companyTaxNumber={company.taxNumber}
+                view="documents"
+              />
+            )}
+
+            {activeTab === "ticaretReminders" && (
+              <TicaretSicilCompanyPanel
+                companyId={company.id}
+                companyName={company.companyName}
+                companyAddress={company.address}
+                companyTaxNumber={company.taxNumber}
+                view="reminders"
+              />
+            )}
+
+            {!ticaretSicilTabs.has(activeTab) ? (
+              <div className="mt-8 flex justify-end">
+                <button
+                  type="button"
+                  onClick={saveCompany}
+                  disabled={isSaving}
+                  className="rounded-lg bg-indigo-600 px-6 py-3 font-semibold hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isSaving ? "Kaydediliyor..." : "Kaydet"}
+                </button>
+              </div>
+            ) : null}
               </>
             )}
           </main>
