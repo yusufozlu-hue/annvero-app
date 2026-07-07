@@ -3,7 +3,6 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
@@ -984,8 +983,6 @@ export default function FisDonusturmePage() {
       )}
 
       <div className="mx-auto max-w-[1800px]">
-        <MuhasebeMenu />
-
         <header className="mb-6">
           <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
             Fiş Dönüştürme Merkezi

@@ -3,7 +3,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import { useCompanyList } from "../hooks/useCompanyList";
 import {
@@ -266,8 +265,6 @@ export default function FisKontrolPage() {
           {toast.message}
         </div>
       ) : null}
-
-      <MuhasebeMenu />
 
       <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
         <div>

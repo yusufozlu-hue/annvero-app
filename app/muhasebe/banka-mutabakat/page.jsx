@@ -3,7 +3,6 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import BankaMutabakatV2Workspace from "./components/BankaMutabakatV2Workspace";
@@ -370,8 +369,6 @@ export default function BankaMutabakatPage() {
           {toast.message}
         </div>
       ) : null}
-
-      <MuhasebeMenu />
 
       <h1 className="mb-2 text-3xl font-bold sm:text-4xl">Banka Mutabakat Merkezi V2</h1>
       <p className="mb-6 max-w-4xl text-gray-400">

@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import EditableStandardLucaPreviewTable from "../components/EditableStandardLucaPreviewTable";
@@ -1091,8 +1090,6 @@ export default function LucaDonusturucuPage() {
           {toast.message}
         </div>
       )}
-      <MuhasebeMenu />
-
       <p className="mb-6 text-3xl font-bold text-yellow-400">
         TEST - BU DOSYA ÇALIŞIYOR
       </p>

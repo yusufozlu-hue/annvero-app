@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/previewRowEdit";
@@ -381,8 +380,6 @@ export default function IslemHafizasiPage() {
           {toast.message}
         </div>
       ) : null}
-
-      <MuhasebeMenu />
 
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>

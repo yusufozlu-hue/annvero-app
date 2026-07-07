@@ -1,7 +1,6 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/previewRowEdit";
@@ -213,8 +212,6 @@ export default function OgrenenHafizaPage() {
           {toast.message}
         </div>
       ) : null}
-
-      <MuhasebeMenu />
 
       <h1 className="mb-2 text-4xl font-bold">Öğrenen Hafıza</h1>
       <p className="mb-8 text-gray-400">

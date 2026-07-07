@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import {
@@ -174,8 +173,6 @@ export default function RiskDenetimMerkeziPage() {
 
   return (
     <main className="min-h-screen bg-[#050816] px-4 py-6 text-white sm:px-6 lg:px-8">
-      <MuhasebeMenu />
-
       {toast ? (
         <div className="fixed right-4 top-4 z-[9999] rounded-xl border border-indigo-500/40 bg-indigo-950/95 px-4 py-3 text-sm font-medium text-indigo-100 shadow-xl">
           {toast}

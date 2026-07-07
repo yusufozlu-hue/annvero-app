@@ -3,7 +3,6 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import PreviewEyeButton from "../components/PreviewEyeButton";
@@ -471,7 +470,6 @@ export default function ElektrawebPage() {
           </div>
 
           <div className="flex-1 lg:flex lg:justify-center">
-            <MuhasebeMenu />
           </div>
 
           <div className="flex items-center gap-3 px-2">

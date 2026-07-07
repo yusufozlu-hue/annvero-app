@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import {
@@ -406,8 +405,6 @@ export default function KurDegerlemePage() {
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
-      <MuhasebeMenu />
-
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <div className="mb-8">
           <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">

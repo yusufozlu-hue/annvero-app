@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import AccountSuggestionBadges from "../components/AccountSuggestionBadges";
@@ -624,8 +623,6 @@ export default function BankaParserPage() {
           {toast.message}
         </div>
       )}
-      <MuhasebeMenu />
-
       <div className="mb-10 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-4xl font-bold">Banka Parser Merkezi</h1>

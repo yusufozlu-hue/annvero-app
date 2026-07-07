@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";import MuhasebeMenu from "../components/MuhasebeMenu";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
@@ -471,7 +471,6 @@ export default function KurallarPage() {
   if (companies.length === 0) {
     return (
       <main className="min-h-screen bg-gray-950 p-8 text-white">
-        <MuhasebeMenu />
         <h1 className="mb-4 text-4xl font-bold">Kural Motoru</h1>
         <p className="text-gray-400">
           Önce Firma Yönetim Merkezi’nden firma eklemelisin.
@@ -613,7 +612,6 @@ export default function KurallarPage() {
         </div>
       )}
 
-      <MuhasebeMenu />
       <h1 className="mb-8 text-4xl font-bold">Rule Engine v1</h1>
 
       <div className="mb-6 rounded-2xl border border-gray-800 bg-gray-900 p-6">

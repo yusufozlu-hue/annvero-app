@@ -2,7 +2,6 @@
 
 import { Fragment, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
@@ -314,8 +313,6 @@ export default function LucaAktarimKontrolPage() {
           {toast.message}
         </div>
       ) : null}
-
-      <MuhasebeMenu />
 
       <h1 className="mb-2 text-4xl font-bold">Luca Aktarım Kontrol Merkezi</h1>
       <p className="mb-6 max-w-4xl text-gray-400">

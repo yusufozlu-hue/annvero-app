@@ -2,7 +2,6 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import { useCompanyList } from "../hooks/useCompanyList";
@@ -266,8 +265,6 @@ export default function AiKontrolPage() {
           {toast.message}
         </div>
       ) : null}
-
-      <MuhasebeMenu />
 
       <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
         <div>

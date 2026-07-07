@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
-import MuhasebeMenu from "../components/MuhasebeMenu";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import {
@@ -117,8 +116,6 @@ export default function HesapPlaniPage() {
 
   return (
     <main className="min-h-screen bg-gray-950 p-8 text-white">
-      <MuhasebeMenu />
-
       <h1 className="mb-2 text-4xl font-bold">Hesap Planı Merkezi</h1>
       <p className="mb-8 text-gray-400">
         Firma bazlı hesap planı yükleme, arama ve parser altyapısı.
