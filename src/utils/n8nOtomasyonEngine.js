@@ -14,6 +14,7 @@ import {
   N8N_SCHEDULE_TYPES,
 } from "@/src/config/n8nOtomasyonDefaults";
 import { buildAiOfisDocument } from "@/src/utils/aiOfisAsistaniEngine";
+import { logSystemError } from "@/src/utils/systemLogEngine";
 
 function safeParseJson(value, fallback) {
   try {
@@ -384,6 +385,19 @@ export async function processAutomationJob(jobId, companies = [], userId = "sist
   });
 
   if (result.status === N8N_JOB_STATUS.HATA) {
+    logSystemError({
+      module: "Otomasyon Merkezi",
+      message: result.errorMessage || result.aiNote || "Otomasyon akışı hatası",
+      companyId: job.companyId,
+      companyName: job.companyName,
+      detail: job.flowId,
+      technicalDetail: result.errorMessage,
+      suggestion: "Görev kuyruğundan retry ile yeniden deneyin.",
+      source: "otomasyon",
+      userId,
+      errorType: "automation_error",
+      retryable: true,
+    });
     const errors = loadAutomationErrors();
     saveAutomationErrors([
       {

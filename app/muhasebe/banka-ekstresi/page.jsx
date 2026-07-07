@@ -58,6 +58,10 @@ import {
 } from "@/src/utils/previewRowEdit";
 import { hasBankMovementError } from "@/src/utils/tableSearch";
 import {
+  logParserError,
+  SYSTEM_ERROR_TYPES,
+} from "@/src/utils/systemLogEngine";
+import {
   loadDeclarationAccrualRecords,
   saveDeclarationAccrualRecords,
 } from "@/src/utils/beyannameTahakkukEngine";
@@ -583,6 +587,19 @@ export default function BankaParserPage() {
       );
     } catch (error) {
       console.error("[banka-ekstresi] preview failed", error);
+      logParserError(
+        error?.message || "Banka ekstresi parse hatası",
+        { stack: error?.stack, bank: selectedBank },
+        selectedCompanyId,
+        {
+          fileName: selectedFile?.name || "",
+          companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+          errorType: parserProgress.timeoutWarning
+            ? SYSTEM_ERROR_TYPES.TIMEOUT
+            : SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
+          module: "Banka Parser",
+        }
+      );
       clearPreviewState();
       showToast(
         error?.message ||

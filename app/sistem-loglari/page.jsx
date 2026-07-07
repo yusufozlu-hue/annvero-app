@@ -14,6 +14,8 @@ import {
   collectAggregatedSystemLogs,
   filterSystemLogs,
   SYSTEM_LOG_LEVELS,
+  SYSTEM_LOG_STATUSES,
+  updateSystemLogStatus,
 } from "@/src/utils/systemLogEngine";
 
 const MODULE_OPTIONS = [
@@ -38,6 +40,7 @@ function levelBadge(level) {
 export default function SistemLoglariPage() {
   const { companies, selectedCompanyId } = useCompanyList();
   const [logs, setLogs] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("Tümü");
   const [moduleFilter, setModuleFilter] = useState("Tümü");
   const [levelFilter, setLevelFilter] = useState("Tümü");
   const [companyFilter, setCompanyFilter] = useState("");
@@ -59,11 +62,12 @@ export default function SistemLoglariPage() {
         module: moduleFilter,
         companyId: companyFilter,
         level: levelFilter,
+        status: statusFilter,
         dateFrom,
         dateTo,
         search,
       }),
-    [logs, moduleFilter, companyFilter, levelFilter, dateFrom, dateTo, search]
+    [logs, moduleFilter, companyFilter, levelFilter, statusFilter, dateFrom, dateTo, search]
   );
 
   const stats = useMemo(() => buildSystemLogStats(filtered), [filtered]);
@@ -95,17 +99,55 @@ export default function SistemLoglariPage() {
       render: (row) => row.companyName || row.companyId || "—",
       filterable: true,
     },
+    { key: "fileName", label: "Dosya", filterable: true },
     { key: "message", label: "Mesaj", filterable: true },
     {
-      key: "detail",
-      label: "Detay",
+      key: "suggestion",
+      label: "Çözüm Önerisi",
       render: (row) => (
-        <span className="max-w-xs truncate text-slate-400" title={row.detail}>
-          {row.detail || "—"}
+        <span className="max-w-xs text-xs text-cyan-200/80">{row.suggestion || "—"}</span>
+      ),
+    },
+    {
+      key: "retryable",
+      label: "Retry",
+      render: (row) => (row.retryable ? "Evet" : "Hayır"),
+    },
+    {
+      key: "status",
+      label: "Durum",
+      render: (row) => (
+        <span
+          className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+            (row.status || "open") === "resolved"
+              ? "bg-emerald-500/15 text-emerald-200"
+              : "bg-amber-500/15 text-amber-200"
+          }`}
+        >
+          {(row.status || "open") === "resolved" ? "Çözüldü" : "Açık"}
         </span>
       ),
     },
-    { key: "source", label: "Kaynak" },
+    {
+      key: "actions",
+      label: "İşlem",
+      sortable: false,
+      render: (row) =>
+        row.id?.startsWith("syslog-") && (row.status || "open") !== "resolved" ? (
+          <button
+            type="button"
+            onClick={() => {
+              updateSystemLogStatus(row.id, "resolved");
+              setLogs(collectAggregatedSystemLogs());
+            }}
+            className="rounded-lg border border-slate-600 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800"
+          >
+            Çözüldü işaretle
+          </button>
+        ) : (
+          "—"
+        ),
+    },
   ];
 
   return (
@@ -126,10 +168,11 @@ export default function SistemLoglariPage() {
         <Stat label="Uyarı" value={stats.warnings} tone="text-amber-300" />
         <Stat label="Parser" value={stats.parserErrors} />
         <Stat label="XML" value={stats.xmlErrors} />
+        <Stat label="Açık" value={stats.open} tone="text-amber-300" />
         <Stat label="Retry" value={stats.retryCount} />
       </section>
 
-      <section className={`${annveroPanelClass} grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6`}>
+      <section className={`${annveroPanelClass} grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-7`}>
         <label className="block xl:col-span-2">
           <span className="mb-1 block text-xs text-slate-400">Arama</span>
           <input
@@ -163,6 +206,20 @@ export default function SistemLoglariPage() {
             {SYSTEM_LOG_LEVELS.map((option) => (
               <option key={option} value={option}>
                 {option}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs text-slate-400">Durum</span>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className={annveroInputClass}
+          >
+            {SYSTEM_LOG_STATUSES.map((option) => (
+              <option key={option} value={option}>
+                {option === "open" ? "Açık" : option === "resolved" ? "Çözüldü" : option}
               </option>
             ))}
           </select>

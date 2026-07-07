@@ -29,10 +29,16 @@ export default function AnnveroDataTable({
   columns = [],
   rows = [],
   rowKey = "id",
+  getRowKey,
   searchPlaceholder = "Hızlı ara...",
   pageSize = 25,
   emptyMessage = "Kayıt bulunamadı.",
+  loadingMessage = "Kayıtlar yükleniyor...",
   stickyHeader = true,
+  isLoading = false,
+  showToolbar = true,
+  exportFilename = "annvero-export.csv",
+  className = "",
 }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("");
@@ -92,6 +98,11 @@ export default function AnnveroDataTable({
   const currentPage = Math.min(page, totalPages);
   const pagedRows = filteredRows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
+  const resolveRowKey = (row, index) => {
+    if (getRowKey) return getRowKey(row, index);
+    return row[rowKey] ?? `row-${index}`;
+  };
+
   const toggleSort = (key) => {
     if (sortKey === key) {
       setSortDir((dir) => (dir === "asc" ? "desc" : "asc"));
@@ -102,50 +113,61 @@ export default function AnnveroDataTable({
   };
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60 shadow-xl shadow-black/20">
-      <div className="flex flex-col gap-3 border-b border-slate-800 p-4 lg:flex-row lg:items-center lg:justify-between">
-        <input
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setPage(1);
-          }}
-          placeholder={searchPlaceholder}
-          className={`max-w-md ${annveroInputClass}`}
-        />
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => exportToCsv("annvero-export.csv", visibleColumns, filteredRows)}
-            className="rounded-xl border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-900"
-          >
-            Excel (CSV)
-          </button>
-          <details className="relative">
-            <summary className="cursor-pointer list-none rounded-xl border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-900">
-              Kolonlar
-            </summary>
-            <div className="absolute right-0 z-20 mt-2 min-w-[180px] rounded-xl border border-slate-700 bg-[#06111f] p-2 shadow-xl">
-              {columns.map((col) => (
-                <label key={col.key} className="flex items-center gap-2 px-2 py-1.5 text-xs text-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={!hiddenColumns[col.key]}
-                    onChange={() =>
-                      setHiddenColumns((prev) => ({ ...prev, [col.key]: !prev[col.key] }))
-                    }
-                  />
-                  {col.label}
-                </label>
-              ))}
-            </div>
-          </details>
+    <div
+      className={`overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/60 shadow-xl shadow-black/20 ${className}`}
+    >
+      {showToolbar ? (
+        <div className="flex flex-col gap-3 border-b border-slate-800 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <input
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
+            placeholder={searchPlaceholder}
+            className={`max-w-md ${annveroInputClass}`}
+          />
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => exportToCsv(exportFilename, visibleColumns, filteredRows)}
+              className="rounded-xl border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-900"
+            >
+              Excel (CSV)
+            </button>
+            <details className="relative">
+              <summary className="cursor-pointer list-none rounded-xl border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-900">
+                Kolonlar
+              </summary>
+              <div className="absolute right-0 z-20 mt-2 min-w-[180px] rounded-xl border border-slate-700 bg-[#06111f] p-2 shadow-xl">
+                {columns.map((col) => (
+                  <label
+                    key={col.key}
+                    className="flex items-center gap-2 px-2 py-1.5 text-xs text-slate-300"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!hiddenColumns[col.key]}
+                      onChange={() =>
+                        setHiddenColumns((prev) => ({ ...prev, [col.key]: !prev[col.key] }))
+                      }
+                    />
+                    {col.label}
+                  </label>
+                ))}
+              </div>
+            </details>
+          </div>
         </div>
-      </div>
+      ) : null}
 
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-sm">
-          <thead className={stickyHeader ? "sticky top-0 z-10 bg-slate-900/95 backdrop-blur" : "bg-slate-900/80"}>
+          <thead
+            className={
+              stickyHeader ? "sticky top-0 z-10 bg-slate-900/95 backdrop-blur" : "bg-slate-900/80"
+            }
+          >
             <tr>
               {visibleColumns.map((col) => (
                 <th key={col.key} className="px-4 py-3 text-left font-medium text-slate-300">
@@ -173,9 +195,18 @@ export default function AnnveroDataTable({
             </tr>
           </thead>
           <tbody>
-            {pagedRows.length ? (
-              pagedRows.map((row) => (
-                <tr key={row[rowKey]} className="border-t border-slate-800/80 hover:bg-white/[0.02]">
+            {isLoading ? (
+              <tr>
+                <td colSpan={visibleColumns.length} className="px-4 py-10 text-center text-slate-400">
+                  {loadingMessage}
+                </td>
+              </tr>
+            ) : pagedRows.length ? (
+              pagedRows.map((row, index) => (
+                <tr
+                  key={resolveRowKey(row, index)}
+                  className="border-t border-slate-800/80 hover:bg-white/[0.02]"
+                >
                   {visibleColumns.map((col) => (
                     <td key={col.key} className="px-4 py-3 text-slate-200">
                       {col.render ? col.render(row) : row[col.key]}

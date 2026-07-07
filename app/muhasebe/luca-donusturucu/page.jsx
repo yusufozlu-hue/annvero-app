@@ -44,6 +44,10 @@ import {
 } from "@/src/utils/accountMemoryV1";
 import { buildExportWarningConfirmMessage } from "@/src/utils/previewExportValidation";
 import {
+  logParserError,
+  SYSTEM_ERROR_TYPES,
+} from "@/src/utils/systemLogEngine";
+import {
   ensureStandardLucaRowIds,
   finalizeStandardLucaRow,
   filterStandardLucaRows,
@@ -694,6 +698,17 @@ export default function LucaDonusturucuPage() {
       logStandardLucaReport("luca-donusturucu-elektraweb", parsedRows);
     } catch (error) {
       console.error("Ön izleme hatası:", error);
+      logParserError(
+        error?.message || "Luca ön izleme hatası",
+        { stack: error?.stack, sourceType },
+        selectedCompanyId,
+        {
+          fileName: uploadedFile?.name || hareketFileName || "",
+          companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+          module: "Luca Fiş Üretici",
+          errorType: SYSTEM_ERROR_TYPES.UNEXPECTED,
+        }
+      );
       setPreviewError(
         `Ön izleme oluşturulamadı: ${error?.message || "Bilinmeyen hata"}`
       );

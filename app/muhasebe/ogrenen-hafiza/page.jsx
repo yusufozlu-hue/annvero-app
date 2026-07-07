@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/previewRowEdit";
@@ -20,6 +20,7 @@ import {
   fetchAllLearningMemory,
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
+import AnnveroDataTable from "@/src/components/AnnveroDataTable";
 
 const inputClassName =
   "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-white outline-none focus:border-indigo-500";
@@ -197,6 +198,80 @@ export default function OgrenenHafizaPage() {
     await loadRecords();
   };
 
+  const memoryColumns = useMemo(
+    () => [
+      {
+        key: "aramaAnahtari",
+        label: "Açıklama / Keyword",
+        filterable: true,
+        render: (row) => (
+          <div className="max-w-[280px]">
+            <div className="font-medium text-gray-100">{row.aramaAnahtari || "—"}</div>
+            <div className="mt-1 text-xs text-gray-400">{row.aciklama}</div>
+            <div className="mt-1 text-[11px] text-gray-500">{row.firmaAdi}</div>
+          </div>
+        ),
+        filterValue: (row) => `${row.aramaAnahtari} ${row.aciklama} ${row.firmaAdi}`,
+      },
+      { key: "hesapKodu", label: "Hesap Kodu", filterable: true },
+      { key: "hesapAdi", label: "Hesap Adı", filterable: true },
+      { key: "belgeTuru", label: "Belge Türü" },
+      { key: "cari", label: "Cari", filterable: true },
+      { key: "kaynakAdi", label: "Banka" },
+      {
+        key: "status",
+        label: "Durum",
+        render: (row) => <StatusBadge status={row.status} />,
+      },
+      { key: "matchCount", label: "Eşleşme", sortable: true },
+      {
+        key: "lastMatchedAt",
+        label: "Son Kullanım",
+        sortValue: (row) => row.lastMatchedAt,
+        render: (row) => formatLearningMemoryDate(row.lastMatchedAt),
+      },
+      {
+        key: "learnedAt",
+        label: "Öğrenme",
+        sortValue: (row) => row.learnedAt,
+        render: (row) => formatLearningMemoryDate(row.learnedAt),
+      },
+      {
+        key: "actions",
+        label: "İşlem",
+        sortable: false,
+        render: (row) => (
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => openEditPanel(row)}
+              className="rounded-lg border border-indigo-700/60 px-3 py-1.5 text-xs font-semibold text-indigo-200 hover:bg-indigo-950/50"
+            >
+              Düzenle
+            </button>
+            <button
+              type="button"
+              onClick={() => toggleActive(row)}
+              className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs font-semibold text-gray-200 hover:bg-gray-800"
+            >
+              {row.isActive ? "Pasif Yap" : "Aktif Yap"}
+            </button>
+            {row.status !== "deleted" ? (
+              <button
+                type="button"
+                onClick={() => deleteRecord(row)}
+                className="rounded-lg border border-red-800/60 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-950/40"
+              >
+                Sil
+              </button>
+            ) : null}
+          </div>
+        ),
+      },
+    ],
+    []
+  );
+
   return (
     <main className="min-h-screen bg-gray-950 p-8 text-white">
       {toast ? (
@@ -357,195 +432,100 @@ export default function OgrenenHafizaPage() {
           </button>
         </div>
 
-        {isLoading ? (
-          <p className="text-gray-400">Kayıtlar yükleniyor...</p>
-        ) : filteredRows.length === 0 ? (
-          <p className="text-gray-400">Kayıt bulunamadı.</p>
-        ) : (
-          <div className="overflow-auto">
-            <table className="w-full min-w-[1500px] text-sm">
-              <thead className="bg-gray-800">
-                <tr>
-                  <th className="p-3 text-left">Açıklama / Keyword</th>
-                  <th className="p-3 text-left">Hesap Kodu</th>
-                  <th className="p-3 text-left">Hesap Adı</th>
-                  <th className="p-3 text-left">Belge Türü</th>
-                  <th className="p-3 text-left">Cari</th>
-                  <th className="p-3 text-left">Banka</th>
-                  <th className="p-3 text-left">Durum</th>
-                  <th className="p-3 text-left">Eşleşme Sayısı</th>
-                  <th className="p-3 text-left">Son Kullanım Tarihi</th>
-                  <th className="p-3 text-left">Öğrenme Tarihi</th>
-                  <th className="p-3 text-center">İşlem</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRows.map((row) => (
-                  <Fragment key={row.id}>
-                    <tr className="border-t border-gray-800">
-                      <td className="p-3 max-w-[280px]">
-                        <div className="font-medium text-gray-100">{row.aramaAnahtari || "—"}</div>
-                        <div className="mt-1 text-xs text-gray-400">{row.aciklama}</div>
-                        <div className="mt-1 text-[11px] text-gray-500">{row.firmaAdi}</div>
-                      </td>
-                      <td className="p-3 font-mono text-xs">{row.hesapKodu || "—"}</td>
-                      <td className="p-3">{row.hesapAdi || "—"}</td>
-                      <td className="p-3">{row.belgeTuru || "—"}</td>
-                      <td className="p-3">{row.cari || "—"}</td>
-                      <td className="p-3">{row.kaynakAdi}</td>
-                      <td className="p-3">
-                        <StatusBadge status={row.status} />
-                      </td>
-                      <td className="p-3">{row.matchCount}</td>
-                      <td className="p-3">{formatLearningMemoryDate(row.lastMatchedAt)}</td>
-                      <td className="p-3">{formatLearningMemoryDate(row.learnedAt)}</td>
-                      <td className="p-3">
-                        <div className="flex flex-wrap justify-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => openEditPanel(row)}
-                            className="rounded-lg border border-indigo-700/60 px-3 py-1.5 text-xs font-semibold text-indigo-200 hover:bg-indigo-950/50"
-                          >
-                            Düzenle
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => toggleActive(row)}
-                            className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs font-semibold text-gray-200 hover:bg-gray-800"
-                          >
-                            {row.isActive ? "Pasif Yap" : "Aktif Yap"}
-                          </button>
-                          {row.status !== "deleted" ? (
-                            <button
-                              type="button"
-                              onClick={() => deleteRecord(row)}
-                              className="rounded-lg border border-red-800/60 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-950/40"
-                            >
-                              Sil
-                            </button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
+        <AnnveroDataTable
+          columns={memoryColumns}
+          rows={filteredRows}
+          isLoading={isLoading}
+          showToolbar={false}
+          pageSize={25}
+          exportFilename="ogrenen-hafiza.csv"
+          emptyMessage="Kayıt bulunamadı."
+        />
 
-                    {editingRecordId === row.id && editDraft ? (
-                      <tr className="border-t border-gray-800 bg-gray-950/60">
-                        <td colSpan={11} className="p-4">
-                          <div className="rounded-xl border border-indigo-700/40 p-4">
-                            <h3 className="mb-4 text-lg font-semibold">Kayıt Düzenle</h3>
-                            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                              <Field label="Arama Anahtarı">
-                                <input
-                                  value={editDraft.keyword}
-                                  onChange={(event) =>
-                                    updateDraftField("keyword", event.target.value)
-                                  }
-                                  className={inputClassName}
-                                />
-                              </Field>
-                              <Field label="Hesap Kodu">
-                                <input
-                                  value={editDraft.account_code}
-                                  onChange={(event) =>
-                                    updateDraftField("account_code", event.target.value)
-                                  }
-                                  className={inputClassName}
-                                />
-                              </Field>
-                              <Field label="Hesap Adı">
-                                <input
-                                  value={editDraft.account_name}
-                                  onChange={(event) =>
-                                    updateDraftField("account_name", event.target.value)
-                                  }
-                                  className={inputClassName}
-                                />
-                              </Field>
-                              <Field label="Belge Türü">
-                                <select
-                                  value={editDraft.document_type}
-                                  onChange={(event) =>
-                                    updateDraftField("document_type", event.target.value)
-                                  }
-                                  className={inputClassName}
-                                >
-                                  {DOCUMENT_TYPE_OPTIONS.map((option) => (
-                                    <option key={option} value={option}>
-                                      {option}
-                                    </option>
-                                  ))}
-                                </select>
-                              </Field>
-                              <Field label="Cari" className="md:col-span-3">
-                                <input
-                                  value={editDraft.cari_name}
-                                  onChange={(event) =>
-                                    updateDraftField(
-                                      "cari_name",
-                                      event.target.value
-                                    )
-                                  }
-                                  className={inputClassName}
-                                />
-                              </Field>
-                              <Field label="Temiz Açıklama" className="md:col-span-3">
-                                <input
-                                  value={editDraft.clean_description}
-                                  onChange={(event) =>
-                                    updateDraftField(
-                                      "clean_description",
-                                      event.target.value
-                                    )
-                                  }
-                                  className={inputClassName}
-                                />
-                              </Field>
-                              <Field label="Aktif/Pasif">
-                                <select
-                                  value={editDraft.status || "active"}
-                                  onChange={(event) =>
-                                    updateDraftField(
-                                      "status",
-                                      event.target.value
-                                    )
-                                  }
-                                  className={inputClassName}
-                                >
-                                  <option value="active">Aktif</option>
-                                  <option value="passive">Pasif</option>
-                                  <option value="deleted">Silindi</option>
-                                </select>
-                              </Field>
-                            </div>
-
-                            <div className="mt-4 flex flex-wrap gap-2">
-                              <button
-                                type="button"
-                                onClick={saveEdit}
-                                disabled={isSaving}
-                                className="rounded-lg bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-700 disabled:opacity-60"
-                              >
-                                {isSaving ? "Kaydediliyor..." : "Kaydet"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={closeEditPanel}
-                                disabled={isSaving}
-                                className="rounded-lg bg-gray-700 px-4 py-2 hover:bg-gray-600 disabled:opacity-60"
-                              >
-                                İptal
-                              </button>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : null}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
+        {editingRecordId && editDraft ? (
+          <div className="mt-4 rounded-xl border border-indigo-700/40 p-4">
+            <h3 className="mb-4 text-lg font-semibold">Kayıt Düzenle</h3>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <Field label="Arama Anahtarı">
+                <input
+                  value={editDraft.keyword}
+                  onChange={(event) => updateDraftField("keyword", event.target.value)}
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="Hesap Kodu">
+                <input
+                  value={editDraft.account_code}
+                  onChange={(event) => updateDraftField("account_code", event.target.value)}
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="Hesap Adı">
+                <input
+                  value={editDraft.account_name}
+                  onChange={(event) => updateDraftField("account_name", event.target.value)}
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="Belge Türü">
+                <select
+                  value={editDraft.document_type}
+                  onChange={(event) => updateDraftField("document_type", event.target.value)}
+                  className={inputClassName}
+                >
+                  {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Cari" className="md:col-span-3">
+                <input
+                  value={editDraft.cari_name}
+                  onChange={(event) => updateDraftField("cari_name", event.target.value)}
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="Temiz Açıklama" className="md:col-span-3">
+                <input
+                  value={editDraft.clean_description}
+                  onChange={(event) => updateDraftField("clean_description", event.target.value)}
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="Aktif/Pasif">
+                <select
+                  value={editDraft.status || "active"}
+                  onChange={(event) => updateDraftField("status", event.target.value)}
+                  className={inputClassName}
+                >
+                  <option value="active">Aktif</option>
+                  <option value="passive">Pasif</option>
+                  <option value="deleted">Silindi</option>
+                </select>
+              </Field>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={saveEdit}
+                disabled={isSaving}
+                className="rounded-lg bg-indigo-600 px-4 py-2 font-semibold hover:bg-indigo-700 disabled:opacity-60"
+              >
+                {isSaving ? "Kaydediliyor..." : "Kaydet"}
+              </button>
+              <button
+                type="button"
+                onClick={closeEditPanel}
+                disabled={isSaving}
+                className="rounded-lg bg-gray-700 px-4 py-2 hover:bg-gray-600 disabled:opacity-60"
+              >
+                İptal
+              </button>
+            </div>
           </div>
-        )}
+        ) : null}
 
         <p className="mt-4 text-sm text-gray-400">
           Toplam {filteredRows.length}/{records.length} kayıt görüntüleniyor.

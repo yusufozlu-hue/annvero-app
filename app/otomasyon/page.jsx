@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Suspense, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
+import AnnveroDataTable from "@/src/components/AnnveroDataTable";
 import { useCompanyList } from "@/app/muhasebe/hooks/useCompanyList";
 import { useAdminAccess } from "@/src/hooks/useAdminAccess";
 import {
@@ -323,59 +324,59 @@ function OtomasyonApp() {
             {filteredQueue.length === 0 ? (
               <p className="text-sm text-slate-400">Kuyrukta iş yok.</p>
             ) : (
-              filteredQueue.map((job) => (
-                <article key={job.id} className="rounded-xl border border-gray-800 bg-gray-900 p-4 text-sm">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <p className="font-semibold">{job.name}</p>
-                      <p className="text-slate-400">
-                        {job.module} · {job.status} · Retry: {job.retryCount}
-                      </p>
-                      <p className="text-xs text-slate-500">
-                        Başlangıç: {job.startedAt?.slice(0, 19).replace("T", " ") || "—"} · Bitiş:{" "}
-                        {job.finishedAt?.slice(0, 19).replace("T", " ") || "—"}
-                      </p>
-                      {job.errorMessage ? (
-                        <p className="mt-1 text-xs text-red-300">{job.errorMessage}</p>
-                      ) : null}
-                      {job.aiNote ? <p className="mt-1 text-xs text-orange-200">{job.aiNote}</p> : null}
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {job.status === N8N_JOB_STATUS.BEKLIYOR ||
-                      job.status === N8N_JOB_STATUS.RETRY ? (
-                        <button
-                          type="button"
-                          onClick={() => runJob(job.id)}
-                          className="rounded-lg bg-orange-600 px-3 py-1 text-xs font-semibold"
-                        >
-                          Çalıştır
-                        </button>
-                      ) : null}
-                      {job.status === N8N_JOB_STATUS.HATA ? (
-                        <button
-                          type="button"
-                          onClick={() => handleRetry(job.id)}
-                          className="rounded-lg border border-amber-700 px-3 py-1 text-xs"
-                        >
-                          Retry
-                        </button>
-                      ) : null}
-                      {job.requiresApproval && job.approvalStatus !== "approved" && isAdmin ? (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            approveAutomationJob(job.id, "admin");
-                            await runJob(job.id);
-                          }}
-                          className="rounded-lg border border-emerald-700 px-3 py-1 text-xs text-emerald-200"
-                        >
-                          Onayla
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                </article>
-              ))
+              <AnnveroDataTable
+                rows={filteredQueue}
+                showToolbar={false}
+                pageSize={20}
+                exportFilename="otomasyon-kuyruk.csv"
+                columns={[
+                  { key: "name", label: "Görev", filterable: true },
+                  { key: "module", label: "Modül", filterable: true },
+                  { key: "status", label: "Durum", filterable: true },
+                  { key: "retryCount", label: "Retry", sortable: true },
+                  {
+                    key: "startedAt",
+                    label: "Başlangıç",
+                    sortValue: (row) => row.startedAt,
+                    render: (row) => row.startedAt?.slice(0, 19).replace("T", " ") || "—",
+                  },
+                  {
+                    key: "errorMessage",
+                    label: "Hata",
+                    render: (row) => (
+                      <span className="text-xs text-red-300">{row.errorMessage || "—"}</span>
+                    ),
+                  },
+                  {
+                    key: "actions",
+                    label: "İşlem",
+                    sortable: false,
+                    render: (row) => (
+                      <div className="flex flex-wrap gap-2">
+                        {row.status === N8N_JOB_STATUS.BEKLIYOR ||
+                        row.status === N8N_JOB_STATUS.RETRY ? (
+                          <button
+                            type="button"
+                            onClick={() => runJob(row.id)}
+                            className="rounded-lg bg-orange-600 px-3 py-1 text-xs font-semibold"
+                          >
+                            Çalıştır
+                          </button>
+                        ) : null}
+                        {row.status === N8N_JOB_STATUS.HATA ? (
+                          <button
+                            type="button"
+                            onClick={() => handleRetry(row.id)}
+                            className="rounded-lg border border-amber-700 px-3 py-1 text-xs"
+                          >
+                            Retry
+                          </button>
+                        ) : null}
+                      </div>
+                    ),
+                  },
+                ]}
+              />
             )}
           </section>
         )}

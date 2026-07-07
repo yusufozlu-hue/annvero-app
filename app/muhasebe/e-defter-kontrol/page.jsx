@@ -31,6 +31,12 @@ import {
   prepareEDefterPdfReport,
 } from "@/src/utils/eDefterKontrolExport";
 import { parseEDefterUploadFile } from "@/src/utils/eDefterXmlParser";
+import {
+  logExcelError,
+  logXmlError,
+  SYSTEM_ERROR_TYPES,
+} from "@/src/utils/systemLogEngine";
+import AnnveroDataTable from "@/src/components/AnnveroDataTable";
 
 const inputClassName =
   "w-full rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20";
@@ -128,6 +134,12 @@ export default function EDefterKontrolPage() {
       setUploadMeta(parsed);
       setToast(`${parsed.rows.length} XML satırı, ${parsed.technicalFindings.length} teknik bulgu okundu.`);
     } catch (error) {
+      logXmlError(error.message || "XML/ZIP okunamadı.", { stack: error?.stack }, selectedCompanyId, {
+        fileName: file.name,
+        companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+        errorType: SYSTEM_ERROR_TYPES.CORRUPT_XML,
+        module: "XML / e-Defter",
+      });
       setToast(error.message || "XML/ZIP okunamadı.");
     }
     event.target.value = "";
@@ -136,8 +148,17 @@ export default function EDefterKontrolPage() {
   const handleMuavinUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    setMuavinRows(parseMuavinSheet(await readExcelSheet(file)));
-    setToast("Muavin Excel yüklendi.");
+    try {
+      setMuavinRows(parseMuavinSheet(await readExcelSheet(file)));
+      setToast("Muavin Excel yüklendi.");
+    } catch (error) {
+      logExcelError(error.message || "Muavin Excel okunamadı.", { stack: error?.stack }, selectedCompanyId, {
+        fileName: file.name,
+        errorType: SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
+        module: "XML / e-Defter",
+      });
+      setToast(error.message || "Muavin Excel okunamadı.");
+    }
     event.target.value = "";
   };
 
@@ -345,34 +366,25 @@ export default function EDefterKontrolPage() {
       {companyRecords.length > 0 ? (
         <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/70 p-5">
           <h2 className="mb-4 text-xl font-semibold">Yükleme Kayıtları</h2>
-          <div className="overflow-x-auto">
-            <table className="min-w-[900px] w-full text-left text-sm">
-              <thead className="text-xs uppercase text-gray-400">
-                <tr>
-                  <th className="px-3 py-2">Dönem</th>
-                  <th className="px-3 py-2">Defter Türü</th>
-                  <th className="px-3 py-2">Yükleme</th>
-                  <th className="px-3 py-2">Durum</th>
-                  <th className="px-3 py-2">Hata</th>
-                  <th className="px-3 py-2">Uyarı</th>
-                </tr>
-              </thead>
-              <tbody>
-                {companyRecords.map((record) => (
-                  <tr key={record.id} className="border-t border-white/10">
-                    <td className="px-3 py-2">{record.period}</td>
-                    <td className="px-3 py-2">{record.defterType}</td>
-                    <td className="px-3 py-2">
-                      {new Date(record.uploadedAt).toLocaleString("tr-TR")}
-                    </td>
-                    <td className="px-3 py-2">{record.controlStatus}</td>
-                    <td className="px-3 py-2">{record.errorCount}</td>
-                    <td className="px-3 py-2">{record.warningCount}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <AnnveroDataTable
+            showToolbar={false}
+            pageSize={15}
+            exportFilename="edefter-yukleme-kayitlari.csv"
+            rows={companyRecords}
+            columns={[
+              { key: "period", label: "Dönem", filterable: true },
+              { key: "defterType", label: "Defter Türü", filterable: true },
+              {
+                key: "uploadedAt",
+                label: "Yükleme",
+                sortValue: (row) => row.uploadedAt,
+                render: (row) => new Date(row.uploadedAt).toLocaleString("tr-TR"),
+              },
+              { key: "controlStatus", label: "Durum", filterable: true },
+              { key: "errorCount", label: "Hata", sortable: true },
+              { key: "warningCount", label: "Uyarı", sortable: true },
+            ]}
+          />
         </section>
       ) : null}
 
