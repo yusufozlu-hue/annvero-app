@@ -14,6 +14,7 @@ import {
   saveDeclarationAccountMappings,
   saveDeclarationAccrualRecords,
 } from "@/src/utils/beyannameTahakkukEngine";
+import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
 
 const inputClassName =
   "w-full rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20";
@@ -167,7 +168,28 @@ export default function BeyannameTahakkukPage() {
     const companyId = selectedCompanyId || form.companyId;
     if (!companyId || !form.period || !form.type) {
       setToast("Firma, dönem ve tür zorunludur.");
+      logOperationalEvent({
+        module: "Beyanname/Tahakkuk Merkezi",
+        message: "Eksik veri: kayıt kaydedilemedi",
+        level: "warning",
+        companyId,
+        errorType: SYSTEM_ERROR_TYPES.EMPTY_DATA,
+        suggestion: "Firma, dönem ve beyanname türünü doldurun.",
+      });
       return;
+    }
+
+    if (distributionWarning) {
+      logOperationalEvent({
+        module: "Beyanname/Tahakkuk Merkezi",
+        message: "Tahakkuk dağılımı eşleşmedi",
+        level: "warning",
+        companyId,
+        companyName: companies.find((c) => c.id === companyId)?.name || "",
+        errorType: SYSTEM_ERROR_TYPES.TAHAKKUK_MISMATCH,
+        technicalDetail: distributionWarning,
+        suggestion: "Dağılım tutarlarını toplam ödeme ile hizalayın.",
+      });
     }
 
     const record = buildDeclarationRecord({

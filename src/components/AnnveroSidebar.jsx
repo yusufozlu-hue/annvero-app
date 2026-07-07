@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import BuildVersionBadge from "@/app/components/BuildVersionBadge";
 import { ANNVERO_NAV_GROUPS } from "@/src/config/annveroNavConfig";
+import { canSeeNavGroup } from "@/src/config/annveroRoles";
+import { useUserRole } from "@/src/hooks/useUserRole";
 import { annveroShellSidebarWidth } from "@/src/styles/annveroDesign";
 
 function normalizeMenuPath(href = "") {
@@ -139,14 +141,20 @@ export default function AnnveroSidebar({
   onToggleCollapse,
 }) {
   const pathname = usePathname();
+  const { role } = useUserRole();
   const [openMenu, setOpenMenu] = useState("");
 
+  const visibleNavGroups = useMemo(
+    () => ANNVERO_NAV_GROUPS.filter((group) => canSeeNavGroup(role, group.title)),
+    [role]
+  );
+
   useEffect(() => {
-    const activeGroup = ANNVERO_NAV_GROUPS.find((group) => isMenuGroupActive(group, pathname));
+    const activeGroup = visibleNavGroups.find((group) => isMenuGroupActive(group, pathname));
     if (activeGroup?.items?.length) {
       setOpenMenu(activeGroup.title);
     }
-  }, [pathname]);
+  }, [pathname, visibleNavGroups]);
 
   const width = collapsed ? "72px" : annveroShellSidebarWidth;
 
@@ -181,7 +189,7 @@ export default function AnnveroSidebar({
         </div>
 
         <nav className="sidebar-premium-nav flex-1 overflow-y-auto px-2 py-3">
-          {ANNVERO_NAV_GROUPS.map((group, index) => (
+          {visibleNavGroups.map((group, index) => (
             <SidebarGroup
               key={group.title}
               group={group}

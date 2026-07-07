@@ -37,6 +37,8 @@ import {
   syncTasksForDocuments,
   updateAiOfisDocument,
 } from "@/src/utils/aiOfisAsistaniEngine";
+import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
+import EvrakPoolPanel from "./components/EvrakPoolPanel";
 
 const inputClassName =
   "w-full rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20";
@@ -145,30 +147,49 @@ function AiOfisAsistaniApp() {
     saveAiOfisReminders(nextReminders);
   };
 
-  const handleFileUpload = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const meta = await readAiOfisDocumentFile(file);
-      const doc = buildAiOfisDocument(
-        {
-          ...meta,
-          source: AI_OFIS_SOURCES.MANUEL,
-          description: meta.fileName,
-        },
-        companies
-      );
-      persistDocuments([doc, ...documents]);
-      appendAiOfisHistory({
-        action: "yukleme",
-        message: `${doc.fileName} evrak havuzuna eklendi`,
-        documentId: doc.id,
-      });
-      setHistory(loadAiOfisHistory());
-      setToast(`${doc.fileName} yüklendi ve sınıflandırıldı.`);
-    } catch (error) {
-      setToast(error.message || "Dosya yüklenemedi.");
+  const handleFilesUpload = async (files = []) => {
+    const uploaded = [];
+    for (const file of files) {
+      try {
+        const meta = await readAiOfisDocumentFile(file);
+        const doc = buildAiOfisDocument(
+          {
+            ...meta,
+            source: AI_OFIS_SOURCES.MANUEL,
+            description: meta.fileName,
+          },
+          companies
+        );
+        uploaded.push(doc);
+        appendAiOfisHistory({
+          action: "yukleme",
+          message: `${doc.fileName} evrak havuzuna eklendi`,
+          documentId: doc.id,
+        });
+      } catch (error) {
+        logOperationalEvent({
+          module: "Evrak Havuzu",
+          message: "Dosya yüklenemedi",
+          level: "error",
+          fileName: file.name,
+          errorType: SYSTEM_ERROR_TYPES.INVALID_FILE_TYPE,
+          technicalDetail: error.message,
+          suggestion: "Dosya formatını ve boyutunu kontrol edin.",
+        });
+      }
     }
+
+    if (uploaded.length) {
+      persistDocuments([...uploaded, ...documents]);
+      setHistory(loadAiOfisHistory());
+      setToast(`${uploaded.length} evrak yüklendi ve sınıflandırıldı.`);
+    }
+  };
+
+  const handleFileUpload = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    await handleFilesUpload(files);
     event.target.value = "";
   };
 
@@ -416,24 +437,14 @@ function AiOfisAsistaniApp() {
         </div>
 
         {view === "pool" && (
-          <section className="space-y-3">
-            <h2 className="text-lg font-semibold">Evrak Havuzu</h2>
-            {filteredDocuments.length === 0 ? (
-              <p className="rounded-2xl border border-gray-800 bg-gray-900 p-6 text-sm text-slate-400">
-                Kayıt bulunamadı.
-              </p>
-            ) : (
-              filteredDocuments.map((doc) => (
-                <DocumentCard
-                  key={doc.id}
-                  doc={doc}
-                  companies={companies}
-                  onUpdate={updateDocument}
-                  onRoute={routeDocument}
-                />
-              ))
-            )}
-          </section>
+          <EvrakPoolPanel
+            documents={filteredDocuments}
+            companies={companies}
+            history={history}
+            onUploadFiles={handleFilesUpload}
+            onUpdate={updateDocument}
+            onRoute={routeDocument}
+          />
         )}
 
         {view === "mail" && (
@@ -606,104 +617,5 @@ function AiOfisAsistaniApp() {
         ) : null}
       </div>
     </div>
-  );
-}
-
-function DocumentCard({ doc, companies, onUpdate, onRoute, focus = "full" }) {
-  return (
-    <article className="rounded-2xl border border-gray-800 bg-gray-900 p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-semibold text-white">{doc.fileName || "İsimsiz evrak"}</p>
-          <p className="text-sm text-slate-400">
-            {doc.companyName || "Firma belirsiz"} · {doc.documentType} · {doc.source}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">
-            {doc.uploadedAt?.slice(0, 10)} · {doc.status} · AI %{doc.aiConfidence} · {doc.targetModule}
-          </p>
-          {doc.description ? <p className="mt-2 text-xs text-slate-400">{doc.description}</p> : null}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => onRoute(doc)}
-            className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-semibold hover:bg-cyan-500"
-          >
-            Modüle Aktar
-          </button>
-        </div>
-      </div>
-
-      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-        <label className="text-xs text-slate-400">
-          Firma
-          <select
-            className={`${inputClassName} mt-1`}
-            value={doc.companyId || ""}
-            onChange={(e) => {
-              const company = companies.find((item) => item.id === e.target.value);
-              onUpdate(doc.id, {
-                companyId: e.target.value,
-                companyName: getCompanyDisplayName(company),
-              });
-            }}
-          >
-            <option value="">Seçin</option>
-            {companies.map((company) => (
-              <option key={company.id} value={company.id}>
-                {getCompanyDisplayName(company)}
-              </option>
-            ))}
-          </select>
-        </label>
-        {focus !== "matching" ? (
-          <>
-            <label className="text-xs text-slate-400">
-              Evrak Türü
-              <select
-                className={`${inputClassName} mt-1`}
-                value={doc.documentType}
-                onChange={(e) => {
-                  const route = getModuleRouteForType(e.target.value);
-                  onUpdate(doc.id, {
-                    documentType: e.target.value,
-                    targetModule: route.label,
-                    targetModuleHref: route.href,
-                  });
-                }}
-              >
-                {AI_OFIS_DOCUMENT_TYPES.map((type) => (
-                  <option key={type} value={type}>
-                    {type}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="text-xs text-slate-400">
-              Durum
-              <select
-                className={`${inputClassName} mt-1`}
-                value={doc.status}
-                onChange={(e) => onUpdate(doc.id, { status: e.target.value })}
-              >
-                {Object.values(AI_OFIS_DOCUMENT_STATUS).map((status) => (
-                  <option key={status} value={status}>
-                    {status}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="text-xs text-slate-400 md:col-span-3">
-              Açıklama
-              <input
-                className={`${inputClassName} mt-1`}
-                value={doc.description || ""}
-                onChange={(e) => onUpdate(doc.id, { description: e.target.value })}
-              />
-            </label>
-          </>
-        ) : null}
-      </div>
-    </article>
   );
 }

@@ -1,10 +1,13 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
+import AnnveroEditableDataTable from "@/src/components/AnnveroEditableDataTable";
 import { useCompanyList } from "../hooks/useCompanyList";
+import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/previewRowEdit";
+import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
 import {
   loadPendingLucaRows,
   savePendingLucaRows,
@@ -134,6 +137,22 @@ export default function FisKontrolPage() {
 
   const analysis = useMemo(() => analyzeStandardLucaRows(rows), [rows]);
 
+  useEffect(() => {
+    if (!analysis.issues.length) return;
+    const highRisk = analysis.issues.filter((issue) => issue.seviye === KONTROL_SEVIYE.HATA);
+    if (!highRisk.length) return;
+    logOperationalEvent({
+      module: "Fiş Kontrol Merkezi",
+      message: `${highRisk.length} kritik kontrol uyarısı`,
+      level: "warning",
+      companyId: payload?.companyId || payload?.firmaId || "",
+      companyName: payload?.companyName || "",
+      errorType: SYSTEM_ERROR_TYPES.RISK_FLAG,
+      technicalDetail: highRisk.slice(0, 5).map((issue) => issue.message),
+      suggestion: "Hatalı satırları düzenleyin veya fişi yeniden üretin.",
+    });
+  }, [analysis.issues, payload]);
+
   const filteredRows = useMemo(() => {
     const baseRows = filterKontrolRows(analysis.rows, filter);
 
@@ -160,6 +179,86 @@ export default function FisKontrolPage() {
       return haystack.includes(query);
     });
   }, [analysis.rows, filter, search]);
+
+  const fisKontrolColumns = useMemo(
+    () => [
+      { key: "rowIndex", label: "#", render: (row) => row._kontrol?.rowIndex },
+      { key: "fisNo", label: "Fiş", sortable: true },
+      { key: "fisTarihi", label: "Tarih", sortable: true },
+      {
+        key: "kaynak",
+        label: "Kaynak",
+        render: (row) => (
+          <div>
+            <div>{row.kaynakTipi || "—"}</div>
+            <div className="text-xs text-gray-500">{row.kaynakAdi || "—"}</div>
+          </div>
+        ),
+      },
+      {
+        key: "hesapKodu",
+        label: "Hesap",
+        editable: true,
+        editKey: "hesapKodu",
+        editDisplay: (row) => (editingRowId === row.id ? null : row.hesapKodu || "—"),
+      },
+      {
+        key: "aciklama",
+        label: "Açıklama",
+        editable: true,
+        editKey: "fisAciklama",
+        editDisplay: (row) =>
+          editingRowId === row.id ? null : row.detayAciklama || row.fisAciklama || "—",
+      },
+      {
+        key: "borc",
+        label: "Borç",
+        render: (row) => formatMoney(row.borc),
+      },
+      {
+        key: "alacak",
+        label: "Alacak",
+        render: (row) => formatMoney(row.alacak),
+      },
+      {
+        key: "belgeTuru",
+        label: "Belge",
+        editable: true,
+        editKey: "belgeTuru",
+        editType: "select",
+        editOptions: DOCUMENT_TYPE_OPTIONS.map((option) => ({ value: option, label: option })),
+      },
+      {
+        key: "risk",
+        label: "Risk",
+        render: (row) => (
+          <div>
+            <span className={`font-semibold ${riskBadgeClass(row._kontrol.riskSeviyesi)}`}>
+              {row._kontrol.riskSeviyesi}
+            </span>
+            <div className="mt-1">
+              <span
+                className={`rounded px-2 py-0.5 text-xs font-semibold ${seviyeBadgeClass(row._kontrol.seviye)}`}
+              >
+                {row._kontrol.seviye}
+              </span>
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: "kontrolNotu",
+        label: "Kontrol Notu",
+        render: (row) => row._kontrol.kontrolNotu || "—",
+      },
+    ],
+    [editingRowId]
+  );
+
+  const tableDrafts = useMemo(() => {
+    if (!editingRowId || !draftRow) return {};
+    return { [editingRowId]: draftRow };
+  }, [editingRowId, draftRow]);
 
   const groupedIssues = useMemo(
     () => ({
@@ -191,6 +290,11 @@ export default function FisKontrolPage() {
   const openEdit = (row) => {
     setEditingRowId(row.id);
     setDraftRow(buildStandardLucaRowEditDraft(row));
+  };
+
+  const patchDraftField = (rowId, field, value) => {
+    if (rowId !== editingRowId) return;
+    setDraftRow((prev) => (prev ? { ...prev, [field]: value } : prev));
   };
 
   const cancelEdit = () => {
@@ -424,96 +528,46 @@ export default function FisKontrolPage() {
               />
             </label>
 
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1200px] text-sm">
-                <thead className="bg-gray-800 text-gray-300">
-                  <tr>
-                    <th className="p-3 text-left">#</th>
-                    <th className="p-3 text-left">Fiş</th>
-                    <th className="p-3 text-left">Tarih</th>
-                    <th className="p-3 text-left">Kaynak</th>
-                    <th className="p-3 text-left">Hesap</th>
-                    <th className="p-3 text-left">Açıklama</th>
-                    <th className="p-3 text-right">Borç</th>
-                    <th className="p-3 text-right">Alacak</th>
-                    <th className="p-3 text-left">Belge</th>
-                    <th className="p-3 text-left">Risk</th>
-                    <th className="p-3 text-left">Kontrol Notu</th>
-                    <th className="p-3 text-left">İşlem</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredRows.slice(0, 150).map((row) => (
-                    <Fragment key={row.id}>
-                      <tr className="border-t border-gray-800 align-top">
-                        <td className="p-3">{row._kontrol.rowIndex}</td>
-                        <td className="p-3">{row.fisNo ?? "—"}</td>
-                        <td className="p-3">{row.fisTarihi || "—"}</td>
-                        <td className="p-3">
-                          <div>{row.kaynakTipi || "—"}</div>
-                          <div className="text-xs text-gray-500">
-                            {row.kaynakAdi || "—"}
-                          </div>
-                        </td>
-                        <td className="p-3">{row.hesapKodu || "—"}</td>
-                        <td className="max-w-xs p-3">
-                          {row.detayAciklama || row.fisAciklama || "—"}
-                        </td>
-                        <td className="p-3 text-right">{formatMoney(row.borc)}</td>
-                        <td className="p-3 text-right">{formatMoney(row.alacak)}</td>
-                        <td className="p-3">{row.belgeTuru || "—"}</td>
-                        <td className="p-3">
-                          <span
-                            className={`font-semibold ${riskBadgeClass(row._kontrol.riskSeviyesi)}`}
-                          >
-                            {row._kontrol.riskSeviyesi}
-                          </span>
-                          <div className="mt-1">
-                            <span
-                              className={`rounded px-2 py-0.5 text-xs font-semibold ${seviyeBadgeClass(row._kontrol.seviye)}`}
-                            >
-                              {row._kontrol.seviye}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="max-w-sm p-3 text-gray-300">
-                          {row._kontrol.kontrolNotu || "—"}
-                        </td>
-                        <td className="p-3">
-                          <button
-                            type="button"
-                            onClick={() => openEdit(row)}
-                            className="rounded-lg border border-indigo-700 px-3 py-1.5 text-xs font-semibold text-indigo-200 hover:bg-indigo-950"
-                          >
-                            Düzenle
-                          </button>
-                        </td>
-                      </tr>
+            <AnnveroEditableDataTable
+              columns={fisKontrolColumns}
+              rows={filteredRows}
+              rowKey="id"
+              drafts={tableDrafts}
+              editingRowId={editingRowId}
+              onDraftChange={patchDraftField}
+              onStartEdit={(rowId) => {
+                const row = filteredRows.find((item) => item.id === rowId);
+                if (row) openEdit(row);
+              }}
+              onCancelEdit={cancelEdit}
+              onCommitEdit={saveEdit}
+              enableVirtualScroll={filteredRows.length > 120}
+              pageSize={50}
+              searchPlaceholder="Fiş, hesap, açıklama ara..."
+              exportFilename="fis-kontrol.csv"
+              showToolbar={false}
+              renderRowActions={(row) => (
+                <button
+                  type="button"
+                  onClick={() => openEdit(row)}
+                  className="rounded-lg border border-indigo-700 px-3 py-1.5 text-xs font-semibold text-indigo-200 hover:bg-indigo-950"
+                >
+                  {editingRowId === row.id ? "Detay" : "Düzenle"}
+                </button>
+              )}
+            />
 
-                      {editingRowId === row.id && draftRow ? (
-                        <tr className="border-t border-gray-800 bg-gray-950/70">
-                          <td colSpan={12} className="p-4">
-                            <PreviewVoucherDetailPanel
-                              variant="standardLuca"
-                              draft={draftRow}
-                              onChange={setDraftRow}
-                              onSave={saveEdit}
-                              onCancel={cancelEdit}
-                              showMemoryOption={false}
-                            />
-                          </td>
-                        </tr>
-                      ) : null}
-                    </Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {filteredRows.length > 150 ? (
-              <p className="mt-4 text-sm text-gray-400">
-                İlk 150 satır gösteriliyor. Filtre veya arama kullanın.
-              </p>
+            {editingRowId && draftRow ? (
+              <div className="mt-4 rounded-xl border border-gray-800 bg-gray-950/70 p-4">
+                <PreviewVoucherDetailPanel
+                  variant="standardLuca"
+                  draft={draftRow}
+                  onChange={setDraftRow}
+                  onSave={saveEdit}
+                  onCancel={cancelEdit}
+                  showMemoryOption={false}
+                />
+              </div>
             ) : null}
           </div>
         </>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { annveroInputClass } from "@/src/styles/annveroDesign";
 import { useWindowedRows } from "@/src/hooks/useWindowedRows";
 
@@ -26,11 +26,78 @@ function exportToCsv(filename, columns, rows) {
   URL.revokeObjectURL(url);
 }
 
-export default function AnnveroDataTable({
+function EditableCell({
+  column,
+  row,
+  rowId,
+  draft,
+  isEditing,
+  error,
+  onChange,
+  onFocus,
+  onKeyDown,
+}) {
+  if (!column.editable) {
+    return column.render ? column.render(row, { draft, isEditing }) : row[column.key];
+  }
+
+  const value = draft?.[column.editKey || column.key] ?? row[column.key] ?? "";
+
+  if (!isEditing && column.editDisplay) {
+    return column.editDisplay(row, { draft, value });
+  }
+
+  if (column.editType === "select" && column.editOptions) {
+    return (
+      <select
+        value={value}
+        onChange={(e) => onChange(column.editKey || column.key, e.target.value)}
+        onFocus={onFocus}
+        onKeyDown={onKeyDown}
+        className={`${annveroInputClass} min-w-[120px] py-1.5 text-xs`}
+      >
+        {column.editOptions.map((option) => (
+          <option key={option.value ?? option} value={option.value ?? option}>
+            {option.label ?? option}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  return (
+    <div>
+      <input
+        value={value}
+        onChange={(e) => onChange(column.editKey || column.key, e.target.value)}
+        onFocus={onFocus}
+        onKeyDown={onKeyDown}
+        className={`${annveroInputClass} min-w-[120px] py-1.5 text-xs ${error ? "border-red-500/60" : ""}`}
+        placeholder={column.editPlaceholder || ""}
+      />
+      {error ? <p className="mt-1 text-[10px] text-red-300">{error}</p> : null}
+    </div>
+  );
+}
+
+export default function AnnveroEditableDataTable({
   columns = [],
   rows = [],
   rowKey = "id",
   getRowKey,
+  drafts = {},
+  selectedIds = [],
+  editingRowId = "",
+  validationErrors = {},
+  onToggleSelect,
+  onToggleSelectAll,
+  isRowSelectable,
+  onDraftChange,
+  onStartEdit,
+  onCancelEdit,
+  onCommitEdit,
+  renderRowActions,
+  bulkToolbar = null,
   searchPlaceholder = "Hızlı ara...",
   pageSize = 25,
   emptyMessage = "Kayıt bulunamadı.",
@@ -39,9 +106,9 @@ export default function AnnveroDataTable({
   isLoading = false,
   showToolbar = true,
   exportFilename = "annvero-export.csv",
-  className = "",
   enableVirtualScroll = false,
-  virtualRowHeight = 48,
+  virtualRowHeight = 52,
+  className = "",
 }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("");
@@ -62,7 +129,7 @@ export default function AnnveroDataTable({
     if (query) {
       result = result.filter((row) =>
         visibleColumns.some((col) => {
-          const value = col.filterValue ? col.filterValue(row) : row[col.key];
+          const value = col.filterValue ? col.filterValue(row, drafts[row[rowKey]]) : row[col.key];
           return String(value ?? "")
             .toLowerCase()
             .includes(query);
@@ -74,7 +141,7 @@ export default function AnnveroDataTable({
       if (!filterValue?.trim()) return;
       const col = columns.find((c) => c.key === key);
       result = result.filter((row) => {
-        const value = col?.filterValue ? col.filterValue(row) : row[key];
+        const value = col?.filterValue ? col.filterValue(row, drafts[row[rowKey]]) : row[key];
         return String(value ?? "")
           .toLowerCase()
           .includes(filterValue.trim().toLowerCase());
@@ -84,8 +151,8 @@ export default function AnnveroDataTable({
     if (sortKey) {
       const col = columns.find((c) => c.key === sortKey);
       result.sort((a, b) => {
-        const av = col?.sortValue ? col.sortValue(a) : a[sortKey];
-        const bv = col?.sortValue ? col.sortValue(b) : b[sortKey];
+        const av = col?.sortValue ? col.sortValue(a, drafts[a[rowKey]]) : a[sortKey];
+        const bv = col?.sortValue ? col.sortValue(b, drafts[b[rowKey]]) : b[sortKey];
         if (av == null && bv == null) return 0;
         if (av == null) return 1;
         if (bv == null) return -1;
@@ -95,7 +162,7 @@ export default function AnnveroDataTable({
     }
 
     return result;
-  }, [rows, search, sortKey, sortDir, columnFilters, visibleColumns, columns]);
+  }, [rows, search, sortKey, sortDir, columnFilters, visibleColumns, columns, drafts, rowKey]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -109,18 +176,37 @@ export default function AnnveroDataTable({
 
   const displayRows = enableVirtualScroll ? windowRows : pagedRows;
 
-  const resolveRowKey = (row, index) => {
-    if (getRowKey) return getRowKey(row, index);
-    return row[rowKey] ?? `row-${index}`;
-  };
+  const resolveRowKey = useCallback(
+    (row, index) => {
+      if (getRowKey) return getRowKey(row, index);
+      return row[rowKey] ?? `row-${index}`;
+    },
+    [getRowKey, rowKey]
+  );
 
-  const toggleSort = (key) => {
-    if (sortKey === key) {
-      setSortDir((dir) => (dir === "asc" ? "desc" : "asc"));
+  const selectableRows = useMemo(
+    () => filteredRows.filter((row) => (isRowSelectable ? isRowSelectable(row) : true)),
+    [filteredRows, isRowSelectable]
+  );
+
+  const allSelected =
+    selectableRows.length > 0 &&
+    selectableRows.every((row) => selectedIds.includes(row[rowKey]));
+
+  const handleKeyDown = (event, rowId, field) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancelEdit?.(rowId);
       return;
     }
-    setSortKey(key);
-    setSortDir("asc");
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      onCommitEdit?.(rowId);
+    }
+    if (event.key === "Tab") {
+      // basic keyboard navigation hook for parent extensions
+      event.currentTarget.dataset.lastField = field;
+    }
   };
 
   return (
@@ -152,10 +238,7 @@ export default function AnnveroDataTable({
               </summary>
               <div className="absolute right-0 z-20 mt-2 min-w-[180px] rounded-xl border border-slate-700 bg-[#06111f] p-2 shadow-xl">
                 {columns.map((col) => (
-                  <label
-                    key={col.key}
-                    className="flex items-center gap-2 px-2 py-1.5 text-xs text-slate-300"
-                  >
+                  <label key={col.key} className="flex items-center gap-2 px-2 py-1.5 text-xs text-slate-300">
                     <input
                       type="checkbox"
                       checked={!hiddenColumns[col.key]}
@@ -172,6 +255,8 @@ export default function AnnveroDataTable({
         </div>
       ) : null}
 
+      {bulkToolbar}
+
       <div
         ref={containerRef}
         onScroll={onScroll}
@@ -184,11 +269,28 @@ export default function AnnveroDataTable({
             }
           >
             <tr>
+              {onToggleSelect ? (
+                <th className="px-3 py-3 text-left">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={() => onToggleSelectAll?.()}
+                    aria-label="Tümünü seç"
+                  />
+                </th>
+              ) : null}
               {visibleColumns.map((col) => (
                 <th key={col.key} className="px-4 py-3 text-left font-medium text-slate-300">
                   <button
                     type="button"
-                    onClick={() => col.sortable !== false && toggleSort(col.key)}
+                    onClick={() => {
+                      if (col.sortable === false) return;
+                      if (sortKey === col.key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                      else {
+                        setSortKey(col.key);
+                        setSortDir("asc");
+                      }
+                    }}
                     className="inline-flex items-center gap-1 hover:text-white"
                   >
                     {col.label}
@@ -207,37 +309,74 @@ export default function AnnveroDataTable({
                   ) : null}
                 </th>
               ))}
+              {renderRowActions ? <th className="px-4 py-3 text-left">İşlem</th> : null}
             </tr>
           </thead>
           <tbody style={enableVirtualScroll ? { height: totalHeight } : undefined}>
             {enableVirtualScroll ? (
               <tr style={{ height: offsetY }} aria-hidden>
-                <td colSpan={visibleColumns.length} />
+                <td colSpan={visibleColumns.length + 2} />
               </tr>
             ) : null}
             {isLoading ? (
               <tr>
-                <td colSpan={visibleColumns.length} className="px-4 py-10 text-center text-slate-400">
+                <td
+                  colSpan={visibleColumns.length + (onToggleSelect ? 1 : 0) + (renderRowActions ? 1 : 0)}
+                  className="px-4 py-10 text-center text-slate-400"
+                >
                   {loadingMessage}
                 </td>
               </tr>
             ) : displayRows.length ? (
-              displayRows.map((row, index) => (
-                <tr
-                  key={resolveRowKey(row, index)}
-                  className="border-t border-slate-800/80 hover:bg-white/[0.02]"
-                  style={enableVirtualScroll ? { height: virtualRowHeight } : undefined}
-                >
-                  {visibleColumns.map((col) => (
-                    <td key={col.key} className="px-4 py-3 text-slate-200">
-                      {col.render ? col.render(row) : row[col.key]}
-                    </td>
-                  ))}
-                </tr>
-              ))
+              displayRows.map((row, index) => {
+                const id = resolveRowKey(row, index);
+                const draft = drafts[id] || drafts[row[rowKey]];
+                const isEditing = editingRowId === id || editingRowId === row[rowKey];
+                const selectable = isRowSelectable ? isRowSelectable(row) : true;
+                return (
+                  <tr
+                    key={id}
+                    className={`border-t border-slate-800/80 hover:bg-white/[0.02] ${isEditing ? "bg-indigo-950/20" : ""}`}
+                    style={enableVirtualScroll ? { height: virtualRowHeight } : undefined}
+                  >
+                    {onToggleSelect ? (
+                      <td className="px-3 py-3">
+                        {selectable ? (
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.includes(row[rowKey])}
+                            onChange={() => onToggleSelect(row[rowKey])}
+                          />
+                        ) : null}
+                      </td>
+                    ) : null}
+                    {visibleColumns.map((col) => (
+                      <td key={col.key} className="px-4 py-3 text-slate-200">
+                        <EditableCell
+                          column={col}
+                          row={row}
+                          rowId={row[rowKey]}
+                          draft={draft}
+                          isEditing={isEditing || col.alwaysEdit}
+                          error={validationErrors[row[rowKey]]}
+                          onChange={(field, value) => onDraftChange?.(row[rowKey], field, value)}
+                          onFocus={() => onStartEdit?.(row[rowKey])}
+                          onKeyDown={(e) => handleKeyDown(e, row[rowKey], col.editKey || col.key)}
+                        />
+                      </td>
+                    ))}
+                    {renderRowActions ? (
+                      <td className="px-4 py-3">{renderRowActions(row, { draft, isEditing })}</td>
+                    ) : null}
+                  </tr>
+                );
+              })
             ) : (
               <tr>
-                <td colSpan={visibleColumns.length} className="px-4 py-8 text-center text-slate-500">
+                <td
+                  colSpan={visibleColumns.length + (onToggleSelect ? 1 : 0) + (renderRowActions ? 1 : 0)}
+                  className="px-4 py-8 text-center text-slate-500"
+                >
                   {emptyMessage}
                 </td>
               </tr>

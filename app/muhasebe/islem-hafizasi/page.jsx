@@ -10,6 +10,8 @@ import {
   fetchUnrecognizedTransactions,
   learnUnrecognizedTransaction,
 } from "@/src/utils/transactionMemoryApi";
+import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
+import AnnveroEditableDataTable from "@/src/components/AnnveroEditableDataTable";
 import {
   buildUnrecognizedStats,
   filterUnrecognizedRows,
@@ -228,6 +230,90 @@ export default function IslemHafizasiPage() {
     ? groupedRows.flatMap((group) => group.rows)
     : filteredRows;
 
+  const unknownQueueColumns = useMemo(
+    () => [
+      {
+        key: "transactionDate",
+        label: "Tarih",
+        sortable: true,
+        render: (row) => (
+          <div>
+            <div className="font-medium text-gray-200">{row.transactionDate || "—"}</div>
+            <div className="text-xs text-gray-500">{row.sourceBank || "—"}</div>
+          </div>
+        ),
+      },
+      {
+        key: "rawDescription",
+        label: "Açıklama",
+        editable: true,
+        editKey: "cleanDescription",
+        editPlaceholder: "Temiz açıklama",
+        sortable: true,
+        editDisplay: (row, { draft }) =>
+          row.status !== "pending" ? (
+            <span className="max-w-xs text-gray-100">{row.rawDescription}</span>
+          ) : null,
+        render: (row) => <span className="max-w-xs text-gray-100">{row.rawDescription}</span>,
+      },
+      {
+        key: "amount",
+        label: "Tutar",
+        sortable: true,
+        render: (row) => (
+          <span className="font-semibold tabular-nums">{formatAmount(row.amount)} ₺</span>
+        ),
+      },
+      {
+        key: "suggestionScore",
+        label: "AI Skor",
+        render: (row) => formatAiScore(row),
+      },
+      {
+        key: "accountCode",
+        label: "Hesap kodu",
+        editable: true,
+        editKey: "accountCode",
+        editDisplay: (row, { draft }) =>
+          row.status !== "pending" ? (
+            <span>{draft?.accountCode || row.suggestedAccountCode || "—"}</span>
+          ) : null,
+      },
+      {
+        key: "accountName",
+        label: "Hesap adı",
+        editable: true,
+        editKey: "accountName",
+        editDisplay: (row, { draft }) =>
+          row.status !== "pending" ? <span>{draft?.accountName || "—"}</span> : null,
+      },
+      {
+        key: "documentType",
+        label: "Belge türü",
+        editable: true,
+        editKey: "documentType",
+        editType: "select",
+        editOptions: DOCUMENT_TYPE_OPTIONS.map((option) => ({ value: option, label: option })),
+        editDisplay: (row, { draft }) =>
+          row.status !== "pending" ? <span>{draft?.documentType || "—"}</span> : null,
+      },
+      {
+        key: "cariName",
+        label: "Cari",
+        editable: true,
+        editKey: "cariName",
+        editDisplay: (row, { draft }) =>
+          row.status !== "pending" ? <span>{draft?.cariName || "—"}</span> : null,
+      },
+      {
+        key: "status",
+        label: "Durum",
+        render: (row) => <IssueBadges row={row} />,
+      },
+    ],
+    []
+  );
+
   const pendingDisplayRows = displayRows.filter((row) => row.status === "pending");
   const allPendingSelected =
     pendingDisplayRows.length > 0 &&
@@ -275,11 +361,27 @@ export default function IslemHafizasiPage() {
         if (!String(draft.accountCode || "").trim()) continue;
         await learnUnrecognizedTransaction(id, draft);
         success += 1;
+        logOperationalEvent({
+          module: "Unknown Queue",
+          message: "Toplu öğretme başarılı",
+          level: "info",
+          companyId: row.companyId,
+          errorType: SYSTEM_ERROR_TYPES.LEARN_SUCCESS,
+          technicalDetail: { transactionId: id, accountCode: draft.accountCode },
+        });
       }
       showToast(`${success} işlem toplu öğretildi.`);
       setSelectedIds([]);
       await loadRows();
     } catch (error) {
+      logOperationalEvent({
+        module: "Unknown Queue",
+        message: "Toplu öğretme başarısız",
+        level: "error",
+        errorType: SYSTEM_ERROR_TYPES.LEARN_FAILED,
+        technicalDetail: error.message,
+        suggestion: "Hesap kodu ve bağlantıyı kontrol edip tekrar deneyin.",
+      });
       showToast(error.message || "Toplu öğretme başarısız.", "error");
     } finally {
       setBusyId(null);
@@ -331,10 +433,27 @@ export default function IslemHafizasiPage() {
     setBusyId(row.id);
     try {
       await learnUnrecognizedTransaction(row.id, draft);
+      logOperationalEvent({
+        module: "Unknown Queue",
+        message: "İşlem öğrenildi",
+        level: "info",
+        companyId: row.companyId,
+        errorType: SYSTEM_ERROR_TYPES.LEARN_SUCCESS,
+        technicalDetail: { transactionId: row.id, accountCode: draft.accountCode },
+      });
       showToast("İşlem öğrenildi ve hafızaya kaydedildi.");
       setExpandedId(null);
       await loadRows();
     } catch (error) {
+      logOperationalEvent({
+        module: "Unknown Queue",
+        message: "Öğrenme başarısız",
+        level: "error",
+        companyId: row.companyId,
+        errorType: SYSTEM_ERROR_TYPES.LEARN_FAILED,
+        technicalDetail: error.message,
+        suggestion: "Hesap kodu zorunludur; taslak alanlarını kontrol edin.",
+      });
       showToast(error.message || "Öğrenme başarısız.", "error");
     } finally {
       setBusyId(null);
@@ -874,219 +993,80 @@ export default function IslemHafizasiPage() {
           })}
         </div>
 
-        {/* Masaüstü tablo */}
-        <div className="hidden overflow-x-auto lg:block">
-          <table className="w-full min-w-[1100px] text-sm">
-            <thead className="bg-white/5 text-gray-300">
-              <tr>
-                <th className="px-4 py-3 text-left font-medium">
-                  <input
-                    type="checkbox"
-                    checked={allPendingSelected}
-                    onChange={toggleSelectAllPending}
-                    aria-label="Bekleyenleri seç"
-                  />
-                </th>
-                <th className="px-4 py-3 text-left font-medium">Tarih</th>
-                <th className="px-4 py-3 text-left font-medium">Açıklama</th>
-                <th className="px-4 py-3 text-right font-medium">Tutar</th>
-                <th className="px-4 py-3 text-left font-medium">AI Skor</th>
-                <th className="px-4 py-3 text-left font-medium">Önerilen Hesap</th>
-                <th className="px-4 py-3 text-left font-medium">Önerilen Belge Tipi</th>
-                <th className="px-4 py-3 text-left font-medium">Cari</th>
-                <th className="px-4 py-3 text-left font-medium">Durum</th>
-                <th className="px-4 py-3 text-left font-medium">İşlem</th>
-              </tr>
-            </thead>
-            <tbody>
-              {displayRows.map((row) => {
-                const draft = drafts[row.id] || buildDraft(row);
-                const isBusy = busyId === row.id;
-                const isPending = row.status === "pending";
-                const isExpanded = expandedId === row.id;
-
-                return (
-                  <tr
-                    key={row.id}
-                    className="border-t border-white/5 align-top transition hover:bg-white/[0.02]"
+        {/* Masaüstü editable tablo */}
+        <div className="hidden lg:block p-4">
+          <AnnveroEditableDataTable
+            columns={unknownQueueColumns}
+            rows={displayRows}
+            rowKey="id"
+            drafts={drafts}
+            selectedIds={selectedIds}
+            editingRowId={expandedId}
+            validationErrors={Object.fromEntries(
+              displayRows
+                .filter((row) => row.status === "pending")
+                .filter((row) => !String(drafts[row.id]?.accountCode || "").trim())
+                .map((row) => [row.id, "Hesap kodu zorunlu"])
+            )}
+            onToggleSelect={toggleRowSelection}
+            onToggleSelectAll={toggleSelectAllPending}
+            isRowSelectable={(row) => row.status === "pending"}
+            onDraftChange={updateDraft}
+            onStartEdit={(rowId) => setExpandedId(rowId)}
+            onCancelEdit={(rowId) => {
+              setExpandedId((current) => (current === rowId ? null : current));
+              setDrafts((prev) => {
+                const row = rows.find((item) => item.id === rowId);
+                if (!row) return prev;
+                return { ...prev, [rowId]: buildDraft(row) };
+              });
+            }}
+            onCommitEdit={(rowId) => {
+              const row = rows.find((item) => item.id === rowId);
+              if (row) handleLearn(row);
+            }}
+            isLoading={isLoading}
+            enableVirtualScroll={displayRows.length > 100}
+            pageSize={50}
+            searchPlaceholder="Satır içinde hızlı ara..."
+            exportFilename="unknown-queue.csv"
+            showToolbar={false}
+            emptyMessage="Tanınmayan işlem bulunamadı. Banka ekstresi yükledikten sonra hesap/cari bulunamayan satırlar burada listelenir."
+            renderRowActions={(row) => {
+              const isBusy = busyId === row.id;
+              const isPending = row.status === "pending";
+              if (!isPending) return <span className="text-xs text-gray-500">—</span>;
+              return (
+                <div className="flex min-w-[150px] flex-col gap-2">
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => handleLearn(row)}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-3 py-2 text-xs font-semibold disabled:opacity-50"
                   >
-                    <td className="px-4 py-3">
-                      {isPending ? (
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.includes(row.id)}
-                          onChange={() => toggleRowSelection(row.id)}
-                          aria-label="Satır seç"
-                        />
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-gray-300">
-                      <div className="font-medium text-gray-200">
-                        {row.transactionDate || "—"}
-                      </div>
-                      <div className="text-xs text-gray-500">{row.sourceBank || "—"}</div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="max-w-xs text-gray-100">{row.rawDescription}</div>
-                      {isPending && isExpanded ? (
-                        <input
-                          value={draft.cleanDescription}
-                          onChange={(event) =>
-                            updateDraft(row.id, "cleanDescription", event.target.value)
-                          }
-                          placeholder="Temiz açıklama"
-                          className={`${inputClassName} mt-2`}
-                        />
-                      ) : row.cleanDescription &&
-                        row.cleanDescription !== row.rawDescription ? (
-                        <div className="mt-1 text-xs text-gray-500">
-                          {row.cleanDescription}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap text-gray-100">
-                      {formatAmount(row.amount)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex rounded-lg px-2 py-1 text-xs font-semibold ${
-                          Number(row.suggestionScore || row.suggestion_score || 0) >= 85
-                            ? "bg-emerald-500/15 text-emerald-200"
-                            : "bg-white/5 text-gray-300"
-                        }`}
-                      >
-                        {formatAiScore(row)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      {isPending && isExpanded ? (
-                        <div className="min-w-[140px] space-y-2">
-                          <input
-                            value={draft.accountCode}
-                            onChange={(event) =>
-                              updateDraft(row.id, "accountCode", event.target.value)
-                            }
-                            placeholder="760"
-                            className={inputClassName}
-                          />
-                          <input
-                            value={draft.accountName}
-                            onChange={(event) =>
-                              updateDraft(row.id, "accountName", event.target.value)
-                            }
-                            placeholder="Reklam Giderleri"
-                            className={inputClassName}
-                          />
-                        </div>
-                      ) : (
-                        <div>
-                          <div className="font-medium text-gray-100">
-                            {row.suggestedAccountCode ||
-                              row.accountCode ||
-                              draft.accountCode ||
-                              "—"}
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {row.suggestedAccountName || row.accountName || ""}
-                          </div>
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      {isPending && isExpanded ? (
-                        <select
-                          value={draft.documentType}
-                          onChange={(event) =>
-                            updateDraft(row.id, "documentType", event.target.value)
-                          }
-                          className={inputClassName}
-                        >
-                          {DOCUMENT_TYPE_OPTIONS.map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className="inline-flex rounded-lg bg-white/5 px-2 py-1 text-xs font-semibold text-gray-200 ring-1 ring-white/10">
-                          {row.suggestedDocumentType ||
-                            row.documentType ||
-                            draft.documentType ||
-                            "—"}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      {isPending && isExpanded ? (
-                        <input
-                          value={draft.cariName}
-                          onChange={(event) =>
-                            updateDraft(row.id, "cariName", event.target.value)
-                          }
-                          placeholder="Google Ireland"
-                          className={inputClassName}
-                        />
-                      ) : (
-                        <span className="text-gray-200">
-                          {row.suggestedCari || row.cariName || draft.cariName || "—"}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <IssueBadges row={row} />
-                    </td>
-                    <td className="px-4 py-3">
-                      {isPending ? (
-                        <div className="flex min-w-[150px] flex-col gap-2">
-                          <button
-                            type="button"
-                            disabled={isBusy}
-                            onClick={() => handleLearn(row)}
-                            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-3 py-2 text-xs font-semibold shadow-md shadow-violet-950/40 transition hover:from-violet-500 hover:to-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <span aria-hidden>✦</span>
-                            {isBusy ? "Kaydediliyor..." : "Öğren"}
-                          </button>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setExpandedId(isExpanded ? null : row.id)
-                              }
-                              className="flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-[11px] font-semibold text-gray-300 hover:bg-white/10"
-                            >
-                              {isExpanded ? "Kapat" : "Düzenle"}
-                            </button>
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={() => handleDismiss(row)}
-                              className="flex-1 rounded-lg border border-white/10 px-2 py-1.5 text-[11px] font-semibold text-gray-400 hover:bg-white/5 disabled:opacity-50"
-                            >
-                              Yok say
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <span className="text-xs text-gray-500">—</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          {!isLoading && !filteredRows.length ? (
-            <p className="p-8 text-sm text-gray-400">
-              Tanınmayan işlem bulunamadı. Banka ekstresi yükledikten sonra hesap/cari
-              bulunamayan satırlar burada listelenir.
-            </p>
-          ) : null}
-
-          {isLoading ? (
-            <p className="p-8 text-sm text-gray-400">Kayıtlar yükleniyor...</p>
-          ) : null}
+                    {isBusy ? "Kaydediliyor..." : "Öğren"}
+                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}
+                      className="flex-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-[11px] font-semibold text-gray-300"
+                    >
+                      {expandedId === row.id ? "İptal" : "Düzenle"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => handleDismiss(row)}
+                      className="flex-1 rounded-lg border border-white/10 px-2 py-1.5 text-[11px] font-semibold text-gray-400"
+                    >
+                      Yok say
+                    </button>
+                  </div>
+                </div>
+              );
+            }}
+          />
         </div>
       </section>
     </main>

@@ -16,6 +16,7 @@ import {
 import { createLearningMemoryRecord } from "@/src/utils/learningMemory";
 import { buildSafeLearningMemoryPayload } from "@/src/utils/learningMemorySafePayload";
 import { getCompanyDisplayName } from "@/src/utils/companies";
+import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
 
 function safeParseJson(value, fallback) {
   try {
@@ -213,7 +214,7 @@ export function classifyAiOfisDocument(input = {}, companies = [], rules = loadA
     "Banka ekstresi",
   ]);
 
-  return {
+  const result = {
     companyId: company?.id || "",
     companyName: getCompanyDisplayName(company),
     documentType: bestType,
@@ -228,11 +229,57 @@ export function classifyAiOfisDocument(input = {}, companies = [], rules = loadA
         ? "Dosya adı ve içerik ipuçlarına göre sınıflandırıldı."
         : "Düşük güven; manuel kontrol önerilir.",
   };
+
+  if (confidence < 60) {
+    logOperationalEvent({
+      module: "AI Evrak Sınıflandırma",
+      message: "Düşük güven skoru",
+      level: "warning",
+      fileName,
+      errorType: SYSTEM_ERROR_TYPES.LOW_CONFIDENCE,
+      technicalDetail: { confidence, documentType: bestType, combined: combined.slice(0, 200) },
+      suggestion: "Evrak türü ve firmayı manuel doğrulayın.",
+    });
+  }
+
+  if (!company) {
+    logOperationalEvent({
+      module: "AI Evrak Sınıflandırma",
+      message: "Firma bulunamadı",
+      level: "warning",
+      fileName,
+      errorType: SYSTEM_ERROR_TYPES.COMPANY_NOT_FOUND,
+      suggestion: "Evrak havuzunda firma eşleştirmesi yapın.",
+    });
+  }
+
+  return result;
 }
 
 export function buildAiOfisDocument(input = {}, companies = []) {
   const now = new Date().toISOString();
   const classification = classifyAiOfisDocument(input, companies);
+  const existing = loadAiOfisDocuments();
+  const duplicate = existing.some(
+    (doc) =>
+      doc.fileName &&
+      input.fileName &&
+      normalizeText(doc.fileName) === normalizeText(input.fileName)
+  );
+
+  if (duplicate) {
+    logOperationalEvent({
+      module: "Evrak Havuzu",
+      message: "Mükerrer evrak tespit edildi",
+      level: "warning",
+      fileName: input.fileName,
+      companyId: classification.companyId,
+      companyName: classification.companyName,
+      errorType: SYSTEM_ERROR_TYPES.DUPLICATE_DOCUMENT,
+      suggestion: "Aynı dosya adıyla kayıt var; yüklemeyi doğrulayın.",
+    });
+  }
+
   const status =
     classification.confidence >= 75 && classification.companyId
       ? AI_OFIS_DOCUMENT_STATUS.AI_SINIFLANDIRILDI
@@ -324,6 +371,18 @@ export async function learnFromAiOfisCorrection({
     200
   );
   saveAiOfisLocalRules(nextRules);
+
+  logOperationalEvent({
+    module: "AI Evrak Sınıflandırma",
+    message: "AI sınıflandırma düzeltmesi öğrenildi",
+    level: "info",
+    companyId,
+    companyName,
+    fileName,
+    errorType: SYSTEM_ERROR_TYPES.AI_OVERRIDE,
+    technicalDetail: { documentType, pattern: normalizedPattern },
+    suggestion: "Benzer evraklar artık öğrenilen kural ile eşleşecek.",
+  });
 
   if (companyId) {
     const payload = buildSafeLearningMemoryPayload({
