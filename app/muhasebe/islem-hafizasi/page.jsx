@@ -44,6 +44,28 @@ function buildDraft(row) {
   };
 }
 
+function formatAiScore(row) {
+  const score = Number(row.suggestionScore || row.suggestion_score || 0);
+  if (!score) return "—";
+  return `${score}%`;
+}
+
+function normalizeDescriptionKey(value = "") {
+  return String(value).trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function groupRowsByDescription(rows = []) {
+  const map = new Map();
+  rows.forEach((row) => {
+    const key = normalizeDescriptionKey(row.rawDescription || row.cleanDescription);
+    if (!map.has(key)) {
+      map.set(key, { key, description: row.rawDescription || row.cleanDescription, rows: [] });
+    }
+    map.get(key).rows.push(row);
+  });
+  return Array.from(map.values()).sort((a, b) => b.rows.length - a.rows.length);
+}
+
 function StatCard({ label, value, accent, active, onClick }) {
   return (
     <button
@@ -114,6 +136,15 @@ export default function IslemHafizasiPage() {
   const [busyId, setBusyId] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [groupByDescription, setGroupByDescription] = useState(false);
+  const [bulkDraft, setBulkDraft] = useState({
+    accountCode: "",
+    accountName: "",
+    documentType: "DK",
+    cariName: "",
+    cleanDescription: "",
+  });
 
   const showToast = (message, type = "success") => setToast({ message, type });
 
@@ -188,6 +219,96 @@ export default function IslemHafizasiPage() {
       dateTo,
     ]
   );
+
+  const groupedRows = useMemo(
+    () => (groupByDescription ? groupRowsByDescription(filteredRows) : []),
+    [filteredRows, groupByDescription]
+  );
+
+  const displayRows = groupByDescription
+    ? groupedRows.flatMap((group) => group.rows)
+    : filteredRows;
+
+  const pendingDisplayRows = displayRows.filter((row) => row.status === "pending");
+  const allPendingSelected =
+    pendingDisplayRows.length > 0 &&
+    pendingDisplayRows.every((row) => selectedIds.includes(row.id));
+
+  const toggleRowSelection = (rowId) => {
+    setSelectedIds((prev) =>
+      prev.includes(rowId) ? prev.filter((id) => id !== rowId) : [...prev, rowId]
+    );
+  };
+
+  const toggleSelectAllPending = () => {
+    if (allPendingSelected) {
+      setSelectedIds((prev) => prev.filter((id) => !pendingDisplayRows.some((row) => row.id === id)));
+      return;
+    }
+    const ids = pendingDisplayRows.map((row) => row.id);
+    setSelectedIds((prev) => Array.from(new Set([...prev, ...ids])));
+  };
+
+  const applyBulkDraftToSelection = () => {
+    setDrafts((prev) => {
+      const next = { ...prev };
+      selectedIds.forEach((id) => {
+        next[id] = { ...(next[id] || {}), ...bulkDraft };
+      });
+      return next;
+    });
+    showToast("Toplu taslak seçili satırlara uygulandı.");
+  };
+
+  const handleBulkLearn = async () => {
+    if (!selectedIds.length) {
+      showToast("Toplu öğretme için satır seçin.", "error");
+      return;
+    }
+
+    setBusyId("bulk");
+    let success = 0;
+    try {
+      for (const id of selectedIds) {
+        const row = rows.find((item) => item.id === id);
+        if (!row || row.status !== "pending") continue;
+        const draft = { ...(drafts[id] || buildDraft(row)), ...bulkDraft };
+        if (!String(draft.accountCode || "").trim()) continue;
+        await learnUnrecognizedTransaction(id, draft);
+        success += 1;
+      }
+      showToast(`${success} işlem toplu öğretildi.`);
+      setSelectedIds([]);
+      await loadRows();
+    } catch (error) {
+      showToast(error.message || "Toplu öğretme başarısız.", "error");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleBulkDismiss = async () => {
+    if (!selectedIds.length) {
+      showToast("Toplu işlem için satır seçin.", "error");
+      return;
+    }
+
+    setBusyId("bulk");
+    try {
+      for (const id of selectedIds) {
+        const row = rows.find((item) => item.id === id);
+        if (!row || row.status !== "pending") continue;
+        await dismissUnrecognizedTransaction(id);
+      }
+      showToast(`${selectedIds.length} işlem yok sayıldı.`);
+      setSelectedIds([]);
+      await loadRows();
+    } catch (error) {
+      showToast(error.message || "Toplu güncelleme başarısız.", "error");
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const updateDraft = (id, field, value) => {
     setDrafts((prev) => ({
@@ -483,16 +604,128 @@ export default function IslemHafizasiPage() {
             <p className="mt-1 text-sm text-gray-400">
               {filteredRows.length} kayıt listeleniyor
               {stats.total ? ` · ${stats.total} bekleyen` : ""}
+              {selectedIds.length ? ` · ${selectedIds.length} seçili` : ""}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={loadRows}
-            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-gray-200 transition hover:bg-white/10"
-          >
-            Yenile
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setGroupByDescription((value) => !value)}
+              className={`rounded-xl border px-4 py-2 text-sm font-semibold transition ${
+                groupByDescription
+                  ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-100"
+                  : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10"
+              }`}
+            >
+              Açıklamaya göre grupla
+            </button>
+            <button
+              type="button"
+              onClick={loadRows}
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-gray-200 transition hover:bg-white/10"
+            >
+              Yenile
+            </button>
+          </div>
         </div>
+
+        {groupByDescription && groupedRows.length ? (
+          <div className="border-b border-white/10 px-4 py-3 sm:px-5">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-indigo-300">
+              Açıklama grupları
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {groupedRows.slice(0, 12).map((group) => (
+                <button
+                  key={group.key}
+                  type="button"
+                  onClick={() => {
+                    setSearch(group.description || "");
+                    setSelectedIds(group.rows.filter((r) => r.status === "pending").map((r) => r.id));
+                  }}
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-gray-200 hover:border-indigo-500/40"
+                >
+                  {group.description?.slice(0, 42) || "—"} ({group.rows.length})
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {selectedIds.length ? (
+          <div className="border-b border-indigo-500/20 bg-indigo-950/20 px-4 py-4 sm:px-5">
+            <p className="mb-3 text-sm font-semibold text-indigo-100">Toplu işlem ({selectedIds.length})</p>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
+              <input
+                value={bulkDraft.accountCode}
+                onChange={(e) => setBulkDraft((p) => ({ ...p, accountCode: e.target.value }))}
+                placeholder="Hesap kodu"
+                className={inputClassName}
+              />
+              <input
+                value={bulkDraft.accountName}
+                onChange={(e) => setBulkDraft((p) => ({ ...p, accountName: e.target.value }))}
+                placeholder="Hesap adı"
+                className={inputClassName}
+              />
+              <select
+                value={bulkDraft.documentType}
+                onChange={(e) => setBulkDraft((p) => ({ ...p, documentType: e.target.value }))}
+                className={inputClassName}
+              >
+                {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={bulkDraft.cariName}
+                onChange={(e) => setBulkDraft((p) => ({ ...p, cariName: e.target.value }))}
+                placeholder="Cari"
+                className={inputClassName}
+              />
+              <input
+                value={bulkDraft.cleanDescription}
+                onChange={(e) => setBulkDraft((p) => ({ ...p, cleanDescription: e.target.value }))}
+                placeholder="Temiz açıklama"
+                className={inputClassName}
+              />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={applyBulkDraftToSelection}
+                className="rounded-xl border border-white/10 px-3 py-2 text-xs font-semibold text-gray-200"
+              >
+                Taslağı uygula
+              </button>
+              <button
+                type="button"
+                disabled={busyId === "bulk"}
+                onClick={handleBulkLearn}
+                className="rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 px-3 py-2 text-xs font-semibold disabled:opacity-50"
+              >
+                Toplu öğret
+              </button>
+              <button
+                type="button"
+                disabled={busyId === "bulk"}
+                onClick={handleBulkDismiss}
+                className="rounded-xl border border-white/10 px-3 py-2 text-xs font-semibold text-gray-300 disabled:opacity-50"
+              >
+                Toplu yok say
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedIds([])}
+                className="rounded-xl px-3 py-2 text-xs font-semibold text-gray-400"
+              >
+                Seçimi temizle
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {/* Mobil kart görünümü */}
         <div className="space-y-3 p-4 lg:hidden">
@@ -507,7 +740,7 @@ export default function IslemHafizasiPage() {
             </p>
           ) : null}
 
-          {filteredRows.map((row) => {
+          {displayRows.map((row) => {
             const draft = drafts[row.id] || buildDraft(row);
             const isBusy = busyId === row.id;
             const isPending = row.status === "pending";
@@ -649,9 +882,18 @@ export default function IslemHafizasiPage() {
           <table className="w-full min-w-[1100px] text-sm">
             <thead className="bg-white/5 text-gray-300">
               <tr>
+                <th className="px-4 py-3 text-left font-medium">
+                  <input
+                    type="checkbox"
+                    checked={allPendingSelected}
+                    onChange={toggleSelectAllPending}
+                    aria-label="Bekleyenleri seç"
+                  />
+                </th>
                 <th className="px-4 py-3 text-left font-medium">Tarih</th>
                 <th className="px-4 py-3 text-left font-medium">Açıklama</th>
                 <th className="px-4 py-3 text-right font-medium">Tutar</th>
+                <th className="px-4 py-3 text-left font-medium">AI Skor</th>
                 <th className="px-4 py-3 text-left font-medium">Önerilen Hesap</th>
                 <th className="px-4 py-3 text-left font-medium">Önerilen Belge Tipi</th>
                 <th className="px-4 py-3 text-left font-medium">Cari</th>
@@ -660,7 +902,7 @@ export default function IslemHafizasiPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row) => {
+              {displayRows.map((row) => {
                 const draft = drafts[row.id] || buildDraft(row);
                 const isBusy = busyId === row.id;
                 const isPending = row.status === "pending";
@@ -671,6 +913,16 @@ export default function IslemHafizasiPage() {
                     key={row.id}
                     className="border-t border-white/5 align-top transition hover:bg-white/[0.02]"
                   >
+                    <td className="px-4 py-3">
+                      {isPending ? (
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.includes(row.id)}
+                          onChange={() => toggleRowSelection(row.id)}
+                          aria-label="Satır seç"
+                        />
+                      ) : null}
+                    </td>
                     <td className="px-4 py-3 whitespace-nowrap text-gray-300">
                       <div className="font-medium text-gray-200">
                         {row.transactionDate || "—"}
@@ -697,6 +949,17 @@ export default function IslemHafizasiPage() {
                     </td>
                     <td className="px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap text-gray-100">
                       {formatAmount(row.amount)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex rounded-lg px-2 py-1 text-xs font-semibold ${
+                          Number(row.suggestionScore || row.suggestion_score || 0) >= 85
+                            ? "bg-emerald-500/15 text-emerald-200"
+                            : "bg-white/5 text-gray-300"
+                        }`}
+                      >
+                        {formatAiScore(row)}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
                       {isPending && isExpanded ? (

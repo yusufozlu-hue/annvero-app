@@ -1,11 +1,10 @@
 import AuthGate from "@/src/components/AuthGate";
-import AuthUserBar from "@/src/components/AuthUserBar";
+import AnnveroAppShell from "@/src/components/AnnveroAppShell";
 
 export default function MuhasebeLayout({ children }) {
   return (
     <AuthGate>
-      <AuthUserBar />
-      {children}
+      <AnnveroAppShell>{children}</AnnveroAppShell>
     </AuthGate>
   );
 }

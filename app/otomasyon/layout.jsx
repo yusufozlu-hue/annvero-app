@@ -1,11 +1,10 @@
-import AuthGate from "@/src/components/AuthGate";
-import AuthUserBar from "@/src/components/AuthUserBar";
-
-export default function OtomasyonLayout({ children }) {
-  return (
-    <AuthGate>
-      <AuthUserBar />
-      {children}
-    </AuthGate>
-  );
-}
+import AuthGate from "@/src/components/AuthGate";
+import AnnveroAppShell from "@/src/components/AnnveroAppShell";
+
+export default function OtomasyonLayout({ children }) {
+  return (
+    <AuthGate>
+      <AnnveroAppShell>{children}</AnnveroAppShell>
+    </AuthGate>
+  );
+}

@@ -146,8 +146,19 @@ export function loadCompaniesFromStorage() {
 }
 
 export function syncSelectedCompanyId(loadedCompanies, currentId) {
-  if (loadedCompanies.some((company) => company.id === currentId)) {
+  if (currentId && loadedCompanies.some((company) => company.id === currentId)) {
     return currentId;
+  }
+
+  if (typeof window !== "undefined") {
+    try {
+      const storedId = localStorage.getItem("annvero_selected_company_v1") || "";
+      if (storedId && loadedCompanies.some((company) => company.id === storedId)) {
+        return storedId;
+      }
+    } catch {
+      // ignore storage errors
+    }
   }
 
   return loadedCompanies[0]?.id || "";
