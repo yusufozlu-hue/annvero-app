@@ -9,7 +9,11 @@ function isProtectedPath(pathname) {
     pathname.startsWith("/muhasebe") ||
     pathname.startsWith("/dashboard") ||
     pathname.startsWith("/ofis-takip") ||
-    pathname.startsWith("/admin")
+    pathname.startsWith("/admin") ||
+    pathname.startsWith("/sistem-loglari") ||
+    pathname.startsWith("/otomasyon") ||
+    pathname.startsWith("/ai-ofis-asistani") ||
+    pathname.startsWith("/ik-personel")
   );
 }
 

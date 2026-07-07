@@ -22,6 +22,7 @@ export const ANNVERO_ROLE_STORAGE_KEY = "annvero_user_role_v1";
 
 export const ANNVERO_PROTECTED_ROUTE_RULES = [
   { prefix: "/admin", roles: [ANNVERO_ROLES.ADMIN, ANNVERO_ROLES.PARTNER] },
+  { prefix: "/admin/kullanicilar-roller", roles: [ANNVERO_ROLES.ADMIN, ANNVERO_ROLES.PARTNER] },
   { prefix: "/sistem-loglari", roles: [ANNVERO_ROLES.ADMIN, ANNVERO_ROLES.PARTNER, ANNVERO_ROLES.MANAGER, ANNVERO_ROLES.AUDIT] },
 ];
 

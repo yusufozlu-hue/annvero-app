@@ -1,5 +1,10 @@
 "use client";
 
+/**
+ * StandardLuca domain preview table.
+ * Unified grid altyapısı: AnnveroUnifiedEditableGrid + useStandardLucaGridColumns.
+ * Bu bileşen domain-özel kontrol/validation katmanını korur.
+ */
 import { Fragment, useMemo, useState } from "react";
 import PreviewVoucherDetailPanel from "./PreviewVoucherDetailPanel";
 import { DOCUMENT_TYPE_OPTIONS, buildStandardLucaRowEditDraft } from "@/src/utils/previewRowEdit";

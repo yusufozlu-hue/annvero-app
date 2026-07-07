@@ -25,6 +25,17 @@ export const AI_OFIS_DOCUMENT_STATUS = {
   ARSIV: "Arşivlendi",
 };
 
+export const AI_OFIS_WORKFLOW_STATUS = {
+  YENI: "Yeni",
+  MUHASEBE_ISLIYOR: "Muhasebe İşliyor",
+  BORDRO_ISLIYOR: "Bordro İşliyor",
+  DENETIM_INCELIYOR: "Denetim İnceliyor",
+  EKSIK_EVRAK: "Eksik Evrak",
+  TAMAMLANDI: "Tamamlandı",
+};
+
+export const AI_OFIS_WORKFLOW_STATUS_LIST = Object.values(AI_OFIS_WORKFLOW_STATUS);
+
 export const AI_OFIS_SOURCES = {
   MANUEL: "Manuel",
   MAIL: "Mail",

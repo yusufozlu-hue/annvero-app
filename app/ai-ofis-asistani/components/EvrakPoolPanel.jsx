@@ -6,9 +6,12 @@ import {
   AI_OFIS_DOCUMENT_STATUS,
   AI_OFIS_DOCUMENT_TYPES,
   AI_OFIS_SOURCES,
+  AI_OFIS_WORKFLOW_STATUS,
+  AI_OFIS_WORKFLOW_STATUS_LIST,
 } from "@/src/config/aiOfisAsistaniDefaults";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import { getModuleRouteForType } from "@/src/utils/aiOfisAsistaniEngine";
+import { loadCachedUsers } from "@/src/utils/annveroUserStore";
 
 const inputClassName =
   "w-full rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20";
@@ -75,7 +78,7 @@ function DocumentTimeline({ doc, history = [] }) {
   );
 }
 
-function DocumentCard({ doc, companies, onUpdate, onRoute, onPreview, history }) {
+function DocumentCard({ doc, companies, assignees, onUpdate, onRoute, onPreview, history }) {
   return (
     <article className="rounded-2xl border border-gray-800 bg-gray-900 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -168,6 +171,57 @@ function DocumentCard({ doc, companies, onUpdate, onRoute, onPreview, history })
           </select>
         </label>
         <label className="text-xs text-slate-400">
+          İş Akışı Durumu
+          <select
+            className={`${inputClassName} mt-1`}
+            value={doc.workflowStatus || AI_OFIS_WORKFLOW_STATUS.YENI}
+            onChange={(e) =>
+              onUpdate(doc.id, {
+                workflowStatus: e.target.value,
+                status:
+                  e.target.value === AI_OFIS_WORKFLOW_STATUS.TAMAMLANDI
+                    ? AI_OFIS_DOCUMENT_STATUS.ISLENDI
+                    : doc.status,
+              })
+            }
+          >
+            {AI_OFIS_WORKFLOW_STATUS_LIST.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-slate-400">
+          Atanan Kullanıcı
+          <select
+            className={`${inputClassName} mt-1`}
+            value={doc.assignedUser || ""}
+            onChange={(e) =>
+              onUpdate(doc.id, {
+                assignedUser: e.target.value,
+                responsibleUser: e.target.value,
+              })
+            }
+          >
+            <option value="">Seçin</option>
+            {assignees.map((user) => (
+              <option key={user.email} value={user.email}>
+                {user.displayName || user.email}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-slate-400">
+          Ekip
+          <input
+            className={`${inputClassName} mt-1`}
+            value={doc.assignedTeam || ""}
+            onChange={(e) => onUpdate(doc.id, { assignedTeam: e.target.value })}
+            placeholder="Muhasebe / Bordro / Denetim"
+          />
+        </label>
+        <label className="text-xs text-slate-400">
           Durum
           <select
             className={`${inputClassName} mt-1`}
@@ -253,6 +307,7 @@ export default function EvrakPoolPanel({
   const [previewDoc, setPreviewDoc] = useState(null);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
+  const assignees = useMemo(() => loadCachedUsers(), [documents]);
 
   const tableColumns = useMemo(
     () => [
@@ -276,9 +331,14 @@ export default function EvrakPoolPanel({
         render: (row) => row.uploadedAt?.slice(0, 10) || "—",
       },
       {
+        key: "workflowStatus",
+        label: "İş akışı",
+        render: (row) => row.workflowStatus || AI_OFIS_WORKFLOW_STATUS.YENI,
+      },
+      {
         key: "assignedUser",
         label: "Atanan",
-        render: (row) => row.assignedUser || "—",
+        render: (row) => row.assignedUser || row.responsibleUser || "—",
       },
     ],
     []
@@ -366,6 +426,7 @@ export default function EvrakPoolPanel({
               key={doc.id}
               doc={doc}
               companies={companies}
+              assignees={assignees}
               history={history}
               onUpdate={onUpdate}
               onRoute={onRoute}

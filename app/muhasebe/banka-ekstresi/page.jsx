@@ -65,6 +65,7 @@ import {
   loadDeclarationAccrualRecords,
   saveDeclarationAccrualRecords,
 } from "@/src/utils/beyannameTahakkukEngine";
+import { cancelActiveParseJob, runBankParserWorker } from "@/src/utils/workerParserBridge";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -84,8 +85,6 @@ const BANK_PARSE_STAGES = {
 
 export default function BankaParserPage() {
   const fileInputRef = useRef(null);
-  const workerRef = useRef(null);
-  const workerRequestIdRef = useRef(0);
   const timeoutWarningRef = useRef(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileName, setFileName] = useState("");
@@ -217,7 +216,7 @@ export default function BankaParserPage() {
       if (timeoutWarningRef.current) {
         clearTimeout(timeoutWarningRef.current);
       }
-      workerRef.current?.terminate();
+      cancelActiveParseJob("unmount");
     };
   }, []);
 
@@ -474,68 +473,30 @@ export default function BankaParserPage() {
   };
 
   const parseFileInWorker = async (file) => {
-    const requestId = workerRequestIdRef.current + 1;
-    workerRequestIdRef.current = requestId;
-
-    workerRef.current?.terminate();
-    const worker = new Worker(new URL("./bankParser.worker.js", import.meta.url), {
-      type: "module",
-    });
-    workerRef.current = worker;
-
     const arrayBuffer = await file.arrayBuffer();
 
-    return await new Promise((resolve, reject) => {
-      worker.onmessage = (event) => {
-        const message = event.data || {};
-
-        if (message.type === "progress") {
-          setParserProgress((current) => ({
-            ...current,
-            stage: message.stage || current.stage,
-            detail: message.detail || "",
-          }));
-          return;
-        }
-
-        if (message.requestId !== requestId) return;
-
-        worker.terminate();
-        if (workerRef.current === worker) workerRef.current = null;
-
-        if (message.type === "success") {
-          resolve(message);
-          return;
-        }
-
-        reject(new Error(message.error || "Dosya işlenirken hata oluştu."));
-      };
-
-      worker.onerror = (error) => {
-        console.error("[banka-ekstresi] worker error", error);
-        worker.terminate();
-        if (workerRef.current === worker) workerRef.current = null;
-        reject(new Error("Dosya işleme worker'ı beklenmeyen şekilde durdu."));
-      };
-
-      worker.postMessage(
-        {
-          requestId,
-          arrayBuffer,
-          context: {
-            selectedBank,
-            selectedCompany,
-            companyPlans,
-            companyRules,
-            learningMemory,
-            accountMemoryRecords: loadAccountMemoryV1Records(),
-            accountingRules,
-            declarationAccrualRecords,
-            selectedCompanyId,
-          },
-        },
-        [arrayBuffer]
-      );
+    return runBankParserWorker({
+      workerUrl: new URL("./bankParser.worker.js", import.meta.url),
+      arrayBuffer,
+      context: {
+        selectedBank,
+        selectedCompany,
+        companyPlans,
+        companyRules,
+        learningMemory,
+        accountMemoryRecords: loadAccountMemoryV1Records(),
+        accountingRules,
+        declarationAccrualRecords,
+        selectedCompanyId,
+      },
+      timeoutMs: 120_000,
+      onProgress: (message) => {
+        setParserProgress((current) => ({
+          ...current,
+          stage: message.stage || current.stage,
+          detail: message.detail || "",
+        }));
+      },
     });
   };
 

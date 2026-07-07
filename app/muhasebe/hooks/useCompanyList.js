@@ -5,6 +5,7 @@ import {
   ANNVERO_COMPANY_CHANGED_EVENT,
   ANNVERO_SELECTED_COMPANY_KEY,
 } from "@/src/config/annveroNavConfig";
+import { useUserRole } from "@/src/hooks/useUserRole";
 import { pushRecentCompanyId } from "@/src/utils/companyPreferences";
 import {
   fetchCompanies,
@@ -18,6 +19,7 @@ function readStoredCompanyId() {
 }
 
 export function useCompanyList() {
+  const { canAccessCompany, loading: roleLoading } = useUserRole();
   const [companies, setCompanies] = useState([]);
   const [selectedCompanyId, setSelectedCompanyIdState] = useState(readStoredCompanyId);
   const [isLoading, setIsLoading] = useState(true);
@@ -87,18 +89,25 @@ export function useCompanyList() {
     };
   }, [refreshCompanies]);
 
+  const accessibleCompanies = useMemo(
+    () => companies.filter((company) => canAccessCompany(company.id)),
+    [companies, canAccessCompany]
+  );
+
   const selectedCompany = useMemo(
-    () => companies.find((company) => company.id === selectedCompanyId) || null,
-    [companies, selectedCompanyId]
+    () => accessibleCompanies.find((company) => company.id === selectedCompanyId) || null,
+    [accessibleCompanies, selectedCompanyId]
   );
 
   return {
-    companies,
+    companies: accessibleCompanies,
+    allCompanies: companies,
     selectedCompanyId,
     setSelectedCompanyId,
     selectedCompany,
     getCompanyDisplayName,
     refreshCompanies,
-    isLoading,
+    isLoading: isLoading || roleLoading,
+    canAccessCompany,
   };
 }

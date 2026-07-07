@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import * as XLSX from "xlsx";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
@@ -136,11 +136,17 @@ export default function FisKontrolPage() {
   }, [loadPendingData]);
 
   const analysis = useMemo(() => analyzeStandardLucaRows(rows), [rows]);
+  const riskLoggedRef = useRef("");
 
   useEffect(() => {
     if (!analysis.issues.length) return;
     const highRisk = analysis.issues.filter((issue) => issue.seviye === KONTROL_SEVIYE.HATA);
     if (!highRisk.length) return;
+
+    const signature = `${payload?.companyId || ""}:${highRisk.length}:${highRisk[0]?.type || ""}`;
+    if (riskLoggedRef.current === signature) return;
+    riskLoggedRef.current = signature;
+
     logOperationalEvent({
       module: "Fiş Kontrol Merkezi",
       message: `${highRisk.length} kritik kontrol uyarısı`,

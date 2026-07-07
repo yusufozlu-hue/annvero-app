@@ -5,9 +5,13 @@ import {
 import { AI_OFIS_HISTORY_STORAGE_KEY } from "@/src/config/aiOfisAsistaniDefaults";
 
 export const SYSTEM_LOG_STORAGE_KEY = "annvero_system_logs_v1";
+export const SYSTEM_LOG_DEDUPE_STORAGE_KEY = "annvero_system_log_dedupe_v1";
 
 const LOG_LEVELS = ["info", "warning", "error", "critical"];
 const LOG_STATUSES = ["open", "resolved"];
+const DEFAULT_DEDUPE_WINDOW_MS = 60_000;
+const DEFAULT_THROTTLE_MS = 5_000;
+const MAX_GROUPED_COUNT = 9999;
 
 function safeParseJson(value, fallback) {
   try {
@@ -46,18 +50,125 @@ function buildLogRecord(entry = {}) {
     errorType: entry.errorType || "",
     retryable: Boolean(entry.retryable),
     status: LOG_STATUSES.includes(entry.status) ? entry.status : "open",
+    groupedCount: entry.groupedCount || 1,
+    severityGroup: entry.severityGroup || entry.level || "info",
+    lastOccurredAt: entry.lastOccurredAt || entry.createdAt || new Date().toISOString(),
     ...entry,
     detail: normalizeDetail(entry.detail),
     technicalDetail: normalizeDetail(entry.technicalDetail || entry.detail),
   };
 }
 
-export function appendSystemLog(entry = {}) {
+function buildDedupeKey(entry = {}) {
+  return [
+    entry.module || "",
+    entry.errorType || "",
+    entry.message || "",
+    entry.companyId || "",
+    entry.fileName || "",
+  ]
+    .join("|")
+    .toLowerCase();
+}
+
+function loadDedupeState() {
+  if (typeof window === "undefined") return {};
+  return safeParseJson(localStorage.getItem(SYSTEM_LOG_DEDUPE_STORAGE_KEY) || "{}", {});
+}
+
+function saveDedupeState(state = {}) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(SYSTEM_LOG_DEDUPE_STORAGE_KEY, JSON.stringify(state));
+}
+
+function shouldThrottleOrGroup(entry = {}, options = {}) {
+  const throttleMs = options.throttleMs ?? DEFAULT_THROTTLE_MS;
+  const dedupeWindowMs = options.dedupeWindowMs ?? DEFAULT_DEDUPE_WINDOW_MS;
+  const key = buildDedupeKey(entry);
+  const now = Date.now();
+  const state = loadDedupeState();
+  const current = state[key];
+
+  if (!current) {
+    state[key] = { count: 1, firstAt: now, lastAt: now, logId: "" };
+    saveDedupeState(state);
+    return { action: "append", groupedCount: 1 };
+  }
+
+  if (now - current.lastAt < throttleMs) {
+    current.count += 1;
+    current.lastAt = now;
+    state[key] = current;
+    saveDedupeState(state);
+    return { action: "skip", groupedCount: current.count };
+  }
+
+  if (now - current.firstAt <= dedupeWindowMs && current.logId) {
+    current.count += 1;
+    current.lastAt = now;
+    state[key] = current;
+    saveDedupeState(state);
+    return { action: "group", groupedCount: current.count, logId: current.logId };
+  }
+
+  state[key] = { count: 1, firstAt: now, lastAt: now, logId: "" };
+  saveDedupeState(state);
+  return { action: "append", groupedCount: 1 };
+}
+
+function applyGroupedLogUpdate(logId, groupedCount, entry = {}) {
+  if (!logId || typeof window === "undefined") return null;
+  const logs = loadSystemLogs();
+  const index = logs.findIndex((log) => log.id === logId);
+  if (index < 0) return null;
+
+  const countLabel = groupedCount > MAX_GROUPED_COUNT ? `${MAX_GROUPED_COUNT}+` : groupedCount;
+  logs[index] = {
+    ...logs[index],
+    groupedCount,
+    lastOccurredAt: new Date().toISOString(),
+    message: `${entry.message} (${countLabel} kez)`,
+    technicalDetail: normalizeDetail({
+      grouped: true,
+      count: groupedCount,
+      sample: entry.technicalDetail || entry.detail,
+    }),
+  };
+  localStorage.setItem(SYSTEM_LOG_STORAGE_KEY, JSON.stringify(logs));
+  return logs[index];
+}
+
+export function appendSystemLog(entry = {}, options = {}) {
   if (typeof window === "undefined") return null;
+
+  const dedupe = shouldThrottleOrGroup(entry, options);
+  if (dedupe.action === "skip") {
+    return { throttled: true, groupedCount: dedupe.groupedCount };
+  }
+
+  if (dedupe.action === "group" && dedupe.logId) {
+    return applyGroupedLogUpdate(dedupe.logId, dedupe.groupedCount, entry);
+  }
+
   const logs = safeParseJson(localStorage.getItem(SYSTEM_LOG_STORAGE_KEY) || "[]", []);
-  const record = buildLogRecord(entry);
+  const record = buildLogRecord({
+    ...entry,
+    groupedCount: dedupe.groupedCount || 1,
+    severityGroup: entry.level || "info",
+  });
   const next = [record, ...logs].slice(0, 2000);
   localStorage.setItem(SYSTEM_LOG_STORAGE_KEY, JSON.stringify(next));
+
+  const state = loadDedupeState();
+  const key = buildDedupeKey(entry);
+  state[key] = {
+    count: dedupe.groupedCount || 1,
+    firstAt: Date.now(),
+    lastAt: Date.now(),
+    logId: record.id,
+  };
+  saveDedupeState(state);
+
   return record;
 }
 

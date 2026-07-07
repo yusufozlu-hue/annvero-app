@@ -7,6 +7,7 @@ import {
   AI_OFIS_SOURCES,
   AI_OFIS_TASK_TYPES,
   AI_OFIS_TYPE_KEYWORDS,
+  AI_OFIS_WORKFLOW_STATUS,
   AI_OFIS_DOCUMENTS_STORAGE_KEY,
   AI_OFIS_HISTORY_STORAGE_KEY,
   AI_OFIS_MAILS_STORAGE_KEY,
@@ -307,6 +308,10 @@ export function buildAiOfisDocument(input = {}, companies = []) {
     missingInfo: input.missingInfo ?? classification.missingInfo,
     classificationSource: classification.classificationSource,
     classificationExplanation: classification.explanation,
+    workflowStatus: input.workflowStatus || AI_OFIS_WORKFLOW_STATUS.YENI,
+    assignedUser: input.assignedUser || "",
+    assignedTeam: input.assignedTeam || "",
+    responsibleUser: input.responsibleUser || input.assignedUser || "",
     createdAt: now,
     updatedAt: now,
   };
