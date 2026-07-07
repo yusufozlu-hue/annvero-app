@@ -1,57 +1,16 @@
 import { NextResponse } from "next/server";
-import { isAdminUser } from "@/src/lib/auth/admin";
-import { buildFallbackProfile, mergeProfileWithAuth } from "@/src/lib/auth/userAccess";
+import { isPlatformAdmin } from "@/src/lib/auth/admin";
+import { mergeProfileWithAuth } from "@/src/lib/auth/userAccess";
+import {
+  fetchProfileByEmail,
+  provisionProfileForUser,
+  touchLastLogin,
+} from "@/src/lib/auth/profileService";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
-import {
-  getServerSupabaseAdmin,
-  getServerSupabaseAdminGuardResponse,
-} from "@/src/lib/supabase/serverAdmin";
-import {
-  mapProfileRow,
-  USER_PROFILES_TABLE,
-  isUserProfilesSchemaCacheError,
-  getUserProfilesSchemaErrorMessage,
-} from "@/src/lib/supabase/userProfilesSchema";
+import { getUserProfilesSchemaErrorMessage } from "@/src/lib/supabase/userProfilesSchema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-async function fetchProfileByEmail(email = "") {
-  const guard = getServerSupabaseAdminGuardResponse("auth:me", USER_PROFILES_TABLE);
-  if (guard) return { profile: null, schemaMissing: true };
-
-  const supabase = getServerSupabaseAdmin({ requireServiceRole: true });
-  const { data, error } = await supabase
-    .from(USER_PROFILES_TABLE)
-    .select("*")
-    .ilike("email", email)
-    .maybeSingle();
-
-  if (error) {
-    if (isUserProfilesSchemaCacheError(error)) {
-      return { profile: null, schemaMissing: true };
-    }
-    return { profile: null, error };
-  }
-
-  return { profile: data ? mapProfileRow(data) : null, schemaMissing: false };
-}
-
-async function touchLastLogin(user, profile) {
-  if (!user?.email || !profile) return;
-  const guard = getServerSupabaseAdminGuardResponse("auth:touch-login", USER_PROFILES_TABLE);
-  if (guard) return;
-
-  const supabase = getServerSupabaseAdmin({ requireServiceRole: true });
-  await supabase
-    .from(USER_PROFILES_TABLE)
-    .update({
-      id: user.id,
-      last_login_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("email", user.email.toLowerCase());
-}
 
 export async function GET() {
   const { user } = await getServerSupabaseUser();
@@ -60,16 +19,36 @@ export async function GET() {
     return NextResponse.json({ authenticated: false });
   }
 
-  const { profile, schemaMissing, error } = await fetchProfileByEmail(user.email);
+  let profileResult = await fetchProfileByEmail(user.email);
+  let profile = profileResult.profile;
+  let schemaMissing = profileResult.schemaMissing;
+  let provisioned = false;
+  let needsInvite = false;
 
-  if (error) {
+  if (!profile && !schemaMissing && !profileResult.error) {
+    const provision = await provisionProfileForUser(user);
+    profile = provision.profile;
+    schemaMissing = provision.schemaMissing;
+    provisioned = provision.created;
+    needsInvite = Boolean(provision.needsInvite);
+  } else if (!profile && schemaMissing) {
+    profile = null;
+  } else if (profile && user.id && profile.id !== user.id) {
+    const provision = await provisionProfileForUser(user);
+    profile = provision.profile || profile;
+    needsInvite = Boolean(provision.needsInvite);
+  }
+
+  if (profileResult.error && !profile) {
     return NextResponse.json({
       authenticated: true,
       email: user.email,
-      isAdmin: isAdminUser(user),
-      profile: mergeProfileWithAuth(user, null),
-      schemaMissing: false,
-      warning: error.message,
+      isAdmin: isPlatformAdmin(user),
+      isPlatformAdmin: isPlatformAdmin(user),
+      profile: mergeProfileWithAuth(user, null, { schemaMissing: true }),
+      schemaMissing: true,
+      usingFallback: true,
+      warning: profileResult.error.message,
     });
   }
 
@@ -80,22 +59,34 @@ export async function GET() {
     );
   }
 
-  const merged = mergeProfileWithAuth(user, profile);
-  if (profile) await touchLastLogin(user, profile);
+  const mergeOptions = { schemaMissing };
+  const merged = mergeProfileWithAuth(user, profile, mergeOptions);
+
+  if (needsInvite && !profile) {
+    merged.needsInvite = true;
+  }
+
+  if (profile) await touchLastLogin(user, merged);
 
   return NextResponse.json({
     authenticated: true,
     email: user.email,
-    isAdmin: isAdminUser(user),
+    isAdmin: isPlatformAdmin(user),
+    isPlatformAdmin: isPlatformAdmin(user),
     active: true,
     schemaMissing,
     schemaHint: schemaMissing ? getUserProfilesSchemaErrorMessage() : "",
+    provisioned,
+    needsInvite: Boolean(merged.needsInvite),
+    usingFallback: !profile || merged.source?.startsWith("fallback"),
     profile: merged,
     access: {
       role: merged.role,
       permissions: merged.permissions,
       companyIds: merged.companyIds,
       modules: merged.modules,
+      isPartner: merged.isPartner,
+      isManagementUser: merged.isManagementUser,
     },
   });
 }

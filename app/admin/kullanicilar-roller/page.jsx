@@ -33,12 +33,17 @@ function emptyForm() {
     permissions: ["view", "edit", "export"],
     teamId: "",
     isActive: true,
+    invite: true,
   };
 }
 
+function isPendingUser(user = {}) {
+  return !user.id || String(user.id).startsWith("pending-");
+}
+
 export default function KullanicilarRollerPage() {
-  const { role, loading: roleLoading } = useUserRole();
-  const canManageUsers = role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER;
+  const { isManagementUser, isPartner, isPlatformAdmin, loading: roleLoading } = useUserRole();
+  const canManageUsers = isManagementUser;
   const { companies, allCompanies } = useCompanyList();
 
   const [users, setUsers] = useState([]);
@@ -67,24 +72,62 @@ export default function KullanicilarRollerPage() {
     if (!roleLoading && canManageUsers) loadUsers();
   }, [canManageUsers, roleLoading, loadUsers]);
 
-  const roleOptions = useMemo(
-    () => Object.entries(ANNVERO_ROLE_LABELS).map(([id, label]) => ({ id, label })),
-    []
-  );
+  const roleOptions = useMemo(() => {
+    const entries = Object.entries(ANNVERO_ROLE_LABELS);
+    if (isPlatformAdmin) {
+      return entries.map(([id, label]) => ({ id, label }));
+    }
+    if (isPartner) {
+      return entries
+        .filter(([id]) => id !== ANNVERO_ROLES.ADMIN)
+        .map(([id, label]) => ({ id, label }));
+    }
+    return entries.map(([id, label]) => ({ id, label }));
+  }, [isPlatformAdmin, isPartner]);
 
   const saveUser = async () => {
     try {
+      const payload = editingEmail ? { ...form, invite: false } : form;
       const response = await fetch("/api/admin/users", {
         method: editingEmail ? "PUT" : "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Kayıt başarısız.");
-      setToast(editingEmail ? "Kullanıcı güncellendi." : "Kullanıcı oluşturuldu.");
+
+      if (!editingEmail && data.invited) {
+        setToast(`Kullanıcı oluşturuldu ve davet e-postası gönderildi.`);
+      } else if (!editingEmail && form.invite && data.inviteError) {
+        setToast(`Profil kaydedildi; davet gönderilemedi: ${data.inviteError}`);
+      } else {
+        setToast(editingEmail ? "Kullanıcı güncellendi." : "Kullanıcı oluşturuldu.");
+      }
+
       setForm(emptyForm());
       setEditingEmail("");
+      await loadUsers();
+    } catch (error) {
+      setToast(error.message);
+    }
+  };
+
+  const resendInvite = async (user) => {
+    try {
+      const response = await fetch("/api/admin/users", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...user,
+          invite: true,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Davet gönderilemedi.");
+      if (data.inviteError) throw new Error(data.inviteError);
+      setToast(`${user.email} için davet yeniden gönderildi.`);
       await loadUsers();
     } catch (error) {
       setToast(error.message);
@@ -114,7 +157,13 @@ export default function KullanicilarRollerPage() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "İşlem başarısız.");
-      setToast(`${user.email} için şifre sıfırlama işaretlendi.`);
+      if (data.recoverySent) {
+        setToast(`${user.email} için şifre sıfırlama bağlantısı gönderildi.`);
+      } else if (data.recoveryError) {
+        setToast(`Şifre sıfırlama başarısız: ${data.recoveryError}`);
+      } else {
+        setToast(`${user.email} için şifre sıfırlama işaretlendi.`);
+      }
       await loadUsers();
     } catch (error) {
       setToast(error.message);
@@ -138,7 +187,7 @@ export default function KullanicilarRollerPage() {
     return (
       <div className="rounded-2xl border border-red-900/40 bg-red-950/20 p-8 text-center">
         <h1 className="text-xl font-bold text-red-100">Yetkisiz erişim</h1>
-        <p className="mt-2 text-sm text-red-200/80">Bu ekran yalnızca admin kullanıcılar içindir.</p>
+        <p className="mt-2 text-sm text-red-200/80">Bu ekran yalnızca admin ve partner kullanıcılar içindir.</p>
       </div>
     );
   }
@@ -208,6 +257,17 @@ export default function KullanicilarRollerPage() {
               Aktif kullanıcı
             </label>
 
+            {!editingEmail ? (
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={form.invite}
+                  onChange={(e) => setForm({ ...form, invite: e.target.checked })}
+                />
+                Supabase davet e-postası gönder
+              </label>
+            ) : null}
+
             <div>
               <p className="mb-2 text-xs font-semibold uppercase text-slate-400">Firma erişimi</p>
               <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-slate-800 p-2">
@@ -222,7 +282,9 @@ export default function KullanicilarRollerPage() {
                   </label>
                 ))}
               </div>
-              <p className="mt-1 text-[11px] text-slate-500">Boş bırakılırsa rol varsayılanına göre erişim verilir.</p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Admin/partner dışı rollerde boş bırakılırsa firma erişimi olmaz.
+              </p>
             </div>
 
             <div>
@@ -294,12 +356,16 @@ export default function KullanicilarRollerPage() {
                       <p className="text-xs text-slate-400">{user.email}</p>
                       <p className="mt-1 text-xs text-slate-500">
                         {ANNVERO_ROLE_LABELS[user.role] || user.role} ·{" "}
-                        {user.isActive === false ? "Pasif" : "Aktif"} · Son giriş:{" "}
+                        {user.isActive === false ? "Pasif" : "Aktif"} ·{" "}
+                        {isPendingUser(user) ? "Davet bekliyor" : "Kayıtlı"} · Son giriş:{" "}
                         {user.lastLoginAt?.slice(0, 16).replace("T", " ") || "—"}
                       </p>
                       <p className="text-xs text-slate-500">
-                        Firmalar: {user.companyIds?.length ? user.companyIds.length : "Tümü"} · Ekip:{" "}
-                        {user.teamId || "—"}
+                        Firmalar:{" "}
+                        {user.role === ANNVERO_ROLES.ADMIN || user.role === ANNVERO_ROLES.PARTNER
+                          ? "Tümü"
+                          : user.companyIds?.length || 0}{" "}
+                        · Ekip: {user.teamId || "—"}
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -317,6 +383,15 @@ export default function KullanicilarRollerPage() {
                       >
                         Şifre sıfırla
                       </button>
+                      {isPendingUser(user) ? (
+                        <button
+                          type="button"
+                          onClick={() => resendInvite(user)}
+                          className="rounded-lg border border-cyan-700/50 px-2 py-1 text-xs text-cyan-200"
+                        >
+                          Daveti yenile
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 </article>

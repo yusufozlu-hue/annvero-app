@@ -3,6 +3,8 @@
  * ANNVERO_ADMIN_EMAILS ortam değişkeni veya Supabase user metadata role=admin.
  */
 
+import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
+
 export function getAdminEmails() {
   const raw =
     process.env.ANNVERO_ADMIN_EMAILS ||
@@ -32,4 +34,35 @@ export function isAdminUser(user) {
   const userRole = user.user_metadata?.role;
 
   return appRole === "admin" || userRole === "admin";
+}
+
+/** Supabase Auth metadata içindeki ANNVERO rolü */
+export function getAnnveroRoleFromUser(user) {
+  if (!user) return "";
+  const metaRole =
+    user.user_metadata?.annvero_role ||
+    user.user_metadata?.role ||
+    user.app_metadata?.annvero_role ||
+    user.app_metadata?.role ||
+    "";
+  return String(metaRole || "").trim();
+}
+
+/** Platform süper-admin (env allowlist veya metadata admin) */
+export function isPlatformAdmin(user) {
+  return isAdminUser(user);
+}
+
+/** Admin paneline erişebilen kullanıcı: platform admin veya partner/admin rolü */
+export function isManagementUser(user) {
+  if (!user) return false;
+  if (isPlatformAdmin(user)) return true;
+  const role = getAnnveroRoleFromUser(user);
+  return role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER;
+}
+
+export function isPartnerUser(user) {
+  if (!user) return false;
+  if (isPlatformAdmin(user)) return false;
+  return getAnnveroRoleFromUser(user) === ANNVERO_ROLES.PARTNER;
 }

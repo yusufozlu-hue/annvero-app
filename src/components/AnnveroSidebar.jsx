@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, useMemo } from "react";
 import BuildVersionBadge from "@/app/components/BuildVersionBadge";
 import { ANNVERO_NAV_GROUPS } from "@/src/config/annveroNavConfig";
-import { canSeeNavGroup } from "@/src/config/annveroRoles";
+import { canSeeNavGroup, canSeeNavItem } from "@/src/config/annveroRoles";
 import { useUserRole } from "@/src/hooks/useUserRole";
 import { annveroShellSidebarWidth } from "@/src/styles/annveroDesign";
 
@@ -144,10 +144,15 @@ export default function AnnveroSidebar({
   const { role } = useUserRole();
   const [openMenu, setOpenMenu] = useState("");
 
-  const visibleNavGroups = useMemo(
-    () => ANNVERO_NAV_GROUPS.filter((group) => canSeeNavGroup(role, group.title)),
-    [role]
-  );
+  const visibleNavGroups = useMemo(() => {
+    return ANNVERO_NAV_GROUPS.map((group) => {
+      if (!canSeeNavGroup(role, group.title)) return null;
+      if (!group.items?.length) return group;
+      const items = group.items.filter((item) => canSeeNavItem(role, item));
+      if (!items.length) return null;
+      return { ...group, items };
+    }).filter(Boolean);
+  }, [role]);
 
   useEffect(() => {
     const activeGroup = visibleNavGroups.find((group) => isMenuGroupActive(group, pathname));

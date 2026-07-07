@@ -3,11 +3,13 @@
 import { useState } from "react";
 import AnnveroSidebar from "@/src/components/AnnveroSidebar";
 import AnnveroTopbar from "@/src/components/AnnveroTopbar";
+import { useUserRole } from "@/src/hooks/useUserRole";
 import { annveroPageBg } from "@/src/styles/annveroDesign";
 
 export default function AnnveroAppShell({ children }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const { schemaMissing, usingFallback, needsInvite, loading } = useUserRole();
 
   const mainOffsetClass = sidebarCollapsed ? "lg:ml-[72px]" : "lg:ml-[302px]";
 
@@ -33,6 +35,22 @@ export default function AnnveroAppShell({ children }) {
 
       <div className={`relative flex min-h-screen flex-col transition-[margin] duration-200 ${mainOffsetClass}`}>
         <AnnveroTopbar onMenuToggle={() => setMobileMenuOpen((v) => !v)} sidebarCollapsed={sidebarCollapsed} />
+
+        {!loading && (schemaMissing || usingFallback) ? (
+          <div className="mx-4 mt-3 rounded-xl border border-amber-700/40 bg-amber-950/30 px-4 py-2 text-xs text-amber-100 sm:mx-6 lg:mx-8">
+            {schemaMissing
+              ? "Kullanıcı profili tablosu bulunamadı — geçici yetki modu aktif. Migration çalıştırılmadan sistem kilitlenmez."
+              : "Profil veritabanından okunamadı — metadata tabanlı geçici yetki kullanılıyor."}
+          </div>
+        ) : null}
+
+        {!loading && needsInvite ? (
+          <div className="mx-4 mt-3 rounded-xl border border-cyan-700/40 bg-cyan-950/30 px-4 py-2 text-xs text-cyan-100 sm:mx-6 lg:mx-8">
+            Hesabınız henüz yönetici tarafından yetkilendirilmedi. Erişim kısıtlı modda devam ediyorsunuz; yöneticinizden
+            davet veya rol ataması isteyin.
+          </div>
+        ) : null}
+
         <main className="flex-1 px-4 pb-8 pt-4 sm:px-6 lg:px-8">{children}</main>
       </div>
     </div>

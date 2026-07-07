@@ -121,6 +121,6 @@ export function hasPermission(role, permission, extraPermissions = []) {
 export function canAccessCompany(role, companyId, companyIds = []) {
   if (!companyId) return true;
   if (role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER) return true;
-  if (!Array.isArray(companyIds) || companyIds.length === 0) return true;
+  if (!Array.isArray(companyIds) || companyIds.length === 0) return false;
   return companyIds.includes(companyId);
 }

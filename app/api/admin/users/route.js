@@ -6,10 +6,15 @@ import {
   logSupabaseQueryError,
 } from "@/src/lib/supabase/serverAdmin";
 import { getDefaultPermissionsForRole } from "@/src/lib/auth/permissions";
-import { ANNVERO_ROLE_LABELS } from "@/src/config/annveroRoles";
+import {
+  inviteAuthUser,
+  sendPasswordRecoveryEmail,
+  syncAnnveroUserMetadata,
+  upsertProfile,
+} from "@/src/lib/auth/profileService";
+import { ANNVERO_ROLE_LABELS, ANNVERO_ROLES } from "@/src/config/annveroRoles";
 import {
   mapProfileRow,
-  mapProfileToRecord,
   USER_PROFILES_TABLE,
   isUserProfilesSchemaCacheError,
   getUserProfilesSchemaErrorMessage,
@@ -20,6 +25,13 @@ export const dynamic = "force-dynamic";
 
 function validateRole(role = "") {
   return Boolean(ANNVERO_ROLE_LABELS[role]);
+}
+
+function canAssignRole(callerRole = "", targetRole = "") {
+  if (callerRole === ANNVERO_ROLES.PARTNER && targetRole === ANNVERO_ROLES.ADMIN) {
+    return false;
+  }
+  return true;
 }
 
 export async function GET() {
@@ -65,7 +77,7 @@ export async function GET() {
 }
 
 export async function POST(request) {
-  const { user, error } = await requireManagementUser();
+  const { user, error, role: callerRole } = await requireManagementUser();
   if (error === "unauthenticated") {
     return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
   }
@@ -93,8 +105,11 @@ export async function POST(request) {
   if (!validateRole(role)) {
     return NextResponse.json({ error: "Geçersiz rol." }, { status: 400 });
   }
+  if (!canAssignRole(callerRole, role)) {
+    return NextResponse.json({ error: "Partner kullanıcıları admin rolü atayamaz." }, { status: 403 });
+  }
 
-  const record = mapProfileToRecord({
+  const profileDraft = {
     id: body?.id || `pending-${email}`,
     email,
     displayName,
@@ -103,25 +118,45 @@ export async function POST(request) {
     companyIds: body?.companyIds || body?.company_ids || [],
     teamId: body?.teamId || body?.team_id || "",
     isActive: body?.isActive ?? body?.is_active ?? true,
-  });
+  };
 
-  const supabase = getServerSupabaseAdmin({ requireServiceRole: true });
-  const { data, error: dbError } = await supabase
-    .from(USER_PROFILES_TABLE)
-    .upsert(record, { onConflict: "email" })
-    .select("*")
-    .single();
+  let invited = false;
+  let inviteError = null;
 
-  if (dbError) {
-    logSupabaseQueryError("admin:users:post", dbError, USER_PROFILES_TABLE);
-    return NextResponse.json({ error: dbError.message }, { status: 500 });
+  if (body?.invite === true) {
+    const inviteResult = await inviteAuthUser({
+      email,
+      role,
+      displayName,
+    });
+    invited = inviteResult.invited;
+    inviteError = inviteResult.error;
+    if (inviteResult.user?.id) {
+      profileDraft.id = inviteResult.user.id;
+    }
   }
 
-  return NextResponse.json({ user: mapProfileRow(data), createdBy: user.email });
+  const saved = await upsertProfile(profileDraft);
+
+  if (saved.error) {
+    logSupabaseQueryError("admin:users:post", saved.error, USER_PROFILES_TABLE);
+    return NextResponse.json({ error: saved.error.message }, { status: 500 });
+  }
+
+  if (saved.profile?.id && !String(saved.profile.id).startsWith("pending-")) {
+    await syncAnnveroUserMetadata(saved.profile.id, saved.profile);
+  }
+
+  return NextResponse.json({
+    user: saved.profile,
+    createdBy: user.email,
+    invited,
+    inviteError: inviteError?.message || null,
+  });
 }
 
 export async function PUT(request) {
-  const { error } = await requireManagementUser();
+  const { error, role: callerRole } = await requireManagementUser();
   if (error === "unauthenticated") {
     return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
   }
@@ -148,9 +183,20 @@ export async function PUT(request) {
   if (role && !validateRole(role)) {
     return NextResponse.json({ error: "Geçersiz rol." }, { status: 400 });
   }
+  if (role && !canAssignRole(callerRole, role)) {
+    return NextResponse.json({ error: "Partner kullanıcıları admin rolü atayamaz." }, { status: 403 });
+  }
 
-  const record = mapProfileToRecord({
-    id: body?.id || `pending-${email}`,
+  let recoverySent = false;
+  let recoveryError = null;
+
+  if (body?.requestPasswordReset) {
+    const recovery = await sendPasswordRecoveryEmail(email);
+    recoverySent = recovery.sent;
+    recoveryError = recovery.error;
+  }
+
+  const saved = await upsertProfile({
     email,
     displayName: body?.displayName || body?.display_name,
     role: role || body?.role,
@@ -158,23 +204,25 @@ export async function PUT(request) {
     companyIds: body?.companyIds || body?.company_ids,
     teamId: body?.teamId || body?.team_id,
     isActive: body?.isActive ?? body?.is_active,
+    id: body?.id || `pending-${email}`,
     passwordResetRequestedAt: body?.requestPasswordReset
       ? new Date().toISOString()
       : body?.passwordResetRequestedAt,
   });
 
-  const supabase = getServerSupabaseAdmin({ requireServiceRole: true });
-  const { data, error: dbError } = await supabase
-    .from(USER_PROFILES_TABLE)
-    .upsert(record, { onConflict: "email" })
-    .select("*")
-    .single();
-
-  if (dbError) {
-    return NextResponse.json({ error: dbError.message }, { status: 500 });
+  if (saved.error) {
+    return NextResponse.json({ error: saved.error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ user: mapProfileRow(data) });
+  if (saved.profile?.id && !String(saved.profile.id).startsWith("pending-")) {
+    await syncAnnveroUserMetadata(saved.profile.id, saved.profile);
+  }
+
+  return NextResponse.json({
+    user: saved.profile,
+    recoverySent,
+    recoveryError: recoveryError?.message || null,
+  });
 }
 
 export async function DELETE(request) {

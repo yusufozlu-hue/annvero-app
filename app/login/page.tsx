@@ -177,6 +177,11 @@ function LoginForm() {
           debugLog("redirect hedefi", redirectTarget);
 
           if (userData.user) {
+            try {
+              await fetch("/api/auth/me", { cache: "no-store", credentials: "include" });
+            } catch {
+              // fallback auth: yönlendirme devam eder
+            }
             router.replace(redirectTarget);
             return;
           }
@@ -278,6 +283,20 @@ function LoginForm() {
         setError("Giriş başarısız: Oturum oluşturulamadı");
         setIsLoading(false);
         return;
+      }
+
+      try {
+        const meResponse = await fetch("/api/auth/me", { cache: "no-store", credentials: "include" });
+        const meData = await meResponse.json();
+
+        if (meData.active === false || meResponse.status === 403) {
+          setError("Hesabınız pasif durumda. Yöneticinize başvurun.");
+          await supabase.auth.signOut();
+          setIsLoading(false);
+          return;
+        }
+      } catch {
+        // fallback auth: login devam eder
       }
 
       router.refresh();

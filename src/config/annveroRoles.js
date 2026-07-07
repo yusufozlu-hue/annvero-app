@@ -45,8 +45,22 @@ export function canSeeNavGroup(role, groupTitle = "") {
   return allowed.includes(role);
 }
 
-export function resolveUserRole({ isAdmin = false, storedRole = "" } = {}) {
+export function canSeeNavItem(role, item = {}) {
+  if (!item?.roles?.length) return true;
+  return item.roles.includes(role);
+}
+
+export function isManagementRole(role = "") {
+  return role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER;
+}
+
+export function isPlatformAdminRole(role = "", isPlatformAdminFlag = false) {
+  return isPlatformAdminFlag || role === ANNVERO_ROLES.ADMIN;
+}
+
+export function resolveUserRole({ isAdmin = false, storedRole = "", profileRole = "" } = {}) {
   if (isAdmin) return ANNVERO_ROLES.ADMIN;
+  if (profileRole && ANNVERO_ROLE_LABELS[profileRole]) return profileRole;
   if (storedRole && ANNVERO_ROLE_LABELS[storedRole]) return storedRole;
   return ANNVERO_ROLES.ACCOUNTING;
 }

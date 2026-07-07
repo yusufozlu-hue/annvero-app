@@ -5,6 +5,7 @@ import {
   ANNVERO_ROLE_STORAGE_KEY,
   canAccessRoute,
   canSeeNavGroup,
+  canSeeNavItem,
 } from "@/src/config/annveroRoles";
 import { createUserAccess } from "@/src/lib/auth/userAccess";
 import { canAccessCompany as checkCompanyAccess } from "@/src/lib/auth/permissions";
@@ -14,7 +15,11 @@ export function useUserRole() {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [authenticated, setAuthenticated] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
+  const [schemaMissing, setSchemaMissing] = useState(false);
+  const [usingFallback, setUsingFallback] = useState(false);
+  const [needsInvite, setNeedsInvite] = useState(false);
+  const [accountActive, setAccountActive] = useState(true);
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
@@ -25,18 +30,29 @@ export function useUserRole() {
       if (!data.authenticated) {
         setAuthenticated(false);
         setProfile(null);
-        setIsAdmin(false);
+        setIsPlatformAdmin(false);
+        setSchemaMissing(false);
+        setUsingFallback(false);
+        setNeedsInvite(false);
+        setAccountActive(true);
         return;
       }
 
-      if (data.active === false) {
+      if (data.active === false || response.status === 403) {
         setAuthenticated(true);
         setProfile(null);
+        setUsingFallback(false);
+        setNeedsInvite(false);
+        setAccountActive(false);
         return;
       }
 
       setAuthenticated(true);
-      setIsAdmin(Boolean(data.isAdmin));
+      setIsPlatformAdmin(Boolean(data.isPlatformAdmin ?? data.isAdmin));
+      setSchemaMissing(Boolean(data.schemaMissing));
+      setUsingFallback(Boolean(data.usingFallback));
+      setNeedsInvite(Boolean(data.needsInvite || data.profile?.needsInvite));
+      setAccountActive(true);
       setProfile(data.profile || null);
 
       if (data.profile?.role && typeof window !== "undefined") {
@@ -46,7 +62,9 @@ export function useUserRole() {
     } catch {
       if (typeof window !== "undefined") {
         const storedRole = localStorage.getItem(ANNVERO_ROLE_STORAGE_KEY) || "";
-        setProfile({ role: storedRole, companyIds: [], permissions: [] });
+        setProfile({ role: storedRole, companyIds: [], permissions: [], source: "fallback" });
+        setUsingFallback(true);
+        setSchemaMissing(true);
       }
     } finally {
       setLoading(false);
@@ -72,16 +90,23 @@ export function useUserRole() {
     permissions: access.permissions,
     companyIds: access.companyIds,
     modules: access.modules,
-    isAdmin,
+    isAdmin: isPlatformAdmin,
+    isPlatformAdmin,
+    isPartner: access.isPartner,
+    isManagementUser: access.isManagementUser,
     authenticated,
     loading,
+    schemaMissing,
+    usingFallback,
+    needsInvite,
     refresh: loadProfile,
     setRole,
     canAccessRoute: (pathname) => canAccessRoute(role, pathname),
     canSeeNavGroup: (groupTitle) => canSeeNavGroup(role, groupTitle),
+    canSeeNavItem: (item) => canSeeNavItem(role, item),
     canAccessCompany: (companyId) => checkCompanyAccess(role, companyId, access.companyIds),
     canAccessModule: access.canAccessModule,
     hasPermission: access.hasPermission,
-    isActive: access.isActive,
+    isActive: accountActive && access.isActive,
   };
 }

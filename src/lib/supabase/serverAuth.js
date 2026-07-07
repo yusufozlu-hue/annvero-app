@@ -1,16 +1,14 @@
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
-import { isAdminUser } from "@/src/lib/auth/admin";
+import { isManagementUser, isPlatformAdmin, getAnnveroRoleFromUser } from "@/src/lib/auth/admin";
 import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
 import {
   getServerSupabaseAdmin,
   getServerSupabaseAdminGuardResponse,
 } from "@/src/lib/supabase/serverAdmin";
-import {
-  mapProfileRow,
-  USER_PROFILES_TABLE,
-} from "@/src/lib/supabase/userProfilesSchema";
+import { fetchProfileByEmail } from "@/src/lib/auth/profileService";
+import { USER_PROFILES_TABLE } from "@/src/lib/supabase/userProfilesSchema";
 
 export async function getServerSupabaseUser() {
   const config = getSupabaseConfig();
@@ -43,7 +41,7 @@ export async function requireAdminUser() {
     return { supabase, user: null, error: "unauthenticated" };
   }
 
-  if (!isAdminUser(user)) {
+  if (!isPlatformAdmin(user)) {
     return { supabase, user: null, error: "forbidden" };
   }
 
@@ -51,27 +49,18 @@ export async function requireAdminUser() {
 }
 
 async function fetchProfileRole(email = "") {
-  const guard = getServerSupabaseAdminGuardResponse("auth:profile-role", USER_PROFILES_TABLE);
-  if (guard) return "";
-
-  const supabase = getServerSupabaseAdmin({ requireServiceRole: true });
-  const { data, error } = await supabase
-    .from(USER_PROFILES_TABLE)
-    .select("role,is_active")
-    .ilike("email", email)
-    .maybeSingle();
-
-  if (error || !data || data.is_active === false) return "";
-  return data.role || "";
+  const result = await fetchProfileByEmail(email);
+  if (!result.profile || result.profile.isActive === false) return "";
+  return result.profile.role || "";
 }
 
 export async function requireManagementUser() {
   const { supabase, user } = await getServerSupabaseUser();
   if (!user) {
-    return { supabase, user: null, error: "unauthenticated" };
+    return { supabase, user: null, error: "unauthenticated", role: "" };
   }
 
-  if (isAdminUser(user)) {
+  if (isPlatformAdmin(user)) {
     return { supabase, user, error: null, role: ANNVERO_ROLES.ADMIN };
   }
 
@@ -80,7 +69,16 @@ export async function requireManagementUser() {
     return { supabase, user, error: null, role: profileRole };
   }
 
-  return { supabase, user: null, error: "forbidden" };
+  if (isManagementUser(user)) {
+    return {
+      supabase,
+      user,
+      error: null,
+      role: profileRole || getAnnveroRoleFromUser(user) || ANNVERO_ROLES.PARTNER,
+    };
+  }
+
+  return { supabase, user: null, error: "forbidden", role: profileRole || "" };
 }
 
 export async function requireRole(allowedRoles = []) {
@@ -89,7 +87,7 @@ export async function requireRole(allowedRoles = []) {
     return { supabase, user: null, error: "unauthenticated", role: "" };
   }
 
-  if (isAdminUser(user)) {
+  if (isPlatformAdmin(user)) {
     return { supabase, user, error: null, role: ANNVERO_ROLES.ADMIN };
   }
 

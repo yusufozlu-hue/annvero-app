@@ -94,6 +94,23 @@ export function useCompanyList() {
     [companies, canAccessCompany]
   );
 
+  useEffect(() => {
+    if (roleLoading || !accessibleCompanies.length) return;
+    if (selectedCompanyId && canAccessCompany(selectedCompanyId)) return;
+    const firstAccessible = accessibleCompanies[0]?.id || "";
+    if (firstAccessible && firstAccessible !== selectedCompanyId) {
+      setSelectedCompanyId(firstAccessible);
+    } else if (!firstAccessible && selectedCompanyId) {
+      setSelectedCompanyId("");
+    }
+  }, [
+    accessibleCompanies,
+    canAccessCompany,
+    roleLoading,
+    selectedCompanyId,
+    setSelectedCompanyId,
+  ]);
+
   const selectedCompany = useMemo(
     () => accessibleCompanies.find((company) => company.id === selectedCompanyId) || null,
     [accessibleCompanies, selectedCompanyId]

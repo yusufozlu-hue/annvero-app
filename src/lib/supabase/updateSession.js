@@ -1,6 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
-import { isAdminUser } from "@/src/lib/auth/admin";
+import { isPlatformAdmin } from "@/src/lib/auth/admin";
+import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
+import { fetchProfileByEmail } from "@/src/lib/auth/profileService";
 import { getSafeNextPath } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
 
@@ -19,6 +21,25 @@ function isProtectedPath(pathname) {
 
 function isAdminPath(pathname) {
   return pathname.startsWith("/admin");
+}
+
+async function canAccessAdminArea(user) {
+  if (!user) return false;
+  if (isPlatformAdmin(user)) return true;
+
+  const { profile, schemaMissing } = await fetchProfileByEmail(user.email);
+  if (!schemaMissing && profile?.isActive !== false) {
+    return (
+      profile.role === ANNVERO_ROLES.ADMIN || profile.role === ANNVERO_ROLES.PARTNER
+    );
+  }
+
+  const metaRole =
+    user.user_metadata?.annvero_role ||
+    user.user_metadata?.role ||
+    user.app_metadata?.annvero_role ||
+    "";
+  return metaRole === ANNVERO_ROLES.ADMIN || metaRole === ANNVERO_ROLES.PARTNER;
 }
 
 function withSupabaseCookies(supabaseResponse, response) {
@@ -73,7 +94,7 @@ export async function updateSession(request) {
     );
   }
 
-  if (isAdminPath(pathname) && user && !isAdminUser(user)) {
+  if (isAdminPath(pathname) && user && !(await canAccessAdminArea(user))) {
     const deniedUrl = request.nextUrl.clone();
     deniedUrl.pathname = "/dashboard";
     deniedUrl.search = "";
