@@ -71,6 +71,7 @@ import { runBankParserWorker } from "@/src/utils/workerParserBridge";
 import { saveBankCardOpsSession } from "@/src/utils/bankCardOpsCenter";
 import { buildBankCardOpsSideOutput } from "@/src/utils/bankCardOpsSideOutput";
 import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
+import { buildBankParserResultFromNormalizedRows } from "@/src/utils/bankParserCore";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -485,17 +486,8 @@ export default function BankaParserPage() {
       arrayBuffer,
       context: {
         selectedBank,
-        selectedCompany,
-        companyPlans,
-        companyRules,
-        learningMemory,
-        accountMemoryRecords: loadAccountMemoryV1Records(),
-        accountingRules,
-        declarationAccrualRecords,
-        selectedCompanyId,
         sourceFileName: file?.name || "",
         sourceFileType: detectSourceFileType(file?.name || "", file?.type || ""),
-        sourceType: "bank",
       },
       timeoutMs: 120_000,
       onProgress: (message) => {
@@ -504,7 +496,7 @@ export default function BankaParserPage() {
     });
   };
 
-  /** Excel okuma + parser pipeline yalnızca Ön İzleme Oluştur ile worker'da çalışır */
+  /** Excel okuma worker'da; Luca/öğrenme/NFT ana thread'de */
   const handleCreatePreview = async () => {
     if (isParsing) return;
 
@@ -526,24 +518,57 @@ export default function BankaParserPage() {
 
     try {
       const workerResult = await parseFileInWorker(selectedFile);
-      const result = buildBankCardOpsSideOutput(workerResult, {
-        selectedBank,
-        selectedCompanyId,
-        sourceFileName: selectedFile?.name || "",
-        sourceFileType: detectSourceFileType(selectedFile?.name || "", selectedFile?.type || ""),
-        sourceType: "bank",
-        learningMemory,
-        accountingRules,
-        companyRules,
+
+      parserJob.onProgress({
+        stage: BANK_PARSE_STAGES.LUCA,
+        detail: "Luca satırları oluşturuluyor",
       });
 
-      setRawCount(result.rawCount || 0);
+      const pipelineResult = buildBankParserResultFromNormalizedRows({
+        normalizedRows: workerResult.normalizedRows || [],
+        selectedBank,
+        selectedCompany,
+        companyPlans,
+        companyRules,
+        learningMemory,
+        accountMemoryRecords: loadAccountMemoryV1Records(),
+        accountingRules,
+        declarationAccrualRecords,
+        selectedCompanyId,
+        sourceFileName: selectedFile?.name || "",
+        sourceFileType: detectSourceFileType(
+          selectedFile?.name || "",
+          selectedFile?.type || ""
+        ),
+        sourceType: "bank",
+      });
+
+      const result = buildBankCardOpsSideOutput(
+        {
+          ...pipelineResult,
+          rawCount: workerResult.rawCount || 0,
+        },
+        {
+          selectedBank,
+          selectedCompanyId,
+          sourceFileName: selectedFile?.name || "",
+          sourceFileType: detectSourceFileType(
+            selectedFile?.name || "",
+            selectedFile?.type || ""
+          ),
+          sourceType: "bank",
+          learningMemory,
+          accountingRules,
+          companyRules,
+        }
+      );
+
+      setRawCount(result.rawCount || workerResult.rawCount || 0);
       setParsedNormalizedRows(result.normalizedRows || []);
       setMovementRows(result.movementRows || []);
       setStandardLucaRows(result.standardLucaRows || []);
       markAppliedDeclarationsPaid(result.declarationSummary);
 
-      // Operasyon Merkezi oturumu — mevcut önizlemeyi bozmaz
       if (Array.isArray(result.financialTransactions)) {
         saveBankCardOpsSession({
           company_id: selectedCompanyId,
