@@ -68,6 +68,8 @@ import ParserJobProgress from "@/src/components/ParserJobProgress";
 import { useParserJob } from "@/src/hooks/useParserJob";
 import { logParserJobError } from "@/src/utils/parserJobLogger";
 import { runBankParserWorker } from "@/src/utils/workerParserBridge";
+import { saveBankCardOpsSession } from "@/src/utils/bankCardOpsCenter";
+import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -490,6 +492,9 @@ export default function BankaParserPage() {
         accountingRules,
         declarationAccrualRecords,
         selectedCompanyId,
+        sourceFileName: file?.name || "",
+        sourceFileType: detectSourceFileType(file?.name || "", file?.type || ""),
+        sourceType: "bank",
       },
       timeoutMs: 120_000,
       onProgress: (message) => {
@@ -526,6 +531,18 @@ export default function BankaParserPage() {
       setMovementRows(result.movementRows || []);
       setStandardLucaRows(result.standardLucaRows || []);
       markAppliedDeclarationsPaid(result.declarationSummary);
+
+      // Operasyon Merkezi oturumu — mevcut önizlemeyi bozmaz
+      if (Array.isArray(result.financialTransactions)) {
+        saveBankCardOpsSession({
+          company_id: selectedCompanyId,
+          bank_name: selectedBank,
+          source_file_name: selectedFile?.name || "",
+          transactions: result.financialTransactions,
+          dashboard: result.opsDashboard,
+          declarationSummary: result.declarationSummary,
+        });
+      }
 
       await recordLearningMemoryUsage(result.standardLucaRows || []);
       const queuedCount = await queueUnrecognizedFromWorker(result.unrecognizedItems || []);

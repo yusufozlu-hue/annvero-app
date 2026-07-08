@@ -229,6 +229,11 @@ const categories = [
         href: "/muhasebe/banka-ekstresi",
       },
       {
+        title: "Banka & Kart Operasyon Merkezi",
+        desc: "Ortak hareket modeli, tanıma durumları ve Luca fiş hazırlık özeti.",
+        href: "/muhasebe/banka-kart-operasyon",
+      },
+      {
         title: "Elektraweb Fiş Dönüştürücü",
         desc: "Elektraweb fiş listesini Luca aktarım formatına dönüştürür.",
         href: "/muhasebe/elektraweb",

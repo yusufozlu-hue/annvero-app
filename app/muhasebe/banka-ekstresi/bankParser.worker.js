@@ -107,6 +107,9 @@ self.onmessage = async (event) => {
       accountingRules: context.accountingRules,
       declarationAccrualRecords: context.declarationAccrualRecords,
       selectedCompanyId: context.selectedCompanyId,
+      sourceFileName: context.sourceFileName || "",
+      sourceFileType: context.sourceFileType || "xlsx",
+      sourceType: context.sourceType || "bank",
     });
 
     postProgress(

@@ -12,6 +12,7 @@ export const ANNVERO_NAV_GROUPS = [
       { label: "Fiş Dönüştürme", href: "/muhasebe/fis-donusturme" },
       { label: "Luca Dönüştürücü", href: "/muhasebe/luca-donusturucu" },
       { label: "Banka Parser", href: "/muhasebe/banka-ekstresi" },
+      { label: "Banka & Kart Operasyon", href: "/muhasebe/banka-kart-operasyon" },
       { label: "Banka Mutabakat", href: "/muhasebe/banka-mutabakat" },
       { label: "ElektraWeb", href: "/muhasebe/elektraweb" },
       { label: "Ofis Takip", href: "/ofis-takip" },
