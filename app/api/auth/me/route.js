@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
-import { isPlatformAdmin } from "@/src/lib/auth/admin";
-import { mergeProfileWithAuth, shouldShowAccessWarning } from "@/src/lib/auth/userAccess";
+import { isOwnerEmail, isPlatformAdmin } from "@/src/lib/auth/admin";
+import {
+  buildAccessDebugPayload,
+  mergeProfileWithAuth,
+  shouldShowAccessWarning,
+} from "@/src/lib/auth/userAccess";
 import {
   fetchProfileByEmail,
   provisionProfileForUser,
@@ -28,6 +32,37 @@ function logProfileIssue(message, detail = {}, companyId = "") {
   } catch (error) {
     console.error("[auth/me] profile log failed", error);
   }
+}
+
+function withDebug(payload, user, profile) {
+  const debug = buildAccessDebugPayload(user, profile, {
+    isAdmin: payload.isAdmin || payload.isPlatformAdmin,
+  });
+
+  return {
+    ...payload,
+    email: debug.email || user?.email || payload.email,
+    role: debug.role,
+    isAdmin: debug.isAdmin,
+    isPartner: debug.isPartner,
+    isPlatformAdmin: debug.isPlatformAdmin,
+    companyIds: debug.companyIds,
+    showAccessWarning: debug.showAccessWarning,
+    warningReason: debug.warningReason,
+    // Geçici debug bloğu (UI/Network incelemesi için)
+    debug: {
+      email: debug.email,
+      role: debug.role,
+      isAdmin: debug.isAdmin,
+      isPartner: debug.isPartner,
+      isPlatformAdmin: debug.isPlatformAdmin,
+      companyIds: debug.companyIds,
+      showAccessWarning: debug.showAccessWarning,
+      warningReason: debug.warningReason,
+      profileSource: profile?.source || null,
+      bootstrapOwner: isOwnerEmail(user?.email),
+    },
+  };
 }
 
 export async function GET() {
@@ -85,28 +120,43 @@ export async function GET() {
     );
 
     const merged = mergeProfileWithAuth(user, null, { schemaMissing: true });
-    return NextResponse.json({
-      authenticated: true,
-      email: user.email,
-      isAdmin: isPlatformAdmin(user),
-      isPlatformAdmin: isPlatformAdmin(user),
-      active: true,
-      schemaMissing,
-      adminUnavailable,
-      schemaHint: getUserProfilesSchemaErrorMessage(),
-      provisioned: false,
-      needsInvite: false,
-      usingFallback: true,
-      profile: merged,
-      access: {
-        role: merged.role,
-        permissions: merged.permissions,
-        companyIds: merged.companyIds,
-        modules: merged.modules,
-        isPartner: merged.isPartner,
-        isManagementUser: merged.isManagementUser,
-      },
-    });
+    // Owner/admin fallback'te bile banner gösterme
+    const ownerForced = isOwnerEmail(user.email) || isPlatformAdmin(user);
+    if (ownerForced && merged.role !== "admin") {
+      merged.role = "admin";
+      merged.isPlatformAdmin = true;
+      merged.isManagementUser = true;
+      merged.needsInvite = false;
+    }
+
+    return NextResponse.json(
+      withDebug(
+        {
+          authenticated: true,
+          email: user.email,
+          isAdmin: ownerForced || isPlatformAdmin(user) || merged.role === "admin",
+          isPlatformAdmin: ownerForced || isPlatformAdmin(user) || merged.role === "admin",
+          active: true,
+          schemaMissing,
+          adminUnavailable,
+          schemaHint: getUserProfilesSchemaErrorMessage(),
+          provisioned: false,
+          needsInvite: false,
+          usingFallback: true,
+          profile: merged,
+          access: {
+            role: merged.role,
+            permissions: merged.permissions,
+            companyIds: merged.companyIds,
+            modules: merged.modules,
+            isPartner: merged.isPartner,
+            isManagementUser: merged.isManagementUser,
+          },
+        },
+        user,
+        merged
+      )
+    );
   }
 
   if (profile?.isActive === false) {
@@ -130,27 +180,47 @@ export async function GET() {
         error: provision.error?.message || null,
       });
       const merged = mergeProfileWithAuth(user, null, { schemaMissing: false });
-      return NextResponse.json({
-        authenticated: true,
-        email: user.email,
-        isAdmin: isPlatformAdmin(user),
-        isPlatformAdmin: isPlatformAdmin(user),
-        active: true,
-        schemaMissing: false,
-        provisioned: false,
-        needsInvite: true,
-        showAccessWarning: true,
-        usingFallback: false,
-        profile: { ...merged, needsInvite: true, source: "restricted" },
-        access: {
-          role: merged.role,
-          permissions: merged.permissions,
-          companyIds: merged.companyIds,
-          modules: merged.modules,
-          isPartner: merged.isPartner,
-          isManagementUser: merged.isManagementUser,
-        },
-      });
+      const ownerForced = isOwnerEmail(user.email) || isPlatformAdmin(user);
+      if (ownerForced) {
+        merged.role = "admin";
+        merged.isPlatformAdmin = true;
+        merged.isManagementUser = true;
+        merged.needsInvite = false;
+        merged.source = "owner_fallback";
+      }
+
+      return NextResponse.json(
+        withDebug(
+          {
+            authenticated: true,
+            email: user.email,
+            isAdmin: ownerForced || merged.role === "admin",
+            isPlatformAdmin: ownerForced || merged.role === "admin",
+            active: true,
+            schemaMissing: false,
+            provisioned: false,
+            needsInvite: ownerForced ? false : true,
+            // Owner için ASLA hardcode true
+            showAccessWarning: ownerForced ? false : shouldShowAccessWarning(merged),
+            usingFallback: false,
+            profile: {
+              ...merged,
+              needsInvite: ownerForced ? false : true,
+              source: ownerForced ? "owner_fallback" : "restricted",
+            },
+            access: {
+              role: merged.role,
+              permissions: merged.permissions,
+              companyIds: merged.companyIds,
+              modules: merged.modules,
+              isPartner: merged.isPartner,
+              isManagementUser: merged.isManagementUser,
+            },
+          },
+          user,
+          merged
+        )
+      );
     }
   }
 
@@ -166,10 +236,26 @@ export async function GET() {
   finalProfile.source = "database";
   finalProfile.needsInvite = false;
 
+  // Owner e-posta: bootstrap DB'ye yazamasa bile yanıtlarda admin say
+  if (isOwnerEmail(user.email) || isPlatformAdmin(user)) {
+    finalProfile.role = "admin";
+    finalProfile.isPlatformAdmin = true;
+    finalProfile.isManagementUser = true;
+    finalProfile.needsInvite = false;
+  }
+
   if (bootstrap.bootstrapped) {
     logProfileIssue("Owner admin bootstrap uygulandı", {
       email: user.email,
       role: finalProfile.role,
+      upsertOk: Boolean(bootstrap.upsertOk),
+    });
+  }
+
+  if (bootstrap.error) {
+    logProfileIssue("Owner admin bootstrap upsert hatası", {
+      email: user.email,
+      error: bootstrap.error?.message || String(bootstrap.error),
     });
   }
 
@@ -182,28 +268,38 @@ export async function GET() {
     });
   }
 
-  const showAccessWarning = shouldShowAccessWarning(finalProfile);
+  const platformAdmin =
+    isOwnerEmail(user.email) ||
+    isPlatformAdmin(user) ||
+    finalProfile.role === "admin";
 
-  return NextResponse.json({
-    authenticated: true,
-    email: user.email,
-    isAdmin: isPlatformAdmin(user) || finalProfile.role === "admin",
-    isPlatformAdmin: isPlatformAdmin(user) || finalProfile.role === "admin",
-    active: true,
-    schemaMissing: false,
-    schemaHint: "",
-    provisioned: provisioned || bootstrap.bootstrapped,
-    needsInvite: false,
-    showAccessWarning,
-    usingFallback: false,
-    profile: finalProfile,
-    access: {
-      role: finalProfile.role,
-      permissions: finalProfile.permissions,
-      companyIds: finalProfile.companyIds,
-      modules: finalProfile.modules,
-      isPartner: finalProfile.isPartner,
-      isManagementUser: finalProfile.isManagementUser,
-    },
-  });
+  return NextResponse.json(
+    withDebug(
+      {
+        authenticated: true,
+        email: user.email,
+        isAdmin: platformAdmin,
+        isPlatformAdmin: platformAdmin,
+        active: true,
+        schemaMissing: false,
+        schemaHint: "",
+        provisioned: provisioned || bootstrap.bootstrapped,
+        needsInvite: false,
+        usingFallback: false,
+        bootstrapped: bootstrap.bootstrapped,
+        upsertOk: bootstrap.upsertOk ?? null,
+        profile: finalProfile,
+        access: {
+          role: finalProfile.role,
+          permissions: finalProfile.permissions,
+          companyIds: finalProfile.companyIds,
+          modules: finalProfile.modules,
+          isPartner: finalProfile.isPartner,
+          isManagementUser: finalProfile.isManagementUser,
+        },
+      },
+      user,
+      finalProfile
+    )
+  );
 }

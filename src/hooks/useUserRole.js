@@ -11,6 +11,25 @@ import { createUserAccess } from "@/src/lib/auth/userAccess";
 import { canAccessCompany as checkCompanyAccess } from "@/src/lib/auth/permissions";
 import { upsertCachedUser } from "@/src/utils/annveroUserStore";
 
+const STALE_ACCESS_KEYS = [
+  "annvero_show_access_warning",
+  "annvero_needs_invite",
+  "annvero_missing_company_access",
+  "annvero_access_warning_v1",
+];
+
+function clearStaleAccessFlags() {
+  if (typeof window === "undefined") return;
+  try {
+    for (const key of STALE_ACCESS_KEYS) {
+      localStorage.removeItem(key);
+      sessionStorage.removeItem(key);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 export function useUserRole() {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -19,11 +38,12 @@ export function useUserRole() {
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [usingFallback, setUsingFallback] = useState(false);
   const [needsInvite, setNeedsInvite] = useState(false);
-  const [showAccessWarning, setShowAccessWarning] = useState(false);
+  const [apiShowAccessWarning, setApiShowAccessWarning] = useState(false);
   const [accountActive, setAccountActive] = useState(true);
 
   const loadProfile = useCallback(async () => {
     setLoading(true);
+    clearStaleAccessFlags();
     try {
       const response = await fetch("/api/auth/me", { cache: "no-store", credentials: "include" });
       const data = await response.json();
@@ -35,7 +55,7 @@ export function useUserRole() {
         setSchemaMissing(false);
         setUsingFallback(false);
         setNeedsInvite(false);
-        setShowAccessWarning(false);
+        setApiShowAccessWarning(false);
         setAccountActive(true);
         return;
       }
@@ -45,29 +65,41 @@ export function useUserRole() {
         setProfile(null);
         setUsingFallback(false);
         setNeedsInvite(false);
-        setShowAccessWarning(false);
+        setApiShowAccessWarning(false);
         setAccountActive(false);
         return;
       }
 
+      const nextProfile = data.profile || null;
+      const role = data.role || nextProfile?.role || "";
+      const elevated =
+        Boolean(data.isAdmin) ||
+        Boolean(data.isPlatformAdmin) ||
+        Boolean(data.isPartner) ||
+        role === "admin" ||
+        role === "partner";
+
       setAuthenticated(true);
-      setIsPlatformAdmin(Boolean(data.isPlatformAdmin ?? data.isAdmin));
-      // usingFallback yalnızca DB gerçekten ulaşılamadığında true olmalı (API tarafında kısıtlanır).
+      setIsPlatformAdmin(Boolean(data.isPlatformAdmin ?? data.isAdmin) || role === "admin");
       setSchemaMissing(Boolean(data.schemaMissing));
       setUsingFallback(Boolean(data.usingFallback && (data.schemaMissing || data.adminUnavailable)));
-      setNeedsInvite(Boolean(data.needsInvite));
-      setShowAccessWarning(
-        Boolean(data.showAccessWarning ?? data.profile?.showAccessWarning)
-      );
+      setNeedsInvite(elevated ? false : Boolean(data.needsInvite));
+      // Banner sadece API'nin kesin showAccessWarning alanı; eski flag'ler yok sayılır
+      setApiShowAccessWarning(elevated ? false : data.showAccessWarning === true);
       setAccountActive(true);
-      setProfile(data.profile || null);
+      setProfile(nextProfile);
 
-      if (data.profile?.role && typeof window !== "undefined") {
-        localStorage.setItem(ANNVERO_ROLE_STORAGE_KEY, data.profile.role);
+      if (nextProfile?.role && typeof window !== "undefined") {
+        localStorage.setItem(ANNVERO_ROLE_STORAGE_KEY, nextProfile.role);
       }
-      if (data.profile) upsertCachedUser(data.profile);
+      if (nextProfile) upsertCachedUser(nextProfile);
+
+      if (typeof window !== "undefined" && data.debug) {
+        console.info("[auth/me debug]", data.debug);
+      }
     } catch {
-      // Ağ hatası: sessiz metadata/local fallback; kullanıcıya banner göstermeyiz.
+      // Ağ hatası: banner gösterme
+      clearStaleAccessFlags();
       if (typeof window !== "undefined") {
         const storedRole = localStorage.getItem(ANNVERO_ROLE_STORAGE_KEY) || "";
         setProfile({
@@ -79,6 +111,7 @@ export function useUserRole() {
         setUsingFallback(true);
         setSchemaMissing(false);
         setAuthenticated(true);
+        setApiShowAccessWarning(false);
       }
     } finally {
       setLoading(false);
@@ -92,6 +125,10 @@ export function useUserRole() {
   const access = useMemo(() => createUserAccess(profile || {}), [profile]);
   const role = access.role;
 
+  // Tek kaynak: API showAccessWarning === true VE client access de true; admin asla false
+  const showAccessWarning =
+    apiShowAccessWarning === true && access.showAccessWarning === true;
+
   const setRole = (nextRole) => {
     if (typeof window === "undefined") return;
     localStorage.setItem(ANNVERO_ROLE_STORAGE_KEY, nextRole);
@@ -104,8 +141,8 @@ export function useUserRole() {
     permissions: access.permissions,
     companyIds: access.companyIds,
     modules: access.modules,
-    isAdmin: isPlatformAdmin,
-    isPlatformAdmin,
+    isAdmin: isPlatformAdmin || role === "admin",
+    isPlatformAdmin: isPlatformAdmin || role === "admin",
     isPartner: access.isPartner,
     isManagementUser: access.isManagementUser,
     authenticated,
@@ -114,6 +151,7 @@ export function useUserRole() {
     usingFallback,
     needsInvite,
     showAccessWarning,
+    userAccess: access,
     refresh: loadProfile,
     setRole,
     canAccessRoute: (pathname) => canAccessRoute(role, pathname),

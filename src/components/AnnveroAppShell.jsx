@@ -9,9 +9,11 @@ import { annveroPageBg } from "@/src/styles/annveroDesign";
 export default function AnnveroAppShell({ children }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const { showAccessWarning, loading } = useUserRole();
+  const { userAccess, loading } = useUserRole();
 
   const mainOffsetClass = sidebarCollapsed ? "lg:ml-[72px]" : "lg:ml-[302px]";
+  // Banner yalnız userAccess.showAccessWarning === true ise (eski needsInvite / companyIds yok sayılır)
+  const showBanner = !loading && userAccess?.showAccessWarning === true;
 
   return (
     <div className={annveroPageBg}>
@@ -36,7 +38,7 @@ export default function AnnveroAppShell({ children }) {
       <div className={`relative flex min-h-screen flex-col transition-[margin] duration-200 ${mainOffsetClass}`}>
         <AnnveroTopbar onMenuToggle={() => setMobileMenuOpen((v) => !v)} sidebarCollapsed={sidebarCollapsed} />
 
-        {!loading && showAccessWarning ? (
+        {showBanner ? (
           <div className="mx-4 mt-3 rounded-xl border border-cyan-700/40 bg-cyan-950/30 px-4 py-2 text-xs text-cyan-100 sm:mx-6 lg:mx-8">
             Hesabınıza henüz rol veya firma erişimi atanmadı. Yöneticinizden yetki tanımı isteyin.
           </div>

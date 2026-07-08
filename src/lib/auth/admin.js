@@ -14,10 +14,13 @@ export function getAdminEmails() {
     process.env.NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS ||
     "";
 
-  return raw
+  const fromEnv = raw
     .split(/[,;\n]/)
     .map((email) => email.trim().toLowerCase())
     .filter((email) => email.includes("@"));
+
+  // yusufozlu@gmail.com her zaman admin allowlist'te (env yoksa bile)
+  return [...new Set([...fromEnv, ...DEFAULT_OWNER_EMAILS])];
 }
 
 export function getOwnerEmails() {

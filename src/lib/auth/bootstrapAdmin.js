@@ -82,6 +82,7 @@ export async function shouldBootstrapAsAdmin(user, profile = null) {
   const email = normalizeEmail(user?.email);
   if (!email) return false;
 
+  // Owner allowlist: her zaman admin
   if (isAdminUser(user) || isBootstrapOwnerEmail(email)) return true;
 
   const role = profile?.role || "";
@@ -120,22 +121,35 @@ function buildAdminProfile(user, profile = {}) {
 /**
  * İlk kurulum / owner kullanıcıyı Admin yapar ve metadata senkronlar.
  * company_ids boş bırakılır — admin tüm firmalara erişir.
+ * Upsert başarısız olsa bile in-memory admin profil döner (banner kapanır).
  */
 export async function ensureBootstrapAdmin(user, profile = null) {
-  if (!user?.email) return { profile, bootstrapped: false };
+  if (!user?.email) {
+    return { profile, bootstrapped: false, upsertOk: false, error: null };
+  }
 
   let current = profile;
   if (!current) {
     const fetched = await fetchProfileByEmail(user.email);
     current = fetched.profile;
   }
-  if (!current) return { profile: null, bootstrapped: false };
+
+  // Profil yoksa owner için sıfırdan oluştur
+  if (!current) {
+    if (!isBootstrapOwnerEmail(user.email) && !isAdminUser(user)) {
+      return { profile: null, bootstrapped: false, upsertOk: false, error: null };
+    }
+    current = buildAdminProfile(user, {});
+  }
 
   const shouldPromote = await shouldBootstrapAsAdmin(user, current);
-  if (!shouldPromote) return { profile: current, bootstrapped: false };
+  if (!shouldPromote) {
+    return { profile: current, bootstrapped: false, upsertOk: false, error: null };
+  }
 
-  if (current.role === ANNVERO_ROLES.ADMIN) {
-    return { profile: current, bootstrapped: false };
+  // Zaten admin ama DB'ye yazmayı yine de doğrula (owner)
+  if (current.role === ANNVERO_ROLES.ADMIN && !isBootstrapOwnerEmail(user.email)) {
+    return { profile: current, bootstrapped: false, upsertOk: true, error: null };
   }
 
   const promoted = buildAdminProfile(user, current);
@@ -143,15 +157,25 @@ export async function ensureBootstrapAdmin(user, profile = null) {
 
   if (saved.profile) {
     await syncAnnveroUserMetadata(user.id, saved.profile);
-    return { profile: saved.profile, bootstrapped: true };
+    return {
+      profile: { ...saved.profile, role: ANNVERO_ROLES.ADMIN, source: "database" },
+      bootstrapped: true,
+      upsertOk: true,
+      error: null,
+    };
   }
 
-  if (saved.error) {
-    console.error("[bootstrapAdmin] upsert failed", saved.error.message);
-  }
+  const error = saved.error || new Error("bootstrap upsert failed");
+  console.error("[bootstrapAdmin] upsert failed", error.message);
 
-  await syncAnnveroUserMetadata(user.id, promoted);
-  return { profile: promoted, bootstrapped: true };
+  // DB yazılamasa bile oturumda admin say — banner kesin kalksın
+  await syncAnnveroUserMetadata(user.id, promoted).catch(() => {});
+  return {
+    profile: promoted,
+    bootstrapped: true,
+    upsertOk: false,
+    error,
+  };
 }
 
 /** Tanılama: mevcut profil durumu */
