@@ -8,6 +8,12 @@ import {
 } from "@/src/lib/auth/permissions";
 import { ANNVERO_ROLES, resolveUserRole } from "@/src/config/annveroRoles";
 
+const MANAGEMENT_ROLES = new Set([
+  ANNVERO_ROLES.ADMIN,
+  ANNVERO_ROLES.PARTNER,
+  ANNVERO_ROLES.MANAGER,
+]);
+
 export function buildFallbackProfile(user, { schemaMissing = false } = {}) {
   const isAdmin = isPlatformAdmin(user);
   const metadataRole = getAnnveroRoleFromUser(user);
@@ -91,6 +97,31 @@ export function mergeProfileWithAuth(user, profile = null, options = {}) {
   };
 }
 
+/** Banner yalnızca gerçekten rol/firma ataması eksik normal kullanıcılar için */
+export function shouldShowAccessWarning(profile = null) {
+  if (!profile) return false;
+
+  if (profile.isPlatformAdmin || profile.isManagementUser) return false;
+  if (profile.role === ANNVERO_ROLES.ADMIN || profile.role === ANNVERO_ROLES.PARTNER) {
+    return false;
+  }
+
+  const role = profile.role || "";
+  const companyIds = Array.isArray(profile.companyIds) ? profile.companyIds : [];
+  const hasAssignedRole = Boolean(role) && role !== ANNVERO_ROLES.VIEWER;
+  const hasCompanyAccess =
+    MANAGEMENT_ROLES.has(role) || companyIds.length > 0;
+
+  if (profile.source === "restricted" || profile.needsInvite) {
+    return !hasAssignedRole || !hasCompanyAccess;
+  }
+
+  if (!hasAssignedRole) return true;
+  if (!hasCompanyAccess) return true;
+
+  return false;
+}
+
 export function createUserAccess(profile) {
   const role = profile?.role || ANNVERO_ROLES.VIEWER;
   const permissions = profile?.permissions || getDefaultPermissionsForRole(role);
@@ -110,5 +141,6 @@ export function createUserAccess(profile) {
     hasPermission: (permission) => hasPermission(role, permission, permissions),
     isActive: profile?.isActive !== false,
     usingFallback: profile?.source === "fallback" || profile?.source === "fallback_restricted",
+    showAccessWarning: shouldShowAccessWarning(profile),
   };
 }

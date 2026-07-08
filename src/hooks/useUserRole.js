@@ -19,6 +19,7 @@ export function useUserRole() {
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [usingFallback, setUsingFallback] = useState(false);
   const [needsInvite, setNeedsInvite] = useState(false);
+  const [showAccessWarning, setShowAccessWarning] = useState(false);
   const [accountActive, setAccountActive] = useState(true);
 
   const loadProfile = useCallback(async () => {
@@ -34,6 +35,7 @@ export function useUserRole() {
         setSchemaMissing(false);
         setUsingFallback(false);
         setNeedsInvite(false);
+        setShowAccessWarning(false);
         setAccountActive(true);
         return;
       }
@@ -43,6 +45,7 @@ export function useUserRole() {
         setProfile(null);
         setUsingFallback(false);
         setNeedsInvite(false);
+        setShowAccessWarning(false);
         setAccountActive(false);
         return;
       }
@@ -52,7 +55,10 @@ export function useUserRole() {
       // usingFallback yalnızca DB gerçekten ulaşılamadığında true olmalı (API tarafında kısıtlanır).
       setSchemaMissing(Boolean(data.schemaMissing));
       setUsingFallback(Boolean(data.usingFallback && (data.schemaMissing || data.adminUnavailable)));
-      setNeedsInvite(Boolean(data.needsInvite || data.profile?.needsInvite));
+      setNeedsInvite(Boolean(data.needsInvite));
+      setShowAccessWarning(
+        Boolean(data.showAccessWarning ?? data.profile?.showAccessWarning)
+      );
       setAccountActive(true);
       setProfile(data.profile || null);
 
@@ -85,6 +91,7 @@ export function useUserRole() {
 
   const access = useMemo(() => createUserAccess(profile || {}), [profile]);
   const role = access.role;
+  const resolvedShowAccessWarning = showAccessWarning || access.showAccessWarning;
 
   const setRole = (nextRole) => {
     if (typeof window === "undefined") return;
@@ -107,6 +114,7 @@ export function useUserRole() {
     schemaMissing,
     usingFallback,
     needsInvite,
+    showAccessWarning: resolvedShowAccessWarning,
     refresh: loadProfile,
     setRole,
     canAccessRoute: (pathname) => canAccessRoute(role, pathname),

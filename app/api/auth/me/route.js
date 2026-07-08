@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isPlatformAdmin } from "@/src/lib/auth/admin";
-import { mergeProfileWithAuth } from "@/src/lib/auth/userAccess";
+import { mergeProfileWithAuth, shouldShowAccessWarning } from "@/src/lib/auth/userAccess";
 import {
   fetchProfileByEmail,
   provisionProfileForUser,
@@ -138,6 +138,7 @@ export async function GET() {
         schemaMissing: false,
         provisioned: false,
         needsInvite: true,
+        showAccessWarning: true,
         usingFallback: false,
         profile: { ...merged, needsInvite: true, source: "restricted" },
         access: {
@@ -165,6 +166,8 @@ export async function GET() {
     });
   }
 
+  const showAccessWarning = shouldShowAccessWarning(merged);
+
   return NextResponse.json({
     authenticated: true,
     email: user.email,
@@ -175,6 +178,7 @@ export async function GET() {
     schemaHint: "",
     provisioned,
     needsInvite: false,
+    showAccessWarning,
     usingFallback: false,
     profile: merged,
     access: {

@@ -194,8 +194,10 @@ export async function sendPasswordRecoveryEmail(email = "", redirectTo = "") {
   return { sent: true, error: null, actionLink };
 }
 
-function resolveProvisionRole(user) {
-  if (isAdminUser(user)) return ANNVERO_ROLES.ADMIN;
+function resolveProvisionRole(user, { isFirstUser = false, hasAdminProfile = true } = {}) {
+  if (isAdminUser(user) || isFirstUser || !hasAdminProfile) {
+    return ANNVERO_ROLES.ADMIN;
+  }
 
   const metadataRole = getAnnveroRoleFromUser(user);
   if (metadataRole && ANNVERO_ROLE_LABELS[metadataRole]) {
@@ -203,6 +205,76 @@ function resolveProvisionRole(user) {
   }
 
   return ANNVERO_ROLES.ACCOUNTING;
+}
+
+async function countUserProfiles() {
+  const { supabase, adminUnavailable, schemaMissing } = getAdminClient();
+  if (adminUnavailable || schemaMissing || !supabase) return -1;
+
+  const { count, error } = await supabase
+    .from(USER_PROFILES_TABLE)
+    .select("id", { count: "exact", head: true });
+
+  if (error) {
+    logSupabaseQueryError("auth:profiles:count", error, USER_PROFILES_TABLE);
+    return -1;
+  }
+
+  return count ?? 0;
+}
+
+async function hasAdminProfileInDb() {
+  const { supabase, adminUnavailable, schemaMissing } = getAdminClient();
+  if (adminUnavailable || schemaMissing || !supabase) return false;
+
+  const { count, error } = await supabase
+    .from(USER_PROFILES_TABLE)
+    .select("id", { count: "exact", head: true })
+    .eq("role", ANNVERO_ROLES.ADMIN);
+
+  if (error) {
+    logSupabaseQueryError("auth:profiles:has-admin", error, USER_PROFILES_TABLE);
+    return false;
+  }
+
+  return (count ?? 0) > 0;
+}
+
+function buildOwnerProfileDraft(user, overrides = {}) {
+  const role = ANNVERO_ROLES.ADMIN;
+  return {
+    id: user.id,
+    email: String(user.email).trim().toLowerCase(),
+    displayName:
+      overrides.displayName ||
+      user.user_metadata?.display_name ||
+      user.user_metadata?.full_name ||
+      user.email,
+    role,
+    permissions: getDefaultPermissionsForRole(role),
+    companyIds: [],
+    teamId: user.user_metadata?.team_id || "",
+    isActive: true,
+    lastLoginAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function shouldPromoteToOwner(user, profileCount, hasAdminProfile) {
+  if (isAdminUser(user)) return true;
+  if (profileCount === 0) return true;
+  if (!hasAdminProfile && profileCount <= 1) return true;
+  return false;
+}
+
+function applyOwnerPromotion(profile) {
+  const role = ANNVERO_ROLES.ADMIN;
+  return {
+    ...profile,
+    role,
+    permissions: getDefaultPermissionsForRole(role),
+    companyIds: [],
+  };
 }
 
 export async function provisionProfileForUser(user) {
@@ -215,6 +287,11 @@ export async function provisionProfileForUser(user) {
       needsInvite: false,
     };
   }
+
+  const profileCount = await countUserProfiles();
+  const hasAdminProfile = await hasAdminProfileInDb();
+  const isFirstUser = profileCount === 0;
+  const bootstrapOwner = shouldPromoteToOwner(user, profileCount, hasAdminProfile);
 
   const existing = await fetchProfileByEmail(user.email);
   if (existing.schemaMissing || existing.adminUnavailable) {
@@ -240,7 +317,7 @@ export async function provisionProfileForUser(user) {
 
   // Mevcut profil (pending-* dahil) → auth user id'ye bağla
   if (existing.profile) {
-    const linked = {
+    let linked = {
       ...existing.profile,
       id: user.id,
       email: String(user.email).trim().toLowerCase(),
@@ -250,6 +327,11 @@ export async function provisionProfileForUser(user) {
         user.email,
       lastLoginAt: new Date().toISOString(),
     };
+
+    if (bootstrapOwner) {
+      linked = applyOwnerPromotion(linked);
+    }
+
     const saved = await upsertProfile(linked);
     if (saved.profile) {
       await syncAnnveroUserMetadata(user.id, saved.profile);
@@ -273,20 +355,23 @@ export async function provisionProfileForUser(user) {
   }
 
   // İlk login: Auth kullanıcısı için otomatik profil oluştur
-  const role = resolveProvisionRole(user);
-  const draft = {
-    id: user.id,
-    email: String(user.email).trim().toLowerCase(),
-    displayName: user.user_metadata?.display_name || user.user_metadata?.full_name || user.email,
-    role,
-    permissions: getDefaultPermissionsForRole(role),
-    companyIds: Array.isArray(user.user_metadata?.company_ids)
-      ? user.user_metadata.company_ids
-      : [],
-    teamId: user.user_metadata?.team_id || "",
-    isActive: true,
-    lastLoginAt: new Date().toISOString(),
-  };
+  const role = resolveProvisionRole(user, { isFirstUser, hasAdminProfile });
+  const draft = bootstrapOwner
+    ? buildOwnerProfileDraft(user)
+    : {
+        id: user.id,
+        email: String(user.email).trim().toLowerCase(),
+        displayName:
+          user.user_metadata?.display_name || user.user_metadata?.full_name || user.email,
+        role,
+        permissions: getDefaultPermissionsForRole(role),
+        companyIds: Array.isArray(user.user_metadata?.company_ids)
+          ? user.user_metadata.company_ids
+          : [],
+        teamId: user.user_metadata?.team_id || "",
+        isActive: true,
+        lastLoginAt: new Date().toISOString(),
+      };
 
   const saved = await upsertProfile(draft);
   if (saved.profile) {
