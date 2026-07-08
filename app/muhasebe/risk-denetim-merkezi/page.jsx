@@ -3,13 +3,19 @@
 import { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import CompanySelectOptions from "../components/CompanySelectOptions";
+import ParserJobProgress from "@/src/components/ParserJobProgress";
 import { useCompanyList } from "../hooks/useCompanyList";
+import { useParserJob } from "@/src/hooks/useParserJob";
 import {
   KURGAN_RISK_LEVEL,
   KURGAN_RISK_STATUS,
   riskLevelBadgeClass,
 } from "@/src/config/kurganRiskDefaults";
 import { getCompanyDisplayName } from "@/src/utils/companies";
+import { logParserJobError } from "@/src/utils/parserJobLogger";
+import { SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
+import { runRiskAnalysisWorker } from "@/src/utils/workerParserBridge";
+import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
 import {
   analyzeKurganRisks,
   collectKurganDataSources,
@@ -73,6 +79,15 @@ export default function RiskDenetimMerkeziPage() {
 
   const companyName = getCompanyDisplayName(selectedCompany);
 
+  const parserJob = useParserJob({
+    logMeta: {
+      module: "Risk / Denetim Merkezi",
+      companyId: selectedCompanyId,
+      companyName,
+      jobType: "risk-analysis",
+    },
+  });
+
   const filteredFindings = useMemo(() => {
     return findings.filter((item) => {
       if (selectedCompanyId && item.companyId !== selectedCompanyId) return false;
@@ -100,18 +115,20 @@ export default function RiskDenetimMerkeziPage() {
     setToast("Muavin dosyası yüklendi.");
   };
 
-  const runAnalysis = () => {
+  const runAnalysis = async () => {
     if (!selectedCompanyId) {
       setToast("Analiz için önce firma seçin.");
       return;
     }
 
     setAnalyzing(true);
+    parserJob.begin({ stage: "Risk analizi", detail: "Veri kaynakları toplanıyor" });
+
     try {
       const { lucaRows, declarationRecords, bankRows } = collectKurganDataSources({
         companyId: selectedCompanyId,
       });
-      const result = analyzeKurganRisks({
+      const input = {
         companyId: selectedCompanyId,
         companyName,
         period,
@@ -120,7 +137,26 @@ export default function RiskDenetimMerkeziPage() {
         bankRows,
         lucaRows,
         declarationRecords,
-      });
+      };
+
+      let result;
+      try {
+        const workerResult = await runRiskAnalysisWorker({
+          workerUrl: PARSER_WORKER_URLS.riskAnalysis,
+          payload: { input },
+          onProgress: parserJob.onProgress,
+        });
+        result = {
+          findings: workerResult.findings,
+          summary: workerResult.summary,
+          sources: workerResult.sources,
+          analyzedAt: workerResult.analyzedAt,
+        };
+      } catch (workerError) {
+        console.warn("[risk-denetim] worker fallback", workerError);
+        result = analyzeKurganRisks(input);
+      }
+
       const merged = mergeSavedStatuses(result.findings, loadKurganRiskFindings());
       setFindings(merged);
       setSummary({ ...result.summary, lastAnalyzedAt: result.analyzedAt });
@@ -132,7 +168,18 @@ export default function RiskDenetimMerkeziPage() {
         summary: result.summary,
         sources: result.sources,
       });
+      parserJob.markSuccess(`${merged.length} risk bulgusu üretildi`);
       setToast(`${merged.length} risk bulgusu üretildi.`);
+    } catch (error) {
+      logParserJobError(error, {
+        module: "Risk / Denetim Merkezi",
+        companyId: selectedCompanyId,
+        companyName,
+        errorType: SYSTEM_ERROR_TYPES.UNEXPECTED,
+        jobType: "risk-analysis",
+      });
+      parserJob.markError(error);
+      setToast(error?.message || "Risk analizi başarısız.");
     } finally {
       setAnalyzing(false);
     }
@@ -191,6 +238,17 @@ export default function RiskDenetimMerkeziPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <ParserJobProgress
+            visible={analyzing || parserJob.isDone || parserJob.isError}
+            stage={parserJob.stage}
+            detail={parserJob.detail}
+            percent={parserJob.percent}
+            timeoutWarning={parserJob.timeoutWarning}
+            status={parserJob.status}
+            error={parserJob.error}
+            onCancel={analyzing ? () => parserJob.cancel("user") : undefined}
+            className="w-full"
+          />
           <button
             type="button"
             onClick={runAnalysis}

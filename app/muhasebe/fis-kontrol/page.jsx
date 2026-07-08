@@ -5,6 +5,11 @@ import Link from "next/link";
 import * as XLSX from "xlsx";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import AnnveroEditableDataTable from "@/src/components/AnnveroEditableDataTable";
+import ParserJobProgress from "@/src/components/ParserJobProgress";
+import { useParserJob } from "@/src/hooks/useParserJob";
+import { logParserJobError } from "@/src/utils/parserJobLogger";
+import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
+import { runFisKontrolWorker } from "@/src/utils/workerParserBridge";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/previewRowEdit";
 import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
@@ -90,6 +95,19 @@ export default function FisKontrolPage() {
   const [editingRowId, setEditingRowId] = useState(null);
   const [draftRow, setDraftRow] = useState(null);
   const [toast, setToast] = useState(null);
+  const [analysis, setAnalysis] = useState({ rows: [], issues: [], summary: {} });
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+
+  const parserJob = useParserJob({
+    logMeta: {
+      module: "Fiş Kontrol Merkezi",
+      companyId: payload?.companyId || payload?.firmaId || "",
+      companyName: payload?.companyName || "",
+      jobType: "fis-kontrol",
+    },
+  });
+
+  const FIS_KONTROL_WORKER_THRESHOLD = 300;
 
   const showToast = (message, type) => setToast({ message, type });
 
@@ -135,7 +153,60 @@ export default function FisKontrolPage() {
     return () => window.removeEventListener("focus", loadPendingData);
   }, [loadPendingData]);
 
-  const analysis = useMemo(() => analyzeStandardLucaRows(rows), [rows]);
+  useEffect(() => {
+    if (!rows.length) {
+      setAnalysis({ rows: [], issues: [], summary: {} });
+      return;
+    }
+
+    if (rows.length < FIS_KONTROL_WORKER_THRESHOLD) {
+      setAnalysis(analyzeStandardLucaRows(rows));
+      return;
+    }
+
+    let cancelled = false;
+    setAnalysisLoading(true);
+    parserJob.begin({ stage: "Fiş kontrolü", detail: `${rows.length} satır analiz ediliyor` });
+
+    (async () => {
+      try {
+        let nextAnalysis;
+        try {
+          const workerResult = await runFisKontrolWorker({
+            workerUrl: PARSER_WORKER_URLS.fisKontrol,
+            payload: { rows },
+            onProgress: parserJob.onProgress,
+          });
+          nextAnalysis = workerResult.analysis;
+        } catch (workerError) {
+          console.warn("[fis-kontrol] worker fallback", workerError);
+          nextAnalysis = analyzeStandardLucaRows(rows);
+        }
+        if (!cancelled) {
+          setAnalysis(nextAnalysis);
+          parserJob.markSuccess("Fiş kontrol analizi tamamlandı");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          logParserJobError(error, {
+            module: "Fiş Kontrol Merkezi",
+            companyId: payload?.companyId || payload?.firmaId || "",
+            companyName: payload?.companyName || "",
+            errorType: SYSTEM_ERROR_TYPES.UNEXPECTED,
+            jobType: "fis-kontrol",
+          });
+          parserJob.markError(error);
+          setAnalysis(analyzeStandardLucaRows(rows));
+        }
+      } finally {
+        if (!cancelled) setAnalysisLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rows, payload?.companyId, payload?.companyName, payload?.firmaId]);
   const riskLoggedRef = useRef("");
 
   useEffect(() => {
@@ -386,6 +457,18 @@ export default function FisKontrolPage() {
             düzenlemeler yalnızca aktarım kuyruğuna yazılır.
           </p>
         </div>
+
+        <ParserJobProgress
+          visible={analysisLoading || parserJob.isRunning || parserJob.isError}
+          stage={parserJob.stage}
+          detail={parserJob.detail}
+          percent={parserJob.percent}
+          timeoutWarning={parserJob.timeoutWarning}
+          status={parserJob.status}
+          error={parserJob.error}
+          onCancel={analysisLoading ? () => parserJob.cancel("user") : undefined}
+          className="w-full max-w-md"
+        />
 
         <div className="flex flex-wrap gap-3">
           <button

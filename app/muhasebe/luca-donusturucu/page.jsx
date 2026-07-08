@@ -38,6 +38,11 @@ import {
   buildStandardLucaLearningMemoryPayload,
 } from "@/src/utils/previewRowEdit";
 import { exportStandardLucaExcel } from "@/src/utils/exportStandardLucaExcel";
+import ParserJobProgress from "@/src/components/ParserJobProgress";
+import { useParserJob } from "@/src/hooks/useParserJob";
+import { logParserJobError } from "@/src/utils/parserJobLogger";
+import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
+import { runLucaExcelWorker } from "@/src/utils/workerParserBridge";
 import {
   applyAccountMemoryV1ToRows,
   saveAccountMemoryFromEdit,
@@ -163,6 +168,15 @@ export default function LucaDonusturucuPage() {
     () => normalizeCompanyRecord(selectedCompanyRaw),
     [selectedCompanyRaw]
   );
+
+  const parserJob = useParserJob({
+    logMeta: {
+      module: "Luca Dönüştürücü",
+      companyId: selectedCompanyId,
+      companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+      jobType: "luca-excel",
+    },
+  });
 
   const getAccountMemoryContext = (rows = []) => ({
     firmaId: selectedCompanyId,
@@ -615,18 +629,44 @@ export default function LucaDonusturucuPage() {
       return;
     }
 
-    const data = await file.arrayBuffer();
-    const workbook = XLSX.read(data, { cellDates: true });
-    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    parserJob.begin({ stage: "Excel okunuyor", detail: file.name });
 
-    const jsonRows = XLSX.utils.sheet_to_json(worksheet, {
-      defval: "",
-    });
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      let jsonRows;
+      try {
+        const workerResult = await runLucaExcelWorker({
+          workerUrl: PARSER_WORKER_URLS.excelSheet,
+          arrayBuffer,
+          onProgress: parserJob.onProgress,
+        });
+        jsonRows = workerResult.rows;
+      } catch (workerError) {
+        console.warn("[luca] excel worker fallback", workerError);
+        const workbook = XLSX.read(arrayBuffer, { cellDates: true, type: "array" });
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        jsonRows = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+      }
 
-    setRawRows(jsonRows);
-    setHareketFileName(
-      `${file.name} — ${formatRowCountLabel(jsonRows.length, sourceType)}`
-    );
+      setRawRows(jsonRows);
+      setHareketFileName(
+        `${file.name} — ${formatRowCountLabel(jsonRows.length, sourceType)}`
+      );
+      parserJob.markSuccess(`${jsonRows.length} satır okundu`);
+    } catch (error) {
+      logParserJobError(error, {
+        module: "Luca Dönüştürücü",
+        companyId: selectedCompanyId,
+        companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+        fileName: file.name,
+        errorType: SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
+        source: "excel",
+        jobType: "luca-excel",
+      });
+      parserJob.markError(error);
+      setPreviewError(error?.message || "Excel dosyası okunamadı.");
+    }
+
     e.target.value = "";
   };
 
@@ -1264,6 +1304,18 @@ export default function LucaDonusturucuPage() {
               {hareketFileName || "Henüz dosya seçilmedi"}
             </span>
           </div>
+
+          <ParserJobProgress
+            visible={parserJob.isRunning || parserJob.isDone || parserJob.isError}
+            stage={parserJob.stage}
+            detail={parserJob.detail}
+            percent={parserJob.percent}
+            timeoutWarning={parserJob.timeoutWarning}
+            status={parserJob.status}
+            error={parserJob.error}
+            onCancel={parserJob.isRunning ? () => parserJob.cancel("user") : undefined}
+            className="mt-4"
+          />
 
           {standardLucaRows.length > 0 && (
             <p className="mt-4 text-sm text-emerald-400">

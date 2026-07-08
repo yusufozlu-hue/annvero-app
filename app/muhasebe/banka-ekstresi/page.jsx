@@ -58,14 +58,16 @@ import {
 } from "@/src/utils/previewRowEdit";
 import { hasBankMovementError } from "@/src/utils/tableSearch";
 import {
-  logParserError,
   SYSTEM_ERROR_TYPES,
 } from "@/src/utils/systemLogEngine";
 import {
   loadDeclarationAccrualRecords,
   saveDeclarationAccrualRecords,
 } from "@/src/utils/beyannameTahakkukEngine";
-import { cancelActiveParseJob, runBankParserWorker } from "@/src/utils/workerParserBridge";
+import ParserJobProgress from "@/src/components/ParserJobProgress";
+import { useParserJob } from "@/src/hooks/useParserJob";
+import { logParserJobError } from "@/src/utils/parserJobLogger";
+import { runBankParserWorker } from "@/src/utils/workerParserBridge";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -85,15 +87,9 @@ const BANK_PARSE_STAGES = {
 
 export default function BankaParserPage() {
   const fileInputRef = useRef(null);
-  const timeoutWarningRef = useRef(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileName, setFileName] = useState("");
   const [isParsing, setIsParsing] = useState(false);
-  const [parserProgress, setParserProgress] = useState({
-    stage: "",
-    detail: "",
-    timeoutWarning: false,
-  });
   const [rawCount, setRawCount] = useState(0);
   const [parsedNormalizedRows, setParsedNormalizedRows] = useState([]);
   const [movementRows, setMovementRows] = useState([]);
@@ -122,6 +118,15 @@ export default function BankaParserPage() {
     () => normalizeCompanyRecord(selectedCompanyRaw),
     [selectedCompanyRaw]
   );
+
+  const parserJob = useParserJob({
+    logMeta: {
+      module: "Banka Parser",
+      companyId: selectedCompanyId,
+      companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+      fileName,
+    },
+  });
 
   const [selectedBank, setSelectedBank] = useState("GARANTI");
 
@@ -212,13 +217,10 @@ export default function BankaParserPage() {
   );
 
   useEffect(() => {
-    return () => {
-      if (timeoutWarningRef.current) {
-        clearTimeout(timeoutWarningRef.current);
-      }
-      cancelActiveParseJob("unmount");
-    };
-  }, []);
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   const filteredStandardLucaRows = useMemo(
     () =>
@@ -491,11 +493,7 @@ export default function BankaParserPage() {
       },
       timeoutMs: 120_000,
       onProgress: (message) => {
-        setParserProgress((current) => ({
-          ...current,
-          stage: message.stage || current.stage,
-          detail: message.detail || "",
-        }));
+        parserJob.onProgress(message);
       },
     });
   };
@@ -515,18 +513,10 @@ export default function BankaParserPage() {
     }
 
     setIsParsing(true);
-    setParserProgress({
+    parserJob.begin({
       stage: BANK_PARSE_STAGES.READING,
       detail: "Worker hazırlanıyor",
-      timeoutWarning: false,
     });
-
-    timeoutWarningRef.current = setTimeout(() => {
-      setParserProgress((current) => ({
-        ...current,
-        timeoutWarning: true,
-      }));
-    }, 20000);
 
     try {
       const result = await parseFileInWorker(selectedFile);
@@ -546,21 +536,20 @@ export default function BankaParserPage() {
           : `${(result.normalizedRows || []).length} işlem satırı ön izlemeye alındı.`,
         "success"
       );
+      parserJob.markSuccess(`${(result.normalizedRows || []).length} satır hazır`);
     } catch (error) {
       console.error("[banka-ekstresi] preview failed", error);
-      logParserError(
-        error?.message || "Banka ekstresi parse hatası",
-        { stack: error?.stack, bank: selectedBank },
-        selectedCompanyId,
-        {
-          fileName: selectedFile?.name || "",
-          companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
-          errorType: parserProgress.timeoutWarning
-            ? SYSTEM_ERROR_TYPES.TIMEOUT
-            : SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
-          module: "Banka Parser",
-        }
-      );
+      const isTimeout = /zaman aşımı/i.test(error?.message || "");
+      logParserJobError(error, {
+        module: "Banka Parser",
+        companyId: selectedCompanyId,
+        companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+        fileName: selectedFile?.name || "",
+        errorType: isTimeout ? SYSTEM_ERROR_TYPES.TIMEOUT : SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
+        source: "parser",
+        jobType: "bank-excel",
+      });
+      parserJob.markError(error);
       clearPreviewState();
       showToast(
         error?.message ||
@@ -568,16 +557,7 @@ export default function BankaParserPage() {
         "error"
       );
     } finally {
-      if (timeoutWarningRef.current) {
-        clearTimeout(timeoutWarningRef.current);
-        timeoutWarningRef.current = null;
-      }
       setIsParsing(false);
-      setParserProgress((current) => ({
-        ...current,
-        stage: "",
-        detail: "",
-      }));
     }
   };
 
@@ -754,34 +734,17 @@ export default function BankaParserPage() {
             </span>
           </div>
 
-          {isParsing ? (
-            <div
-              role="status"
-              aria-live="polite"
-              className="mt-4 rounded-xl border border-indigo-500/30 bg-indigo-950/40 px-4 py-3 text-sm text-indigo-100"
-            >
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-indigo-300" />
-                <span className="font-semibold">
-                  {parserProgress.stage || BANK_PARSE_STAGES.READING}
-                </span>
-                {parserProgress.detail ? (
-                  <span className="text-indigo-200/80">{parserProgress.detail}</span>
-                ) : null}
-              </div>
-              {parserProgress.timeoutWarning ? (
-                <p className="mt-2 text-xs text-amber-200">
-                  İşlem 20 saniyeyi geçti. Büyük dosya arka planda işlenmeye devam
-                  ediyor; sayfayı kullanabilirsiniz.
-                </p>
-              ) : (
-                <p className="mt-2 text-xs text-indigo-200/70">
-                  Excel okuma, parser, Luca satırları ve öğrenme kontrolü Web Worker
-                  içinde çalışıyor.
-                </p>
-              )}
-            </div>
-          ) : null}
+          <ParserJobProgress
+            visible={isParsing || parserJob.isDone || parserJob.isError}
+            stage={parserJob.stage}
+            detail={parserJob.detail}
+            percent={parserJob.percent}
+            timeoutWarning={parserJob.timeoutWarning}
+            status={parserJob.status}
+            error={parserJob.error}
+            onCancel={isParsing ? () => parserJob.cancel("user") : undefined}
+            className="mt-4"
+          />
 
           {rawCount > 0 && !isParsing ? (
             <p className="mt-4 text-sm text-green-400">
@@ -797,7 +760,7 @@ export default function BankaParserPage() {
             disabled={isParsing || !selectedFile}
             className="rounded-xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isParsing ? parserProgress.stage || "İşleniyor…" : "Ön İzleme Oluştur"}
+            {isParsing ? parserJob.stage || "İşleniyor…" : "Ön İzleme Oluştur"}
           </button>
 
           <button

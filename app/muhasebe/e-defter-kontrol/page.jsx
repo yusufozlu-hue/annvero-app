@@ -30,13 +30,22 @@ import {
   exportEDefterReportWorkbook,
   prepareEDefterPdfReport,
 } from "@/src/utils/eDefterKontrolExport";
-import { parseEDefterUploadFile } from "@/src/utils/eDefterXmlParser";
+import AnnveroDataTable from "@/src/components/AnnveroDataTable";
+import ParserJobProgress from "@/src/components/ParserJobProgress";
+import { useParserJob } from "@/src/hooks/useParserJob";
+import { logParserJobError } from "@/src/utils/parserJobLogger";
+import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
+import {
+  runEDefterAnalyzeWorker,
+  runEDefterXmlWorker,
+  runExcelSheetWorker,
+} from "@/src/utils/workerParserBridge";
+import { parseEDefterUploadBuffer } from "@/src/utils/eDefterXmlParser";
 import {
   logExcelError,
   logXmlError,
   SYSTEM_ERROR_TYPES,
 } from "@/src/utils/systemLogEngine";
-import AnnveroDataTable from "@/src/components/AnnveroDataTable";
 
 const inputClassName =
   "w-full rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20";
@@ -99,6 +108,16 @@ export default function EDefterKontrolPage() {
   const [cozumFilter, setCozumFilter] = useState("Tümü");
   const [expandedId, setExpandedId] = useState("");
   const [toast, setToast] = useState("");
+  const [xmlParsing, setXmlParsing] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+
+  const parserJob = useParserJob({
+    logMeta: {
+      module: "XML / e-Defter",
+      companyId: selectedCompanyId,
+      companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+    },
+  });
 
   const period = `${year}/${month}`;
   const companyRecords = useMemo(
@@ -124,32 +143,72 @@ export default function EDefterKontrolPage() {
     saveEDefterKontrolRecords(next);
   };
 
+  const readExcelSheetWithWorker = async (file) => {
+    const arrayBuffer = await file.arrayBuffer();
+    try {
+      const result = await runExcelSheetWorker({
+        workerUrl: PARSER_WORKER_URLS.excelSheet,
+        arrayBuffer,
+        mode: "rows",
+        onProgress: parserJob.onProgress,
+      });
+      return result.rows;
+    } catch (error) {
+      console.warn("[e-defter] excel worker fallback", error);
+      const workbook = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+    }
+  };
+
   const handleXmlUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    setXmlParsing(true);
+    parserJob.begin({ stage: "XML/ZIP okunuyor", detail: file.name });
     try {
-      const parsed = await parseEDefterUploadFile(file);
+      const arrayBuffer = await file.arrayBuffer();
+      let parsed;
+      try {
+        const workerResult = await runEDefterXmlWorker({
+          workerUrl: PARSER_WORKER_URLS.eDefterXml,
+          arrayBuffer,
+          fileName: file.name,
+          onProgress: parserJob.onProgress,
+        });
+        parsed = workerResult;
+      } catch (workerError) {
+        console.warn("[e-defter] xml worker fallback", workerError);
+        parsed = await parseEDefterUploadBuffer(arrayBuffer, file.name);
+      }
       setXmlRows(parsed.rows);
       setTechnicalFindings(parsed.technicalFindings);
       setUploadMeta(parsed);
+      parserJob.markSuccess(`${parsed.rows.length} XML satırı okundu`);
       setToast(`${parsed.rows.length} XML satırı, ${parsed.technicalFindings.length} teknik bulgu okundu.`);
     } catch (error) {
-      logXmlError(error.message || "XML/ZIP okunamadı.", { stack: error?.stack }, selectedCompanyId, {
-        fileName: file.name,
-        companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
-        errorType: SYSTEM_ERROR_TYPES.CORRUPT_XML,
+      logParserJobError(error, {
         module: "XML / e-Defter",
+        companyId: selectedCompanyId,
+        companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+        fileName: file.name,
+        errorType: SYSTEM_ERROR_TYPES.CORRUPT_XML,
+        source: "xml",
+        jobType: "edefter-xml",
       });
+      parserJob.markError(error);
       setToast(error.message || "XML/ZIP okunamadı.");
+    } finally {
+      setXmlParsing(false);
+      event.target.value = "";
     }
-    event.target.value = "";
   };
 
   const handleMuavinUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      setMuavinRows(parseMuavinSheet(await readExcelSheet(file)));
+      setMuavinRows(parseMuavinSheet(await readExcelSheetWithWorker(file)));
       setToast("Muavin Excel yüklendi.");
     } catch (error) {
       logExcelError(error.message || "Muavin Excel okunamadı.", { stack: error?.stack }, selectedCompanyId, {
@@ -165,7 +224,7 @@ export default function EDefterKontrolPage() {
   const handleYevmiyeUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    setYevmiyeRows(parseYevmiyeSheet(await readExcelSheet(file)));
+    setYevmiyeRows(parseYevmiyeSheet(await readExcelSheetWithWorker(file)));
     setToast("Yevmiye Excel yüklendi.");
     event.target.value = "";
   };
@@ -173,7 +232,7 @@ export default function EDefterKontrolPage() {
   const handleMizanUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    setMizanRows(parseMizanSheet(await readExcelSheet(file)));
+    setMizanRows(parseMizanSheet(await readExcelSheetWithWorker(file)));
     setToast("Mizan Excel yüklendi.");
     event.target.value = "";
   };
@@ -181,12 +240,12 @@ export default function EDefterKontrolPage() {
   const handleEdefterUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    setEdefterListeRows(parseEDefterListeSheet(await readExcelSheet(file)));
+    setEdefterListeRows(parseEDefterListeSheet(await readExcelSheetWithWorker(file)));
     setToast("E-defter liste Excel yüklendi.");
     event.target.value = "";
   };
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!selectedCompanyId) {
       setToast("Önce firma seçin.");
       return;
@@ -196,7 +255,10 @@ export default function EDefterKontrolPage() {
       return;
     }
 
-    const result = runEDefterKontrolPipeline({
+    setAnalyzing(true);
+    parserJob.begin({ stage: "e-Defter kontrolü", detail: "Kurallar çalışıyor" });
+
+    const payload = {
       muavinRows,
       yevmiyeRows,
       mizanRows,
@@ -205,28 +267,57 @@ export default function EDefterKontrolPage() {
       technicalFindings,
       companyId: selectedCompanyId,
       period,
-    });
+    };
 
-    setRows(result.rows);
-    setSummary(result.summary);
-    setGroupCounts(result.groupCounts);
+    try {
+      let result;
+      try {
+        const workerResult = await runEDefterAnalyzeWorker({
+          workerUrl: PARSER_WORKER_URLS.eDefterAnalyze,
+          payload,
+          onProgress: parserJob.onProgress,
+        });
+        result = workerResult;
+      } catch (workerError) {
+        console.warn("[e-defter] analyze worker fallback", workerError);
+        result = runEDefterKontrolPipeline(payload);
+      }
 
-    persistRecord(
-      buildEDefterUploadRecord({
+      setRows(result.rows);
+      setSummary(result.summary);
+      setGroupCounts(result.groupCounts);
+
+      persistRecord(
+        buildEDefterUploadRecord({
+          companyId: selectedCompanyId,
+          year,
+          month,
+          period,
+          defterType: uploadMeta?.defterType || "Excel/XML",
+          fileName: uploadMeta?.fileName || "excel-yukleme",
+          controlStatus: E_DEFTER_KONTROL_STATUS.TAMAMLANDI,
+          errorCount: result.summary.kritikHata + result.summary.teknikHata,
+          warningCount: result.summary.uyariSayisi,
+          uploadedAt: new Date().toISOString(),
+        })
+      );
+
+      parserJob.markSuccess(`${result.rows.length} kayıt kontrol edildi`);
+      setToast(`${result.rows.length} kayıt kontrol edildi.`);
+    } catch (error) {
+      logParserJobError(error, {
+        module: "XML / e-Defter",
         companyId: selectedCompanyId,
-        year,
-        month,
-        period,
-        defterType: uploadMeta?.defterType || "Excel/XML",
-        fileName: uploadMeta?.fileName || "excel-yukleme",
-        controlStatus: E_DEFTER_KONTROL_STATUS.TAMAMLANDI,
-        errorCount: result.summary.kritikHata + result.summary.teknikHata,
-        warningCount: result.summary.uyariSayisi,
-        uploadedAt: new Date().toISOString(),
-      })
-    );
-
-    setToast(`${result.rows.length} kayıt kontrol edildi.`);
+        companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+        errorType: SYSTEM_ERROR_TYPES.UNEXPECTED,
+        source: "xml",
+        jobType: "edefter-analyze",
+      });
+      parserJob.markError(error);
+      setToast(error?.message || "Analiz başarısız.");
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const updateRow = (rowId, patch) => {
@@ -278,13 +369,25 @@ export default function EDefterKontrolPage() {
             hataları berat öncesi tespit edin.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex w-full min-w-[280px] flex-col gap-2 sm:w-auto">
+          <ParserJobProgress
+            visible={xmlParsing || analyzing || parserJob.isDone || parserJob.isError}
+            stage={parserJob.stage}
+            detail={parserJob.detail}
+            percent={parserJob.percent}
+            timeoutWarning={parserJob.timeoutWarning}
+            status={parserJob.status}
+            error={parserJob.error}
+            onCancel={xmlParsing || analyzing ? () => parserJob.cancel("user") : undefined}
+          />
+          <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={handleAnalyze}
-            className="rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-950/40"
+            disabled={analyzing}
+            className="rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-950/40 disabled:opacity-60"
           >
-            Kontrol Çalıştır
+            {analyzing ? "Kontrol çalışıyor..." : "Kontrol Çalıştır"}
           </button>
           <button
             type="button"
@@ -300,6 +403,7 @@ export default function EDefterKontrolPage() {
           >
             PDF (Yakında)
           </button>
+          </div>
         </div>
       </div>
 

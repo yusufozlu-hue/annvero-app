@@ -224,12 +224,11 @@ export function analyzeEDefterXmlTechnical(rows = [], meta = {}) {
   return findings;
 }
 
-export async function parseEDefterUploadFile(file) {
-  const fileName = file?.name || "";
-  const lower = fileName.toLowerCase();
+export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "") {
+  const lower = String(fileName || "").toLowerCase();
 
   if (lower.endsWith(".zip")) {
-    const zip = await JSZip.loadAsync(await file.arrayBuffer());
+    const zip = await JSZip.loadAsync(arrayBuffer);
     const xmlFiles = Object.values(zip.files).filter(
       (entry) => !entry.dir && entry.name.toLowerCase().endsWith(".xml")
     );
@@ -292,7 +291,7 @@ export async function parseEDefterUploadFile(file) {
   }
 
   if (lower.endsWith(".xml")) {
-    const xmlText = await file.text();
+    const xmlText = new TextDecoder().decode(arrayBuffer);
     try {
       const parsed = parseEDefterXmlText(xmlText, fileName);
       return {
@@ -313,6 +312,18 @@ export async function parseEDefterUploadFile(file) {
         fileName,
       };
     }
+  }
+
+  throw new Error("Desteklenmeyen dosya türü. XML veya ZIP yükleyin.");
+}
+
+export async function parseEDefterUploadFile(file) {
+  const fileName = file?.name || "";
+  const lower = fileName.toLowerCase();
+
+  if (lower.endsWith(".zip") || lower.endsWith(".xml")) {
+    const arrayBuffer = await file.arrayBuffer();
+    return parseEDefterUploadBuffer(arrayBuffer, fileName);
   }
 
   throw new Error("Desteklenmeyen dosya türü. XML veya ZIP yükleyin.");
