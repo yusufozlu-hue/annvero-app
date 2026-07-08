@@ -67,11 +67,13 @@ import {
 import ParserJobProgress from "@/src/components/ParserJobProgress";
 import { useParserJob } from "@/src/hooks/useParserJob";
 import { logParserJobError } from "@/src/utils/parserJobLogger";
-import { runBankParserWorker } from "@/src/utils/workerParserBridge";
 import { saveBankCardOpsSession } from "@/src/utils/bankCardOpsCenter";
 import { buildBankCardOpsSideOutput } from "@/src/utils/bankCardOpsSideOutput";
 import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 import { buildBankParserResultFromNormalizedRows } from "@/src/utils/bankParserCore";
+import { parseBankExcelOnMainThread } from "@/src/utils/bankExcelMainThreadParse";
+// Worker geçici olarak kapalı — bankParser.worker.js dosyası duruyor, çağrılmıyor.
+// import { runBankParserWorker } from "@/src/utils/workerParserBridge";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -109,6 +111,8 @@ export default function BankaParserPage() {
   const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
   const [exportValidation, setExportValidation] = useState(null);
   const [standardLucaRows, setStandardLucaRows] = useState([]);
+  const [parseModeDebug, setParseModeDebug] = useState("");
+  const [previewErrorDetail, setPreviewErrorDetail] = useState("");
 
   const {
     companies,
@@ -447,6 +451,7 @@ export default function BankaParserPage() {
     setMovementRows([]);
     setStandardLucaRows([]);
     setExportValidation(null);
+    setPreviewErrorDetail("");
   };
 
   /** Dosya seçimi: yalnızca state; parse başlamaz */
@@ -478,25 +483,13 @@ export default function BankaParserPage() {
     }
   };
 
-  const parseFileInWorker = async (file) => {
-    const arrayBuffer = await file.arrayBuffer();
-
-    return runBankParserWorker({
-      workerUrl: new URL("./bankParser.worker.js", import.meta.url),
-      arrayBuffer,
-      context: {
-        selectedBank,
-        sourceFileName: file?.name || "",
-        sourceFileType: detectSourceFileType(file?.name || "", file?.type || ""),
-      },
-      timeoutMs: 120_000,
-      onProgress: (message) => {
-        parserJob.onProgress(message);
-      },
+  const parseFileOnMainThread = async (file) => {
+    return parseBankExcelOnMainThread(file, selectedBank, (message) => {
+      parserJob.onProgress(message);
     });
   };
 
-  /** Excel okuma worker'da; Luca/öğrenme/NFT ana thread'de */
+  /** Geçici: worker kapalı — Excel/parse ana thread'de */
   const handleCreatePreview = async () => {
     if (isParsing) return;
 
@@ -511,21 +504,23 @@ export default function BankaParserPage() {
     }
 
     setIsParsing(true);
+    setPreviewErrorDetail("");
+    setParseModeDebug("Worker bypass — ana thread fallback parse");
     parserJob.begin({
       stage: BANK_PARSE_STAGES.READING,
-      detail: "Worker hazırlanıyor",
+      detail: "Ana thread fallback — dosya okunuyor",
     });
 
     try {
-      const workerResult = await parseFileInWorker(selectedFile);
+      const mainResult = await parseFileOnMainThread(selectedFile);
 
       parserJob.onProgress({
         stage: BANK_PARSE_STAGES.LUCA,
-        detail: "Luca satırları oluşturuluyor",
+        detail: "Luca satırları oluşturuluyor (ana thread)",
       });
 
       const pipelineResult = buildBankParserResultFromNormalizedRows({
-        normalizedRows: workerResult.normalizedRows || [],
+        normalizedRows: mainResult.normalizedRows || [],
         selectedBank,
         selectedCompany,
         companyPlans,
@@ -546,7 +541,7 @@ export default function BankaParserPage() {
       const result = buildBankCardOpsSideOutput(
         {
           ...pipelineResult,
-          rawCount: workerResult.rawCount || 0,
+          rawCount: mainResult.rawCount || 0,
         },
         {
           selectedBank,
@@ -563,11 +558,14 @@ export default function BankaParserPage() {
         }
       );
 
-      setRawCount(result.rawCount || workerResult.rawCount || 0);
+      setRawCount(result.rawCount || mainResult.rawCount || 0);
       setParsedNormalizedRows(result.normalizedRows || []);
       setMovementRows(result.movementRows || []);
       setStandardLucaRows(result.standardLucaRows || []);
       markAppliedDeclarationsPaid(result.declarationSummary);
+      setParseModeDebug(
+        `Worker bypass aktif · ana thread fallback · ${selectedBank} · ${(result.normalizedRows || []).length} satır`
+      );
 
       if (Array.isArray(result.financialTransactions)) {
         saveBankCardOpsSession({
@@ -591,24 +589,25 @@ export default function BankaParserPage() {
       );
       parserJob.markSuccess(`${(result.normalizedRows || []).length} satır hazır`);
     } catch (error) {
-      console.error("[banka-ekstresi] preview failed", error);
-      const isTimeout = /zaman aşımı/i.test(error?.message || "");
+      console.error("[banka-ekstresi] preview failed (main-thread)", error);
+      const detail =
+        error?.userMessage ||
+        error?.message ||
+        "Dosya okunamadı. Excel'de açıp .xlsx olarak kaydedip tekrar deneyin.";
+      setPreviewErrorDetail(detail);
+      setParseModeDebug("Worker bypass — ana thread fallback (hata)");
       logParserJobError(error, {
         module: "Banka Parser",
         companyId: selectedCompanyId,
         companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
         fileName: selectedFile?.name || "",
-        errorType: isTimeout ? SYSTEM_ERROR_TYPES.TIMEOUT : SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
-        source: "parser",
-        jobType: "bank-excel",
+        errorType: SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
+        source: "parser-main-thread",
+        jobType: "bank-excel-main-thread",
       });
       parserJob.markError(error);
       clearPreviewState();
-      showToast(
-        error?.message ||
-          "Dosya okunamadı. Excel'de açıp .xlsx olarak kaydedip tekrar deneyin.",
-        "error"
-      );
+      showToast(detail, "error");
     } finally {
       setIsParsing(false);
     }
@@ -798,6 +797,18 @@ export default function BankaParserPage() {
             onCancel={isParsing ? () => parserJob.cancel("user") : undefined}
             className="mt-4"
           />
+
+          {parseModeDebug ? (
+            <p className="mt-2 text-[11px] text-amber-300/90">
+              Debug: {parseModeDebug}
+            </p>
+          ) : null}
+
+          {previewErrorDetail ? (
+            <p className="mt-2 rounded-lg border border-red-800/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">
+              {previewErrorDetail}
+            </p>
+          ) : null}
 
           {rawCount > 0 && !isParsing ? (
             <p className="mt-4 text-sm text-green-400">
