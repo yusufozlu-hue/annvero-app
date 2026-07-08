@@ -36,17 +36,23 @@ export function mapProfileRow(row = {}) {
 }
 
 export function mapProfileToRecord(profile = {}) {
+  const email = String(profile.email || "").trim().toLowerCase();
   return {
-    id: profile.id || `user-${Date.now()}`,
-    email: String(profile.email || "").trim().toLowerCase(),
+    id: profile.id || `pending-${email || Date.now()}`,
+    email,
     display_name: profile.displayName || profile.display_name || "",
     role: profile.role || "muhasebe_personeli",
-    permissions: profile.permissions || [],
-    company_ids: profile.companyIds || profile.company_ids || [],
+    permissions: Array.isArray(profile.permissions) ? profile.permissions : [],
+    company_ids: Array.isArray(profile.companyIds)
+      ? profile.companyIds
+      : Array.isArray(profile.company_ids)
+        ? profile.company_ids
+        : [],
     team_id: profile.teamId || profile.team_id || "",
     is_active: profile.isActive ?? profile.is_active ?? true,
-    password_reset_requested_at: profile.passwordResetRequestedAt || null,
-    last_login_at: profile.lastLoginAt || null,
+    password_reset_requested_at:
+      profile.passwordResetRequestedAt || profile.password_reset_requested_at || null,
+    last_login_at: profile.lastLoginAt || profile.last_login_at || null,
     updated_at: new Date().toISOString(),
   };
 }

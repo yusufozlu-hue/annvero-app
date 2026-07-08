@@ -1,9 +1,10 @@
 import { isAdminUser, getAnnveroRoleFromUser } from "@/src/lib/auth/admin";
 import { getDefaultPermissionsForRole } from "@/src/lib/auth/permissions";
-import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
+import { ANNVERO_ROLE_LABELS, ANNVERO_ROLES } from "@/src/config/annveroRoles";
 import {
   getServerSupabaseAdmin,
   getServerSupabaseAdminGuardResponse,
+  logSupabaseQueryError,
 } from "@/src/lib/supabase/serverAdmin";
 import {
   mapProfileRow,
@@ -14,41 +15,77 @@ import {
 
 function getAdminClient() {
   const guard = getServerSupabaseAdminGuardResponse("auth:profiles", USER_PROFILES_TABLE);
-  if (guard) return { supabase: null, schemaMissing: true };
+  if (guard) {
+    return { supabase: null, schemaMissing: false, adminUnavailable: true };
+  }
+
+  const supabase = getServerSupabaseAdmin({ requireServiceRole: true });
+  if (!supabase) {
+    return { supabase: null, schemaMissing: false, adminUnavailable: true };
+  }
+
   return {
-    supabase: getServerSupabaseAdmin({ requireServiceRole: true }),
+    supabase,
     schemaMissing: false,
+    adminUnavailable: false,
+  };
+}
+
+function emptyResult(overrides = {}) {
+  return {
+    profile: null,
+    schemaMissing: false,
+    adminUnavailable: false,
+    error: null,
+    ...overrides,
   };
 }
 
 export async function fetchProfileByEmail(email = "") {
   const normalized = String(email || "").trim().toLowerCase();
-  if (!normalized) return { profile: null, schemaMissing: false, error: null };
+  if (!normalized) return emptyResult();
 
-  const { supabase, schemaMissing } = getAdminClient();
-  if (schemaMissing) return { profile: null, schemaMissing: true, error: null };
-  if (!supabase) return { profile: null, schemaMissing: true, error: null };
+  const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
+  if (adminUnavailable) return emptyResult({ adminUnavailable: true });
+  if (schemaMissing) return emptyResult({ schemaMissing: true });
+  if (!supabase) return emptyResult({ adminUnavailable: true });
 
+  // Case-insensitive exact match (no wildcards) — emails DB'de karışık büyük/küçük olabilir.
   const { data, error } = await supabase
     .from(USER_PROFILES_TABLE)
     .select("*")
-    .ilike("email", normalized)
+    .ilike("email", normalized.replace(/[%_]/g, ""))
     .maybeSingle();
 
   if (error) {
     if (isUserProfilesSchemaCacheError(error)) {
-      return { profile: null, schemaMissing: true, error: null };
+      logSupabaseQueryError("auth:profiles:fetch", error, USER_PROFILES_TABLE);
+      return emptyResult({ schemaMissing: true });
     }
-    return { profile: null, schemaMissing: false, error };
+    logSupabaseQueryError("auth:profiles:fetch", error, USER_PROFILES_TABLE);
+    return emptyResult({ error });
   }
 
-  return { profile: data ? mapProfileRow(data) : null, schemaMissing: false, error: null };
+  return emptyResult({ profile: data ? mapProfileRow(data) : null });
 }
 
 export async function upsertProfile(profile = {}) {
-  const { supabase, schemaMissing } = getAdminClient();
-  if (schemaMissing || !supabase) {
-    return { profile: null, schemaMissing: true, error: new Error("Profil tablosu kullanılamıyor.") };
+  const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
+  if (adminUnavailable || !supabase) {
+    return {
+      profile: null,
+      schemaMissing: false,
+      adminUnavailable: true,
+      error: new Error("Profil servisi kullanılamıyor (service role)."),
+    };
+  }
+  if (schemaMissing) {
+    return {
+      profile: null,
+      schemaMissing: true,
+      adminUnavailable: false,
+      error: new Error("Profil tablosu kullanılamıyor."),
+    };
   }
 
   const record = mapProfileToRecord(profile);
@@ -58,15 +95,24 @@ export async function upsertProfile(profile = {}) {
     .select("*")
     .single();
 
-  if (error) return { profile: null, schemaMissing: false, error };
-  return { profile: mapProfileRow(data), schemaMissing: false, error: null };
+  if (error) {
+    logSupabaseQueryError("auth:profiles:upsert", error, USER_PROFILES_TABLE);
+    return { profile: null, schemaMissing: false, adminUnavailable: false, error };
+  }
+
+  return {
+    profile: mapProfileRow(data),
+    schemaMissing: false,
+    adminUnavailable: false,
+    error: null,
+  };
 }
 
 export async function syncAnnveroUserMetadata(authUserId = "", profile = {}) {
   if (!authUserId || !profile?.email) return { ok: false };
 
-  const { supabase, schemaMissing } = getAdminClient();
-  if (schemaMissing || !supabase) return { ok: false };
+  const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
+  if (schemaMissing || adminUnavailable || !supabase) return { ok: false };
 
   const { error } = await supabase.auth.admin.updateUserById(authUserId, {
     user_metadata: {
@@ -98,9 +144,14 @@ export async function inviteAuthUser({
   displayName = "",
   redirectTo = "",
 } = {}) {
-  const { supabase, schemaMissing } = getAdminClient();
-  if (schemaMissing || !supabase) {
-    return { invited: false, schemaMissing: true, error: new Error("Supabase admin kullanılamıyor.") };
+  const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
+  if (schemaMissing || adminUnavailable || !supabase) {
+    return {
+      invited: false,
+      schemaMissing,
+      adminUnavailable,
+      error: new Error("Supabase admin kullanılamıyor."),
+    };
   }
 
   const siteUrl = getSiteUrl(redirectTo);
@@ -119,8 +170,8 @@ export async function inviteAuthUser({
 }
 
 export async function sendPasswordRecoveryEmail(email = "", redirectTo = "") {
-  const { supabase, schemaMissing } = getAdminClient();
-  if (schemaMissing || !supabase) {
+  const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
+  if (schemaMissing || adminUnavailable || !supabase) {
     return { sent: false, error: new Error("Supabase admin kullanılamıyor.") };
   }
 
@@ -143,42 +194,90 @@ export async function sendPasswordRecoveryEmail(email = "", redirectTo = "") {
   return { sent: true, error: null, actionLink };
 }
 
+function resolveProvisionRole(user) {
+  if (isAdminUser(user)) return ANNVERO_ROLES.ADMIN;
+
+  const metadataRole = getAnnveroRoleFromUser(user);
+  if (metadataRole && ANNVERO_ROLE_LABELS[metadataRole]) {
+    return metadataRole;
+  }
+
+  return ANNVERO_ROLES.ACCOUNTING;
+}
+
 export async function provisionProfileForUser(user) {
   if (!user?.email) {
-    return { profile: null, schemaMissing: false, created: false, needsInvite: false };
+    return {
+      profile: null,
+      schemaMissing: false,
+      adminUnavailable: false,
+      created: false,
+      needsInvite: false,
+    };
   }
 
   const existing = await fetchProfileByEmail(user.email);
-  if (existing.schemaMissing) {
-    return { profile: null, schemaMissing: true, created: false, needsInvite: false };
+  if (existing.schemaMissing || existing.adminUnavailable) {
+    return {
+      profile: null,
+      schemaMissing: Boolean(existing.schemaMissing),
+      adminUnavailable: Boolean(existing.adminUnavailable),
+      created: false,
+      needsInvite: false,
+    };
   }
 
+  if (existing.error && !existing.profile) {
+    return {
+      profile: null,
+      schemaMissing: false,
+      adminUnavailable: false,
+      created: false,
+      needsInvite: false,
+      error: existing.error,
+    };
+  }
+
+  // Mevcut profil (pending-* dahil) → auth user id'ye bağla
   if (existing.profile) {
     const linked = {
       ...existing.profile,
       id: user.id,
+      email: String(user.email).trim().toLowerCase(),
+      displayName:
+        existing.profile.displayName ||
+        user.user_metadata?.display_name ||
+        user.email,
       lastLoginAt: new Date().toISOString(),
     };
     const saved = await upsertProfile(linked);
-    if (saved.profile) await syncAnnveroUserMetadata(user.id, saved.profile);
-    return { profile: saved.profile || linked, schemaMissing: false, created: false, needsInvite: false };
+    if (saved.profile) {
+      await syncAnnveroUserMetadata(user.id, saved.profile);
+      return {
+        profile: saved.profile,
+        schemaMissing: false,
+        adminUnavailable: false,
+        created: false,
+        needsInvite: false,
+      };
+    }
+    // Upsert başarısız olsa bile mevcut DB profilini kullan
+    return {
+      profile: linked,
+      schemaMissing: false,
+      adminUnavailable: Boolean(saved.adminUnavailable),
+      created: false,
+      needsInvite: false,
+      error: saved.error,
+    };
   }
 
-  const metadataRole = getAnnveroRoleFromUser(user);
-  const canAutoProvision = isAdminUser(user) || (metadataRole && metadataRole !== "");
-
-  if (!canAutoProvision) {
-    return { profile: null, schemaMissing: false, created: false, needsInvite: true };
-  }
-
-  const role = isAdminUser(user)
-    ? ANNVERO_ROLES.ADMIN
-    : metadataRole;
-
+  // İlk login: Auth kullanıcısı için otomatik profil oluştur
+  const role = resolveProvisionRole(user);
   const draft = {
     id: user.id,
-    email: user.email,
-    displayName: user.user_metadata?.display_name || user.email,
+    email: String(user.email).trim().toLowerCase(),
+    displayName: user.user_metadata?.display_name || user.user_metadata?.full_name || user.email,
     role,
     permissions: getDefaultPermissionsForRole(role),
     companyIds: Array.isArray(user.user_metadata?.company_ids)
@@ -190,22 +289,36 @@ export async function provisionProfileForUser(user) {
   };
 
   const saved = await upsertProfile(draft);
-  if (saved.profile) await syncAnnveroUserMetadata(user.id, saved.profile);
+  if (saved.profile) {
+    await syncAnnveroUserMetadata(user.id, saved.profile);
+    return {
+      profile: saved.profile,
+      schemaMissing: false,
+      adminUnavailable: false,
+      created: true,
+      needsInvite: false,
+    };
+  }
+
   return {
-    profile: saved.profile || draft,
-    schemaMissing: false,
-    created: true,
+    profile: null,
+    schemaMissing: Boolean(saved.schemaMissing),
+    adminUnavailable: Boolean(saved.adminUnavailable),
+    created: false,
     needsInvite: false,
     error: saved.error,
   };
 }
 
 export async function touchLastLogin(user, profile) {
-  if (!user?.id || !profile?.email) return;
-  await upsertProfile({
+  if (!user?.id || !profile?.email) return { ok: false };
+
+  const result = await upsertProfile({
     ...profile,
     id: user.id,
     email: user.email,
     lastLoginAt: new Date().toISOString(),
   });
+
+  return { ok: Boolean(result.profile), error: result.error };
 }

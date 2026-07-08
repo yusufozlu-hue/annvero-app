@@ -38,7 +38,7 @@ export function buildFallbackProfile(user, { schemaMissing = false } = {}) {
     teamId: user?.user_metadata?.team_id || "",
     isActive: true,
     lastLoginAt: new Date().toISOString(),
-    source: schemaMissing ? "fallback" : "fallback_restricted",
+    source: schemaMissing ? "fallback" : "restricted",
     isPlatformAdmin: isAdmin,
     isPartner: safeRole === ANNVERO_ROLES.PARTNER,
     isManagementUser: isManagementUser(user) || safeRole === ANNVERO_ROLES.PARTNER,
@@ -49,29 +49,38 @@ export function buildFallbackProfile(user, { schemaMissing = false } = {}) {
 export function mergeProfileWithAuth(user, profile = null, options = {}) {
   if (!user) return null;
 
-  const fallback = buildFallbackProfile(user, options);
-  if (!profile) return fallback;
+  if (!profile) {
+    return buildFallbackProfile(user, options);
+  }
 
   const profileRole = profile.isActive === false ? ANNVERO_ROLES.VIEWER : profile.role || "";
+  // DB profili birincil kaynak; platform admin env allowlist ile admin korunur.
   const role = resolveUserRole({
     isAdmin: isPlatformAdmin(user),
-    storedRole: getAnnveroRoleFromUser(user),
+    storedRole: "",
     profileRole,
   });
 
   return {
-    ...fallback,
-    ...profile,
     id: user.id || profile.id,
-    email: profile.email || user.email,
+    email: String(profile.email || user.email || "").trim().toLowerCase(),
+    displayName:
+      profile.displayName ||
+      user.user_metadata?.display_name ||
+      user.user_metadata?.full_name ||
+      user.email ||
+      "",
     role,
     permissions:
       Array.isArray(profile.permissions) && profile.permissions.length
         ? profile.permissions
         : getDefaultPermissionsForRole(role),
     companyIds: Array.isArray(profile.companyIds) ? profile.companyIds : [],
+    teamId: profile.teamId || "",
+    isActive: profile.isActive !== false,
+    lastLoginAt: profile.lastLoginAt || new Date().toISOString(),
     modules: getModulesForRole(role),
-    source: profile.source || "database",
+    source: "database",
     isPlatformAdmin: isPlatformAdmin(user),
     isPartner: role === ANNVERO_ROLES.PARTNER,
     isManagementUser:
@@ -100,6 +109,6 @@ export function createUserAccess(profile) {
     canAccessModule: (moduleId) => canAccessModule(role, moduleId, permissions),
     hasPermission: (permission) => hasPermission(role, permission, permissions),
     isActive: profile?.isActive !== false,
-    usingFallback: profile?.source === "fallback",
+    usingFallback: profile?.source === "fallback" || profile?.source === "fallback_restricted",
   };
 }

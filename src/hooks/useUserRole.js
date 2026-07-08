@@ -49,8 +49,9 @@ export function useUserRole() {
 
       setAuthenticated(true);
       setIsPlatformAdmin(Boolean(data.isPlatformAdmin ?? data.isAdmin));
+      // usingFallback yalnızca DB gerçekten ulaşılamadığında true olmalı (API tarafında kısıtlanır).
       setSchemaMissing(Boolean(data.schemaMissing));
-      setUsingFallback(Boolean(data.usingFallback));
+      setUsingFallback(Boolean(data.usingFallback && (data.schemaMissing || data.adminUnavailable)));
       setNeedsInvite(Boolean(data.needsInvite || data.profile?.needsInvite));
       setAccountActive(true);
       setProfile(data.profile || null);
@@ -60,11 +61,18 @@ export function useUserRole() {
       }
       if (data.profile) upsertCachedUser(data.profile);
     } catch {
+      // Ağ hatası: sessiz metadata/local fallback; kullanıcıya banner göstermeyiz.
       if (typeof window !== "undefined") {
         const storedRole = localStorage.getItem(ANNVERO_ROLE_STORAGE_KEY) || "";
-        setProfile({ role: storedRole, companyIds: [], permissions: [], source: "fallback" });
+        setProfile({
+          role: storedRole || "muhasebe_personeli",
+          companyIds: [],
+          permissions: [],
+          source: "fallback",
+        });
         setUsingFallback(true);
-        setSchemaMissing(true);
+        setSchemaMissing(false);
+        setAuthenticated(true);
       }
     } finally {
       setLoading(false);

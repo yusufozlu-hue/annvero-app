@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { isManagementUser, isPlatformAdmin } from "@/src/lib/auth/admin";
 import { mergeProfileWithAuth } from "@/src/lib/auth/userAccess";
-import { fetchProfileByEmail } from "@/src/lib/auth/profileService";
+import {
+  fetchProfileByEmail,
+  provisionProfileForUser,
+} from "@/src/lib/auth/profileService";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
 
 export const runtime = "nodejs";
@@ -20,8 +23,24 @@ export async function GET() {
     });
   }
 
-  const profileResult = await fetchProfileByEmail(user.email);
-  const merged = mergeProfileWithAuth(user, profileResult.profile);
+  let profileResult = await fetchProfileByEmail(user.email);
+  let profile = profileResult.profile;
+  const dbUnreachable =
+    Boolean(profileResult.schemaMissing) || Boolean(profileResult.adminUnavailable);
+
+  if (!dbUnreachable && (!profile || (profile && user.id && profile.id !== user.id))) {
+    const provision = await provisionProfileForUser(user);
+    profile = provision.profile || profile;
+  }
+
+  const merged = mergeProfileWithAuth(user, profile, {
+    schemaMissing: Boolean(profileResult.schemaMissing) || Boolean(profileResult.adminUnavailable),
+  });
+
+  const usingFallback =
+    Boolean(profileResult.schemaMissing) ||
+    Boolean(profileResult.adminUnavailable) ||
+    merged.source === "fallback";
 
   return NextResponse.json({
     authenticated: true,
@@ -31,7 +50,7 @@ export async function GET() {
     isManagementUser: isManagementUser(user) || merged.isManagementUser,
     isPartner: merged.isPartner,
     role: merged.role,
-    schemaMissing: profileResult.schemaMissing,
-    usingFallback: !profileResult.profile || merged.source === "fallback",
+    schemaMissing: Boolean(profileResult.schemaMissing),
+    usingFallback,
   });
 }
