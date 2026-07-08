@@ -90,12 +90,36 @@ export function createNormalizedFinancialTransaction(partial = {}) {
     parser_name: emptyString(partial.parser_name),
     recognition_status:
       emptyString(partial.recognition_status) || RECOGNITION_STATUS.UNKNOWN,
-    suggested_account_code: emptyString(partial.suggested_account_code),
-    suggested_counter_account_code: emptyString(partial.suggested_counter_account_code),
-    suggested_cari: emptyString(partial.suggested_cari),
+    suggested_account_code: emptyString(partial.suggested_account_code) || null,
+    suggested_account_name: emptyString(partial.suggested_account_name) || null,
+    suggested_counter_account_code:
+      emptyString(partial.suggested_counter_account_code) ||
+      emptyString(partial.suggested_counter_account) ||
+      null,
+    suggested_counter_account:
+      emptyString(partial.suggested_counter_account) ||
+      emptyString(partial.suggested_counter_account_code) ||
+      null,
+    suggested_cari: emptyString(partial.suggested_cari) || null,
     suggested_document_type: emptyString(partial.suggested_document_type) || "DK",
+    suggested_vat_rate:
+      partial.suggested_vat_rate == null || partial.suggested_vat_rate === ""
+        ? null
+        : toNumber(partial.suggested_vat_rate, null),
+    suggested_vat_amount:
+      partial.suggested_vat_amount == null || partial.suggested_vat_amount === ""
+        ? null
+        : toNumber(partial.suggested_vat_amount, null),
+    suggested_description: emptyString(partial.suggested_description),
+    suggested_voucher_type: emptyString(partial.suggested_voucher_type) || "DK",
+    suggested_rule: emptyString(partial.suggested_rule) || null,
     confidence_score: toNumber(partial.confidence_score, 0),
     risk_flags: toArray(partial.risk_flags),
+    risk_level: emptyString(partial.risk_level) || "none",
+    decision_source: emptyString(partial.decision_source) || "",
+    pipeline_stage: emptyString(partial.pipeline_stage) || "",
+    message: emptyString(partial.message),
+    accounting_decision: partial.accounting_decision || null,
     created_at: createdAt,
     updated_at: emptyString(partial.updated_at) || createdAt,
     // İç bağlantılar (kalıcı schema dışı, pipeline için)
@@ -156,5 +180,6 @@ export function toPersistedFinancialTransaction(tx = {}) {
     _match_source: _s,
     ...persisted
   } = full;
+  // accounting_decision JSON olarak kalabilir (ops UI için)
   return persisted;
 }

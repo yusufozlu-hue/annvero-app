@@ -1,15 +1,16 @@
 /**
- * Banka parser worker sonucuna ana thread'de NFT + dashboard ekler.
- * Worker bundle'ına bankCardOpsCenter / recognition pipeline çekilmez.
+ * Banka parser sonucuna ana thread'de NFT + Muhasebe Karar Motoru + dashboard ekler.
+ * Worker bundle'ına çekilmez; Excel/parser akışını bozmaz.
  */
 
 import { buildRecognizedFinancialTransactions } from "@/src/utils/financialRecognitionPipeline";
+import { applyAccountingDecisionsToTransactions } from "@/src/utils/accountingDecisionEngine";
 import { buildBankCardOpsDashboard } from "@/src/utils/bankCardOpsCenter";
 import { resolveParserName } from "@/src/utils/financialSourceArchitecture";
 import { toPersistedFinancialTransaction } from "@/src/models/normalizedFinancialTransaction";
 
 /**
- * Worker sonucuna ops merkezi yan çıktısını güvenli şekilde ekler.
+ * Ana thread yan çıktı: NFT tanıma + Muhasebe Karar Motoru.
  * Hata olursa eski preview alanları korunur.
  */
 export function buildBankCardOpsSideOutput(result = {}, context = {}) {
@@ -21,25 +22,33 @@ export function buildBankCardOpsSideOutput(result = {}, context = {}) {
   const sourceFileType = context.sourceFileType || meta.sourceFileType || "xlsx";
   const sourceType = context.sourceType || meta.sourceType || "bank";
 
+  const decisionContext = {
+    companyId: selectedCompanyId,
+    selectedCompanyId,
+    selectedBank,
+    sourceName: selectedBank,
+    sourceType,
+    sourceFileName,
+    sourceFileType,
+    parserName: meta.parserName || resolveParserName(selectedBank, sourceType),
+    learningMemory: context.learningMemory || [],
+    accountingRules: context.accountingRules || [],
+    companyRules: context.companyRules || {},
+  };
+
   try {
-    const financialTransactions = buildRecognizedFinancialTransactions({
+    // 1) Temel NFT + tanıma
+    let financialTransactions = buildRecognizedFinancialTransactions({
       normalizedBankRows: result.normalizedRows || [],
       movementRows: result.movementRows || [],
-      context: {
-        companyId: selectedCompanyId,
-        selectedCompanyId,
-        selectedBank,
-        sourceName: selectedBank,
-        sourceType,
-        sourceFileName,
-        sourceFileType,
-        parserName:
-          meta.parserName || resolveParserName(selectedBank, sourceType),
-        learningMemory: context.learningMemory || [],
-        accountingRules: context.accountingRules || [],
-        companyRules: context.companyRules || {},
-      },
-    }).map((tx) => toPersistedFinancialTransaction(tx));
+      context: decisionContext,
+    });
+
+    // 2) Muhasebe Karar Motoru: Memory → Rule → AI(stub) → Manual
+    financialTransactions = applyAccountingDecisionsToTransactions(
+      financialTransactions,
+      decisionContext
+    ).map((tx) => toPersistedFinancialTransaction(tx));
 
     const opsDashboard = buildBankCardOpsDashboard(financialTransactions, {
       companyId: selectedCompanyId,

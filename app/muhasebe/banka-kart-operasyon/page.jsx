@@ -9,11 +9,15 @@ import {
   saveBankCardOpsSession,
 } from "@/src/utils/bankCardOpsCenter";
 import { RECOGNITION_STATUS_LABELS } from "@/src/models/normalizedFinancialTransaction";
+import {
+  DECISION_SOURCE_LABELS,
+  RISK_LEVEL_LABELS,
+} from "@/src/models/accountingDecision";
 import { parseCreditCardStatementStub } from "@/src/utils/financialSourceArchitecture";
 
 /**
- * Banka & Kart Operasyon Merkezi — çekirdek özet ekranı.
- * UI güzelleştirme yok; metrik + son oturum + connector linkleri.
+ * Banka & Kart Operasyon Merkezi — karar motoru özeti.
+ * UI güzelleştirme yok; metrik + liste + connector linkleri.
  */
 export default function BankCardOpsCenterPage() {
   const [session, setSession] = useState(null);
@@ -29,13 +33,15 @@ export default function BankCardOpsCenterPage() {
   const metricRows = useMemo(() => {
     if (!metrics) return [];
     return [
+      ["recognized", labels.recognized || "Tanınan Hareket"],
+      ["from_memory", labels.from_memory || "Hafızadan Tanınan"],
+      ["from_rule", labels.from_rule || "Kuralla Tanınan"],
+      ["from_ai", labels.from_ai || "AI Önerisi"],
+      ["unknown", labels.unknown || "Tanınmayan"],
+      ["risky", labels.risky || "Riskli"],
+      ["duplicate", labels.duplicate || "Mükerrer"],
       ["total", labels.total || "Toplam hareket"],
-      ["recognized", labels.recognized || "Tanınan işlem"],
-      ["unknown", labels.unknown || "Tanınmayan işlem"],
-      ["suggested", labels.suggested || "Önerilen işlem"],
-      ["risky", labels.risky || "Riskli işlem"],
-      ["duplicate", labels.duplicate || "Mükerrer şüpheli işlem"],
-      ["ready_for_voucher", labels.ready_for_voucher || "Luca fişine hazır işlem"],
+      ["ready_for_voucher", labels.ready_for_voucher || "Luca fişine hazır"],
     ].map(([key, label]) => ({ key, label, value: metrics[key] ?? 0 }));
   }, [metrics, labels]);
 
@@ -86,12 +92,14 @@ export default function BankCardOpsCenterPage() {
   };
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-4 text-sm text-zinc-200">
+    <div className="mx-auto max-w-6xl space-y-6 p-4 text-sm text-zinc-200">
       <header className="space-y-1">
         <h1 className="text-xl font-semibold text-white">Banka & Kart Operasyon Merkezi</h1>
         <p className="text-zinc-400">
-          Ortak finansal hareket modeli, tanıma durumları ve Luca fiş hazırlık özeti.
-          Mevcut Banka Parser akışı değişmeden bağlanmıştır.
+          Muhasebe Karar Motoru: Memory → Rule → AI (stub) → Manual. Parser akışı aynen çalışır.
+        </p>
+        <p className="text-[11px] text-zinc-500">
+          Pipeline: {(session?.dashboard?.decision_pipeline || ["Memory", "Rule", "AI", "Manual"]).join(" → ")}
         </p>
       </header>
 
@@ -109,11 +117,11 @@ export default function BankCardOpsCenterPage() {
           <Link className="text-cyan-300 underline" href="/muhasebe/banka-ekstresi">
             Banka Parser
           </Link>{" "}
-          ile ön izleme oluşturunca özet burada görünür.
+          ile ön izleme oluşturunca karar motoru özeti burada görünür.
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             {metricRows.map((row) => (
               <div key={row.key} className="rounded border border-zinc-700 bg-zinc-900/50 p-3">
                 <div className="text-xs text-zinc-500">{row.label}</div>
@@ -163,29 +171,50 @@ export default function BankCardOpsCenterPage() {
                   <th className="px-2 py-2">Borç</th>
                   <th className="px-2 py-2">Alacak</th>
                   <th className="px-2 py-2">Durum</th>
-                  <th className="px-2 py-2">Hesap</th>
-                  <th className="px-2 py-2">Skor</th>
+                  <th className="px-2 py-2">Güven Skoru</th>
+                  <th className="px-2 py-2">Önerilen Hesap</th>
+                  <th className="px-2 py-2">Önerilen Cari</th>
+                  <th className="px-2 py-2">Muhasebe Açıklaması</th>
+                  <th className="px-2 py-2">Muhasebe Kaynağı</th>
+                  <th className="px-2 py-2">Risk</th>
                 </tr>
               </thead>
               <tbody>
-                {(session.transactions || []).slice(0, 100).map((tx) => (
-                  <tr key={tx.id} className="border-t border-zinc-800">
-                    <td className="px-2 py-1.5 whitespace-nowrap">{tx.transaction_date}</td>
-                    <td className="px-2 py-1.5 max-w-[280px] truncate">{tx.description_raw}</td>
-                    <td className="px-2 py-1.5">{tx.debit_amount}</td>
-                    <td className="px-2 py-1.5">{tx.credit_amount}</td>
-                    <td className="px-2 py-1.5">
-                      {RECOGNITION_STATUS_LABELS[tx.recognition_status] || tx.recognition_status}
-                    </td>
-                    <td className="px-2 py-1.5">
-                      {tx.suggested_account_code}
-                      {tx.suggested_counter_account_code
-                        ? ` / ${tx.suggested_counter_account_code}`
-                        : ""}
-                    </td>
-                    <td className="px-2 py-1.5">{tx.confidence_score}</td>
-                  </tr>
-                ))}
+                {(session.transactions || []).slice(0, 100).map((tx) => {
+                  const source =
+                    tx.decision_source ||
+                    tx.accounting_decision?.decision_source ||
+                    "";
+                  return (
+                    <tr key={tx.id} className="border-t border-zinc-800">
+                      <td className="px-2 py-1.5 whitespace-nowrap">{tx.transaction_date}</td>
+                      <td className="max-w-[200px] truncate px-2 py-1.5">{tx.description_raw}</td>
+                      <td className="px-2 py-1.5">{tx.debit_amount}</td>
+                      <td className="px-2 py-1.5">{tx.credit_amount}</td>
+                      <td className="px-2 py-1.5">
+                        {RECOGNITION_STATUS_LABELS[tx.recognition_status] ||
+                          tx.recognition_status}
+                      </td>
+                      <td className="px-2 py-1.5">{tx.confidence_score ?? 0}</td>
+                      <td className="px-2 py-1.5">
+                        {tx.suggested_account_code || "—"}
+                        {tx.suggested_counter_account || tx.suggested_counter_account_code
+                          ? ` / ${tx.suggested_counter_account || tx.suggested_counter_account_code}`
+                          : ""}
+                      </td>
+                      <td className="px-2 py-1.5">{tx.suggested_cari || "—"}</td>
+                      <td className="max-w-[180px] truncate px-2 py-1.5">
+                        {tx.suggested_description || tx.message || "—"}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        {DECISION_SOURCE_LABELS[source] || source || "—"}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        {RISK_LEVEL_LABELS[tx.risk_level] || tx.risk_level || "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -193,11 +222,12 @@ export default function BankCardOpsCenterPage() {
       )}
 
       <section className="rounded border border-zinc-700 p-4 text-xs text-zinc-400">
-        <div className="font-medium text-zinc-300">Kredi kartı altyapısı</div>
+        <div className="font-medium text-zinc-300">Kredi kartı / AI altyapısı</div>
+        <p className="mt-1">source_type = credit_card — {creditCardStub.note}</p>
         <p className="mt-1">
-          source_type = credit_card — {creditCardStub.note}
+          AI katmanı: `decideFromAiStub` hazır, bu sprintte çağrı yok. Eşleşme yoksa UNKNOWN →
+          tanınmayan kuyruk.
         </p>
-        <p className="mt-1">Dosya türleri (mimari): xlsx/xls aktif; csv, pdf, ocr_pdf, zip, email_attachment sonraki sprint.</p>
       </section>
     </div>
   );

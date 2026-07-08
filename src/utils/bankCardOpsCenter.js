@@ -13,11 +13,17 @@ import {
   filterReadyForVoucherTransactions,
   filterUnknownTransactions,
 } from "@/src/utils/financialRecognitionPipeline";
+import {
+  DECISION_SOURCE,
+  DECISION_SOURCE_LABELS,
+  summarizeDecisionSources,
+} from "@/src/models/accountingDecision";
 
 export const BANK_CARD_OPS_SESSION_KEY = "annvero_bank_card_ops_session_v1";
 
 export function buildBankCardOpsDashboard(transactions = [], extras = {}) {
   const summary = summarizeRecognitionStatuses(transactions);
+  const decisionSummary = summarizeDecisionSources(transactions);
   const ready = filterReadyForVoucherTransactions(transactions);
   const unknown = filterUnknownTransactions(transactions);
 
@@ -29,27 +35,35 @@ export function buildBankCardOpsDashboard(transactions = [], extras = {}) {
     source_file_name: extras.sourceFileName || "",
     metrics: {
       total: summary.total,
-      recognized: summary.recognized,
+      recognized: decisionSummary.recognized || summary.recognized,
+      from_memory: decisionSummary.from_memory,
+      from_rule: decisionSummary.from_rule,
+      from_ai: decisionSummary.from_ai,
       unknown: summary.unknown,
-      suggested: summary.suggested,
       risky: summary.risky,
       duplicate: summary.duplicate,
+      suggested: summary.suggested,
       ready_for_voucher: summary.ready_for_voucher,
       ready_for_luca: ready.length,
       unknown_queue: unknown.length,
     },
     labels: {
       total: "Toplam hareket",
-      recognized: "Tanınan işlem",
-      unknown: "Tanınmayan işlem",
+      recognized: "Tanınan Hareket",
+      from_memory: "Hafızadan Tanınan",
+      from_rule: "Kuralla Tanınan",
+      from_ai: "AI Önerisi",
+      unknown: "Tanınmayan",
+      risky: "Riskli",
+      duplicate: "Mükerrer",
       suggested: "Önerilen işlem",
-      risky: "Riskli işlem",
-      duplicate: "Mükerrer şüpheli işlem",
       ready_for_voucher: "Luca fişine hazır işlem",
     },
     status_labels: RECOGNITION_STATUS_LABELS,
+    source_labels: DECISION_SOURCE_LABELS,
     ready_for_voucher_ids: ready.map((tx) => tx.id),
     unknown_ids: unknown.map((tx) => tx.id),
+    decision_pipeline: ["Memory", "Rule", "AI", "Manual"],
   };
 }
 
@@ -103,12 +117,13 @@ export function markTransactionsReadyForLuca(transactions = [], ids = null) {
     if (idSet && !idSet.has(tx.id)) return tx;
     if (
       tx.suggested_account_code &&
-      tx.suggested_counter_account_code &&
+      (tx.suggested_counter_account_code || tx.suggested_counter_account) &&
       !(tx.risk_flags || []).includes("duplicate")
     ) {
       return {
         ...tx,
         recognition_status: RECOGNITION_STATUS.READY_FOR_VOUCHER,
+        decision_source: tx.decision_source || DECISION_SOURCE.MANUAL,
         updated_at: new Date().toISOString(),
       };
     }
