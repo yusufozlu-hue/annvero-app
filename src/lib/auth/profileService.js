@@ -1,4 +1,4 @@
-import { isAdminUser, getAnnveroRoleFromUser } from "@/src/lib/auth/admin";
+import { isAdminUser, getAnnveroRoleFromUser, isOwnerEmail } from "@/src/lib/auth/admin";
 import { getDefaultPermissionsForRole } from "@/src/lib/auth/permissions";
 import { ANNVERO_ROLE_LABELS, ANNVERO_ROLES } from "@/src/config/annveroRoles";
 import {
@@ -260,10 +260,31 @@ function buildOwnerProfileDraft(user, overrides = {}) {
   };
 }
 
-function shouldPromoteToOwner(user, profileCount, hasAdminProfile) {
-  if (isAdminUser(user)) return true;
+async function getFirstProfileEmail() {
+  const { supabase, adminUnavailable, schemaMissing } = getAdminClient();
+  if (adminUnavailable || schemaMissing || !supabase) return "";
+
+  const { data, error } = await supabase
+    .from(USER_PROFILES_TABLE)
+    .select("email")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    logSupabaseQueryError("auth:profiles:first-email", error, USER_PROFILES_TABLE);
+    return "";
+  }
+
+  return String(data?.email || "").trim().toLowerCase();
+}
+
+function shouldPromoteToOwner(user, profileCount, hasAdminProfile, firstProfileEmail = "") {
+  const email = String(user?.email || "").trim().toLowerCase();
+  if (isAdminUser(user) || isOwnerEmail(email)) return true;
   if (profileCount === 0) return true;
-  if (!hasAdminProfile && profileCount <= 1) return true;
+  if (!hasAdminProfile) return true;
+  if (firstProfileEmail && firstProfileEmail === email) return true;
   return false;
 }
 
@@ -291,7 +312,13 @@ export async function provisionProfileForUser(user) {
   const profileCount = await countUserProfiles();
   const hasAdminProfile = await hasAdminProfileInDb();
   const isFirstUser = profileCount === 0;
-  const bootstrapOwner = shouldPromoteToOwner(user, profileCount, hasAdminProfile);
+  const firstProfileEmail = await getFirstProfileEmail();
+  const bootstrapOwner = shouldPromoteToOwner(
+    user,
+    profileCount,
+    hasAdminProfile,
+    firstProfileEmail
+  );
 
   const existing = await fetchProfileByEmail(user.email);
   if (existing.schemaMissing || existing.adminUnavailable) {

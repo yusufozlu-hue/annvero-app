@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isManagementUser, isPlatformAdmin } from "@/src/lib/auth/admin";
-import { mergeProfileWithAuth } from "@/src/lib/auth/userAccess";
+import { mergeProfileWithAuth, shouldShowAccessWarning } from "@/src/lib/auth/userAccess";
+import { ensureBootstrapAdmin } from "@/src/lib/auth/bootstrapAdmin";
 import {
   fetchProfileByEmail,
   provisionProfileForUser,
@@ -37,20 +38,31 @@ export async function GET() {
     schemaMissing: Boolean(profileResult.schemaMissing) || Boolean(profileResult.adminUnavailable),
   });
 
+  const bootstrap = await ensureBootstrapAdmin(user, merged);
+  const finalProfile = mergeProfileWithAuth(user, bootstrap.profile || merged, {
+    schemaMissing: Boolean(profileResult.schemaMissing) || Boolean(profileResult.adminUnavailable),
+  });
+
   const usingFallback =
     Boolean(profileResult.schemaMissing) ||
     Boolean(profileResult.adminUnavailable) ||
-    merged.source === "fallback";
+    finalProfile.source === "fallback";
+
+  const platformAdmin =
+    isPlatformAdmin(user) || finalProfile.role === "admin" || finalProfile.role === "partner";
 
   return NextResponse.json({
     authenticated: true,
     email: user.email,
-    isAdmin: isPlatformAdmin(user),
-    isPlatformAdmin: isPlatformAdmin(user),
-    isManagementUser: isManagementUser(user) || merged.isManagementUser,
-    isPartner: merged.isPartner,
-    role: merged.role,
+    isAdmin: platformAdmin,
+    isPlatformAdmin: platformAdmin,
+    isManagementUser:
+      isManagementUser(user) || finalProfile.isManagementUser || finalProfile.role === "admin",
+    isPartner: finalProfile.isPartner,
+    role: finalProfile.role,
     schemaMissing: Boolean(profileResult.schemaMissing),
     usingFallback,
+    showAccessWarning: shouldShowAccessWarning(finalProfile),
+    bootstrapped: bootstrap.bootstrapped,
   });
 }

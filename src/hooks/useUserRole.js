@@ -91,7 +91,6 @@ export function useUserRole() {
 
   const access = useMemo(() => createUserAccess(profile || {}), [profile]);
   const role = access.role;
-  const resolvedShowAccessWarning = showAccessWarning || access.showAccessWarning;
 
   const setRole = (nextRole) => {
     if (typeof window === "undefined") return;
@@ -114,7 +113,7 @@ export function useUserRole() {
     schemaMissing,
     usingFallback,
     needsInvite,
-    showAccessWarning: resolvedShowAccessWarning,
+    showAccessWarning,
     refresh: loadProfile,
     setRole,
     canAccessRoute: (pathname) => canAccessRoute(role, pathname),

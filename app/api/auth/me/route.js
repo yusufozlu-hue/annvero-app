@@ -6,6 +6,7 @@ import {
   provisionProfileForUser,
   touchLastLogin,
 } from "@/src/lib/auth/profileService";
+import { ensureBootstrapAdmin } from "@/src/lib/auth/bootstrapAdmin";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
 import { getUserProfilesSchemaErrorMessage } from "@/src/lib/supabase/userProfilesSchema";
 import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
@@ -157,8 +158,23 @@ export async function GET() {
   merged.source = "database";
   merged.needsInvite = false;
 
+  // Owner / ilk admin bootstrap — DB'de role=admin garanti et
+  const bootstrap = await ensureBootstrapAdmin(user, merged);
+  const finalProfile = mergeProfileWithAuth(user, bootstrap.profile || merged, {
+    schemaMissing: false,
+  });
+  finalProfile.source = "database";
+  finalProfile.needsInvite = false;
+
+  if (bootstrap.bootstrapped) {
+    logProfileIssue("Owner admin bootstrap uygulandı", {
+      email: user.email,
+      role: finalProfile.role,
+    });
+  }
+
   try {
-    await touchLastLogin(user, merged);
+    await touchLastLogin(user, finalProfile);
   } catch (error) {
     logProfileIssue("last_login güncellenemedi", {
       email: user.email,
@@ -166,28 +182,28 @@ export async function GET() {
     });
   }
 
-  const showAccessWarning = shouldShowAccessWarning(merged);
+  const showAccessWarning = shouldShowAccessWarning(finalProfile);
 
   return NextResponse.json({
     authenticated: true,
     email: user.email,
-    isAdmin: isPlatformAdmin(user),
-    isPlatformAdmin: isPlatformAdmin(user),
+    isAdmin: isPlatformAdmin(user) || finalProfile.role === "admin",
+    isPlatformAdmin: isPlatformAdmin(user) || finalProfile.role === "admin",
     active: true,
     schemaMissing: false,
     schemaHint: "",
-    provisioned,
+    provisioned: provisioned || bootstrap.bootstrapped,
     needsInvite: false,
     showAccessWarning,
     usingFallback: false,
-    profile: merged,
+    profile: finalProfile,
     access: {
-      role: merged.role,
-      permissions: merged.permissions,
-      companyIds: merged.companyIds,
-      modules: merged.modules,
-      isPartner: merged.isPartner,
-      isManagementUser: merged.isManagementUser,
+      role: finalProfile.role,
+      permissions: finalProfile.permissions,
+      companyIds: finalProfile.companyIds,
+      modules: finalProfile.modules,
+      isPartner: finalProfile.isPartner,
+      isManagementUser: finalProfile.isManagementUser,
     },
   });
 }

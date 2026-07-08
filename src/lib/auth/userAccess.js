@@ -8,7 +8,7 @@ import {
 } from "@/src/lib/auth/permissions";
 import { ANNVERO_ROLES, resolveUserRole } from "@/src/config/annveroRoles";
 
-const MANAGEMENT_ROLES = new Set([
+const ELEVATED_ROLES = new Set([
   ANNVERO_ROLES.ADMIN,
   ANNVERO_ROLES.PARTNER,
   ANNVERO_ROLES.MANAGER,
@@ -60,12 +60,17 @@ export function mergeProfileWithAuth(user, profile = null, options = {}) {
   }
 
   const profileRole = profile.isActive === false ? ANNVERO_ROLES.VIEWER : profile.role || "";
-  // DB profili birincil kaynak; platform admin env allowlist ile admin korunur.
   const role = resolveUserRole({
     isAdmin: isPlatformAdmin(user),
     storedRole: "",
     profileRole,
   });
+
+  const isPartner = role === ANNVERO_ROLES.PARTNER;
+  const isManagement =
+    isManagementUser(user) ||
+    role === ANNVERO_ROLES.PARTNER ||
+    role === ANNVERO_ROLES.ADMIN;
 
   return {
     id: user.id || profile.id,
@@ -88,16 +93,29 @@ export function mergeProfileWithAuth(user, profile = null, options = {}) {
     modules: getModulesForRole(role),
     source: "database",
     isPlatformAdmin: isPlatformAdmin(user),
-    isPartner: role === ANNVERO_ROLES.PARTNER,
-    isManagementUser:
-      isManagementUser(user) ||
-      role === ANNVERO_ROLES.PARTNER ||
-      role === ANNVERO_ROLES.ADMIN,
+    isPartner,
+    isManagementUser: isManagement,
     needsInvite: false,
   };
 }
 
-/** Banner yalnızca gerçekten rol/firma ataması eksik normal kullanıcılar için */
+function hasEffectiveCompanyAccess(profile = {}) {
+  const role = profile.role || "";
+  const companyIds = Array.isArray(profile.companyIds) ? profile.companyIds : [];
+
+  // Admin/partner: boş company_ids = tüm firmalar
+  if (role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER) {
+    return true;
+  }
+
+  if (ELEVATED_ROLES.has(role)) {
+    return true;
+  }
+
+  return companyIds.length > 0;
+}
+
+/** Banner: yalnızca rol boş/viewer VEYA (normal rol + firma erişimi yok) */
 export function shouldShowAccessWarning(profile = null) {
   if (!profile) return false;
 
@@ -105,19 +123,16 @@ export function shouldShowAccessWarning(profile = null) {
   if (profile.role === ANNVERO_ROLES.ADMIN || profile.role === ANNVERO_ROLES.PARTNER) {
     return false;
   }
+  if (ELEVATED_ROLES.has(profile.role)) return false;
 
   const role = profile.role || "";
-  const companyIds = Array.isArray(profile.companyIds) ? profile.companyIds : [];
-  const hasAssignedRole = Boolean(role) && role !== ANNVERO_ROLES.VIEWER;
-  const hasCompanyAccess =
-    MANAGEMENT_ROLES.has(role) || companyIds.length > 0;
+  if (!role || role === ANNVERO_ROLES.VIEWER) return true;
 
   if (profile.source === "restricted" || profile.needsInvite) {
-    return !hasAssignedRole || !hasCompanyAccess;
+    return !hasEffectiveCompanyAccess(profile);
   }
 
-  if (!hasAssignedRole) return true;
-  if (!hasCompanyAccess) return true;
+  if (!hasEffectiveCompanyAccess(profile)) return true;
 
   return false;
 }
@@ -134,7 +149,10 @@ export function createUserAccess(profile) {
     modules: getModulesForRole(role),
     isPlatformAdmin: Boolean(profile?.isPlatformAdmin),
     isPartner: Boolean(profile?.isPartner) || role === ANNVERO_ROLES.PARTNER,
-    isManagementUser: Boolean(profile?.isManagementUser) || role === ANNVERO_ROLES.PARTNER || role === ANNVERO_ROLES.ADMIN,
+    isManagementUser:
+      Boolean(profile?.isManagementUser) ||
+      role === ANNVERO_ROLES.PARTNER ||
+      role === ANNVERO_ROLES.ADMIN,
     canAccessRoute: (pathname, routeChecker) => routeChecker(role, pathname),
     canAccessCompany: (companyId) => canAccessCompany(role, companyId, companyIds),
     canAccessModule: (moduleId) => canAccessModule(role, moduleId, permissions),

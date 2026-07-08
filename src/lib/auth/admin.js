@@ -5,6 +5,9 @@
 
 import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
 
+/** Kurulum sahibi — env yoksa bile bootstrap için tanınır */
+const DEFAULT_OWNER_EMAILS = ["yusufozlu@gmail.com"];
+
 export function getAdminEmails() {
   const raw =
     process.env.ANNVERO_ADMIN_EMAILS ||
@@ -17,9 +20,28 @@ export function getAdminEmails() {
     .filter((email) => email.includes("@"));
 }
 
+export function getOwnerEmails() {
+  const raw =
+    process.env.ANNVERO_OWNER_EMAILS ||
+    process.env.NEXT_PUBLIC_ANNVERO_OWNER_EMAILS ||
+    "";
+
+  const owners = raw
+    .split(/[,;\n]/)
+    .map((email) => email.trim().toLowerCase())
+    .filter((email) => email.includes("@"));
+
+  return [...new Set([...owners, ...getAdminEmails(), ...DEFAULT_OWNER_EMAILS])];
+}
+
+export function isOwnerEmail(email) {
+  if (!email) return false;
+  return getOwnerEmails().includes(String(email).trim().toLowerCase());
+}
+
 export function isAdminEmail(email) {
   if (!email) return false;
-  return getAdminEmails().includes(String(email).trim().toLowerCase());
+  return getOwnerEmails().includes(String(email).trim().toLowerCase());
 }
 
 export function isAdminUser(user) {
