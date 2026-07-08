@@ -80,20 +80,31 @@ export function bankParsedRowsToNormalizedTransactions(rows = [], context = {}) 
  */
 export function applyMovementSuggestionsToTransaction(tx, movement = {}) {
   if (!tx || !movement) return tx;
+
+  const accountCode = movement?.accountCode || "";
+  const counterAccountCode = movement?.counterAccountCode || "";
+  const mappingFailed =
+    Boolean(movement?.mappingError) ||
+    (!accountCode && !counterAccountCode) ||
+    String(movement?.warning || "").includes("Hesap eşleşmesi bulunamadı");
+
   return {
     ...tx,
-    suggested_account_code:
-      tx.suggested_account_code || movement.accountCode || "",
+    suggested_account_code: tx.suggested_account_code || accountCode || null,
     suggested_counter_account_code:
-      tx.suggested_counter_account_code || movement.counterAccountCode || "",
+      tx.suggested_counter_account_code || counterAccountCode || null,
     suggested_document_type:
-      tx.suggested_document_type || movement.documentType || "DK",
+      tx.suggested_document_type || movement?.documentType || "DK",
     suggested_cari:
       tx.suggested_cari ||
-      movement.cariSuggestions?.[0]?.title ||
-      movement.cariSuggestions?.[0]?.name ||
+      movement?.cariSuggestions?.[0]?.title ||
+      movement?.cariSuggestions?.[0]?.name ||
       "",
     counterparty_name: tx.counterparty_name || "",
-    _movement_id: movement.id || tx._movement_id || "",
+    _movement_id: movement?.id || tx._movement_id || "",
+    _mapping_failed: mappingFailed,
+    risk_flags: mappingFailed
+      ? [...new Set([...(tx.risk_flags || []), "missing_account"])]
+      : tx.risk_flags || [],
   };
 }

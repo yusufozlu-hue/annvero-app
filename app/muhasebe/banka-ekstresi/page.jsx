@@ -348,8 +348,39 @@ export default function BankaParserPage() {
   };
 
   const exportExcel = (ignoreWarnings = false) => {
+    const allRows = standardLucaRows || [];
+    if (!allRows.length) {
+      showToast("Önce dosyayı yükleyip ön izleme oluşturun.", "error");
+      return;
+    }
+
+    const readyRows = allRows.filter((row) => {
+      const hesap = String(row?.hesapKodu || "").trim();
+      const karsi = String(row?.karsiHesapKodu || "").trim();
+      const warning = String(row?.uyari || row?.warning || "");
+      if (!hesap) return false;
+      if (warning.includes("Hesap eşleşmesi bulunamadı")) return false;
+      if (row?.riskDurumu === "HESAP_EKSIK") return false;
+      // Çift satırlı fişlerde karşı hesap boş olabilir (banka satırı); en az banka hesabı olsun
+      return Boolean(hesap || karsi);
+    });
+
+    const unknownCount = allRows.length - readyRows.length;
+    if (unknownCount > 0 && !ignoreWarnings) {
+      const confirmed = window.confirm(
+        `${unknownCount} satır hesap eşleşmesi olmadığı için Excel’e alınmayacak.\n` +
+          `${readyRows.length} fişe hazır satır dışa aktarılsın mı?`
+      );
+      if (!confirmed) return;
+      if (!readyRows.length) {
+        showToast("Fişe hazır satır yok. Önce hesap eşleşmelerini tamamlayın.", "error");
+        return;
+      }
+    }
+
+    const rowsToExport = readyRows.length ? readyRows : allRows;
     const bankPrefix = `${String(selectedBank || "banka").toLowerCase()}_luca`;
-    const result = exportStandardLucaExcel(standardLucaRows, {
+    const result = exportStandardLucaExcel(rowsToExport, {
       filePrefix: bankPrefix,
       logLabel: "banka-export",
       onValidationFail: setExportValidation,
@@ -386,7 +417,9 @@ export default function BankaParserPage() {
     showToast(
       result.fileCount > 1
         ? `${result.fileCount} adet Luca Excel dosyası oluşturuldu.`
-        : "Luca Excel dosyası oluşturuldu.",
+        : unknownCount > 0
+          ? `Luca Excel oluşturuldu (${readyRows.length} hazır / ${unknownCount} atlandı).`
+          : "Luca Excel dosyası oluşturuldu.",
       "success"
     );
   };
@@ -537,6 +570,8 @@ export default function BankaParserPage() {
         ),
         sourceType: "bank",
       });
+
+      // Hesap/kural eksikliği önizlemeyi durdurmaz; satırlar warning ile gelir.
 
       const result = buildBankCardOpsSideOutput(
         {

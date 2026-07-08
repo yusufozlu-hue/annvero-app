@@ -92,25 +92,25 @@ function matchRuleEngine(tx, context = {}) {
       best = {
         source: "accounting_rule",
         rule,
-        accountCode: rule.hesapKodu || "",
-        counterAccountCode: rule.karsiHesapKodu || "",
-        documentType: rule.belgeTuru || "DK",
+        accountCode: rule?.hesapKodu || rule?.accountCode || "",
+        counterAccountCode: rule?.karsiHesapKodu || "",
+        documentType: rule?.belgeTuru || "DK",
         score: 70 + Math.min(20, priority),
       };
     }
   }
 
   for (const rule of bankRules) {
-    const keyword = normalizeParserText(rule.anahtar || rule.keyword || "");
+    const keyword = normalizeParserText(rule?.anahtar || rule?.keyword || "");
     if (!keyword || !text.includes(keyword)) continue;
     const score = 60 + keyword.length;
     if (!best || score > best.score) {
       best = {
         source: "company_bank_rule",
         rule,
-        accountCode: rule.hesapKodu || rule.accountCode || "",
-        counterAccountCode: rule.karsiHesapKodu || "",
-        documentType: rule.belgeTuru || "DK",
+        accountCode: rule?.hesapKodu || rule?.accountCode || "",
+        counterAccountCode: rule?.karsiHesapKodu || "",
+        documentType: rule?.belgeTuru || "DK",
         score,
       };
     }
@@ -119,16 +119,18 @@ function matchRuleEngine(tx, context = {}) {
   // Kart bazlı altyapı (bugün satır yoksa bile eşleştirme noktası hazır)
   if (tx.source_type === "credit_card" || text.includes("KREDIKART") || textIncludesCard(text)) {
     for (const rule of cardRules) {
-      const keyword = normalizeParserText(rule.anahtar || rule.keyword || rule.cardLast4 || "");
+      const keyword = normalizeParserText(
+        rule?.anahtar || rule?.keyword || rule?.cardLast4 || ""
+      );
       if (!keyword || !text.includes(keyword)) continue;
       const score = 65 + keyword.length;
       if (!best || score > best.score) {
         best = {
           source: "company_card_rule",
           rule,
-          accountCode: rule.hesapKodu || rule.accountCode || "",
-          counterAccountCode: rule.karsiHesapKodu || "",
-          documentType: rule.belgeTuru || "DK",
+          accountCode: rule?.hesapKodu || rule?.accountCode || "",
+          counterAccountCode: rule?.karsiHesapKodu || "",
+          documentType: rule?.belgeTuru || "DK",
           score,
         };
       }
@@ -251,19 +253,33 @@ export function recognizeFinancialTransaction(tx, context = {}) {
   }
 
   const riskFlags = detectRiskFlags(next);
+  if (next._mapping_failed) {
+    riskFlags.push("missing_account");
+  }
+
   const hasAccounts = Boolean(
     next.suggested_account_code && next.suggested_counter_account_code
   );
 
-  next.confidence_score = confidence;
-  next.risk_flags = riskFlags;
+  next.confidence_score = hasAccounts ? confidence : 0;
+  next.risk_flags = [...new Set(riskFlags)];
   next._match_source = matchSource;
-  next.recognition_status = resolveStatus({
-    confidence,
-    hasAccounts,
-    riskFlags,
-    isDuplicate: riskFlags.includes("duplicate"),
-  });
+
+  if (!hasAccounts) {
+    next.recognition_status = RECOGNITION_STATUS.UNKNOWN;
+    next.suggested_account_code = next.suggested_account_code || null;
+    next.suggested_counter_account_code =
+      next.suggested_counter_account_code || null;
+    next.confidence_score = 0;
+    next.message = "Hesap eşleşmesi bulunamadı";
+  } else {
+    next.recognition_status = resolveStatus({
+      confidence,
+      hasAccounts,
+      riskFlags: next.risk_flags,
+      isDuplicate: next.risk_flags.includes("duplicate"),
+    });
+  }
   next.updated_at = new Date().toISOString();
 
   return next;

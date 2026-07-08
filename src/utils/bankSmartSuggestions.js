@@ -113,11 +113,13 @@ function normalizeSmartText(value = "") {
     .trim();
 }
 
-function getAccountCode(account = {}) {
+function getAccountCode(account) {
+  if (!account || typeof account !== "object") return "";
   return String(account.accountCode || account.hesapKodu || "").trim();
 }
 
-function getAccountName(account = {}) {
+function getAccountName(account) {
+  if (!account || typeof account !== "object") return "";
   return String(account.accountName || account.hesapAdi || "").trim();
 }
 
@@ -189,9 +191,11 @@ export function findSmartBankSuggestion(row = {}, context = {}) {
   const rule = findSmartRule(description);
   if (!rule) return null;
 
-  const planAccount = findAccountInPlan(context.companyPlans || [], rule.accountCandidates);
-  const accountCode = getAccountCode(planAccount) || rule.fallbackAccount.code;
-  const accountName = getAccountName(planAccount) || rule.fallbackAccount.name;
+    const planAccount = findAccountInPlan(context.companyPlans || [], rule.accountCandidates);
+    const accountCode =
+      getAccountCode(planAccount) || rule?.fallbackAccount?.code || "";
+    const accountName =
+      getAccountName(planAccount) || rule?.fallbackAccount?.name || "";
 
   return {
     ruleId: rule.id,

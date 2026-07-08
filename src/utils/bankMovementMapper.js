@@ -351,7 +351,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       creditCard: card,
       paymentDate: date || new Date(),
       installmentYearShift: false,
-    });
+    }) || { accountCode: "", warning: "Kredi kartı hesabı çözülemedi." };
 
     matchedRule = {
       source: "creditCard",
@@ -359,7 +359,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       anahtar: card?.lastFourDigits || card?.cardName || "",
     };
 
-    counterAccountCode = resolvedCard.accountCode || "";
+    counterAccountCode = resolvedCard?.accountCode || "";
     documentType = "KR";
     lucaDescription = buildCreditCardPaymentDescription({
       creditCard: card,
@@ -367,8 +367,11 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       rawDescription: description,
     });
 
-    if (resolvedCard.warning) appendWarning(warnings, resolvedCard.warning);
+    if (resolvedCard?.warning) appendWarning(warnings, resolvedCard.warning);
     if (!card) appendWarning(warnings, "Kredi kartı eşleşmedi");
+    if (!counterAccountCode) {
+      appendWarning(warnings, "Hesap eşleşmesi bulunamadı");
+    }
   } else {
     const memoryMatch = findLearningMemoryMatch(learningMemory, description, {
       bankName: rawRow.banka || rawRow.bankName || selectedBank,
@@ -392,10 +395,13 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         direction,
         bankLucaBase,
         selectedCompany?.bankAccounts || []
-      );
+      ) || { accountCode: bankLucaBase || "", counterAccountCode: "" };
 
-      accountCode = memoryAccounts.accountCode;
-      counterAccountCode = memoryAccounts.counterAccountCode;
+      accountCode = memoryAccounts?.accountCode || bankLucaBase || "";
+      counterAccountCode = memoryAccounts?.counterAccountCode || "";
+      if (!counterAccountCode) {
+        appendWarning(warnings, "Hesap eşleşmesi bulunamadı");
+      }
       lucaDescription = formatMemoryDescription(
         memoryMatch,
         description,
@@ -425,18 +431,22 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
           accountingRule,
           description,
           direction
-        );
+        ) || {};
 
-        counterAccountCode = applied.counterAccountCode;
-        documentType = applied.documentType || documentType;
-        ruleAciklama = applied.ruleAciklama;
+        counterAccountCode = applied?.counterAccountCode || "";
+        documentType = applied?.documentType || documentType;
+        ruleAciklama = applied?.ruleAciklama || "";
         lucaDescription =
-          applied.lucaDescription ||
+          applied?.lucaDescription ||
           buildFallbackLucaDescription({
             ...rawRow,
             yon: direction,
             aciklama: description,
           });
+
+        if (!counterAccountCode) {
+          appendWarning(warnings, "Hesap eşleşmesi bulunamadı");
+        }
 
         appendWarning(warnings, `Kural Motoru: ${accountingRule.aramaMetni}`);
       } else {
@@ -584,9 +594,46 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 }
 
 export function mapParsedRowsToStandardMovements(parsedRows, context) {
-  return parsedRows
-    .filter((row) => Math.abs(Number(row.tutar ?? row.amount ?? 0)) > 0)
-    .map((row) => mapParsedRowToStandardMovement(row, context));
+  const movements = [];
+
+  (parsedRows || [])
+    .filter((row) => Math.abs(Number(row?.tutar ?? row?.amount ?? 0)) > 0)
+    .forEach((row, index) => {
+      try {
+        movements.push(mapParsedRowToStandardMovement(row, context));
+      } catch (error) {
+        const description = String(row?.aciklama || row?.description || "").trim();
+        console.error("[bankMovementMapper] row failed", {
+          index: index + 1,
+          description,
+          error: error?.message || String(error),
+        });
+        movements.push({
+          id: `fallback-${index + 1}-${Date.now()}`,
+          date: String(row?.tarih || row?.date || ""),
+          description,
+          amount: Math.abs(Number(row?.tutar ?? row?.amount ?? 0)),
+          direction: row?.yon === "CIKIS" || row?.direction === "CIKIS" ? "CIKIS" : "GIRIS",
+          bankName: row?.banka || row?.bankName || context?.selectedBank || "",
+          rawRow: row,
+          matchedRule: null,
+          accountCode: "",
+          counterAccountCode: "",
+          documentType: "DK",
+          lucaDescription: description,
+          warning: `Satır ${index + 1}: Hesap eşleşmesi bulunamadı (${error?.message || "mapping hatası"})`,
+          matchedMemoryId: null,
+          accountSuggestions: [],
+          accountPlanMissing: null,
+          normalizedPlate: "",
+          displayPlate: "",
+          cariSuggestions: [],
+          mappingError: true,
+        });
+      }
+    });
+
+  return movements;
 }
 
 export function standardMovementToLucaPendingRow(movement) {
