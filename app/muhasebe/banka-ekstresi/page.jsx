@@ -6,6 +6,7 @@ import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import AccountSuggestionBadges from "../components/AccountSuggestionBadges";
 import EditableStandardLucaPreviewTable from "../components/EditableStandardLucaPreviewTable";
+import PreviewErrorBoundary from "../components/PreviewErrorBoundary";
 import {
   applySuggestionToMovement,
   buildLearningMemoryAccountUpdate,
@@ -91,13 +92,65 @@ const BANK_PARSE_STAGES = {
   LEARNING: "Öğrenme sistemi kontrol ediliyor",
 };
 
+const PREVIEW_PAGE_SIZE = 100;
+
+function slimMovementForUi(movement = {}) {
+  return {
+    id: movement.id,
+    accountSuggestions: Array.isArray(movement.accountSuggestions)
+      ? movement.accountSuggestions
+      : [],
+    warning: movement.warning || "",
+    matchedMemoryId: movement.matchedMemoryId || null,
+    accountCode: movement.accountCode || "",
+    counterAccountCode: movement.counterAccountCode || "",
+  };
+}
+
+function computePreviewSummary(lucaRows = [], opsDashboard = null) {
+  const metrics = opsDashboard?.metrics;
+  if (metrics) {
+    return {
+      totalMovements: metrics.total || Math.ceil((lucaRows.length || 0) / 2),
+      lucaRows: lucaRows.length,
+      recognized: metrics.recognized || 0,
+      unknown: metrics.unknown || 0,
+      risky: metrics.risky || 0,
+      suggested: metrics.suggested || 0,
+    };
+  }
+
+  let recognized = 0;
+  let unknown = 0;
+  let risky = 0;
+  for (const row of lucaRows) {
+    const warning = String(row?.kontrolNotu || row?.uyari || row?.warning || "");
+    const hesap = String(row?.hesapKodu || "").trim();
+    if (!hesap || warning.includes("Hesap eşleşmesi") || warning.includes("Kural bulunamadı")) {
+      unknown += 1;
+    } else if (warning.includes("risk") || row?.riskDurumu) {
+      risky += 1;
+    } else {
+      recognized += 1;
+    }
+  }
+
+  return {
+    totalMovements: Math.ceil((lucaRows.length || 0) / 2),
+    lucaRows: lucaRows.length,
+    recognized,
+    unknown,
+    risky,
+    suggested: 0,
+  };
+}
+
 export default function BankaParserPage() {
   const fileInputRef = useRef(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileName, setFileName] = useState("");
   const [isParsing, setIsParsing] = useState(false);
   const [rawCount, setRawCount] = useState(0);
-  const [parsedNormalizedRows, setParsedNormalizedRows] = useState([]);
   const [movementRows, setMovementRows] = useState([]);
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
@@ -113,6 +166,8 @@ export default function BankaParserPage() {
   const [standardLucaRows, setStandardLucaRows] = useState([]);
   const [parseModeDebug, setParseModeDebug] = useState("");
   const [previewErrorDetail, setPreviewErrorDetail] = useState("");
+  const [previewLimit, setPreviewLimit] = useState(PREVIEW_PAGE_SIZE);
+  const [previewSummary, setPreviewSummary] = useState(null);
 
   const {
     companies,
@@ -240,13 +295,22 @@ export default function BankaParserPage() {
     [standardLucaRows, previewSearch, previewQuickFilter]
   );
 
-  const displayedStandardLucaRows = filteredStandardLucaRows.slice(0, 100);
+  const displayedStandardLucaRows = useMemo(
+    () => filteredStandardLucaRows.slice(0, previewLimit),
+    [filteredStandardLucaRows, previewLimit]
+  );
+
+  const canShowMore = displayedStandardLucaRows.length < filteredStandardLucaRows.length;
 
   const movementById = useMemo(() => {
     const map = new Map();
     movementRows.forEach((row) => map.set(row.id, row));
     return map;
   }, [movementRows]);
+
+  useEffect(() => {
+    setPreviewLimit(PREVIEW_PAGE_SIZE);
+  }, [previewSearch, previewQuickFilter]);
 
   const handleApplyAccountSuggestion = async (row, suggestion) => {
     const updatedRow = applySuggestionToMovement(
@@ -480,11 +544,12 @@ export default function BankaParserPage() {
 
   const clearPreviewState = () => {
     setRawCount(0);
-    setParsedNormalizedRows([]);
     setMovementRows([]);
     setStandardLucaRows([]);
     setExportValidation(null);
     setPreviewErrorDetail("");
+    setPreviewLimit(PREVIEW_PAGE_SIZE);
+    setPreviewSummary(null);
   };
 
   /** Dosya seçimi: yalnızca state; parse başlamaz */
@@ -538,6 +603,8 @@ export default function BankaParserPage() {
 
     setIsParsing(true);
     setPreviewErrorDetail("");
+    setPreviewLimit(PREVIEW_PAGE_SIZE);
+    setPreviewSummary(null);
     setParseModeDebug("Worker bypass — ana thread fallback parse");
     parserJob.begin({
       stage: BANK_PARSE_STAGES.READING,
@@ -551,6 +618,9 @@ export default function BankaParserPage() {
         stage: BANK_PARSE_STAGES.LUCA,
         detail: "Luca satırları oluşturuluyor (ana thread)",
       });
+
+      // Büyük dosyalarda UI'nın nefes alması için yield
+      await new Promise((r) => setTimeout(r, 0));
 
       const pipelineResult = buildBankParserResultFromNormalizedRows({
         normalizedRows: mainResult.normalizedRows || [],
@@ -571,7 +641,7 @@ export default function BankaParserPage() {
         sourceType: "bank",
       });
 
-      // Hesap/kural eksikliği önizlemeyi durdurmaz; satırlar warning ile gelir.
+      await new Promise((r) => setTimeout(r, 0));
 
       const result = buildBankCardOpsSideOutput(
         {
@@ -593,36 +663,62 @@ export default function BankaParserPage() {
         }
       );
 
+      const lucaRows = result.standardLucaRows || [];
+      const slimMovements = (result.movementRows || []).map(slimMovementForUi);
+      const summary = computePreviewSummary(lucaRows, result.opsDashboard);
+
+      // Loading'i state commit'ten ÖNCE kapat — progress takılı kalmasın
+      setIsParsing(false);
+      parserJob.markSuccess(`${summary.totalMovements || lucaRows.length} hareket hazır`);
+
       setRawCount(result.rawCount || mainResult.rawCount || 0);
-      setParsedNormalizedRows(result.normalizedRows || []);
-      setMovementRows(result.movementRows || []);
-      setStandardLucaRows(result.standardLucaRows || []);
+      setPreviewSummary(summary);
+      setPreviewLimit(PREVIEW_PAGE_SIZE);
+      setMovementRows(slimMovements);
+      setStandardLucaRows(lucaRows);
       markAppliedDeclarationsPaid(result.declarationSummary);
       setParseModeDebug(
-        `Worker bypass aktif · ana thread fallback · ${selectedBank} · ${(result.normalizedRows || []).length} satır`
+        `Worker bypass · ana thread · ${selectedBank} · ${summary.totalMovements} hareket · gösterilen ${PREVIEW_PAGE_SIZE}`
       );
 
+      // Ops session: tüm işlemleri tut (export/ops merkezi) ama UI'ya basma
       if (Array.isArray(result.financialTransactions)) {
-        saveBankCardOpsSession({
-          company_id: selectedCompanyId,
-          bank_name: selectedBank,
-          source_file_name: selectedFile?.name || "",
-          transactions: result.financialTransactions,
-          dashboard: result.opsDashboard,
-          declarationSummary: result.declarationSummary,
-        });
+        try {
+          saveBankCardOpsSession({
+            company_id: selectedCompanyId,
+            bank_name: selectedBank,
+            source_file_name: selectedFile?.name || "",
+            transactions: result.financialTransactions,
+            dashboard: result.opsDashboard,
+            declarationSummary: result.declarationSummary,
+          });
+        } catch (sessionError) {
+          console.error("[banka-ekstresi] ops session save failed", sessionError);
+        }
       }
 
-      await recordLearningMemoryUsage(result.standardLucaRows || []);
-      const queuedCount = await queueUnrecognizedFromWorker(result.unrecognizedItems || []);
-
-      showToast(
-        queuedCount > 0
-          ? `${(result.normalizedRows || []).length} işlem satırı ön izlemeye alındı. ${queuedCount} tanınmayan işlem Öğrenme Merkezi'ne eklendi.`
-          : `${(result.normalizedRows || []).length} işlem satırı ön izlemeye alındı.`,
-        "success"
-      );
-      parserJob.markSuccess(`${(result.normalizedRows || []).length} satır hazır`);
+      // Ağır yan işler — UI render'ını engellemesin
+      setTimeout(() => {
+        recordLearningMemoryUsage(lucaRows).catch((err) =>
+          console.error("[banka-ekstresi] learning usage failed", err)
+        );
+        queueUnrecognizedFromWorker(result.unrecognizedItems || [])
+          .then((queuedCount) => {
+            showToast(
+              queuedCount > 0
+                ? `${summary.totalMovements} hareket ön izlemeye alındı. ${queuedCount} tanınmayan işlem kuyruğa eklendi.`
+                : `${summary.totalMovements} hareket ön izlemeye alındı (ekranda ilk ${PREVIEW_PAGE_SIZE} satır).`,
+              "success"
+            );
+          })
+          .catch((err) => {
+            console.error("[banka-ekstresi] unrecognized queue failed", err);
+            showToast(
+              `${summary.totalMovements} hareket ön izlemeye alındı (ekranda ilk ${PREVIEW_PAGE_SIZE} satır).`,
+              "success"
+            );
+          });
+      }, 0);
     } catch (error) {
       console.error("[banka-ekstresi] preview failed (main-thread)", error);
       const detail =
@@ -887,6 +983,47 @@ export default function BankaParserPage() {
             <p className="text-gray-400">Henüz StandardLucaRow oluşturulmadı.</p>
           ) : (
             <>
+              {previewSummary ? (
+                <div className="mb-4 grid grid-cols-2 gap-2 text-xs text-gray-300 sm:grid-cols-3 lg:grid-cols-6">
+                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                    <div className="text-gray-500">Toplam hareket</div>
+                    <div className="text-lg font-semibold text-white">
+                      {previewSummary.totalMovements}
+                    </div>
+                  </div>
+                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                    <div className="text-gray-500">Luca satırı</div>
+                    <div className="text-lg font-semibold text-white">
+                      {previewSummary.lucaRows}
+                    </div>
+                  </div>
+                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                    <div className="text-gray-500">Gösterilen</div>
+                    <div className="text-lg font-semibold text-white">
+                      {displayedStandardLucaRows.length}
+                    </div>
+                  </div>
+                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                    <div className="text-gray-500">Tanınan</div>
+                    <div className="text-lg font-semibold text-emerald-300">
+                      {previewSummary.recognized}
+                    </div>
+                  </div>
+                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                    <div className="text-gray-500">Tanınmayan</div>
+                    <div className="text-lg font-semibold text-amber-300">
+                      {previewSummary.unknown}
+                    </div>
+                  </div>
+                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                    <div className="text-gray-500">Riskli</div>
+                    <div className="text-lg font-semibold text-red-300">
+                      {previewSummary.risky}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               <RowSearchToolbar
                 search={previewSearch}
                 onSearchChange={setPreviewSearch}
@@ -894,60 +1031,73 @@ export default function BankaParserPage() {
                 filters={BANK_PREVIEW_FILTERS}
                 activeFilter={previewQuickFilter}
                 onFilterChange={setPreviewQuickFilter}
-                shownCount={filteredStandardLucaRows.length}
-                totalCount={standardLucaRows.length}
+                shownCount={displayedStandardLucaRows.length}
+                totalCount={filteredStandardLucaRows.length}
               />
 
-              <EditableStandardLucaPreviewTable
-                rows={standardLucaRows}
-                onRowsChange={(nextRows) => {
-                  setStandardLucaRows(nextRows);
-                  setExportValidation(null);
-                }}
-                displayedRows={displayedStandardLucaRows}
-                exportValidation={exportValidation}
-                createRowContext={{
-                  firmaId: selectedCompanyId,
-                  kaynakTipi: KAYNAK_TIPI.BANKA,
-                  kaynakAdi: selectedBank,
-                  belgeTuru: "DK",
-                }}
-                onSaveAdvancedEdit={saveAdvancedPreviewEdit}
-                onAccountFieldChange={handleAccountMemorySave}
-                isSavingAdvancedEdit={isSavingPreviewEdit}
-                renderKontrolCell={(row) => {
-                  const movement = row._movementId
-                    ? movementById.get(row._movementId)
-                    : null;
+              <PreviewErrorBoundary>
+                <EditableStandardLucaPreviewTable
+                  rows={standardLucaRows}
+                  onRowsChange={(nextRows) => {
+                    setStandardLucaRows(nextRows);
+                    setExportValidation(null);
+                  }}
+                  displayedRows={displayedStandardLucaRows}
+                  exportValidation={exportValidation}
+                  createRowContext={{
+                    firmaId: selectedCompanyId,
+                    kaynakTipi: KAYNAK_TIPI.BANKA,
+                    kaynakAdi: selectedBank,
+                    belgeTuru: "DK",
+                  }}
+                  onSaveAdvancedEdit={saveAdvancedPreviewEdit}
+                  onAccountFieldChange={handleAccountMemorySave}
+                  isSavingAdvancedEdit={isSavingPreviewEdit}
+                  renderKontrolCell={(row) => {
+                    const movement = row._movementId
+                      ? movementById.get(row._movementId)
+                      : null;
 
-                  return (
-                    <div className={getMovementWarningClass(row.kontrolNotu)}>
-                      <div>{row.kontrolNotu || "—"}</div>
-                      {movement ? (
-                        <AccountSuggestionBadges
-                          suggestions={
-                            movement.accountSuggestions?.length
-                              ? movement.accountSuggestions
-                              : parseSuggestionsFromWarning(movement.warning)
-                          }
-                          disabled={applyingSuggestionRowId === movement.id}
-                          onSelect={(suggestion) =>
-                            handleApplyAccountSuggestion(movement, suggestion)
-                          }
-                        />
-                      ) : null}
-                    </div>
-                  );
-                }}
-              />
+                    return (
+                      <div className={getMovementWarningClass(row.kontrolNotu)}>
+                        <div>{row.kontrolNotu || "—"}</div>
+                        {movement ? (
+                          <AccountSuggestionBadges
+                            suggestions={
+                              movement.accountSuggestions?.length
+                                ? movement.accountSuggestions
+                                : parseSuggestionsFromWarning(movement.warning)
+                            }
+                            disabled={applyingSuggestionRowId === movement.id}
+                            onSelect={(suggestion) =>
+                              handleApplyAccountSuggestion(movement, suggestion)
+                            }
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  }}
+                />
+              </PreviewErrorBoundary>
 
-              <p className="mt-4 text-sm text-gray-400">
-                Toplam {standardLucaRows.length} StandardLucaRow satırı oluşturuldu.
-                {filteredStandardLucaRows.length !== standardLucaRows.length ||
-                displayedStandardLucaRows.length !== filteredStandardLucaRows.length
-                  ? ` Görünen ${displayedStandardLucaRows.length}/${filteredStandardLucaRows.length} satır.`
-                  : ""}
-              </p>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                {canShowMore ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPreviewLimit((prev) => prev + PREVIEW_PAGE_SIZE)
+                    }
+                    className="rounded-lg border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-medium text-gray-100 hover:bg-gray-800"
+                  >
+                    Daha fazla göster (+{PREVIEW_PAGE_SIZE})
+                  </button>
+                ) : null}
+                <p className="text-sm text-gray-400">
+                  Toplam {standardLucaRows.length} Luca satırı.
+                  {` Ekranda ${displayedStandardLucaRows.length}/${filteredStandardLucaRows.length}.`}
+                  {" Luca Excel tüm satırlar üzerinden çalışır."}
+                </p>
+              </div>
             </>
           )}
         </div>
