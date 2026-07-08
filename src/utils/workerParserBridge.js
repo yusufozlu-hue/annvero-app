@@ -209,7 +209,36 @@ export function runParserWorker({
       worker.terminate();
       if (activeWorker === worker) activeWorker = null;
       activeJob = null;
-      const message = error?.message ? error.message : "Worker beklenmedik şekilde durdu.";
+      const detailParts = [
+        error?.message,
+        error?.filename ? `file=${error.filename}` : null,
+        Number.isFinite(error?.lineno) ? `line=${error.lineno}` : null,
+        Number.isFinite(error?.colno) ? `col=${error.colno}` : null,
+      ].filter(Boolean);
+      const message =
+        detailParts.length > 0
+          ? detailParts.join(" | ")
+          : "Worker beklenmedik şekilde durdu (modül yükleme veya çalışma zamanı hatası).";
+      console.error("[workerParserBridge] worker.onerror", {
+        message: error?.message,
+        filename: error?.filename,
+        lineno: error?.lineno,
+        colno: error?.colno,
+        error,
+      });
+      emit({ type: "error", jobId: requestId, jobType, error: message });
+      reject(new Error(message));
+    };
+
+    worker.onmessageerror = (error) => {
+      clearTimeout(timer);
+      worker.terminate();
+      if (activeWorker === worker) activeWorker = null;
+      activeJob = null;
+      const message =
+        error?.message ||
+        "Worker mesajı işlenemedi (structured clone / serializable olmayan veri).";
+      console.error("[workerParserBridge] worker.onmessageerror", error);
       emit({ type: "error", jobId: requestId, jobType, error: message });
       reject(new Error(message));
     };

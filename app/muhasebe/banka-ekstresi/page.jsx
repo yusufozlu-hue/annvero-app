@@ -69,6 +69,7 @@ import { useParserJob } from "@/src/hooks/useParserJob";
 import { logParserJobError } from "@/src/utils/parserJobLogger";
 import { runBankParserWorker } from "@/src/utils/workerParserBridge";
 import { saveBankCardOpsSession } from "@/src/utils/bankCardOpsCenter";
+import { buildBankCardOpsSideOutput } from "@/src/utils/bankCardOpsSideOutput";
 import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 
 const BANK_PREVIEW_FILTERS = [
@@ -524,7 +525,17 @@ export default function BankaParserPage() {
     });
 
     try {
-      const result = await parseFileInWorker(selectedFile);
+      const workerResult = await parseFileInWorker(selectedFile);
+      const result = buildBankCardOpsSideOutput(workerResult, {
+        selectedBank,
+        selectedCompanyId,
+        sourceFileName: selectedFile?.name || "",
+        sourceFileType: detectSourceFileType(selectedFile?.name || "", selectedFile?.type || ""),
+        sourceType: "bank",
+        learningMemory,
+        accountingRules,
+        companyRules,
+      });
 
       setRawCount(result.rawCount || 0);
       setParsedNormalizedRows(result.normalizedRows || []);

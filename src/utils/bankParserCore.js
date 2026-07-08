@@ -17,8 +17,6 @@ import { buildUnrecognizedQueueItems } from "@/src/utils/bankParserLearningPipel
 import { applyAccountMemoryV1RecordsToRows } from "@/src/utils/accountMemoryV1";
 import { applySmartBankSuggestionsToRows } from "@/src/utils/bankSmartSuggestions";
 import { applyDeclarationAccrualDistributionToRows } from "@/src/utils/beyannameTahakkukEngine";
-import { buildRecognizedFinancialTransactions } from "@/src/utils/financialRecognitionPipeline";
-import { buildBankCardOpsDashboard } from "@/src/utils/bankCardOpsCenter";
 import { resolveParserName } from "@/src/utils/financialSourceArchitecture";
 
 export const BANK_PARSE_STAGES = {
@@ -288,39 +286,24 @@ export function buildBankParserResultFromNormalizedRows({
     learningMemory,
   });
 
-  // Banka & Kart Operasyon Merkezi — mevcut akışa yan çıktı (bozmaz)
-  const financialTransactions = buildRecognizedFinancialTransactions({
-    normalizedBankRows: normalizedRows,
-    movementRows,
-    context: {
-      companyId: selectedCompanyId,
-      selectedCompanyId,
-      selectedBank,
-      sourceName: selectedBank,
-      sourceType,
-      sourceFileName,
-      sourceFileType,
-      parserName: resolveParserName(selectedBank, sourceType),
-      learningMemory,
-      accountingRules,
-      companyRules,
-    },
-  });
-
-  const opsDashboard = buildBankCardOpsDashboard(financialTransactions, {
-    companyId: selectedCompanyId,
-    bankName: selectedBank,
-    sourceFileName,
-  });
-
+  // NFT/dashboard worker içinde üretilmez (import crash + structured clone riski).
+  // Ana thread buildBankCardOpsSideOutput ile doldurur.
   return {
     normalizedRows,
     movementRows,
     standardLucaRows,
     unrecognizedItems,
     declarationSummary: declarationResult.summary,
-    financialTransactions,
-    opsDashboard,
+    financialTransactions: null,
+    opsDashboard: null,
+    opsMeta: {
+      selectedBank,
+      selectedCompanyId,
+      sourceFileName,
+      sourceFileType,
+      sourceType,
+      parserName: resolveParserName(selectedBank, sourceType),
+    },
   };
 }
 
