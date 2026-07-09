@@ -15,6 +15,7 @@ export default function CorePreviewTable({
   displayedCount = 100,
   onTeachClick,
   showTeachButton = true,
+  showTeachForMovement,
 }) {
   const rows = movements.slice(0, displayedCount);
 
@@ -45,7 +46,13 @@ export default function CorePreviewTable({
           {rows.map((movement, index) => {
             const preview = movement.corePreview || {};
             const teachable =
-              showTeachButton && shouldShowCoreTeachButton({}, movement, { isManagementUser: true, isCoreEnabled: true });
+              showTeachButton &&
+              (showTeachForMovement
+                ? showTeachForMovement(movement)
+                : shouldShowCoreTeachButton({}, movement, {
+                    isManagementUser: true,
+                    isCoreEnabled: true,
+                  }));
 
             return (
               <tr key={movement.id || index} className="hover:bg-gray-900/50">

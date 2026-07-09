@@ -87,15 +87,6 @@ export function formatCoreYesNo(value) {
 const LOW_CONFIDENCE_THRESHOLD = 0.55;
 const FULL_CONFIDENCE_THRESHOLD = 1;
 
-const CORE_RECOGNIZED_SOURCES = new Set([
-  "company_memory",
-  "global_memory",
-  "global_knowledge",
-  "accounting_rule",
-  "company_rule",
-  "accounting_decision",
-]);
-
 export function getCoreTeachContext(movement = {}, row = {}) {
   const preview = movement?.corePreview || (movement ? extractCorePreviewFields(null, movement) : {});
   const decisionSource = String(
@@ -111,6 +102,9 @@ export function getCoreTeachContext(movement = {}, row = {}) {
   const accountCode = String(
     preview.suggested_account_code || movement?.counterAccountCode || row?.karsiHesapKodu || ""
   ).trim();
+  const matchedRuleId = String(
+    preview.matched_rule || movement?.matchedRule?.rule_id || movement?.matched_rule || ""
+  ).trim();
 
   return {
     preview,
@@ -119,33 +113,31 @@ export function getCoreTeachContext(movement = {}, row = {}) {
     confidence,
     needsReview,
     accountCode,
+    matchedRuleId,
+    hasMatchedRule: Boolean(matchedRuleId),
+    hasCompanyMemory: decisionSource === "company_memory",
   };
+}
+
+export function hasCompanyMemoryMatch(movement = {}, row = {}) {
+  return getCoreTeachContext(movement, row).hasCompanyMemory;
+}
+
+export function hasMatchedRule(movement = {}, row = {}) {
+  return getCoreTeachContext(movement, row).hasMatchedRule;
 }
 
 /**
  * CORE zaten firma hafızası / global kural ile tanıdıysa öğretme modalı açılmaz.
  */
 export function isCoreAlreadyRecognized(movement = {}, row = {}) {
-  const { decisionSource, confidence, needsReview, accountCode, coreStatus } =
-    getCoreTeachContext(movement, row);
-
-  if (!accountCode) return false;
-
-  if (CORE_RECOGNIZED_SOURCES.has(decisionSource)) {
+  if (hasCompanyMemoryMatch(movement, row) || hasMatchedRule(movement, row)) {
     return true;
   }
 
-  if (confidence >= FULL_CONFIDENCE_THRESHOLD && needsReview === false) {
+  const { confidence, needsReview, accountCode } = getCoreTeachContext(movement, row);
+  if (accountCode && confidence >= FULL_CONFIDENCE_THRESHOLD && needsReview === false) {
     return true;
-  }
-
-  if (
-    movement?._coreMatched &&
-    needsReview === false &&
-    confidence >= LOW_CONFIDENCE_THRESHOLD &&
-    (coreStatus === "recognized" || coreStatus === "suggested")
-  ) {
-    return CORE_RECOGNIZED_SOURCES.has(decisionSource);
   }
 
   return false;
@@ -182,8 +174,9 @@ function normalizeTeachHaystack(...parts) {
 }
 
 /**
- * StandardLuca satırı + movement için CORE'a Öğret butonu görünürlüğü.
- * İlk etap: yönetim kullanıcı + CORE açık + problem sinyali.
+ * Satır bazlı CORE'a Öğret butonu görünürlüğü.
+ * Gizle: company_memory veya matched_rule varsa.
+ * Göster: manual_queue, needs_manual_review, kural/hafıza yoksa.
  */
 export function shouldShowCoreTeachButton(
   row = {},
@@ -191,10 +184,28 @@ export function shouldShowCoreTeachButton(
   { isManagementUser = false, isCoreEnabled = false } = {}
 ) {
   if (!isCoreEnabled || !isManagementUser) return false;
-  if (isCoreAlreadyRecognized(movement || {}, row)) return false;
 
-  if (movement && (movement.corePreview || movement._coreDecisionSource || movement._coreStatus)) {
-    return shouldOpenCoreTeachModal(movement, row);
+  const movementData = movement || {};
+
+  if (hasCompanyMemoryMatch(movementData, row)) return false;
+  if (hasMatchedRule(movementData, row)) return false;
+
+  const { decisionSource, needsReview } = getCoreTeachContext(movementData, row);
+
+  const hasCoreMeta = Boolean(
+    movementData.corePreview ||
+      movementData._coreDecisionSource ||
+      movementData._coreStatus ||
+      movementData._coreSkipped
+  );
+
+  if (hasCoreMeta) {
+    return (
+      decisionSource === "manual_queue" ||
+      needsReview === true ||
+      !hasMatchedRule(movementData, row) ||
+      !hasCompanyMemoryMatch(movementData, row)
+    );
   }
 
   const haystack = normalizeTeachHaystack(
@@ -202,32 +213,24 @@ export function shouldShowCoreTeachButton(
     row.uyari,
     row.warning,
     row.riskDurumu,
-    movement?.warning
+    movementData.warning
   );
 
-  const { confidence, needsReview, accountCode } = getCoreTeachContext(movement || {}, row);
-  const ruleNotFound = haystack.includes("kural bulunamadı");
-  const cariNotFound =
-    haystack.includes("cari") &&
-    (haystack.includes("bulunamadı") || haystack.includes("eslesme"));
-  const accountPlanNotFound =
+  return (
+    haystack.includes("kural bulunamadı") ||
+    haystack.includes("cari") && haystack.includes("bulunamadı") ||
     haystack.includes("hesap planında bulunamadı") ||
     haystack.includes("hesap eşleşmesi bulunamadı") ||
-    haystack.includes("hesap eksik");
-  const lowConfidence = confidence > 0 && confidence < LOW_CONFIDENCE_THRESHOLD;
-
-  return (
-    ruleNotFound ||
-    cariNotFound ||
-    accountPlanNotFound ||
-    lowConfidence ||
-    needsReview === true ||
-    !accountCode
+    haystack.includes("hesap eksik") ||
+    !String(row.karsiHesapKodu || movementData.counterAccountCode || "").trim()
   );
 }
 
-export function isMovementTeachable(movement = {}) {
-  return shouldOpenCoreTeachModal(movement, {});
+export function isMovementTeachable(movement = {}, row = {}) {
+  return shouldShowCoreTeachButton({}, movement, {
+    isManagementUser: true,
+    isCoreEnabled: true,
+  });
 }
 
 function isCoreDecisionUsableForPreview(coreResult = {}) {

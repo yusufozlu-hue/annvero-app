@@ -922,14 +922,18 @@ export default function BankaParserPage() {
     );
   };
 
+  const coreTeachOptions = {
+    isManagementUser,
+    isCoreEnabled: isAnnveroCoreEnabled(),
+  };
+
+  const showCoreTeachForMovement = (movement, row = {}) =>
+    shouldShowCoreTeachButton(row, movement, coreTeachOptions);
+
   const showCoreTeachForLucaRow = (row) =>
-    shouldShowCoreTeachButton(
-      row,
+    showCoreTeachForMovement(
       row?._movementId ? fullMovementById.get(row._movementId) : null,
-      {
-        isManagementUser,
-        isCoreEnabled: isAnnveroCoreEnabled(),
-      }
+      row
     );
 
   const handleCloseTeachModal = () => {
@@ -1281,6 +1285,7 @@ export default function BankaParserPage() {
               displayedCount={PREVIEW_PAGE_SIZE}
               onTeachClick={handleOpenTeachModal}
               showTeachButton={isManagementUser && isAnnveroCoreEnabled()}
+              showTeachForMovement={(movement) => showCoreTeachForMovement(movement)}
             />
           </div>
         ) : null}
