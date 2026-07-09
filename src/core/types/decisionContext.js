@@ -15,6 +15,8 @@ export function normalizeCoreContext(raw = {}) {
       : [],
     module: empty(raw.module),
     request_id: empty(raw.request_id || raw.requestId),
+    // Server-only: API route service_role client (JSON'a serialize edilmez)
+    supabase: raw.supabase || null,
   };
 }
 

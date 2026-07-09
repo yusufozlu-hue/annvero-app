@@ -16,8 +16,17 @@ export async function resolveKnowledgeSupabase(context = {}) {
 
   if (!adminClientPromise) {
     adminClientPromise = import("../../lib/supabase/serverAdmin.js")
-      .then((mod) => mod.getServerSupabaseAdmin({ requireServiceRole: true }))
-      .catch(() => null);
+      .then((mod) => {
+        const client = mod.getServerSupabaseAdmin({ requireServiceRole: true });
+        if (!client) {
+          console.error("[annvero-core] SUPABASE_SERVICE_ROLE_KEY eksik — Knowledge DB kullanılamaz");
+        }
+        return client;
+      })
+      .catch((error) => {
+        console.error("[annvero-core] serverAdmin import failed", error?.message || error);
+        return null;
+      });
   }
 
   return adminClientPromise;
@@ -27,9 +36,138 @@ function isMissingTableError(error) {
   const text = `${error?.message || ""} ${error?.code || ""}`.toLowerCase();
   return (
     error?.code === "42P01" ||
+    error?.code === "PGRST205" ||
     /does not exist/i.test(text) ||
-    /could not find/i.test(text)
+    /could not find/i.test(text) ||
+    /schema cache/i.test(text)
   );
+}
+
+function readEnvFlag(name) {
+  return String(process.env[name] ?? "")
+    .trim()
+    .replace(/^['"]|['"]$/g, "");
+}
+
+/** Tanı — hangi env eksik, client tipi (log/health endpoint). */
+export function getKnowledgeEnvDiagnostics() {
+  const url = readEnvFlag("NEXT_PUBLIC_SUPABASE_URL");
+  const serviceRole = readEnvFlag("SUPABASE_SERVICE_ROLE_KEY");
+  const anon = readEnvFlag("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+
+  const missing = [];
+  if (!url) missing.push("NEXT_PUBLIC_SUPABASE_URL");
+  if (!serviceRole) missing.push("SUPABASE_SERVICE_ROLE_KEY");
+
+  return {
+    hasSupabaseUrl: Boolean(url),
+    hasServiceRoleKey: Boolean(serviceRole),
+    hasAnonKey: Boolean(anon),
+    missingEnv: missing,
+    recommendedClient: "service_role (SUPABASE_SERVICE_ROLE_KEY)",
+  };
+}
+
+async function probeTable(supabase, table, buildQuery) {
+  if (!supabase) {
+    return { ok: false, count: 0, error: "no_client", clientType: "none" };
+  }
+
+  let query = supabase.from(table).select("id", { count: "exact", head: true });
+  if (buildQuery) query = buildQuery(query);
+
+  const { count, error } = await query;
+
+  if (error) {
+    return {
+      ok: false,
+      count: 0,
+      error: error.message || String(error),
+      code: error.code || null,
+      hint: isMissingTableError(error) ? "table_or_schema_cache_missing" : "query_failed",
+    };
+  }
+
+  return { ok: true, count: count ?? 0, error: null };
+}
+
+/**
+ * Knowledge Engine tablolarına basit SELECT probe (health / debug).
+ */
+export async function probeKnowledgeDatabase(context = {}, companyId = "") {
+  const env = getKnowledgeEnvDiagnostics();
+  const supabase = await resolveKnowledgeSupabase(context);
+  const clientType = context.supabase
+    ? "context_service_role"
+    : supabase
+      ? "service_role_admin"
+      : "none";
+
+  if (!supabase) {
+    return {
+      ok: false,
+      clientType,
+      env,
+      reason:
+        env.missingEnv.length > 0
+          ? `Eksik env: ${env.missingEnv.join(", ")}`
+          : "Supabase service_role client oluşturulamadı",
+      tables: {},
+    };
+  }
+
+  const [entities, patterns, rules, memory] = await Promise.all([
+    probeTable(supabase, KNOWLEDGE_TABLES.ENTITIES, (q) =>
+      q.eq("is_active", true).is("deleted_at", null)
+    ),
+    probeTable(supabase, KNOWLEDGE_TABLES.MATCH_PATTERNS, (q) =>
+      q.eq("is_active", true).is("deleted_at", null)
+    ),
+    probeTable(supabase, KNOWLEDGE_TABLES.ACCOUNTING_RULES, (q) =>
+      q.eq("is_active", true).is("deleted_at", null)
+    ),
+    companyId
+      ? probeTable(supabase, KNOWLEDGE_TABLES.COMPANY_MEMORY, (q) =>
+          q.eq("company_id", companyId).eq("is_active", true).is("deleted_at", null)
+        )
+      : probeTable(supabase, KNOWLEDGE_TABLES.COMPANY_MEMORY, (q) =>
+          q.eq("is_active", true).is("deleted_at", null)
+        ),
+  ]);
+
+  const tables = {
+    knowledge_entities: entities,
+    knowledge_match_patterns: patterns,
+    knowledge_accounting_rules: rules,
+    knowledge_company_memory: memory,
+  };
+
+  const tableErrors = Object.entries(tables).filter(([, v]) => !v.ok);
+  const ok = tableErrors.length === 0;
+
+  let reason = null;
+  if (!ok) {
+    const first = tableErrors[0];
+    reason = `${first[0]}: ${first[1].error} (${first[1].hint || first[1].code || "error"})`;
+    if (first[1].hint === "table_or_schema_cache_missing") {
+      reason += " — migration 017_knowledge_engine.sql çalıştırılmamış olabilir";
+    }
+  }
+
+  if (process.env.NODE_ENV === "development" || process.env.ANNVERO_CORE_DB_PROBE_LOG === "1") {
+    console.info("[annvero-core:knowledge-db-probe]", {
+      clientType,
+      env: env.missingEnv,
+      entities: entities.count,
+      patterns: patterns.count,
+      rules: rules.count,
+      memory: memory.count,
+      ok,
+      reason,
+    });
+  }
+
+  return { ok, clientType, env, reason, tables };
 }
 
 async function queryActiveRows(supabase, table, buildQuery) {
@@ -115,8 +253,11 @@ export async function fetchAccountingRules(supabase, { companyId, entityId, glob
 export async function loadKnowledgeBundle(context = {}, companyId = "") {
   const supabase = await resolveKnowledgeSupabase(context);
   if (!supabase) {
+    const dbProbe = await probeKnowledgeDatabase(context, companyId);
     return {
       unavailable: true,
+      supabase: null,
+      dbProbe,
       entities: [],
       companyPatterns: [],
       globalPatterns: [],
@@ -124,7 +265,7 @@ export async function loadKnowledgeBundle(context = {}, companyId = "") {
       companyRules: [],
       globalRules: [],
       entitiesById: new Map(),
-      error: new Error("Supabase service role unavailable"),
+      error: new Error(dbProbe.reason || "Supabase service role unavailable"),
     };
   }
 
@@ -150,11 +291,17 @@ export async function loadKnowledgeBundle(context = {}, companyId = "") {
     globalPatternResult.unavailable;
 
   const entities = entityResult.entities || [];
+  let dbProbe = null;
+  if (unavailable || !entities.length) {
+    dbProbe = await probeKnowledgeDatabase(context, companyId);
+  }
+
   const entitiesById = new Map(entities.map((row) => [row.id, row]));
 
   return {
     unavailable,
     supabase,
+    dbProbe,
     entities,
     entitiesById,
     companyPatterns: companyPatternResult.data || [],

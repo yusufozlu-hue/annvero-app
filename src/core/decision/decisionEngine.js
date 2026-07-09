@@ -105,16 +105,23 @@ export async function runDecisionPipeline(input, context) {
     enrichedContext = { ...context, knowledgeBundle: bundle };
 
     if (bundle.unavailable) {
+      const probe = bundle.dbProbe || null;
       state.debug_trace.push({
         stage: "knowledge_db",
         outcome: "unavailable",
-        detail: bundle.error?.message || "Knowledge tables unavailable — fallback mode",
+        detail: bundle.error?.message || probe?.reason || "Knowledge tables unavailable — fallback mode",
+        client_type: probe?.clientType || (context.supabase ? "context_service_role" : "unknown"),
+        missing_env: probe?.env?.missingEnv || null,
+        probe: probe?.tables || null,
       });
     } else {
+      const probe = bundle.dbProbe || null;
       state.debug_trace.push({
         stage: "knowledge_db",
         outcome: "loaded",
-        detail: `entities=${bundle.entities.length} patterns=${bundle.companyPatterns.length + bundle.globalPatterns.length} memory=${bundle.companyMemory.length}`,
+        detail: `entities=${bundle.entities.length} patterns=${bundle.companyPatterns.length + bundle.globalPatterns.length} rules=${(bundle.companyRules?.length || 0) + (bundle.globalRules?.length || 0)} memory=${bundle.companyMemory.length}`,
+        client_type: probe?.clientType || (context.supabase ? "context_service_role" : "service_role_admin"),
+        probe: probe?.tables || null,
       });
     }
   } catch (error) {

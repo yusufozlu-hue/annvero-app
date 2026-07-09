@@ -6,6 +6,7 @@ import {
   requireApiSession,
 } from "@/src/lib/auth/apiGuard";
 import { resolveAccountingDecision } from "@/src/core/annveroCore.js";
+import { probeKnowledgeDatabase } from "@/src/core/db/knowledgeStore.js";
 import { KNOWLEDGE_TABLES } from "@/src/lib/knowledge-engine/constants.js";
 
 export const runtime = "nodejs";
@@ -78,6 +79,8 @@ export async function POST(request) {
       ? crypto.randomUUID()
       : `core-test-${Date.now()}`);
 
+  const knowledgeDbHealth = await probeKnowledgeDatabase({ supabase }, companyId);
+
   const result = await resolveAccountingDecision(
     {
       source_type: body.source_type || body.sourceType || "bank",
@@ -109,6 +112,13 @@ export async function POST(request) {
       request_id: requestId,
       company_id: companyId,
       environment: process.env.NODE_ENV || "unknown",
+      knowledge_db: {
+        client_type: knowledgeDbHealth.clientType,
+        ok: knowledgeDbHealth.ok,
+        reason: knowledgeDbHealth.reason,
+        missing_env: knowledgeDbHealth.env?.missingEnv || [],
+        tables: knowledgeDbHealth.tables,
+      },
     },
   });
 }

@@ -53,6 +53,7 @@ export async function resolveAccountingDecision(input = {}, context = {}) {
 
     const result = await runDecisionPipeline(inputCheck.value, {
       ...contextCheck.value,
+      supabase: context.supabase || contextCheck.value.supabase || null,
       debug_trace: debugTrace,
     });
 
