@@ -3,7 +3,7 @@
 import {
   formatCorePreviewPercent,
   formatCoreYesNo,
-  isMovementTeachable,
+  shouldShowCoreTeachButton,
 } from "@/src/utils/bankCorePreview";
 
 const thClass =
@@ -44,7 +44,8 @@ export default function CorePreviewTable({
         <tbody>
           {rows.map((movement, index) => {
             const preview = movement.corePreview || {};
-            const teachable = showTeachButton && isMovementTeachable(movement);
+            const teachable =
+              showTeachButton && shouldShowCoreTeachButton({}, movement, { isManagementUser: true, isCoreEnabled: true });
 
             return (
               <tr key={movement.id || index} className="hover:bg-gray-900/50">

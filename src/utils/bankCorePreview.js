@@ -85,6 +85,93 @@ export function formatCoreYesNo(value) {
 }
 
 const LOW_CONFIDENCE_THRESHOLD = 0.55;
+const FULL_CONFIDENCE_THRESHOLD = 1;
+
+const CORE_RECOGNIZED_SOURCES = new Set([
+  "company_memory",
+  "global_memory",
+  "global_knowledge",
+  "accounting_rule",
+  "company_rule",
+  "accounting_decision",
+]);
+
+export function getCoreTeachContext(movement = {}, row = {}) {
+  const preview = movement?.corePreview || (movement ? extractCorePreviewFields(null, movement) : {});
+  const decisionSource = String(
+    preview.decision_source || movement?._coreDecisionSource || ""
+  )
+    .trim()
+    .toLowerCase();
+  const coreStatus = String(preview.core_status || movement?._coreStatus || "")
+    .trim()
+    .toLowerCase();
+  const confidence = Number(preview.confidence_score ?? movement?._coreConfidence ?? 0);
+  const needsReview = preview.needs_manual_review === true;
+  const accountCode = String(
+    preview.suggested_account_code || movement?.counterAccountCode || row?.karsiHesapKodu || ""
+  ).trim();
+
+  return {
+    preview,
+    decisionSource,
+    coreStatus,
+    confidence,
+    needsReview,
+    accountCode,
+  };
+}
+
+/**
+ * CORE zaten firma hafızası / global kural ile tanıdıysa öğretme modalı açılmaz.
+ */
+export function isCoreAlreadyRecognized(movement = {}, row = {}) {
+  const { decisionSource, confidence, needsReview, accountCode, coreStatus } =
+    getCoreTeachContext(movement, row);
+
+  if (!accountCode) return false;
+
+  if (CORE_RECOGNIZED_SOURCES.has(decisionSource)) {
+    return true;
+  }
+
+  if (confidence >= FULL_CONFIDENCE_THRESHOLD && needsReview === false) {
+    return true;
+  }
+
+  if (
+    movement?._coreMatched &&
+    needsReview === false &&
+    confidence >= LOW_CONFIDENCE_THRESHOLD &&
+    (coreStatus === "recognized" || coreStatus === "suggested")
+  ) {
+    return CORE_RECOGNIZED_SOURCES.has(decisionSource);
+  }
+
+  return false;
+}
+
+/**
+ * Öğretme modalı yalnızca gerçekten öğretme gerektiğinde açılır.
+ */
+export function shouldOpenCoreTeachModal(movement = {}, row = {}) {
+  if (isCoreAlreadyRecognized(movement, row)) return false;
+
+  const { decisionSource, coreStatus, confidence, needsReview, accountCode } =
+    getCoreTeachContext(movement, row);
+
+  return (
+    coreStatus === "unknown" ||
+    coreStatus === "legacy_fallback" ||
+    coreStatus === "not_run" ||
+    coreStatus === "none" ||
+    decisionSource === "manual_queue" ||
+    confidence === 0 ||
+    (confidence > 0 && confidence < LOW_CONFIDENCE_THRESHOLD) ||
+    needsReview === true ||
+    !accountCode
+  );
+}
 
 function normalizeTeachHaystack(...parts) {
   return parts
@@ -104,6 +191,11 @@ export function shouldShowCoreTeachButton(
   { isManagementUser = false, isCoreEnabled = false } = {}
 ) {
   if (!isCoreEnabled || !isManagementUser) return false;
+  if (isCoreAlreadyRecognized(movement || {}, row)) return false;
+
+  if (movement && (movement.corePreview || movement._coreDecisionSource || movement._coreStatus)) {
+    return shouldOpenCoreTeachModal(movement, row);
+  }
 
   const haystack = normalizeTeachHaystack(
     row.kontrolNotu,
@@ -113,9 +205,7 @@ export function shouldShowCoreTeachButton(
     movement?.warning
   );
 
-  const preview = movement?.corePreview || (movement ? extractCorePreviewFields(null, movement) : {});
-  const confidence = Number(preview.confidence_score ?? movement?._coreConfidence ?? 0);
-
+  const { confidence, needsReview, accountCode } = getCoreTeachContext(movement || {}, row);
   const ruleNotFound = haystack.includes("kural bulunamadı");
   const cariNotFound =
     haystack.includes("cari") &&
@@ -125,45 +215,19 @@ export function shouldShowCoreTeachButton(
     haystack.includes("hesap eşleşmesi bulunamadı") ||
     haystack.includes("hesap eksik");
   const lowConfidence = confidence > 0 && confidence < LOW_CONFIDENCE_THRESHOLD;
-  const manualReview = preview.needs_manual_review === true;
-  const missingCounterAccount =
-    !String(row.karsiHesapKodu || movement?.counterAccountCode || "").trim() &&
-    !String(preview.suggested_account_code || "").trim();
-
-  if (movement && isMovementTeachable(movement)) return true;
 
   return (
     ruleNotFound ||
     cariNotFound ||
     accountPlanNotFound ||
     lowConfidence ||
-    manualReview ||
-    missingCounterAccount
+    needsReview === true ||
+    !accountCode
   );
 }
 
 export function isMovementTeachable(movement = {}) {
-  const preview = movement.corePreview || extractCorePreviewFields(null, movement);
-  const confidence = Number(preview.confidence_score ?? movement._coreConfidence ?? 0);
-  const status = String(preview.core_status || movement._coreStatus || "").toLowerCase();
-  const hasAccount = Boolean(
-    preview.suggested_account_code || movement.counterAccountCode
-  );
-
-  if (movement._coreMatched && confidence >= LOW_CONFIDENCE_THRESHOLD && hasAccount) {
-    return preview.needs_manual_review === true;
-  }
-
-  return (
-    !movement._coreMatched ||
-    status === "unknown" ||
-    status === "legacy_fallback" ||
-    status === "not_run" ||
-    status === "none" ||
-    preview.needs_manual_review === true ||
-    (confidence > 0 && confidence < LOW_CONFIDENCE_THRESHOLD) ||
-    !hasAccount
-  );
+  return shouldOpenCoreTeachModal(movement, {});
 }
 
 function isCoreDecisionUsableForPreview(coreResult = {}) {

@@ -74,7 +74,7 @@ import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 import { buildBankParserResultFromNormalizedRowsAsync } from "@/src/utils/bankParserCore";
 import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
 import { DEFAULT_CORE_PREVIEW_LIMIT } from "@/src/utils/bankCoreBridge";
-import { computeCoreIntegrationSummary, mergeCoreDecisionIntoMovement, shouldShowCoreTeachButton } from "@/src/utils/bankCorePreview";
+import { computeCoreIntegrationSummary, mergeCoreDecisionIntoMovement, shouldShowCoreTeachButton, isCoreAlreadyRecognized, shouldOpenCoreTeachModal } from "@/src/utils/bankCorePreview";
 import CorePreviewTable from "./CorePreviewTable";
 import KnowledgeTeachModal from "./KnowledgeTeachModal";
 import { buildTeachFormFromMovement } from "@/src/utils/knowledgeBuilderForm";
@@ -869,8 +869,18 @@ export default function BankaParserPage() {
     coreIntegrationSummary?.notRun > 0 &&
     normalizedRowsCache.length > 0;
 
-  const handleOpenTeachModal = (movement) => {
+  const requestCoreTeach = (movement, row = {}) => {
     if (!selectedCompanyId || !movement) return;
+
+    if (isCoreAlreadyRecognized(movement, row)) {
+      showToast("Bu işlem CORE tarafından zaten tanındı.", "success");
+      return;
+    }
+
+    if (!shouldOpenCoreTeachModal(movement, row)) {
+      showToast("Bu işlem CORE tarafından zaten tanındı.", "success");
+      return;
+    }
 
     setTeachMovement(movement);
     setTeachFormDefaults(
@@ -884,25 +894,32 @@ export default function BankaParserPage() {
     setIsTeachModalOpen(true);
   };
 
+  const handleOpenTeachModal = (movement) => {
+    requestCoreTeach(movement, {});
+  };
+
   const handleOpenTeachFromLucaRow = (row) => {
     const movement = row?._movementId ? fullMovementById.get(row._movementId) : null;
     if (movement) {
-      handleOpenTeachModal(movement);
+      requestCoreTeach(movement, row);
       return;
     }
 
-    handleOpenTeachModal({
-      id: row?._movementId || row?.id,
-      description: row?.aciklama || row?.fisAciklama || "",
-      counterAccountCode: row?.karsiHesapKodu || "",
-      documentType: row?.belgeTuru || "",
-      bankName: selectedBank,
-      rawRow: {
-        aciklama: row?.aciklama || row?.fisAciklama || "",
-        belgeTuru: row?.belgeTuru || "",
-        banka: selectedBank,
+    requestCoreTeach(
+      {
+        id: row?._movementId || row?.id,
+        description: row?.aciklama || row?.fisAciklama || "",
+        counterAccountCode: row?.karsiHesapKodu || "",
+        documentType: row?.belgeTuru || "",
+        bankName: selectedBank,
+        rawRow: {
+          aciklama: row?.aciklama || row?.fisAciklama || "",
+          belgeTuru: row?.belgeTuru || "",
+          banka: selectedBank,
+        },
       },
-    });
+      row
+    );
   };
 
   const showCoreTeachForLucaRow = (row) =>
@@ -955,10 +972,14 @@ export default function BankaParserPage() {
       setMovementRows((prev) => applyMovementUpdate(prev).map(slimMovementForUi));
 
       const saveMeta = result?.save || {};
+      const recognizedAfterTeach = isCoreAlreadyRecognized(updatedMovement, {});
+
       showToast(
-        saveMeta.warning
-          ? `Kaydedildi (${saveMeta.action}). ${saveMeta.warning}`
-          : `CORE öğretme kaydı tamamlandı (${saveMeta.action || "CREATE"}).`,
+        recognizedAfterTeach
+          ? "CORE öğretme kaydı tamamlandı — işlem artık company_memory ile tanınıyor."
+          : saveMeta.warning
+            ? `Kaydedildi (${saveMeta.action}). ${saveMeta.warning}`
+            : `CORE öğretme kaydı tamamlandı (${saveMeta.action || "CREATE"}).`,
         "success"
       );
       handleCloseTeachModal();
