@@ -10,6 +10,7 @@ import {
   isDevelopmentEnvironment,
 } from "@/src/lib/dev/coreTestCenterAccess";
 import { useUserRole } from "@/src/hooks/useUserRole";
+import { CORE_TEST_PRESETS } from "@/src/lib/dev/coreTestPresets";
 
 const inputClass =
   "w-full rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/40";
@@ -48,8 +49,10 @@ export default function CoreTestMerkeziApp() {
     useCompanyList();
 
   const [description, setDescription] = useState("GOOGLE ADS PAYMENT");
-  const [amount, setAmount] = useState("1250");
+  const [amount, setAmount] = useState("-1250");
+  const [sourceType, setSourceType] = useState("bank");
   const [bankName, setBankName] = useState("Vakıfbank");
+  const [activePresetId, setActivePresetId] = useState("google-ads");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   const [responsePayload, setResponsePayload] = useState(null);
@@ -70,6 +73,16 @@ export default function CoreTestMerkeziApp() {
       router.replace("/dashboard?error=core_test_forbidden");
     }
   }, [roleLoading, allowed, router]);
+
+  function applyPreset(preset) {
+    setActivePresetId(preset.id);
+    setDescription(preset.description);
+    setAmount(preset.amount);
+    setSourceType(preset.source_type);
+    setBankName(preset.bank_name);
+    setError("");
+    setResponsePayload(null);
+  }
 
   async function handleTest() {
     setError("");
@@ -98,7 +111,7 @@ export default function CoreTestMerkeziApp() {
           raw_description: String(description || "").trim(),
           amount: parsedAmount,
           currency: "TRY",
-          source_type: "bank",
+          source_type: sourceType,
           bank_name: String(bankName || "").trim(),
         }),
       });
@@ -155,6 +168,29 @@ export default function CoreTestMerkeziApp() {
       </header>
 
       <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
+        <h2 className="mb-3 text-lg font-semibold text-white">Hazır test senaryoları</h2>
+        <p className="mb-4 text-sm text-slate-400">
+          Görev 5 global muhasebe kural seed seti — migration 018 sonrası doğrulama için.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {CORE_TEST_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              onClick={() => applyPreset(preset)}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                activePresetId === preset.id
+                  ? "border-cyan-500 bg-cyan-950/50 text-cyan-200"
+                  : "border-slate-700 bg-slate-950/60 text-slate-300 hover:border-slate-500"
+              }`}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
         <h2 className="mb-4 text-lg font-semibold text-white">Test girdisi</h2>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="md:col-span-2">
@@ -183,6 +219,21 @@ export default function CoreTestMerkeziApp() {
               onChange={(e) => setAmount(e.target.value)}
               placeholder="1250"
             />
+          </div>
+
+          <div>
+            <label className={labelClass} htmlFor="core-test-source-type">
+              Source type
+            </label>
+            <select
+              id="core-test-source-type"
+              className={inputClass}
+              value={sourceType}
+              onChange={(e) => setSourceType(e.target.value)}
+            >
+              <option value="bank">bank</option>
+              <option value="credit_card">credit_card</option>
+            </select>
           </div>
 
           <div>
@@ -257,6 +308,10 @@ export default function CoreTestMerkeziApp() {
             </ResultCard>
             <ResultCard title="decision_source">{formatJsonValue(data?.decision_source)}</ResultCard>
             <ResultCard title="confidence_score">{formatJsonValue(data?.confidence_score)}</ResultCard>
+            <ResultCard title="matched_rule" mono>
+              {formatJsonValue(data?.matched_rule)}
+            </ResultCard>
+            <ResultCard title="suggested_cari">{formatJsonValue(data?.suggested_cari)}</ResultCard>
             <ResultCard title="suggested_account_code">
               {formatJsonValue(data?.suggested_account_code)}
             </ResultCard>
