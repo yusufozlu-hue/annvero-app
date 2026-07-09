@@ -136,13 +136,11 @@ export async function runKnowledgeEntitiesSelectDiagnostic(context = {}) {
 
   const table = KNOWLEDGE_TABLES.ENTITIES;
 
-  const [rawHead, pipelineGlobal, relaxedGlobal, activeOnly] = await Promise.all([
+  const [rawHead, pipelineGlobal, relaxedGlobal, bareSample] = await Promise.all([
     supabase.from(table).select("id", { count: "exact", head: true }),
     supabase
       .from(table)
-      .select("id, entity_name, is_global, company_id, is_active, deleted_at")
-      .eq("is_active", true)
-      .is("deleted_at", null)
+      .select("id, entity_name, is_global, company_id")
       .eq("is_global", true)
       .is("company_id", null)
       .limit(5),
@@ -152,7 +150,7 @@ export async function runKnowledgeEntitiesSelectDiagnostic(context = {}) {
       .eq("is_global", true)
       .or("company_id.is.null,company_id.eq.")
       .limit(5),
-    supabase.from(table).select("id, entity_name").eq("is_active", true).limit(5),
+    supabase.from(table).select("id, entity_name").limit(5),
   ]);
 
   return {
@@ -161,7 +159,7 @@ export async function runKnowledgeEntitiesSelectDiagnostic(context = {}) {
       raw_head_count: formatQueryOutcome(rawHead),
       pipeline_global_filter: formatQueryOutcome(pipelineGlobal),
       relaxed_global_filter: formatQueryOutcome(relaxedGlobal),
-      active_only_sample: formatQueryOutcome(activeOnly),
+      bare_sample: formatQueryOutcome(bareSample),
     },
   };
 }
@@ -241,22 +239,12 @@ export async function probeKnowledgeDatabase(context = {}, companyId = "") {
   }
 
   const [entities, patterns, rules, memory] = await Promise.all([
-    probeTable(supabase, KNOWLEDGE_TABLES.ENTITIES, (q) =>
-      q.eq("is_active", true).is("deleted_at", null)
-    ),
-    probeTable(supabase, KNOWLEDGE_TABLES.MATCH_PATTERNS, (q) =>
-      q.eq("is_active", true).is("deleted_at", null)
-    ),
-    probeTable(supabase, KNOWLEDGE_TABLES.ACCOUNTING_RULES, (q) =>
-      q.eq("is_active", true).is("deleted_at", null)
-    ),
+    probeTable(supabase, KNOWLEDGE_TABLES.ENTITIES),
+    probeTable(supabase, KNOWLEDGE_TABLES.MATCH_PATTERNS),
+    probeTable(supabase, KNOWLEDGE_TABLES.ACCOUNTING_RULES),
     companyId
-      ? probeTable(supabase, KNOWLEDGE_TABLES.COMPANY_MEMORY, (q) =>
-          q.eq("company_id", companyId).eq("is_active", true).is("deleted_at", null)
-        )
-      : probeTable(supabase, KNOWLEDGE_TABLES.COMPANY_MEMORY, (q) =>
-          q.eq("is_active", true).is("deleted_at", null)
-        ),
+      ? probeTable(supabase, KNOWLEDGE_TABLES.COMPANY_MEMORY, (q) => q.eq("company_id", companyId))
+      : probeTable(supabase, KNOWLEDGE_TABLES.COMPANY_MEMORY),
   ]);
 
   const tables = {
@@ -294,6 +282,23 @@ export async function probeKnowledgeDatabase(context = {}, companyId = "") {
   return { ok, clientType, env, reason, tables };
 }
 
+function filterRowsInMemory(rows) {
+  return (rows || []).filter((row) => {
+    if (!row || typeof row !== "object") return false;
+    if (Object.prototype.hasOwnProperty.call(row, "is_active") && row.is_active === false) {
+      return false;
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(row, "deleted_at") &&
+      row.deleted_at != null &&
+      row.deleted_at !== ""
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
 async function queryActiveRows(supabase, table, buildQuery) {
   if (!supabase) {
     return {
@@ -305,7 +310,8 @@ async function queryActiveRows(supabase, table, buildQuery) {
     };
   }
 
-  let query = supabase.from(table).select("*").eq("is_active", true).is("deleted_at", null);
+  // Production şemasında is_active / deleted_at olmayabilir — SQL'de filtreleme yok.
+  let query = supabase.from(table).select("*");
   query = buildQuery(query);
 
   const { data, error } = await query;
@@ -323,7 +329,13 @@ async function queryActiveRows(supabase, table, buildQuery) {
     return { data: [], error, queryError, unavailable: false, unavailableReason: null };
   }
 
-  return { data: data || [], error: null, queryError: null, unavailable: false, unavailableReason: null };
+  return {
+    data: filterRowsInMemory(data),
+    error: null,
+    queryError: null,
+    unavailable: false,
+    unavailableReason: null,
+  };
 }
 
 export async function fetchKnowledgeEntities(supabase, { companyId } = {}) {
