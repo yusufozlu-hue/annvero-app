@@ -71,7 +71,8 @@ import { logParserJobError } from "@/src/utils/parserJobLogger";
 import { saveBankCardOpsSession } from "@/src/utils/bankCardOpsCenter";
 import { buildBankCardOpsSideOutput } from "@/src/utils/bankCardOpsSideOutput";
 import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
-import { buildBankParserResultFromNormalizedRows } from "@/src/utils/bankParserCore";
+import { buildBankParserResultFromNormalizedRowsAsync } from "@/src/utils/bankParserCore";
+import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
 import { parseBankExcelOnMainThread } from "@/src/utils/bankExcelMainThreadParse";
 // Worker geçici olarak kapalı — bankParser.worker.js dosyası duruyor, çağrılmıyor.
 // import { runBankParserWorker } from "@/src/utils/workerParserBridge";
@@ -104,6 +105,10 @@ function slimMovementForUi(movement = {}) {
     matchedMemoryId: movement.matchedMemoryId || null,
     accountCode: movement.accountCode || "",
     counterAccountCode: movement.counterAccountCode || "",
+    coreMatched: Boolean(movement._coreMatched),
+    coreFallback: Boolean(movement._coreFallback),
+    coreDebug: movement._coreDebug || "",
+    coreDecisionSource: movement._coreDecisionSource || "",
   };
 }
 
@@ -605,7 +610,11 @@ export default function BankaParserPage() {
     setPreviewErrorDetail("");
     setPreviewLimit(PREVIEW_PAGE_SIZE);
     setPreviewSummary(null);
-    setParseModeDebug("Worker bypass — ana thread fallback parse");
+    setParseModeDebug(
+      isAnnveroCoreEnabled()
+        ? "ANNVERO CORE aktif — karar motoru server-side"
+        : "Worker bypass — ana thread fallback parse"
+    );
     parserJob.begin({
       stage: BANK_PARSE_STAGES.READING,
       detail: "Ana thread fallback — dosya okunuyor",
@@ -622,7 +631,7 @@ export default function BankaParserPage() {
       // Büyük dosyalarda UI'nın nefes alması için yield
       await new Promise((r) => setTimeout(r, 0));
 
-      const pipelineResult = buildBankParserResultFromNormalizedRows({
+      const pipelineResult = await buildBankParserResultFromNormalizedRowsAsync({
         normalizedRows: mainResult.normalizedRows || [],
         selectedBank,
         selectedCompany,
@@ -640,6 +649,16 @@ export default function BankaParserPage() {
         ),
         sourceType: "bank",
       });
+
+      if (pipelineResult?.opsMeta?.coreSummary) {
+        const summary = pipelineResult.opsMeta.coreSummary;
+        console.info("[banka-ekstresi] ANNVERO CORE özeti", summary);
+        if (summary.enabled) {
+          setParseModeDebug(
+            `ANNVERO CORE — ${summary.core} CORE / ${summary.fallback} legacy fallback (toplam ${summary.total})`
+          );
+        }
+      }
 
       await new Promise((r) => setTimeout(r, 0));
 

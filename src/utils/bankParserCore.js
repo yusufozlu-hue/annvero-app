@@ -16,6 +16,7 @@ import { buildUnrecognizedQueueItems } from "@/src/utils/bankParserLearningPipel
 import { applyAccountMemoryV1RecordsToRows } from "@/src/utils/accountMemoryV1";
 import { applySmartBankSuggestionsToRows } from "@/src/utils/bankSmartSuggestions";
 import { applyDeclarationAccrualDistributionToRows } from "@/src/utils/beyannameTahakkukEngine";
+import { mapParsedRowsWithCoreFallback, isAnnveroCoreEnabled } from "@/src/utils/bankCoreBridge";
 import {
   BANK_PARSE_STAGES,
   normalizeBankParsedRow,
@@ -80,6 +81,22 @@ export function buildBankParserResult({
   });
 }
 
+function buildMovementMappingContext(options = {}) {
+  return {
+    selectedCompany: options.selectedCompany,
+    companyPlans: options.companyPlans,
+    companyRules: options.companyRules,
+    selectedBank: options.selectedBank,
+    learningMemory: options.learningMemory,
+    accountingRules: options.accountingRules,
+    selectedCompanyId: options.selectedCompanyId,
+    sourceFileName: options.sourceFileName,
+    sourceType: options.sourceType || "bank",
+    currency: options.currency || "TRY",
+    legacyRules: bankaKurallari,
+  };
+}
+
 export function buildBankParserResultFromNormalizedRows({
   normalizedRows = [],
   selectedBank,
@@ -94,17 +111,22 @@ export function buildBankParserResultFromNormalizedRows({
   sourceFileName = "",
   sourceFileType = "xlsx",
   sourceType = "bank",
+  movementRows: prebuiltMovementRows = null,
+  coreSummary = null,
 }) {
-  const movementRows = mapParsedRowsToStandardMovements(normalizedRows, {
-    selectedCompany,
-    companyPlans,
-    companyRules,
-    selectedBank,
-    legacyRules: bankaKurallari,
-    learningMemory,
-    accountingRules,
-    selectedCompanyId,
-  });
+  const movementRows =
+    prebuiltMovementRows ||
+    mapParsedRowsToStandardMovements(normalizedRows, buildMovementMappingContext({
+      selectedCompany,
+      companyPlans,
+      companyRules,
+      selectedBank,
+      learningMemory,
+      accountingRules,
+      selectedCompanyId,
+      sourceFileName,
+      sourceType,
+    }));
 
   const baseRows = bankMovementsToStandardLucaRows(movementRows, {
     firmaId: selectedCompanyId,
@@ -171,8 +193,37 @@ export function buildBankParserResultFromNormalizedRows({
       sourceFileType,
       sourceType,
       parserName: resolveParserName(selectedBank, sourceType),
+      annveroCoreEnabled: isAnnveroCoreEnabled(),
+      coreSummary,
     },
   };
+}
+
+/**
+ * ANNVERO CORE etkinse async karar pipeline; değilse senkron legacy.
+ * Parser/Luca/öğrenme akışı buildBankParserResultFromNormalizedRows içinde aynı kalır.
+ */
+export async function buildBankParserResultFromNormalizedRowsAsync(options = {}) {
+  const mappingContext = buildMovementMappingContext(options);
+
+  let movementRows = null;
+  let coreSummary = null;
+
+  if (isAnnveroCoreEnabled()) {
+    const mapped = await mapParsedRowsWithCoreFallback(
+      options.normalizedRows || [],
+      mappingContext,
+      { companyId: options.selectedCompanyId }
+    );
+    movementRows = mapped.movements;
+    coreSummary = mapped.coreSummary;
+  }
+
+  return buildBankParserResultFromNormalizedRows({
+    ...options,
+    movementRows,
+    coreSummary,
+  });
 }
 
 export { formatParserDate };

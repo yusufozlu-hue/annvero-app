@@ -593,47 +593,55 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   };
 }
 
-export function mapParsedRowsToStandardMovements(parsedRows, context) {
-  const movements = [];
+export function filterActiveBankParsedRows(parsedRows = []) {
+  return (parsedRows || []).filter(
+    (row) => Math.abs(Number(row?.tutar ?? row?.amount ?? 0)) > 0
+  );
+}
 
-  (parsedRows || [])
-    .filter((row) => Math.abs(Number(row?.tutar ?? row?.amount ?? 0)) > 0)
-    .forEach((row, index) => {
-      try {
-        movements.push(mapParsedRowToStandardMovement(row, context));
-      } catch (error) {
-        const description = String(row?.aciklama || row?.description || "").trim();
-        console.error("[bankMovementMapper] row failed", {
-          index: index + 1,
-          description,
-          error: error?.message || String(error),
-        });
-        movements.push({
-          id: `fallback-${index + 1}-${Date.now()}`,
-          date: String(row?.tarih || row?.date || ""),
-          description,
-          amount: Math.abs(Number(row?.tutar ?? row?.amount ?? 0)),
-          direction: row?.yon === "CIKIS" || row?.direction === "CIKIS" ? "CIKIS" : "GIRIS",
-          bankName: row?.banka || row?.bankName || context?.selectedBank || "",
-          rawRow: row,
-          matchedRule: null,
-          accountCode: "",
-          counterAccountCode: "",
-          documentType: "DK",
-          lucaDescription: description,
-          warning: `Satır ${index + 1}: Hesap eşleşmesi bulunamadı (${error?.message || "mapping hatası"})`,
-          matchedMemoryId: null,
-          accountSuggestions: [],
-          accountPlanMissing: null,
-          normalizedPlate: "",
-          displayPlate: "",
-          cariSuggestions: [],
-          mappingError: true,
-        });
-      }
+/**
+ * Tek satır legacy movement mapping — hata durumunda mevcut fallback objesi.
+ * CORE bridge unknown satırlarda da bunu çağırır (parser yeniden yazılmaz).
+ */
+export function mapSingleParsedRowToMovement(row, context, index = 0) {
+  try {
+    return mapParsedRowToStandardMovement(row, context);
+  } catch (error) {
+    const description = String(row?.aciklama || row?.description || "").trim();
+    console.error("[bankMovementMapper] row failed", {
+      index: index + 1,
+      description,
+      error: error?.message || String(error),
     });
+    return {
+      id: `fallback-${index + 1}-${Date.now()}`,
+      date: String(row?.tarih || row?.date || ""),
+      description,
+      amount: Math.abs(Number(row?.tutar ?? row?.amount ?? 0)),
+      direction: row?.yon === "CIKIS" || row?.direction === "CIKIS" ? "CIKIS" : "GIRIS",
+      bankName: row?.banka || row?.bankName || context?.selectedBank || "",
+      rawRow: row,
+      matchedRule: null,
+      accountCode: "",
+      counterAccountCode: "",
+      documentType: "DK",
+      lucaDescription: description,
+      warning: `Satır ${index + 1}: Hesap eşleşmesi bulunamadı (${error?.message || "mapping hatası"})`,
+      matchedMemoryId: null,
+      accountSuggestions: [],
+      accountPlanMissing: null,
+      normalizedPlate: "",
+      displayPlate: "",
+      cariSuggestions: [],
+      mappingError: true,
+    };
+  }
+}
 
-  return movements;
+export function mapParsedRowsToStandardMovements(parsedRows, context) {
+  return filterActiveBankParsedRows(parsedRows).map((row, index) =>
+    mapSingleParsedRowToMovement(row, context, index)
+  );
 }
 
 export function standardMovementToLucaPendingRow(movement) {

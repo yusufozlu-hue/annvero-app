@@ -5,6 +5,7 @@
 
 import { buildRecognizedFinancialTransactions } from "@/src/utils/financialRecognitionPipeline";
 import { applyAccountingDecisionsToTransactions } from "@/src/utils/accountingDecisionEngine";
+import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
 import { buildBankCardOpsDashboard } from "@/src/utils/bankCardOpsCenter";
 import { resolveParserName } from "@/src/utils/financialSourceArchitecture";
 import { toPersistedFinancialTransaction } from "@/src/models/normalizedFinancialTransaction";
@@ -44,11 +45,42 @@ export function buildBankCardOpsSideOutput(result = {}, context = {}) {
       context: decisionContext,
     });
 
-    // 2) Muhasebe Karar Motoru: Memory → Rule → AI(stub) → Manual
-    financialTransactions = applyAccountingDecisionsToTransactions(
-      financialTransactions,
-      decisionContext
-    ).map((tx) => toPersistedFinancialTransaction(tx));
+    // 2) Muhasebe Karar Motoru — CORE etkinse movement'tan gelen karar korunur
+    if (!isAnnveroCoreEnabled()) {
+      financialTransactions = applyAccountingDecisionsToTransactions(
+        financialTransactions,
+        decisionContext
+      );
+    } else {
+      financialTransactions = financialTransactions.map((tx, index) => {
+        const movement = (result.movementRows || [])[index];
+        if (!movement?._coreMatched) {
+          return applyAccountingDecisionsToTransactions([tx], decisionContext)[0];
+        }
+        const confidencePct = Math.round((movement._coreConfidence || 0) * 100);
+        return {
+          ...tx,
+          confidence_score: confidencePct,
+          suggested_account_name:
+            tx.suggested_account_name || movement._coreSuggestedAccountName || null,
+          suggested_document_type:
+            tx.suggested_document_type || movement.documentType || "DK",
+          suggested_description:
+            tx.suggested_description || movement.lucaDescription || tx.description_raw,
+          suggested_vat_rate:
+            tx.suggested_vat_rate ?? movement._coreVatRate ?? null,
+          risk_level: movement._coreRiskLevel || tx.risk_level,
+          decision_source: movement._coreDecisionSource || tx.decision_source,
+          pipeline_stage: "annvero_core",
+          message: "ANNVERO CORE kararı",
+          _core_debug: movement._coreDebug || "",
+        };
+      });
+    }
+
+    financialTransactions = financialTransactions.map((tx) =>
+      toPersistedFinancialTransaction(tx)
+    );
 
     const opsDashboard = buildBankCardOpsDashboard(financialTransactions, {
       companyId: selectedCompanyId,
