@@ -29,6 +29,8 @@ const EMPTY_FORM = {
   vat_rate: "",
   description_template: "",
   risk_level: "low",
+  confidence_score: "",
+  rule_type: "bank_movement",
   is_global: false,
 };
 
@@ -107,7 +109,7 @@ export default function KnowledgeTeachModal({
             />
           </Field>
 
-          <Field label="Entity family">
+          <Field label="Entity family / Kural tipi">
             <select
               className={inputClass}
               value={form.entity_family}
@@ -121,11 +123,14 @@ export default function KnowledgeTeachModal({
             </select>
           </Field>
 
-          <Field label="İşlem tipi">
+          <Field label="İşlem / kural tipi">
             <input
               className={inputClass}
-              value={form.transaction_type}
-              onChange={(e) => setField("transaction_type", e.target.value)}
+              value={form.rule_type || form.transaction_type}
+              onChange={(e) => {
+                setField("rule_type", e.target.value);
+                setField("transaction_type", e.target.value);
+              }}
             />
           </Field>
 
@@ -209,6 +214,19 @@ export default function KnowledgeTeachModal({
             />
           </Field>
 
+          <Field label="Güven skoru (CORE)">
+            <input
+              className={inputClass}
+              value={
+                form.confidence_score === "" || form.confidence_score == null
+                  ? ""
+                  : `${Math.round(Number(form.confidence_score) * 100)}%`
+              }
+              disabled
+              readOnly
+            />
+          </Field>
+
           <Field label="Risk seviyesi">
             <select
               className={inputClass}
@@ -263,7 +281,7 @@ export default function KnowledgeTeachModal({
               disabled={isSaving}
               className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
             >
-              {isSaving ? "Kaydediliyor…" : "Kaydet ve CORE'u yeniden çalıştır"}
+              {isSaving ? "Kaydediliyor…" : "Kaydet"}
             </button>
           </div>
         </form>

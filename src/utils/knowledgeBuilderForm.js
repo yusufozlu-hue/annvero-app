@@ -40,6 +40,13 @@ export function buildTeachFormFromMovement(movement = {}, context = {}) {
         : String(movement._coreVatRate),
     description_template: String(movement.description || rawRow.aciklama || "").trim(),
     risk_level: String(preview.risk_level || movement._coreRiskLevel || "low").trim() || "low",
+    confidence_score:
+      preview.confidence_score == null
+        ? movement._coreConfidence == null
+          ? ""
+          : String(movement._coreConfidence)
+        : String(preview.confidence_score),
+    rule_type: String(rawRow.islem_tipi || rawRow.transaction_type || "bank_movement").trim(),
     is_global: false,
   };
 }

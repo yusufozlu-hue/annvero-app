@@ -84,7 +84,7 @@ import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 import { buildBankParserResultFromNormalizedRowsAsync } from "@/src/utils/bankParserCore";
 import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
 import { DEFAULT_CORE_PREVIEW_LIMIT } from "@/src/utils/bankCoreBridge";
-import { computeCoreIntegrationSummary, mergeCoreDecisionIntoMovement, shouldShowCoreTeachButton, isCoreAlreadyRecognized, shouldOpenCoreTeachModal } from "@/src/utils/bankCorePreview";
+import { computeCoreIntegrationSummary, mergeCoreDecisionIntoMovement, shouldShowCoreTeachButton, isCoreAlreadyRecognized, shouldOpenCoreTeachModal, isMovementTaughtForDisplay } from "@/src/utils/bankCorePreview";
 import CorePreviewTable from "./CorePreviewTable";
 import KnowledgeTeachModal from "./KnowledgeTeachModal";
 import { buildTeachFormFromMovement } from "@/src/utils/knowledgeBuilderForm";
@@ -130,6 +130,7 @@ function slimMovementForUi(movement = {}) {
     coreDebug: movement._coreDebug || "",
     coreDecisionSource: movement._coreDecisionSource || "",
     corePreview: movement.corePreview || null,
+    _knowledgeTeachSaved: Boolean(movement._knowledgeTeachSaved),
     _coreMatched: movement._coreMatched,
     _coreFallback: movement._coreFallback,
     _coreSkipped: movement._coreSkipped,
@@ -934,7 +935,6 @@ export default function BankaParserPage() {
   };
 
   const coreTeachOptions = {
-    isManagementUser,
     isCoreEnabled: isAnnveroCoreEnabled(),
   };
 
@@ -971,10 +971,10 @@ export default function BankaParserPage() {
         },
       });
 
-      const updatedMovement = mergeCoreDecisionIntoMovement(
-        teachMovement,
-        result?.core_decision || null
-      );
+      const updatedMovement = {
+        ...mergeCoreDecisionIntoMovement(teachMovement, result?.core_decision || null),
+        _knowledgeTeachSaved: true,
+      };
 
       const applyMovementUpdate = (rows = []) =>
         rows.map((row) => (row.id === teachMovement.id ? updatedMovement : row));
@@ -987,7 +987,9 @@ export default function BankaParserPage() {
       setMovementRows((prev) => applyMovementUpdate(prev).map(slimMovementForUi));
 
       const saveMeta = result?.save || {};
-      const recognizedAfterTeach = isCoreAlreadyRecognized(updatedMovement, {});
+      const recognizedAfterTeach =
+        isMovementTaughtForDisplay(updatedMovement) ||
+        isCoreAlreadyRecognized(updatedMovement, {});
 
       showToast(
         recognizedAfterTeach
@@ -1314,7 +1316,7 @@ export default function BankaParserPage() {
               movements={corePreviewMovements}
               displayedCount={PREVIEW_PAGE_SIZE}
               onTeachClick={handleOpenTeachModal}
-              showTeachButton={isManagementUser && isAnnveroCoreEnabled()}
+              showTeachButton={isAnnveroCoreEnabled()}
               showTeachForMovement={(movement) => showCoreTeachForMovement(movement)}
             />
           </div>
