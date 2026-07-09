@@ -52,23 +52,25 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #06111f;
+    --foreground: #e2e8f0;
   }
 }
 
 html {
   overflow-x: hidden;
   width: 100%;
+  max-width: 100%;
 }
 
 body {
-  background: var(--background);
+  background: #06111f;
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
   overflow-x: hidden;
   width: 100%;
   max-width: 100%;
+  min-width: 0;
 }
 
 #__next,
@@ -77,4 +79,32 @@ body {
   width: 100%;
   max-width: 100%;
   min-width: 0;
+}
+
+.annvero-table-scroll {
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+}
+
+.annvero-preview-row {
+  height: 3.5rem;
+  max-height: 3.5rem;
+}
+
+.annvero-preview-row > td,
+.annvero-preview-row > th {
+  height: 3.5rem;
+  max-height: 3.5rem;
+  vertical-align: middle;
+  overflow: hidden;
+}
+
+.annvero-clamp-cell {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: 2.5rem;
+  line-height: 1.25rem;
+  word-break: break-word;
 }

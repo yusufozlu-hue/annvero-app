@@ -92,6 +92,20 @@ export function formatCoreYesNo(value) {
 const LOW_CONFIDENCE_THRESHOLD = 0.55;
 const FULL_CONFIDENCE_THRESHOLD = 1;
 
+export function getMovementCoreStatus(movement = {}) {
+  const preview =
+    movement?.corePreview || extractCorePreviewFields(null, movement || {});
+  return String(
+    preview.core_status || movement?._coreStatus || movement?.core_status || ""
+  )
+    .trim()
+    .toLowerCase();
+}
+
+export function isCoreStatusUnknown(movement = {}) {
+  return getMovementCoreStatus(movement) === "unknown";
+}
+
 export function getCoreTeachContext(movement = {}, row = {}) {
   const preview =
     movement?.corePreview ||
@@ -189,6 +203,8 @@ export function isCoreAlreadyRecognized(movement = {}, row = {}) {
  * Öğretme modalı yalnızca gerçekten öğretme gerektiğinde açılır.
  */
 export function shouldOpenCoreTeachModal(movement = {}, row = {}) {
+  if (isMovementTaughtForDisplay(movement, row)) return false;
+  if (isCoreStatusUnknown(movement)) return true;
   if (isCoreAlreadyRecognized(movement, row)) return false;
   return movementNeedsCoreTeach(movement, row);
 }
@@ -206,8 +222,8 @@ function normalizeTeachHaystack(...parts) {
  */
 export function movementNeedsCoreTeach(movement = {}, row = {}) {
   if (isMovementTaughtForDisplay(movement, row)) return false;
+  if (isCoreStatusUnknown(movement)) return true;
   if (isCoreAlreadyRecognized(movement, row)) return false;
-
   const {
     decisionSource,
     coreStatus,
@@ -217,7 +233,6 @@ export function movementNeedsCoreTeach(movement = {}, row = {}) {
     hasCompanyMemory,
   } = getCoreTeachContext(movement, row);
 
-  if (coreStatus === "unknown") return true;
   if (needsReview === true) return true;
   if (confidence > 0 && confidence < LOW_CONFIDENCE_THRESHOLD) return true;
   if (confidence === 0 && hasCoreMeta) return true;

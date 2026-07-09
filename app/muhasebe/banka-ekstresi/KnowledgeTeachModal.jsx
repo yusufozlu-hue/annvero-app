@@ -91,7 +91,7 @@ export default function KnowledgeTeachModal({
             />
           </Field>
 
-          <Field label="Açıklama / keyword *">
+          <Field label="Açıklama *">
             <input
               className={inputClass}
               value={form.keyword}
@@ -100,7 +100,16 @@ export default function KnowledgeTeachModal({
             />
           </Field>
 
-          <Field label="Entity adı">
+          <Field label="Hesap kodu *">
+            <input
+              className={inputClass}
+              value={form.account_code}
+              onChange={(e) => setField("account_code", e.target.value)}
+              required
+            />
+          </Field>
+
+          <Field label="Entity">
             <input
               className={inputClass}
               value={form.entity_name}
@@ -109,7 +118,7 @@ export default function KnowledgeTeachModal({
             />
           </Field>
 
-          <Field label="Entity family / Kural tipi">
+          <Field label="Kural tipi">
             <select
               className={inputClass}
               value={form.entity_family}
@@ -123,7 +132,7 @@ export default function KnowledgeTeachModal({
             </select>
           </Field>
 
-          <Field label="İşlem / kural tipi">
+          <Field label="İşlem tipi">
             <input
               className={inputClass}
               value={form.rule_type || form.transaction_type}
@@ -131,6 +140,14 @@ export default function KnowledgeTeachModal({
                 setField("rule_type", e.target.value);
                 setField("transaction_type", e.target.value);
               }}
+            />
+          </Field>
+
+          <Field label="Kaynak banka">
+            <input
+              className={inputClass}
+              value={form.bank_name}
+              onChange={(e) => setField("bank_name", e.target.value)}
             />
           </Field>
 
@@ -148,36 +165,11 @@ export default function KnowledgeTeachModal({
             </select>
           </Field>
 
-          <Field label="Banka">
-            <input
-              className={inputClass}
-              value={form.bank_name}
-              onChange={(e) => setField("bank_name", e.target.value)}
-            />
-          </Field>
-
-          <Field label="Hesap kodu *">
-            <input
-              className={inputClass}
-              value={form.account_code}
-              onChange={(e) => setField("account_code", e.target.value)}
-              required
-            />
-          </Field>
-
           <Field label="Hesap adı">
             <input
               className={inputClass}
               value={form.account_name}
               onChange={(e) => setField("account_name", e.target.value)}
-            />
-          </Field>
-
-          <Field label="Karşı hesap kodu">
-            <input
-              className={inputClass}
-              value={form.counter_account_code}
-              onChange={(e) => setField("counter_account_code", e.target.value)}
             />
           </Field>
 
@@ -214,7 +206,7 @@ export default function KnowledgeTeachModal({
             />
           </Field>
 
-          <Field label="Güven skoru (CORE)">
+          <Field label="Güven seviyesi (CORE)">
             <input
               className={inputClass}
               value={

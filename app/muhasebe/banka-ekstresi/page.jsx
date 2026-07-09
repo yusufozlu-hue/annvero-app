@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
-import AccountSuggestionBadges from "../components/AccountSuggestionBadges";
 import EditableStandardLucaPreviewTable from "../components/EditableStandardLucaPreviewTable";
 import PreviewErrorBoundary from "../components/PreviewErrorBoundary";
 import {
@@ -84,7 +83,7 @@ import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 import { buildBankParserResultFromNormalizedRowsAsync } from "@/src/utils/bankParserCore";
 import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
 import { DEFAULT_CORE_PREVIEW_LIMIT } from "@/src/utils/bankCoreBridge";
-import { computeCoreIntegrationSummary, mergeCoreDecisionIntoMovement, shouldShowCoreTeachButton, isCoreAlreadyRecognized, shouldOpenCoreTeachModal, isMovementTaughtForDisplay } from "@/src/utils/bankCorePreview";
+import { computeCoreIntegrationSummary, mergeCoreDecisionIntoMovement, shouldShowCoreTeachButton, isCoreAlreadyRecognized, shouldOpenCoreTeachModal, isMovementTaughtForDisplay, isCoreStatusUnknown } from "@/src/utils/bankCorePreview";
 import CorePreviewTable from "./CorePreviewTable";
 import KnowledgeTeachModal from "./KnowledgeTeachModal";
 import { buildTeachFormFromMovement } from "@/src/utils/knowledgeBuilderForm";
@@ -884,6 +883,20 @@ export default function BankaParserPage() {
   const requestCoreTeach = (movement, row = {}) => {
     if (!selectedCompanyId || !movement) return;
 
+    if (isCoreStatusUnknown(movement)) {
+      setTeachMovement(movement);
+      setTeachFormDefaults(
+        buildTeachFormFromMovement(movement, {
+          selectedCompanyId,
+          companyName: getCompanyDisplayName(selectedCompany),
+          selectedBank,
+          sourceType: "bank",
+        })
+      );
+      setIsTeachModalOpen(true);
+      return;
+    }
+
     if (isCoreAlreadyRecognized(movement, row)) {
       showToast("Bu işlem CORE tarafından zaten tanındı.", "success");
       return;
@@ -1009,7 +1022,7 @@ export default function BankaParserPage() {
   };
 
   return (
-    <div className="w-full min-w-0 max-w-full">
+    <div className="w-full min-w-0 max-w-full pb-6">
       {toast && (
         <div
           role="status"
@@ -1416,23 +1429,24 @@ export default function BankaParserPage() {
                     const movement = row._movementId
                       ? movementById.get(row._movementId)
                       : null;
+                    const suggestions = movement
+                      ? movement.accountSuggestions?.length
+                        ? movement.accountSuggestions
+                        : parseSuggestionsFromWarning(movement.warning)
+                      : [];
+                    const suggestionHint =
+                      suggestions.length > 0
+                        ? `\nÖneriler: ${suggestions.map((s) => s.label || s.code).join(", ")}`
+                        : "";
 
                     return (
-                      <div className={getMovementWarningClass(row.kontrolNotu)}>
-                        <div>{row.kontrolNotu || "—"}</div>
-                        {movement ? (
-                          <AccountSuggestionBadges
-                            suggestions={
-                              movement.accountSuggestions?.length
-                                ? movement.accountSuggestions
-                                : parseSuggestionsFromWarning(movement.warning)
-                            }
-                            disabled={applyingSuggestionRowId === movement.id}
-                            onSelect={(suggestion) =>
-                              handleApplyAccountSuggestion(movement, suggestion)
-                            }
-                          />
-                        ) : null}
+                      <div
+                        className={`max-h-10 overflow-hidden rounded-md px-1 py-0.5 text-[11px] leading-tight ${getMovementWarningClass(row.kontrolNotu)}`}
+                        title={`${row.kontrolNotu || ""}${suggestionHint}`}
+                      >
+                        <span className="annvero-clamp-cell block">
+                          {row.kontrolNotu || "—"}
+                        </span>
                       </div>
                     );
                   }}

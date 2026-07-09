@@ -7,6 +7,13 @@
  */
 import { Fragment, useMemo, useState } from "react";
 import PreviewVoucherDetailPanel from "./PreviewVoucherDetailPanel";
+import { PreviewClampList, PreviewClampText, PreviewRiskBadge } from "./PreviewClampCell";
+import {
+  annveroPreviewRowClass,
+  annveroTableScrollWrap,
+  annveroTableStickyRightTd,
+  annveroTableStickyRightTh,
+} from "@/src/styles/annveroDesign";
 import { DOCUMENT_TYPE_OPTIONS, buildStandardLucaRowEditDraft } from "@/src/utils/previewRowEdit";
 import { validatePreviewForExport } from "@/src/utils/previewExportValidation";
 import { MUKERRER_RISK_SEVIYE } from "@/src/utils/duplicateRiskAnalysis";
@@ -16,7 +23,7 @@ import {
 } from "@/src/utils/standardLucaRow";
 
 const cellInputClassName =
-  "w-full min-w-[88px] rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-white outline-none focus:border-indigo-500";
+  "h-8 w-full min-w-0 truncate rounded-md border border-slate-700/80 bg-slate-950 px-2 py-1 text-xs text-white outline-none focus:border-indigo-500";
 
 export default function EditableStandardLucaPreviewTable({
   rows,
@@ -225,26 +232,40 @@ export default function EditableStandardLucaPreviewTable({
         </button>
       </div>
 
-      <div className="max-w-full min-w-0 overflow-x-auto rounded-xl border border-gray-800/70 bg-gray-950/40">
-        <table className="w-full min-w-[1900px] text-sm">
-          <thead className="bg-gray-800 text-gray-300">
-            <tr>
-              <th className="p-3 text-left">Fiş No</th>
-              <th className="p-3 text-left">Tarih</th>
-              {showKaynakColumn ? <th className="p-3 text-left">Kaynak</th> : null}
-              <th className="p-3 text-left">Açıklama</th>
-              <th className="p-3 text-left">Hesap Kodu</th>
-              <th className="p-3 text-left">Hesap Adı</th>
-              <th className="p-3 text-center">Güven</th>
-              <th className="p-3 text-left">Belge Türü</th>
-              <th className="p-3 text-right">Borç</th>
-              <th className="p-3 text-right">Alacak</th>
-              <th className="p-3 text-left">Karşı Hesap</th>
-              {renderKontrolCell ? <th className="p-3 text-left">Kontrol</th> : null}
-              <th className="p-3 text-center">Mükerrer</th>
-              <th className="p-3 text-left">Hatalar</th>
-              <th className="p-3 text-left">Uyarılar</th>
-              <th className="p-3 text-center">İşlem</th>
+      <div className={annveroTableScrollWrap}>
+        <table className="annvero-table-fixed-rows w-full min-w-[1680px] text-sm">
+          <thead className="bg-slate-900 text-slate-300">
+            <tr className={annveroPreviewRowClass}>
+              <th className="p-2 text-left text-[11px] font-semibold uppercase">Fiş No</th>
+              <th className="p-2 text-left text-[11px] font-semibold uppercase">Tarih</th>
+              {showKaynakColumn ? (
+                <th className="p-2 text-left text-[11px] font-semibold uppercase">Kaynak</th>
+              ) : null}
+              <th className="min-w-[160px] p-2 text-left text-[11px] font-semibold uppercase">
+                Açıklama
+              </th>
+              <th className="p-2 text-left text-[11px] font-semibold uppercase">Hesap Kodu</th>
+              <th className="p-2 text-left text-[11px] font-semibold uppercase">Hesap Adı</th>
+              <th className="p-2 text-center text-[11px] font-semibold uppercase">Güven</th>
+              <th className="p-2 text-left text-[11px] font-semibold uppercase">Belge Türü</th>
+              <th className="p-2 text-right text-[11px] font-semibold uppercase">Borç</th>
+              <th className="p-2 text-right text-[11px] font-semibold uppercase">Alacak</th>
+              <th className="p-2 text-left text-[11px] font-semibold uppercase">Karşı Hesap</th>
+              {renderKontrolCell ? (
+                <th className="min-w-[140px] p-2 text-left text-[11px] font-semibold uppercase">
+                  Kontrol
+                </th>
+              ) : null}
+              <th className="p-2 text-center text-[11px] font-semibold uppercase">Mükerrer</th>
+              <th className="min-w-[120px] p-2 text-left text-[11px] font-semibold uppercase">
+                Hatalar
+              </th>
+              <th className="min-w-[120px] p-2 text-left text-[11px] font-semibold uppercase">
+                Uyarılar
+              </th>
+              <th className={`p-2 text-center text-[11px] font-semibold uppercase ${annveroTableStickyRightTh}`}>
+                İşlem
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -268,22 +289,20 @@ export default function EditableStandardLucaPreviewTable({
                 const isMediumDuplicate =
                   duplicateRisk?.level === MUKERRER_RISK_SEVIYE.ORTA;
 
+                const rowSurfaceClass = errors.length || isCriticalDuplicate
+                  ? "border-l-4 border-l-red-500 bg-red-950/25"
+                  : isHighDuplicate
+                    ? "border-l-4 border-l-orange-500 bg-orange-950/20"
+                    : isMediumDuplicate
+                      ? "bg-amber-950/10"
+                      : warnings.length
+                        ? "bg-amber-950/10"
+                        : "bg-slate-950/70";
+
                 return (
                   <Fragment key={row.id}>
-                    <tr
-                      className={`border-t border-gray-800 ${
-                        errors.length || isCriticalDuplicate
-                          ? "border-l-4 border-l-red-500 bg-red-950/25"
-                          : isHighDuplicate
-                            ? "border-l-4 border-l-orange-500 bg-orange-950/20"
-                            : isMediumDuplicate
-                              ? "bg-amber-950/10"
-                              : warnings.length
-                                ? "bg-amber-950/10"
-                                : ""
-                      }`}
-                    >
-                      <td className="p-2">
+                    <tr className={`${annveroPreviewRowClass} border-t border-slate-800/80 ${rowSurfaceClass}`}>
+                      <td className="p-1.5">
                         <input
                           value={row.fisNo ?? ""}
                           onChange={(event) =>
@@ -292,7 +311,7 @@ export default function EditableStandardLucaPreviewTable({
                           className={cellInputClassName}
                         />
                       </td>
-                      <td className="p-2">
+                      <td className="p-1.5">
                         <input
                           value={row.fisTarihi || ""}
                           onChange={(event) =>
@@ -306,11 +325,14 @@ export default function EditableStandardLucaPreviewTable({
                         />
                       </td>
                       {showKaynakColumn ? (
-                        <td className="p-3 text-xs text-gray-400">
-                          {row.kaynakAdi || row.kaynakTipi || "—"}
+                        <td className="p-1.5">
+                          <PreviewClampText
+                            text={row.kaynakAdi || row.kaynakTipi}
+                            className="text-slate-400"
+                          />
                         </td>
                       ) : null}
-                      <td className="p-2">
+                      <td className="p-1.5">
                         <input
                           value={row.detayAciklama || row.fisAciklama || ""}
                           onChange={(event) =>
@@ -320,10 +342,11 @@ export default function EditableStandardLucaPreviewTable({
                               aciklama: event.target.value,
                             })
                           }
-                          className={`${cellInputClassName} min-w-[180px]`}
+                          title={row.detayAciklama || row.fisAciklama || ""}
+                          className={cellInputClassName}
                         />
                       </td>
-                      <td className="p-2">
+                      <td className="p-1.5">
                         <input
                           value={row.hesapKodu || ""}
                           onChange={(event) =>
@@ -336,7 +359,7 @@ export default function EditableStandardLucaPreviewTable({
                           className={`${cellInputClassName} font-mono`}
                         />
                       </td>
-                      <td className="p-2">
+                      <td className="p-1.5">
                         <input
                           value={row.hesapAdi || ""}
                           onChange={(event) =>
@@ -346,13 +369,14 @@ export default function EditableStandardLucaPreviewTable({
                               { trackAccountMemory: true }
                             )
                           }
-                          className={`${cellInputClassName} min-w-[140px]`}
+                          title={row.hesapAdi || ""}
+                          className={cellInputClassName}
                         />
                       </td>
-                      <td className="p-3 text-center">
+                      <td className="p-1.5 text-center">
                         {row.hafizaGuvenSkoru ? (
                           <span
-                            className={`inline-flex min-w-[42px] justify-center rounded-full px-2 py-1 text-[11px] font-semibold ${
+                            className={`inline-flex max-h-7 min-w-[42px] items-center justify-center rounded-full px-2 py-0.5 text-[10px] font-semibold leading-none ${
                               row.hafizaGuvenSkoru >= 100
                                 ? "bg-emerald-900/60 text-emerald-200"
                                 : row.hafizaGuvenSkoru >= 80
@@ -368,10 +392,10 @@ export default function EditableStandardLucaPreviewTable({
                             {row.hafizaGuvenSkoru}
                           </span>
                         ) : (
-                          <span className="text-xs text-gray-500">—</span>
+                          <span className="text-xs text-slate-500">—</span>
                         )}
                       </td>
-                      <td className="p-2">
+                      <td className="p-1.5">
                         <select
                           value={row.belgeTuru || ""}
                           onChange={(event) =>
@@ -387,7 +411,7 @@ export default function EditableStandardLucaPreviewTable({
                           ))}
                         </select>
                       </td>
-                      <td className="p-2">
+                      <td className="p-1.5">
                         <input
                           value={row.borc ?? ""}
                           onChange={(event) =>
@@ -396,7 +420,7 @@ export default function EditableStandardLucaPreviewTable({
                           className={`${cellInputClassName} text-right`}
                         />
                       </td>
-                      <td className="p-2">
+                      <td className="p-1.5">
                         <input
                           value={row.alacak ?? ""}
                           onChange={(event) =>
@@ -405,7 +429,7 @@ export default function EditableStandardLucaPreviewTable({
                           className={`${cellInputClassName} text-right`}
                         />
                       </td>
-                      <td className="p-2">
+                      <td className="p-1.5">
                         <input
                           value={row.karsiHesapKodu || ""}
                           onChange={(event) =>
@@ -415,65 +439,43 @@ export default function EditableStandardLucaPreviewTable({
                         />
                       </td>
                       {renderKontrolCell ? (
-                        <td className="p-3">{renderKontrolCell(row)}</td>
+                        <td className="max-w-[180px] p-1.5">{renderKontrolCell(row)}</td>
                       ) : null}
-                      <td className="p-3 text-center align-top">
+                      <td className="p-1.5 text-center">
                         {duplicateScore > 0 ? (
-                          <div className="space-y-1">
-                            <span
-                              className={`inline-flex min-w-[42px] justify-center rounded-full px-2 py-1 text-[11px] font-semibold ${
-                                isCriticalDuplicate
-                                  ? "bg-red-900/70 text-red-100"
-                                  : isHighDuplicate
-                                    ? "bg-orange-900/70 text-orange-100"
-                                    : isMediumDuplicate
-                                      ? "bg-amber-900/60 text-amber-100"
-                                      : "bg-gray-800 text-gray-300"
-                              }`}
-                              title={duplicateRisk?.level || "Düşük"}
-                            >
-                              {duplicateScore}
-                            </span>
-                            <div className="text-[10px] text-gray-400">
-                              {duplicateRisk?.level || "—"}
-                            </div>
-                          </div>
+                          <PreviewRiskBadge
+                            score={duplicateScore}
+                            level={duplicateRisk?.level}
+                            variant={
+                              isCriticalDuplicate
+                                ? "critical"
+                                : isHighDuplicate
+                                  ? "high"
+                                  : isMediumDuplicate
+                                    ? "medium"
+                                    : "default"
+                            }
+                          />
                         ) : (
-                          <span className="text-xs text-gray-500">—</span>
+                          <span className="text-xs text-slate-500">—</span>
                         )}
                       </td>
-                      <td className="p-3 align-top">
-                        {errors.length ? (
-                          <ul className="space-y-1 text-[11px] text-red-300">
-                            {errors.map((error) => (
-                              <li key={error}>• {error}</li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <span className="text-xs text-gray-500">—</span>
-                        )}
+                      <td className="p-1.5">
+                        <PreviewClampList items={errors} tone="text-red-300" />
                       </td>
-                      <td className="p-3 align-top">
-                        {warnings.length ? (
-                          <ul className="space-y-1 text-[11px] text-amber-300">
-                            {warnings.map((warning) => (
-                              <li key={warning}>• {warning}</li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <span className="text-xs text-gray-500">—</span>
-                        )}
+                      <td className="p-1.5">
+                        <PreviewClampList items={warnings} tone="text-amber-300" />
                       </td>
-                      <td className="p-3">
-                        <div className="flex items-center justify-center gap-2">
+                      <td className={`p-1.5 ${annveroTableStickyRightTd} ${rowSurfaceClass}`}>
+                        <div className="flex items-center justify-center gap-1">
                           {showAdvancedEdit && onSaveAdvancedEdit ? (
                             <button
                               type="button"
                               onClick={() => openAdvancedEdit(row, buildStandardLucaRowEditDraft)}
-                              className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                              className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition ${
                                 editingRowId === row.id
                                   ? "border-indigo-500 bg-indigo-950/60 text-indigo-200"
-                                  : "border-gray-700 bg-gray-950 text-gray-300 hover:border-indigo-500 hover:text-white"
+                                  : "border-slate-700 bg-slate-950 text-slate-300 hover:border-indigo-500 hover:text-white"
                               }`}
                             >
                               Detay
@@ -483,15 +485,15 @@ export default function EditableStandardLucaPreviewTable({
                             <button
                               type="button"
                               onClick={() => onCoreTeachClick(row)}
-                              className="rounded-lg border border-indigo-600/70 bg-indigo-950/40 px-3 py-1.5 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-950/70"
+                              className="rounded-md border border-indigo-600/70 bg-indigo-950/40 px-2 py-1 text-[10px] font-semibold text-indigo-200 transition hover:bg-indigo-950/70"
                             >
-                              CORE&apos;a Öğret
+                              Öğret
                             </button>
                           ) : null}
                           <button
                             type="button"
                             onClick={() => handleDeleteRow(row)}
-                            className="rounded-lg border border-red-700/60 bg-red-950/30 px-3 py-1.5 text-xs font-semibold text-red-300 transition hover:bg-red-950/60"
+                            className="rounded-md border border-red-700/60 bg-red-950/30 px-2 py-1 text-[10px] font-semibold text-red-300 transition hover:bg-red-950/60"
                           >
                             Sil
                           </button>

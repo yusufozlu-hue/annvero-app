@@ -23,3 +23,14 @@ export const annveroPageBg =
   "min-h-screen w-full max-w-full overflow-x-hidden bg-[#06111f] text-slate-100";
 
 export const annveroShellSidebarWidth = "302px";
+
+export const annveroTableScrollWrap =
+  "annvero-table-scroll max-w-full min-w-0 overflow-x-auto rounded-xl border border-slate-800/80 bg-slate-950/40";
+
+export const annveroTableStickyRightTh =
+  "sticky right-0 z-20 min-w-[132px] border-l border-slate-700/60 bg-slate-900 shadow-[-8px_0_16px_-8px_rgba(0,0,0,0.55)]";
+
+export const annveroTableStickyRightTd =
+  "sticky right-0 z-10 min-w-[132px] border-l border-slate-800/70 shadow-[-6px_0_14px_-8px_rgba(0,0,0,0.45)]";
+
+export const annveroPreviewRowClass = "annvero-preview-row h-14 max-h-14";

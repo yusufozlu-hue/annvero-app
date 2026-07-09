@@ -13,16 +13,38 @@ import {
   syncSelectedCompanyId,
 } from "@/src/utils/companies";
 
+const COMPANIES_SESSION_KEY = "annvero_companies_session_v1";
+
 function readStoredCompanyId() {
   if (typeof window === "undefined") return "";
   return localStorage.getItem(ANNVERO_SELECTED_COMPANY_KEY) || "";
 }
 
+function readSessionCompanies() {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = sessionStorage.getItem(COMPANIES_SESSION_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSessionCompanies(companies = []) {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(COMPANIES_SESSION_KEY, JSON.stringify(companies));
+  } catch {
+    // ignore quota errors
+  }
+}
+
 export function useCompanyList() {
   const { canAccessCompany, loading: roleLoading } = useUserRole();
-  const [companies, setCompanies] = useState([]);
+  const [companies, setCompanies] = useState(() => readSessionCompanies());
   const [selectedCompanyId, setSelectedCompanyIdState] = useState(readStoredCompanyId);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => readSessionCompanies().length === 0);
   const lastRefreshAtRef = useRef(0);
   const COMPANY_REFRESH_TTL_MS = 60_000;
 
@@ -57,11 +79,12 @@ export function useCompanyList() {
       return;
     }
 
-    setIsLoading(true);
+    setIsLoading(companies.length === 0);
 
     try {
       const loaded = await fetchCompanies();
       setCompanies(loaded);
+      writeSessionCompanies(loaded);
       lastRefreshAtRef.current = Date.now();
       setSelectedCompanyIdState((currentId) => {
         const storedId = readStoredCompanyId();

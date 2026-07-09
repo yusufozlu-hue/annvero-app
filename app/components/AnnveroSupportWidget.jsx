@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 
 const WHATSAPP_PHONE = "905323637729";
@@ -68,6 +69,11 @@ function ChevronIcon({ open }) {
 }
 
 export default function AnnveroSupportWidget() {
+  const pathname = usePathname();
+  const hideOnDataWorkbench =
+    pathname?.startsWith("/muhasebe/banka-ekstresi") ||
+    pathname?.startsWith("/muhasebe/fis-donusturme");
+
   const [open, setOpen] = useState(false);
   const [view, setView] = useState("menu");
   const [openFaqIndex, setOpenFaqIndex] = useState(null);
@@ -218,12 +224,16 @@ export default function AnnveroSupportWidget() {
     },
   ];
 
+  if (hideOnDataWorkbench) {
+    return null;
+  }
+
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[70] flex justify-end p-4 sm:p-5">
+    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-start p-4 sm:p-5 lg:justify-end">
       {open ? (
         <div
           ref={panelRef}
-          className="pointer-events-auto mb-3 w-full max-w-[calc(100vw-2rem)] rounded-2xl border border-violet-100 bg-white shadow-2xl shadow-violet-500/10 transition-all duration-200 sm:mb-4 sm:max-w-sm"
+          className="pointer-events-auto mb-3 w-full max-w-[min(100%,24rem)] rounded-2xl border border-violet-100 bg-white shadow-2xl shadow-violet-500/10 transition-all duration-200 sm:mb-4 sm:max-w-sm"
           role="dialog"
           aria-modal="true"
           aria-labelledby="annvero-support-title"
