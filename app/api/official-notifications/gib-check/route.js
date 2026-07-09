@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import {
+  assertCompanyAccess,
+  getApiSupabase,
+  requireApiSession,
+} from "@/src/lib/auth/apiGuard";
 import {
   buildGibCheckPayload,
   computeNextCheckAt,
@@ -98,17 +102,20 @@ async function performGibCheck(supabase, body = {}) {
 }
 
 export async function POST(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
+  const body = await request.json().catch(() => null);
+  if (!body) {
     return NextResponse.json({ error: "Geçersiz istek gövdesi." }, { status: 400 });
   }
+
+  const companyId = String(body?.company_id || body?.companyId || "").trim();
+  const accessCheck = assertCompanyAccess(session.access, companyId, { required: true });
+  if (!accessCheck.ok) return accessCheck.response;
+
+  const { supabase, guard } = getApiSupabase("official-notifications:gib-check", "official_notifications");
+  if (guard) return guard;
 
   const result = await performGibCheck(supabase, body);
   if (!result.ok) {
@@ -119,10 +126,8 @@ export async function POST(request) {
 }
 
 export async function PUT(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   let body;
   try {
@@ -144,6 +149,14 @@ export async function PUT(request) {
   if (!companyIds.length) {
     return NextResponse.json({ error: "En az bir firma seçilmelidir." }, { status: 400 });
   }
+
+  for (const companyId of companyIds) {
+    const check = assertCompanyAccess(session.access, companyId, { required: true });
+    if (!check.ok) return check.response;
+  }
+
+  const { supabase, guard } = getApiSupabase("official-notifications:gib-check-bulk", "official_notifications");
+  if (guard) return guard;
 
   const results = [];
 

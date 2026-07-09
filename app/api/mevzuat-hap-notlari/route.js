@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
-import { requireAdminUser } from "@/src/lib/supabase/serverAuth";
-import {
+import { getApiSupabase, requireApiSession } from "@/src/lib/auth/apiGuard";
+import { requireAdminUser } from "@/src/lib/supabase/serverAuth";import {
   fromMevzuatHapNotuDbRow,
   mapMevzuatHapNotuRows,
   normalizeMevzuatCategory,
@@ -40,14 +39,16 @@ function adminErrorResponse(error) {
 }
 
 export async function GET(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
+  const session = await requireApiSession();
+  if (session.error) return session.error;
+
+  const { supabase, guard } = getApiSupabase("mevzuat-hap-notlari:get", TABLE_NAME);
+  if (guard) {
     return NextResponse.json({
       data: [],
       meta: { notice: "Supabase yapılandırılmamış." },
     });
   }
-
   const category = request.nextUrl.searchParams.get("category");
   const source = request.nextUrl.searchParams.get("source");
   const search = request.nextUrl.searchParams.get("search");
@@ -87,10 +88,12 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const { supabase, error } = await requireAdminUser();
+  const { error } = await requireAdminUser();
   const authResponse = adminErrorResponse(error);
   if (authResponse) return authResponse;
 
+  const { supabase, guard } = getApiSupabase("mevzuat-hap-notlari:post", TABLE_NAME);
+  if (guard) return guard;
   let body;
   try {
     body = await request.json();
@@ -126,10 +129,12 @@ export async function POST(request) {
 }
 
 export async function PATCH(request) {
-  const { supabase, error } = await requireAdminUser();
+  const { error } = await requireAdminUser();
   const authResponse = adminErrorResponse(error);
   if (authResponse) return authResponse;
 
+  const { supabase, guard } = getApiSupabase("mevzuat-hap-notlari:patch", TABLE_NAME);
+  if (guard) return guard;
   let body;
   try {
     body = await request.json();
@@ -187,10 +192,12 @@ export async function PATCH(request) {
 }
 
 export async function DELETE(request) {
-  const { supabase, error } = await requireAdminUser();
+  const { error } = await requireAdminUser();
   const authResponse = adminErrorResponse(error);
   if (authResponse) return authResponse;
 
+  const { supabase, guard } = getApiSupabase("mevzuat-hap-notlari:delete", TABLE_NAME);
+  if (guard) return guard;
   const id = request.nextUrl.searchParams.get("id");
   if (!id) {
     return NextResponse.json({ error: "id zorunludur." }, { status: 400 });

@@ -1,52 +1,51 @@
 import { NextResponse } from "next/server";
 import {
-  createNormalizedFinancialTransaction,
-  summarizeRecognitionStatuses,
-  toPersistedFinancialTransaction,
-} from "@/src/models/normalizedFinancialTransaction";
+  applyCompanyScopeToQuery,
+  assertCompanyAccess,
+  getApiSupabase,
+  requireApiSession,
+  requireAuthenticatedApi,
+  resolveCompanyId,
+} from "@/src/lib/auth/apiGuard";
+import { summarizeRecognitionStatuses, toPersistedFinancialTransaction, createNormalizedFinancialTransaction } from "@/src/models/normalizedFinancialTransaction";
 import { buildBankCardOpsDashboard } from "@/src/utils/bankCardOpsCenter";
-import {
-  getServerSupabaseAdmin,
-  getServerSupabaseAdminGuardResponse,
-  logSupabaseQueryError,
-} from "@/src/lib/supabase/serverAdmin";
+import { logSupabaseQueryError } from "@/src/lib/supabase/serverAdmin";
+import { excludeSoftDeleted } from "@/src/lib/softDelete";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const TABLE = "normalized_financial_transactions";
 
-function getClient() {
-  const guard = getServerSupabaseAdminGuardResponse("bank-card-ops", TABLE);
-  if (guard) return { supabase: null, guard };
-  const supabase = getServerSupabaseAdmin({ requireServiceRole: true });
-  if (!supabase) {
-    return {
-      supabase: null,
-      guard: NextResponse.json(
-        { error: "SUPABASE_SERVICE_ROLE_KEY yapılandırılmamış." },
-        { status: 500 }
-      ),
-    };
-  }
-  return { supabase, guard: null };
-}
-
-/** GET ?companyId= — oturum/özet veya DB satırları */
 export async function GET(request) {
-  const { searchParams } = new URL(request.url);
-  const companyId = String(searchParams.get("companyId") || "").trim();
+  const companyId = resolveCompanyId({
+    companyId: request.nextUrl.searchParams.get("companyId"),
+  });
 
-  const { supabase, guard } = getClient();
-  if (guard) return guard;
+  const ctx = await requireAuthenticatedApi("bank-card-ops:get", TABLE, { companyId });
+  if (ctx.error) return ctx.error;
 
-  let query = supabase.from(TABLE).select("*").order("created_at", { ascending: false }).limit(500);
-  if (companyId) query = query.eq("company_id", companyId);
+  let query = ctx.supabase
+    .from(TABLE)
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(500);
 
-  const { data, error } = await query;
+  query = excludeSoftDeleted(query);
+  const scoped = applyCompanyScopeToQuery(query, ctx.access, companyId);
+  if (!scoped) {
+    return NextResponse.json({
+      ok: true,
+      tableReady: true,
+      transactions: [],
+      dashboard: buildBankCardOpsDashboard([], { companyId }),
+      summary: summarizeRecognitionStatuses([]),
+    });
+  }
+
+  const { data, error } = await scoped;
   if (error) {
     logSupabaseQueryError("bank-card-ops:list", error, TABLE);
-    // Tablo yoksa boş özet dön (migration henüz uygulanmamış olabilir)
     return NextResponse.json({
       ok: true,
       tableReady: false,
@@ -67,8 +66,10 @@ export async function GET(request) {
   });
 }
 
-/** POST — toplu upsert (parser sonucu) */
 export async function POST(request) {
+  const session = await requireApiSession();
+  if (session.error) return session.error;
+
   const body = await request.json().catch(() => ({}));
   const rows = Array.isArray(body.transactions) ? body.transactions : [];
 
@@ -76,10 +77,16 @@ export async function POST(request) {
     return NextResponse.json({ ok: false, error: "transactions boş." }, { status: 400 });
   }
 
-  const { supabase, guard } = getClient();
+  const companyId = resolveCompanyId(body) || resolveCompanyId(rows[0]);
+  const accessCheck = assertCompanyAccess(session.access, companyId, { required: true });
+  if (!accessCheck.ok) return accessCheck.response;
+
+  const { supabase, guard } = getApiSupabase("bank-card-ops:post", TABLE);
   if (guard) return guard;
 
-  const records = rows.map((row) => toPersistedFinancialTransaction(createNormalizedFinancialTransaction(row)));
+  const records = rows.map((row) =>
+    toPersistedFinancialTransaction(createNormalizedFinancialTransaction(row))
+  );
 
   const { data, error } = await supabase.from(TABLE).upsert(records, { onConflict: "id" }).select("id");
 
@@ -100,7 +107,7 @@ export async function POST(request) {
     ok: true,
     upserted: data?.length || 0,
     dashboard: buildBankCardOpsDashboard(records, {
-      companyId: body.company_id || records[0]?.company_id || "",
+      companyId,
       bankName: body.bank_name || "",
       sourceFileName: body.source_file_name || "",
     }),

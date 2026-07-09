@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { requireApiSession } from "@/src/lib/auth/apiGuard";
 import { getGibAutomationGuardResponse } from "@/src/lib/gibAutomationRouteGuard";
-import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
 import { getGibEncryptionKeyGuardResponse } from "@/src/lib/gibCredentialsRouteGuard";
 import {
   getGibSupabaseAdmin,
@@ -15,10 +15,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 export async function POST(request) {
-  const { user } = await getServerSupabaseUser();
-  if (!user) {
-    return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   const encryptionKeyError = getGibEncryptionKeyGuardResponse();
   if (encryptionKeyError) return encryptionKeyError;

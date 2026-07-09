@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
+import { requireApiSession } from "@/src/lib/auth/apiGuard";
 import { isCompanyActive } from "@/src/utils/companies";
 import { formatCompanyFromSupabaseRow } from "@/src/utils/companyNormalize";
 import {
@@ -15,10 +15,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const { user } = await getServerSupabaseUser();
-  if (!user) {
-    return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   const supabaseGuard = getGibSupabaseGuardResponse("gib-tebligat:companies");
   if (supabaseGuard) return supabaseGuard;
@@ -58,6 +56,7 @@ export async function GET() {
     .map(formatCompanyFromSupabaseRow)
     .filter(Boolean)
     .filter(isCompanyActive)
+    .filter((company) => session.access.canAccessCompany(company.id))
     .map((company) => {
       const credential = credentialMap.get(company.id);
       const state = stateMap.get(company.id);

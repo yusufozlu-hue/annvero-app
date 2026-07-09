@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
+import { assertCompanyAccess, requireApiSession } from "@/src/lib/auth/apiGuard";
 import { encryptSecret, maskSecret } from "@/src/lib/gibCredentialsCrypto";
 import { getGibEncryptionKeyGuardResponse } from "@/src/lib/gibCredentialsRouteGuard";
 import {
@@ -15,10 +15,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request) {
-  const { user } = await getServerSupabaseUser();
-  if (!user) {
-    return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   const encryptionKeyError = getGibEncryptionKeyGuardResponse();
   if (encryptionKeyError) return encryptionKeyError;
@@ -30,6 +28,10 @@ export async function GET(request) {
   logGibSupabaseDiagnostics("gib-credentials:get", GIB_CREDENTIALS_TABLE);
 
   const companyId = request.nextUrl.searchParams.get("companyId");
+  if (companyId) {
+    const check = assertCompanyAccess(session.access, companyId, { required: true });
+    if (!check.ok) return check.response;
+  }
 
   let credentialsQuery = supabase.from(GIB_CREDENTIALS_TABLE).select("*");
   if (companyId) credentialsQuery = credentialsQuery.eq("company_id", companyId);
@@ -52,7 +54,9 @@ export async function GET(request) {
 
   const stateMap = new Map((queryStates || []).map((row) => [row.company_id, row]));
 
-  const payload = (credentials || []).map((row) => ({
+  const payload = (credentials || [])
+    .filter((row) => session.access.canAccessCompany(row.company_id))
+    .map((row) => ({
     companyId: row.company_id,
     gibUserCode: row.gib_user_code,
     hasPassword: Boolean(row.encrypted_password),
@@ -69,10 +73,8 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const { user } = await getServerSupabaseUser();
-  if (!user) {
-    return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   const encryptionKeyError = getGibEncryptionKeyGuardResponse();
   if (encryptionKeyError) return encryptionKeyError;
@@ -104,6 +106,9 @@ export async function POST(request) {
     );
   }
 
+  const accessCheck = assertCompanyAccess(session.access, companyId, { required: true });
+  if (!accessCheck.ok) return accessCheck.response;
+
   const { data: existing, error: existingError } = await supabase
     .from(GIB_CREDENTIALS_TABLE)
     .select("*")
@@ -129,7 +134,7 @@ export async function POST(request) {
       ? encryptSecret(parola)
       : existing?.encrypted_parola || null,
     is_active: isActive,
-    updated_by: user.email || user.id,
+    updated_by: session.user.email || session.user.id,
     updated_at: new Date().toISOString(),
   };
 
@@ -158,10 +163,8 @@ export async function POST(request) {
 }
 
 export async function DELETE(request) {
-  const { user } = await getServerSupabaseUser();
-  if (!user) {
-    return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   const supabaseGuard = getGibSupabaseGuardResponse("gib-credentials:delete");
   if (supabaseGuard) return supabaseGuard;
@@ -173,6 +176,9 @@ export async function DELETE(request) {
   if (!companyId) {
     return NextResponse.json({ error: "companyId zorunludur." }, { status: 400 });
   }
+
+  const accessCheck = assertCompanyAccess(session.access, companyId, { required: true });
+  if (!accessCheck.ok) return accessCheck.response;
 
   const { error } = await supabase
     .from(GIB_CREDENTIALS_TABLE)

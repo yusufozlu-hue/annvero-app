@@ -1,14 +1,26 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import {
+  applyCompanyScopeToQuery,
+  getApiSupabase,
+  requireApiSession,
+  requireAuthenticatedApi,
+  requireRecordCompanyAccess,
+  resolveCompanyId,
+} from "@/src/lib/auth/apiGuard";
+import {
+  buildAuditContextFromRequest,
+  writeAuditEvent,
+  AUDIT_ACTIONS,
+  AUDIT_ENTITY_TYPES,
+} from "@/src/lib/audit/auditEvents";
+import { buildSoftDeletePatch } from "@/src/lib/softDelete";
 import {
   buildSafeLearningMemoryPayload,
   isLearningMemorySchemaError,
   LEARNING_MEMORY_SCHEMA_MESSAGE,
 } from "@/src/utils/learningMemorySafePayload";
 
-function buildRecordPayload(record = {}) {
-  return buildSafeLearningMemoryPayload(record);
-}
+const TABLE = "learning_memory";
 
 function withLearningMemoryAliases(row = {}) {
   return {
@@ -17,39 +29,41 @@ function withLearningMemoryAliases(row = {}) {
   };
 }
 
+function buildRecordPayload(record = {}) {
+  return buildSafeLearningMemoryPayload(record);
+}
+
 export async function GET(request) {
-  const companyId = request.nextUrl.searchParams.get("companyId");
-  const includeInactive =
-    request.nextUrl.searchParams.get("includeInactive") === "1";
-  const supabase = getSupabaseClient();
+  const companyId = resolveCompanyId({
+    companyId: request.nextUrl.searchParams.get("companyId"),
+  });
+  const includeInactive = request.nextUrl.searchParams.get("includeInactive") === "1";
 
-  if (!supabase) {
-    return NextResponse.json(
-      { error: "Supabase istemcisi yapılandırılmamış." },
-      { status: 500 }
-    );
+  const ctx = await requireAuthenticatedApi("learning-memory:get", TABLE, { companyId });
+  if (ctx.error) return ctx.error;
+
+  let query = ctx.supabase.from(TABLE).select("*");
+
+  const scoped = applyCompanyScopeToQuery(query, ctx.access, companyId);
+  if (!scoped) {
+    return NextResponse.json({ data: [] });
   }
-
-  let query = supabase.from("learning_memory").select("*");
-
-  if (companyId) {
-    query = query.eq("company_id", companyId);
-  }
+  query = scoped;
 
   if (!includeInactive) {
-    query = query.neq("status", "passive");
-    query = query.neq("status", "deleted");
+    query = query.neq("status", "passive").neq("status", "deleted");
+    query = query.is("deleted_at", null);
   }
 
   let { data, error } = await query.order("learned_at", { ascending: false });
 
   if (error && isLearningMemorySchemaError(error)) {
-    let fallbackQuery = supabase.from("learning_memory").select("*");
-    if (companyId) {
-      fallbackQuery = fallbackQuery.eq("company_id", companyId);
+    let fallbackQuery = ctx.supabase.from(TABLE).select("*");
+    const fallbackScoped = applyCompanyScopeToQuery(fallbackQuery, ctx.access, companyId);
+    if (!fallbackScoped) {
+      return NextResponse.json({ data: [] });
     }
-
-    ({ data, error } = await fallbackQuery);
+    ({ data, error } = await fallbackScoped);
   }
 
   if (error) {
@@ -61,26 +75,15 @@ export async function GET(request) {
     : (data || []).filter(
         (row) =>
           row?.is_active !== false &&
-          !["passive", "deleted"].includes(
-            String(row?.status || "active").toLowerCase()
-          )
+          !["passive", "deleted"].includes(String(row?.status || "active").toLowerCase()) &&
+          !row?.deleted_at
       );
 
   return NextResponse.json({ data: rows.map(withLearningMemoryAliases) });
 }
 
 export async function POST(request) {
-  const supabase = getSupabaseClient();
-
-  if (!supabase) {
-    return NextResponse.json(
-      { error: "Supabase istemcisi yapılandırılmamış." },
-      { status: 500 }
-    );
-  }
-
   let body;
-
   try {
     body = await request.json();
   } catch {
@@ -88,8 +91,12 @@ export async function POST(request) {
   }
 
   const record = body?.record;
+  const companyId = resolveCompanyId(record);
 
-  if (!record?.company_id || !record?.keyword) {
+  const ctx = await requireAuthenticatedApi("learning-memory:post", TABLE, { companyId });
+  if (ctx.error) return ctx.error;
+
+  if (!record?.keyword) {
     return NextResponse.json(
       { error: "Firma ID ve anahtar kelime zorunludur." },
       { status: 400 }
@@ -98,16 +105,15 @@ export async function POST(request) {
 
   const insertPayload = buildSafeLearningMemoryPayload({
     ...record,
+    company_id: companyId,
     keyword: String(record.keyword).trim(),
     document_type: record.document_type || "DK",
     learned_at: record.learned_at || new Date().toISOString(),
     status: record.status || "active",
   });
 
-  console.log("learning memory safe payload", insertPayload);
-
-  let { data, error } = await supabase
-    .from("learning_memory")
+  const { data, error } = await ctx.supabase
+    .from(TABLE)
     .insert([insertPayload])
     .select("*")
     .maybeSingle();
@@ -124,39 +130,52 @@ export async function POST(request) {
     );
   }
 
+  void writeAuditEvent({
+    ...buildAuditContextFromRequest(request, ctx),
+    companyId,
+    entityType: AUDIT_ENTITY_TYPES.LEARNING_MEMORY,
+    entityId: data?.id || "",
+    action: AUDIT_ACTIONS.CREATE,
+    afterState: data,
+  });
+
   return NextResponse.json({ data: withLearningMemoryAliases(data) });
 }
 
 export async function PATCH(request) {
-  const supabase = getSupabaseClient();
-
-  if (!supabase) {
-    return NextResponse.json(
-      { error: "Supabase istemcisi yapılandırılmamış." },
-      { status: 500 }
-    );
-  }
-
   let body;
-
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Geçersiz istek gövdesi." }, { status: 400 });
   }
 
+  const session = await requireApiSession();
+  if (session.error) return session.error;
+
+  const { supabase, guard } = getApiSupabase("learning-memory:patch", TABLE);
+  if (guard) return guard;
+
   const updates = Array.isArray(body?.updates) ? body.updates : [];
   const record = body?.record;
 
   if (record?.id) {
-    const payload = buildRecordPayload(record);
+    const accessCheck = await requireRecordCompanyAccess(
+      supabase,
+      TABLE,
+      "id",
+      record.id,
+      session.access
+    );
+    if (!accessCheck.ok) return accessCheck.response;
 
+    const payload = buildRecordPayload(record);
     if (!Object.keys(payload).length) {
       return NextResponse.json({ data: null, skipped: true });
     }
 
-    let { data, error } = await supabase
-      .from("learning_memory")
+    const { data, error } = await supabase
+      .from(TABLE)
       .update(payload)
       .eq("id", record.id)
       .select("*")
@@ -174,6 +193,15 @@ export async function PATCH(request) {
       );
     }
 
+    void writeAuditEvent({
+      ...buildAuditContextFromRequest(request, session),
+      companyId: accessCheck.companyId,
+      entityType: AUDIT_ENTITY_TYPES.LEARNING_MEMORY,
+      entityId: record.id,
+      action: AUDIT_ACTIONS.UPDATE,
+      afterState: data,
+    });
+
     return NextResponse.json({ data: withLearningMemoryAliases(data) });
   }
 
@@ -182,15 +210,22 @@ export async function PATCH(request) {
   }
 
   const results = [];
-
   for (const item of updates) {
     const id = item?.id;
     const increment = Number(item?.increment ?? 1);
-
     if (!id || increment <= 0) continue;
 
+    const accessCheck = await requireRecordCompanyAccess(
+      supabase,
+      TABLE,
+      "id",
+      id,
+      session.access
+    );
+    if (!accessCheck.ok) continue;
+
     const { data: current, error: readError } = await supabase
-      .from("learning_memory")
+      .from(TABLE)
       .select("match_count")
       .eq("id", id)
       .maybeSingle();
@@ -205,7 +240,7 @@ export async function PATCH(request) {
     }
 
     const { error: updateError } = await supabase
-      .from("learning_memory")
+      .from(TABLE)
       .update({
         match_count: Number(current?.match_count || 0) + increment,
         last_matched_at: new Date().toISOString(),
@@ -228,27 +263,46 @@ export async function PATCH(request) {
 }
 
 export async function DELETE(request) {
-  const supabase = getSupabaseClient();
-
-  if (!supabase) {
-    return NextResponse.json(
-      { error: "Supabase istemcisi yapılandırılmamış." },
-      { status: 500 }
-    );
-  }
-
   const id = request.nextUrl.searchParams.get("id");
-
   if (!id) {
     return NextResponse.json({ error: "Kayıt ID gerekli." }, { status: 400 });
   }
 
-  const { error } = await supabase.from("learning_memory").delete().eq("id", id);
+  const session = await requireApiSession();
+  if (session.error) return session.error;
+
+  const { supabase, guard } = getApiSupabase("learning-memory:delete", TABLE);
+  if (guard) return guard;
+
+  const accessCheck = await requireRecordCompanyAccess(
+    supabase,
+    TABLE,
+    "id",
+    id,
+    session.access
+  );
+  if (!accessCheck.ok) return accessCheck.response;
+
+  const softPatch = {
+    ...buildSoftDeletePatch(session.user),
+    status: "deleted",
+  };
+
+  const { error } = await supabase.from(TABLE).update(softPatch).eq("id", id);
 
   if (error) {
     console.error(error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  void writeAuditEvent({
+    ...buildAuditContextFromRequest(request, session),
+    companyId: accessCheck.companyId,
+    entityType: AUDIT_ENTITY_TYPES.LEARNING_MEMORY,
+    entityId: id,
+    action: AUDIT_ACTIONS.SOFT_DELETE,
+    afterState: softPatch,
+  });
 
   return NextResponse.json({ ok: true });
 }

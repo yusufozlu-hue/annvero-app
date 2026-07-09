@@ -1,5 +1,13 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import {
+  applyCompanyScopeToQuery,
+  assertCompanyAccess,
+  getApiSupabase,
+  requireApiSession,
+  requireAuthenticatedApi,
+  requireRecordCompanyAccess,
+  resolveCompanyId,
+} from "@/src/lib/auth/apiGuard";
 import {
   applySuggestionsToCandidates,
   buildLearnPayloadFromQueueItem,
@@ -17,56 +25,53 @@ import {
 const TABLE = "unrecognized_transactions";
 const MEMORY_TABLE = "learning_memory";
 
-function getClient() {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return {
-      error: NextResponse.json(
-        { error: "Supabase istemcisi yapılandırılmamış." },
-        { status: 500 }
-      ),
-    };
+async function loadLearningMemory(supabase, companyId, access) {
+  const check = assertCompanyAccess(access, companyId, { required: true });
+  if (!check.ok) {
+    throw new Error("Firma erişim yetkisi yok.");
   }
-  return { supabase };
-}
 
-async function loadLearningMemory(supabase, companyId) {
   let query = supabase.from(MEMORY_TABLE).select("*").neq("status", "passive");
-  query = query.neq("status", "deleted");
-  if (companyId) query = query.eq("company_id", companyId);
+  query = query.neq("status", "deleted").is("deleted_at", null);
+  query = query.eq("company_id", companyId);
   let { data, error } = await query;
   if (error && isLearningMemorySchemaError(error)) {
-    let fallbackQuery = supabase.from(MEMORY_TABLE).select("*");
-    if (companyId) fallbackQuery = fallbackQuery.eq("company_id", companyId);
+    let fallbackQuery = supabase.from(MEMORY_TABLE).select("*").eq("company_id", companyId);
     ({ data, error } = await fallbackQuery);
   }
   if (error) throw new Error(error.message);
   return (data || []).filter(
     (row) =>
       row?.is_active !== false &&
-      !["passive", "deleted"].includes(
-        String(row?.status || "active").toLowerCase()
-      )
+      !["passive", "deleted"].includes(String(row?.status || "active").toLowerCase()) &&
+      !row?.deleted_at
   );
 }
 
 export async function GET(request) {
-  const { supabase, error } = getClient();
-  if (error) return error;
-
-  const companyId = request.nextUrl.searchParams.get("companyId");
+  const companyId = resolveCompanyId({
+    companyId: request.nextUrl.searchParams.get("companyId"),
+  });
   const status = request.nextUrl.searchParams.get("status") || UNRECOGNIZED_STATUS.PENDING;
 
-  let query = supabase
+  const ctx = await requireAuthenticatedApi("transaction-memory:get", TABLE, { companyId });
+  if (ctx.error) return ctx.error;
+
+  let query = ctx.supabase
     .from(TABLE)
     .select("*")
+    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(500);
 
-  if (companyId) query = query.eq("company_id", companyId);
-  if (status && status !== "all") query = query.eq("status", status);
+  const scoped = applyCompanyScopeToQuery(query, ctx.access, companyId);
+  if (!scoped) {
+    return NextResponse.json({ data: [] });
+  }
 
-  const { data, error: queryError } = await query;
+  if (status && status !== "all") scoped.eq("status", status);
+
+  const { data, error: queryError } = await scoped;
   if (queryError) {
     return NextResponse.json({ error: queryError.message }, { status: 500 });
   }
@@ -77,8 +82,11 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const { supabase, error } = getClient();
-  if (error) return error;
+  const session = await requireApiSession();
+  if (session.error) return session.error;
+
+  const { supabase, guard } = getApiSupabase("transaction-memory:post", TABLE);
+  if (guard) return guard;
 
   let body;
   try {
@@ -95,10 +103,13 @@ export async function POST(request) {
       return NextResponse.json({ error: "Kuyruğa alınacak işlem yok." }, { status: 400 });
     }
 
-    const companyId = items[0]?.companyId;
+    const companyId = resolveCompanyId(items[0]);
+    const accessCheck = assertCompanyAccess(session.access, companyId, { required: true });
+    if (!accessCheck.ok) return accessCheck.response;
+
     let learningMemory = [];
     try {
-      learningMemory = await loadLearningMemory(supabase, companyId);
+      learningMemory = await loadLearningMemory(supabase, companyId, session.access);
     } catch (memoryError) {
       console.error("[transaction-memory] learning_memory load failed", memoryError);
     }
@@ -216,6 +227,11 @@ export async function POST(request) {
       return NextResponse.json({ error: "Kayıt bulunamadı." }, { status: 404 });
     }
 
+    const recordAccess = assertCompanyAccess(session.access, queueItem.company_id, {
+      required: true,
+    });
+    if (!recordAccess.ok) return recordAccess.response;
+
     const memoryPayload = buildLearnPayloadFromQueueItem(queueItem, body?.draft || {});
 
     if (!memoryPayload.company_id || !memoryPayload.keyword) {
@@ -295,8 +311,11 @@ export async function POST(request) {
 }
 
 export async function PATCH(request) {
-  const { supabase, error } = getClient();
-  if (error) return error;
+  const session = await requireApiSession();
+  if (session.error) return session.error;
+
+  const { supabase, guard } = getApiSupabase("transaction-memory:patch", TABLE);
+  if (guard) return guard;
 
   let body;
   try {
@@ -309,6 +328,15 @@ export async function PATCH(request) {
   if (!id) {
     return NextResponse.json({ error: "Kayıt id zorunludur." }, { status: 400 });
   }
+
+  const accessCheck = await requireRecordCompanyAccess(
+    supabase,
+    TABLE,
+    "id",
+    id,
+    session.access
+  );
+  if (!accessCheck.ok) return accessCheck.response;
 
   const payload = { updated_at: new Date().toISOString() };
   const fieldMap = {

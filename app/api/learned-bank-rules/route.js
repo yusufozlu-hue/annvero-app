@@ -1,24 +1,36 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import {
+  applyCompanyScopeToQuery,
+  assertCompanyAccess,
+  getApiSupabase,
+  requireApiSession,
+  requireAuthenticatedApi,
+  resolveCompanyId,
+} from "@/src/lib/auth/apiGuard";
+
+const TABLE = "learned_bank_rules";
 
 export async function GET(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const companyId = resolveCompanyId({
+    companyId: request.nextUrl.searchParams.get("companyId"),
+  });
 
-  const companyId = request.nextUrl.searchParams.get("companyId");
-  let query = supabase
-    .from("learned_bank_rules")
+  const ctx = await requireAuthenticatedApi("learned-bank-rules:get", TABLE, { companyId });
+  if (ctx.error) return ctx.error;
+
+  let query = ctx.supabase
+    .from(TABLE)
     .select("*")
+    .is("deleted_at", null)
     .order("usage_count", { ascending: false })
     .limit(500);
 
-  if (companyId) {
-    query = query.eq("company_id", companyId);
+  const scoped = applyCompanyScopeToQuery(query, ctx.access, companyId);
+  if (!scoped) {
+    return NextResponse.json({ data: [] });
   }
 
-  const { data, error } = await query;
+  const { data, error } = await scoped;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -27,10 +39,8 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   let body;
   try {
@@ -39,17 +49,24 @@ export async function POST(request) {
     return NextResponse.json({ error: "Geçersiz istek gövdesi." }, { status: 400 });
   }
 
-  if (!body?.company_id || !body?.bank_description_pattern) {
+  const companyId = resolveCompanyId(body);
+  const accessCheck = assertCompanyAccess(session.access, companyId, { required: true });
+  if (!accessCheck.ok) return accessCheck.response;
+
+  if (!body?.bank_description_pattern) {
     return NextResponse.json(
       { error: "company_id ve bank_description_pattern zorunludur." },
       { status: 400 }
     );
   }
 
+  const { supabase, guard } = getApiSupabase("learned-bank-rules:post", TABLE);
+  if (guard) return guard;
+
   const { data: existing, error: findError } = await supabase
-    .from("learned_bank_rules")
+    .from(TABLE)
     .select("*")
-    .eq("company_id", body.company_id)
+    .eq("company_id", companyId)
     .eq("bank_description_pattern", body.bank_description_pattern)
     .eq("ledger_account_code", body.ledger_account_code || "")
     .maybeSingle();
@@ -60,7 +77,7 @@ export async function POST(request) {
 
   if (existing?.id) {
     const { data, error } = await supabase
-      .from("learned_bank_rules")
+      .from(TABLE)
       .update({
         usage_count: Number(existing.usage_count || 0) + 1,
         last_used_at: new Date().toISOString(),
@@ -80,10 +97,10 @@ export async function POST(request) {
   }
 
   const { data, error } = await supabase
-    .from("learned_bank_rules")
+    .from(TABLE)
     .insert([
       {
-        company_id: body.company_id,
+        company_id: companyId,
         bank_id: body.bank_id || null,
         bank_description_pattern: body.bank_description_pattern,
         ledger_account_code: body.ledger_account_code || null,

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { assertCompanyAccess, requireApiSession } from "@/src/lib/auth/apiGuard";
 import { getGibAutomationGuardResponse } from "@/src/lib/gibAutomationRouteGuard";
-import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
 import { getGibEncryptionKeyGuardResponse } from "@/src/lib/gibCredentialsRouteGuard";
 import {
   getGibSupabaseAdmin,
@@ -14,10 +14,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 export async function POST(request) {
-  const { user } = await getServerSupabaseUser();
-  if (!user) {
-    return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   const encryptionKeyError = getGibEncryptionKeyGuardResponse();
   if (encryptionKeyError) return encryptionKeyError;
@@ -42,6 +40,9 @@ export async function POST(request) {
   if (!companyId) {
     return NextResponse.json({ error: "companyId zorunludur." }, { status: 400 });
   }
+
+  const accessCheck = assertCompanyAccess(session.access, companyId, { required: true });
+  if (!accessCheck.ok) return accessCheck.response;
 
   const result = await startCompanyGibQuery(supabase, companyId);
   return NextResponse.json(result, { status: result.ok ? 200 : 400 });

@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import { requireApiSession, getApiSupabase } from "@/src/lib/auth/apiGuard";
 
 export async function POST(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
+
+  const { supabase, guard } = getApiSupabase("push-subscriptions:post", "push_subscriptions");
+  if (guard) return guard;
 
   let body;
   try {
@@ -23,7 +24,7 @@ export async function POST(request) {
     .upsert(
       [
         {
-          user_id: body.user_id || null,
+          user_id: session.user.id,
           endpoint: body.endpoint,
           p256dh: body.p256dh,
           auth: body.auth,

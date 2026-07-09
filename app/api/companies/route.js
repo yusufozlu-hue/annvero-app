@@ -1,5 +1,15 @@
 import { NextResponse } from "next/server";
-import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
+import {
+  requireManagementUser,
+  getApiSupabase,
+} from "@/src/lib/auth/apiGuard";
+import {
+  buildAuditContextFromRequest,
+  writeAuditEvent,
+  AUDIT_ACTIONS,
+  AUDIT_ENTITY_TYPES,
+} from "@/src/lib/audit/auditEvents";
+import { buildSoftDeletePatch } from "@/src/lib/softDelete";
 import {
   COMPANIES_TABLE,
   getCompaniesSchemaErrorMessage,
@@ -38,9 +48,12 @@ function buildSupabaseErrorResponse(context, error) {
 }
 
 export async function POST(request) {
-  const { user } = await getServerSupabaseUser();
-  if (!user) {
+  const mgmt = await requireManagementUser();
+  if (mgmt.error === "unauthenticated") {
     return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
+  }
+  if (mgmt.error === "forbidden") {
+    return NextResponse.json({ error: "Yetkisiz erişim." }, { status: 403 });
   }
 
   const supabaseGuard = getServerSupabaseAdminGuardResponse("companies:post", COMPANIES_TABLE);
@@ -89,13 +102,25 @@ export async function POST(request) {
     return buildSupabaseErrorResponse("companies:post", error);
   }
 
+  void writeAuditEvent({
+    ...buildAuditContextFromRequest(request, { user: mgmt.user }),
+    companyId: id,
+    entityType: AUDIT_ENTITY_TYPES.COMPANY,
+    entityId: id,
+    action: AUDIT_ACTIONS.CREATE,
+    afterState: saved,
+  });
+
   return NextResponse.json({ data: saved });
 }
 
 export async function DELETE(request) {
-  const { user } = await getServerSupabaseUser();
-  if (!user) {
+  const mgmt = await requireManagementUser();
+  if (mgmt.error === "unauthenticated") {
     return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
+  }
+  if (mgmt.error === "forbidden") {
+    return NextResponse.json({ error: "Yetkisiz erişim." }, { status: 403 });
   }
 
   const supabaseGuard = getServerSupabaseAdminGuardResponse("companies:delete", COMPANIES_TABLE);
@@ -109,11 +134,24 @@ export async function DELETE(request) {
     return NextResponse.json({ error: "companyId zorunludur." }, { status: 400 });
   }
 
-  const { error } = await supabase.from(COMPANIES_TABLE).delete().eq("id", companyId);
+  const softPatch = buildSoftDeletePatch(mgmt.user);
+  const { error } = await supabase
+    .from(COMPANIES_TABLE)
+    .update(softPatch)
+    .eq("id", companyId);
 
   if (error) {
     return buildSupabaseErrorResponse("companies:delete", error);
   }
+
+  void writeAuditEvent({
+    ...buildAuditContextFromRequest(request, { user: mgmt.user }),
+    companyId,
+    entityType: AUDIT_ENTITY_TYPES.COMPANY,
+    entityId: companyId,
+    action: AUDIT_ACTIONS.SOFT_DELETE,
+    afterState: softPatch,
+  });
 
   return NextResponse.json({ ok: true });
 }

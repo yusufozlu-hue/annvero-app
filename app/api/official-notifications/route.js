@@ -1,5 +1,13 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import {
+  applyCompanyScopeToQuery,
+  assertCompanyAccess,
+  getApiSupabase,
+  requireApiSession,
+  requireAuthenticatedApi,
+  requireRecordCompanyAccess,
+  resolveCompanyId,
+} from "@/src/lib/auth/apiGuard";
 import {
   fromOfficialNotificationDbRow,
   mapOfficialNotificationRows,
@@ -7,30 +15,38 @@ import {
   toOfficialNotificationDbRow,
 } from "@/src/utils/officialNotificationSchema";
 
-export async function GET(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+const TABLE = "official_notifications";
 
+export async function GET(request) {
+  const companyId = resolveCompanyId({
+    companyId: request.nextUrl.searchParams.get("companyId"),
+  });
   const channel = request.nextUrl.searchParams.get("channel");
   const source = request.nextUrl.searchParams.get("source");
-  const companyId = request.nextUrl.searchParams.get("companyId");
   const status = request.nextUrl.searchParams.get("status");
 
-  let query = supabase
-    .from("official_notifications")
+  const ctx = await requireAuthenticatedApi("official-notifications:get", TABLE, { companyId });
+  if (ctx.error) return ctx.error;
+
+  let query = ctx.supabase
+    .from(TABLE)
     .select("*")
     .order("served_date", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false })
     .limit(500);
 
   const resolvedSource = source || channel;
-  if (resolvedSource) query = query.eq("source", normalizeOfficialNotificationSource(resolvedSource));
-  if (companyId) query = query.eq("company_id", companyId);
+  if (resolvedSource) {
+    query = query.eq("source", normalizeOfficialNotificationSource(resolvedSource));
+  }
   if (status) query = query.eq("status", status);
 
-  const { data, error } = await query;
+  const scoped = applyCompanyScopeToQuery(query, ctx.access, companyId);
+  if (!scoped) {
+    return NextResponse.json({ data: [] });
+  }
+
+  const { data, error } = await scoped;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -39,10 +55,8 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   let body;
   try {
@@ -60,7 +74,15 @@ export async function POST(request) {
     return NextResponse.json({ error: "Kayıt verisi zorunludur." }, { status: 400 });
   }
 
-  const { data, error } = await supabase.from("official_notifications").insert(payload).select();
+  for (const row of payload) {
+    const check = assertCompanyAccess(session.access, row.company_id, { required: true });
+    if (!check.ok) return check.response;
+  }
+
+  const { supabase, guard } = getApiSupabase("official-notifications:post", TABLE);
+  if (guard) return guard;
+
+  const { data, error } = await supabase.from(TABLE).insert(payload).select();
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -69,10 +91,8 @@ export async function POST(request) {
 }
 
 export async function PATCH(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   let body;
   try {
@@ -84,6 +104,18 @@ export async function PATCH(request) {
   if (!body?.id) {
     return NextResponse.json({ error: "id zorunludur." }, { status: 400 });
   }
+
+  const { supabase, guard } = getApiSupabase("official-notifications:patch", TABLE);
+  if (guard) return guard;
+
+  const accessCheck = await requireRecordCompanyAccess(
+    supabase,
+    TABLE,
+    "id",
+    body.id,
+    session.access
+  );
+  if (!accessCheck.ok) return accessCheck.response;
 
   const patch = {
     updated_at: new Date().toISOString(),
@@ -98,7 +130,7 @@ export async function PATCH(request) {
   if (body.due_date !== undefined) patch.due_date = body.due_date;
 
   const { data, error } = await supabase
-    .from("official_notifications")
+    .from(TABLE)
     .update(patch)
     .eq("id", body.id)
     .select()

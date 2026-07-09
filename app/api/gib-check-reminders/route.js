@@ -1,23 +1,38 @@
 import { NextResponse } from "next/server";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import {
+  applyCompanyScopeToQuery,
+  assertCompanyAccess,
+  getApiSupabase,
+  requireApiSession,
+  requireAuthenticatedApi,
+  resolveCompanyId,
+} from "@/src/lib/auth/apiGuard";
 import { computeNextCheckAt } from "@/src/utils/gibTebligatEngine";
 
+const TABLE = "gib_check_reminders";
+
 export async function GET(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const companyId = resolveCompanyId({
+    companyId: request.nextUrl.searchParams.get("companyId"),
+  });
 
-  const companyId = request.nextUrl.searchParams.get("companyId");
+  const ctx = await requireAuthenticatedApi("gib-check-reminders:get", TABLE, { companyId });
+  if (ctx.error) return ctx.error;
 
-  let query = supabase
-    .from("gib_check_reminders")
+  let query = ctx.supabase
+    .from(TABLE)
     .select("*")
     .order("updated_at", { ascending: false })
     .limit(500);
 
   if (companyId) {
     query = query.eq("company_id", companyId);
+  } else {
+    const scoped = applyCompanyScopeToQuery(query, ctx.access, "");
+    if (!scoped) {
+      return NextResponse.json({ data: [] });
+    }
+    query = scoped;
   }
 
   const { data, error } = await query;
@@ -29,10 +44,8 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
-  const supabase = getSupabaseClient();
-  if (!supabase) {
-    return NextResponse.json({ error: "Supabase yapılandırılmamış." }, { status: 500 });
-  }
+  const session = await requireApiSession();
+  if (session.error) return session.error;
 
   let body;
   try {
@@ -41,7 +54,15 @@ export async function POST(request) {
     return NextResponse.json({ error: "Geçersiz istek gövdesi." }, { status: 400 });
   }
 
-  const companyId = body?.company_id || body?.companyId || null;
+  const companyId = resolveCompanyId(body) || null;
+  if (companyId) {
+    const check = assertCompanyAccess(session.access, companyId, { required: true });
+    if (!check.ok) return check.response;
+  }
+
+  const { supabase, guard } = getApiSupabase("gib-check-reminders:post", TABLE);
+  if (guard) return guard;
+
   const intervalDays = Number(body?.interval_days || body?.intervalDays || 1);
   const reminderTime = body?.reminder_time || body?.reminderTime || "09:00";
   const enabled = body?.enabled !== false;
@@ -64,7 +85,7 @@ export async function POST(request) {
     updated_at: new Date().toISOString(),
   };
 
-  let query = supabase.from("gib_check_reminders").select("*");
+  let query = supabase.from(TABLE).select("*");
 
   if (companyId) {
     query = query.eq("company_id", companyId);
@@ -79,7 +100,7 @@ export async function POST(request) {
 
   if (existing?.id) {
     const { data, error } = await supabase
-      .from("gib_check_reminders")
+      .from(TABLE)
       .update(payload)
       .eq("id", existing.id)
       .select()
@@ -92,11 +113,7 @@ export async function POST(request) {
     return NextResponse.json({ data });
   }
 
-  const { data, error } = await supabase
-    .from("gib_check_reminders")
-    .insert([payload])
-    .select()
-    .single();
+  const { data, error } = await supabase.from(TABLE).insert([payload]).select().single();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

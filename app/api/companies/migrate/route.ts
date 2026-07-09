@@ -1,5 +1,14 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import {
+  getApiSupabase,
+  requireManagementUser,
+} from "@/src/lib/auth/apiGuard";
+import {
+  buildAuditContextFromRequest,
+  writeAuditEvent,
+  AUDIT_ACTIONS,
+  AUDIT_ENTITY_TYPES,
+} from "@/src/lib/audit/auditEvents";
 
 type CompanyMigrateRecord = {
   id: string;
@@ -12,18 +21,6 @@ type MigrateRequestBody = {
   company?: CompanyMigrateRecord[];
   companies?: CompanyMigrateRecord[];
 };
-
-function createSupabaseServerClient() {
-  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-
-  if (!rawUrl || !anonKey) {
-    return null;
-  }
-
-  const supabaseUrl = rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`;
-  return createClient(supabaseUrl, anonKey);
-}
 
 function extractCompanyArray(body: MigrateRequestBody | CompanyMigrateRecord[] | null) {
   if (!body) return [];
@@ -57,16 +54,17 @@ function normalizeRecords(records: CompanyMigrateRecord[]) {
 }
 
 export async function POST(request: Request) {
-  const supabase = createSupabaseServerClient();
+  const mgmt = await requireManagementUser();
+  if (mgmt.error === "unauthenticated") {
+    return NextResponse.json({ success: false, error: "Oturum gerekli." }, { status: 401 });
+  }
+  if (mgmt.error === "forbidden") {
+    return NextResponse.json({ success: false, error: "Yetkisiz erişim." }, { status: 403 });
+  }
 
-  if (!supabase) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Supabase istemcisi yapılandırılmamış.",
-      },
-      { status: 500 }
-    );
+  const { supabase, guard } = getApiSupabase("companies:migrate", "companies");
+  if (guard) {
+    return NextResponse.json({ success: false, error: "Supabase yapılandırılmamış." }, { status: 500 });
   }
 
   let body: MigrateRequestBody | CompanyMigrateRecord[] | null = null;
@@ -95,7 +93,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const { error } = await supabase.from("companies").upsert(records, {
+  const { error } = await supabase!.from("companies").upsert(records, {
     onConflict: "id",
   });
 
@@ -108,6 +106,15 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
+
+  void writeAuditEvent({
+    ...buildAuditContextFromRequest(request, { user: mgmt.user }),
+    companyId: "",
+    entityType: AUDIT_ENTITY_TYPES.COMPANY,
+    entityId: "bulk-migrate",
+    action: AUDIT_ACTIONS.IMPORT,
+    metadata: { count: records.length },
+  });
 
   return NextResponse.json({
     success: true,
