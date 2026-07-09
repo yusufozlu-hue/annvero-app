@@ -14,6 +14,16 @@ import {
   resolveSuggestionTargetField,
 } from "@/src/utils/accountPlanSuggestions";
 import { useCompanyList } from "../hooks/useCompanyList";
+import {
+  BANK_PARSER_OPTIONS,
+  getDefaultBankParserId,
+} from "@/src/config/bankParserOptions";
+import {
+  annveroBtnPrimary,
+  annveroBtnSecondary,
+  annveroCardClass,
+  annveroInputClass,
+} from "@/src/styles/annveroDesign";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
   countCompanyRules,
@@ -209,6 +219,7 @@ export default function BankaParserPage() {
     setSelectedCompanyId,
     selectedCompany: selectedCompanyRaw,
     refreshCompanies,
+    isLoading: isLoadingCompanies,
   } = useCompanyList();
 
   const selectedCompany = useMemo(
@@ -225,7 +236,7 @@ export default function BankaParserPage() {
     },
   });
 
-  const [selectedBank, setSelectedBank] = useState("GARANTI");
+  const [selectedBank, setSelectedBank] = useState(getDefaultBankParserId);
 
   const showToast = (message, type) => {
     setToast({ message, type });
@@ -996,12 +1007,12 @@ export default function BankaParserPage() {
   };
 
   return (
-    <main className="min-h-screen bg-gray-950 p-8 text-white">
+    <div className="w-full min-w-0 max-w-full">
       {toast && (
         <div
           role="status"
           aria-live="polite"
-          className={`fixed top-4 right-4 z-50 flex max-w-sm items-center gap-3 rounded-lg border px-4 py-3 text-sm font-medium shadow-xl backdrop-blur-sm ${
+          className={`fixed top-4 right-4 z-50 flex max-w-sm items-center gap-3 rounded-xl border px-4 py-3 text-sm font-medium shadow-xl backdrop-blur-sm ${
             toast.type === "success"
               ? "border-emerald-500/40 bg-emerald-950/95 text-emerald-100"
               : "border-red-500/40 bg-red-950/95 text-red-100"
@@ -1015,14 +1026,16 @@ export default function BankaParserPage() {
           {toast.message}
         </div>
       )}
-      <div className="mb-10 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-4xl font-bold">Banka Parser Merkezi</h1>
-          <p className="mt-2 text-sm text-gray-400">
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
+            Banka Parser Merkezi
+          </h1>
+          <p className="mt-2 text-sm text-slate-400">
             Tanınmayan işlemler otomatik olarak{" "}
             <Link
               href="/muhasebe/islem-hafizasi"
-              className="font-semibold text-indigo-300 hover:text-indigo-200"
+              className="font-semibold text-indigo-300 transition hover:text-indigo-200"
             >
               İşlem Hafızası / Öğrenme Merkezi
             </Link>
@@ -1031,27 +1044,42 @@ export default function BankaParserPage() {
         </div>
       </div>
 
-      <div className="grid max-w-7xl gap-6">
-        <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
-          <h2 className="mb-4 text-2xl font-semibold">Firma ve Banka Ekstresi</h2>
+      <div className="grid w-full min-w-0 max-w-full gap-6">
+        <div className={annveroCardClass}>
+          <h2 className="mb-1 text-xl font-semibold text-white sm:text-2xl">
+            Firma ve Banka Ekstresi
+          </h2>
+          <p className="mb-5 text-sm text-slate-400">
+            Firma seçin, banka ekstresini yükleyin ve ön izlemeyi oluşturun.
+          </p>
 
-          <label className="mb-2 block text-sm text-gray-400">Firma Seç</label>
+          <label className="mb-2 block text-sm font-medium text-slate-300">
+            Firma Seç
+          </label>
 
-          <select
-            value={selectedCompanyId}
-            disabled={isParsing}
-            onChange={(e) => {
-              setSelectedCompanyId(e.target.value);
-              setMovementRows([]);
-              setStandardLucaRows([]);
-            }}
-            className="mb-6 min-w-[320px] rounded-xl border border-gray-700 bg-gray-950 p-3 text-white disabled:opacity-60"
-          >
-            <CompanySelectOptions companies={companies} />
-          </select>
+          {isLoadingCompanies && companies.length === 0 ? (
+            <CompanySelectSkeleton />
+          ) : (
+            <select
+              value={selectedCompanyId}
+              disabled={isParsing}
+              onChange={(e) => {
+                setSelectedCompanyId(e.target.value);
+                setMovementRows([]);
+                setStandardLucaRows([]);
+              }}
+              className={`mb-6 w-full max-w-xl disabled:opacity-60 ${annveroInputClass}`}
+            >
+              <CompanySelectOptions companies={companies} />
+            </select>
+          )}
 
-          {selectedCompany && (
-            <div className="mb-6 rounded-2xl border border-gray-800 bg-gray-950/60 p-5">
+          {isLoadingCompanies && !selectedCompany ? (
+            <CompanySummarySkeleton />
+          ) : null}
+
+          {selectedCompany && !isLoadingCompanies && (
+            <div className="mb-6 rounded-2xl border border-slate-800/80 bg-slate-950/50 p-5 shadow-inner shadow-black/10">
               <div className="mb-4 flex items-center gap-2">
                 <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
                 <h3 className="text-base font-semibold text-gray-100">
@@ -1112,11 +1140,13 @@ export default function BankaParserPage() {
             </div>
           )}
 
-          <label className="mb-2 block text-sm text-gray-400">Banka Seç</label>
+          <label className="mb-2 block text-sm font-medium text-slate-300">
+            Banka Seç
+          </label>
 
           <select
             value={selectedBank}
-            disabled={isParsing}
+            disabled={isParsing || isLoadingCompanies}
             onChange={(e) => {
               setSelectedBank(e.target.value);
               setSelectedFile(null);
@@ -1124,16 +1154,16 @@ export default function BankaParserPage() {
               clearPreviewState();
               resetFileInput();
             }}
-            className="mb-6 min-w-[320px] rounded-xl border border-gray-700 bg-gray-950 p-3 text-white disabled:opacity-60"
+            className={`mb-6 w-full max-w-xl disabled:opacity-60 ${annveroInputClass}`}
           >
-            <option value="GARANTI">Garanti Bankası</option>
-            <option value="VAKIFBANK">Vakıfbank</option>
-            <option value="TEB">TEB</option>
-            <option value="KUVEYT">Kuveyt Türk</option>
-            <option value="ZIRAAT">Ziraat Bankası</option>
+            {BANK_PARSER_OPTIONS.map((bank) => (
+              <option key={bank.id} value={bank.id}>
+                {bank.label}
+              </option>
+            ))}
           </select>
 
-          <p className="mb-6 text-gray-400">
+          <p className="mb-6 text-sm text-slate-400">
             Banka ekstresi Excel dosyasını seçin. Okuma ve parse işlemi yalnızca{" "}
             <span className="font-semibold text-gray-300">Ön İzleme Oluştur</span>{" "}
             ile başlar.
@@ -1141,7 +1171,7 @@ export default function BankaParserPage() {
 
           <div className="flex flex-wrap items-center gap-4">
             <label
-              className={`cursor-pointer rounded-lg bg-blue-600 px-5 py-2 font-medium hover:bg-blue-700 ${
+              className={`cursor-pointer rounded-xl px-5 py-2.5 text-sm font-semibold transition ${annveroBtnPrimary} ${
                 isParsing ? "pointer-events-none opacity-60" : ""
               }`}
             >
@@ -1199,12 +1229,12 @@ export default function BankaParserPage() {
           ) : null}
         </div>
 
-        <div className="flex flex-wrap gap-4">
+        <div className="flex min-w-0 flex-wrap gap-3">
           <button
             type="button"
             onClick={handleCreatePreview}
             disabled={isParsing || !selectedFile}
-            className="rounded-xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className={`rounded-xl px-6 py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${annveroBtnPrimary}`}
           >
             {isParsing ? parserJob.stage || "İşleniyor…" : "Ön İzleme Oluştur"}
           </button>
@@ -1213,7 +1243,7 @@ export default function BankaParserPage() {
             type="button"
             onClick={exportExcel}
             disabled={isParsing}
-            className="rounded-xl bg-green-600 px-6 py-3 font-semibold hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-xl bg-emerald-600 px-6 py-3 font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Luca Excel Oluştur
           </button>
@@ -1221,14 +1251,14 @@ export default function BankaParserPage() {
           <Link
             href="/muhasebe/luca-donusturucu"
             onClick={handleGoToLucaProducer}
-            className="rounded-xl border border-gray-700 px-6 py-3 font-semibold text-gray-200 hover:bg-gray-800"
+            className={annveroBtnSecondary}
           >
             Luca Fiş Üretici →
           </Link>
         </div>
 
         {isAnnveroCoreEnabled() && corePreviewMovements.length > 0 ? (
-          <div className="rounded-2xl border border-indigo-900/50 bg-gray-900 p-6">
+          <div className={`${annveroCardClass} border-indigo-900/40`}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-semibold">ANNVERO CORE Entegrasyon Önizleme</h2>
@@ -1299,8 +1329,10 @@ export default function BankaParserPage() {
           onSubmit={handleSaveKnowledgeTeach}
         />
 
-        <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
-          <h2 className="mb-6 text-2xl font-semibold">StandardLucaRow Ön İzleme</h2>
+        <div className={`min-w-0 ${annveroCardClass}`}>
+          <h2 className="mb-6 text-xl font-semibold text-white sm:text-2xl">
+            StandardLucaRow Ön İzleme
+          </h2>
 
           {standardLucaRows.length === 0 ? (
             <p className="text-gray-400">Henüz StandardLucaRow oluşturulmadı.</p>
@@ -1308,37 +1340,37 @@ export default function BankaParserPage() {
             <>
               {previewSummary ? (
                 <div className="mb-4 grid grid-cols-2 gap-2 text-xs text-gray-300 sm:grid-cols-3 lg:grid-cols-6">
-                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/60 px-3 py-2.5 shadow-sm shadow-black/10">
                     <div className="text-gray-500">Toplam hareket</div>
                     <div className="text-lg font-semibold text-white">
                       {previewSummary.totalMovements}
                     </div>
                   </div>
-                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/60 px-3 py-2.5 shadow-sm shadow-black/10">
                     <div className="text-gray-500">Luca satırı</div>
                     <div className="text-lg font-semibold text-white">
                       {previewSummary.lucaRows}
                     </div>
                   </div>
-                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/60 px-3 py-2.5 shadow-sm shadow-black/10">
                     <div className="text-gray-500">Gösterilen</div>
                     <div className="text-lg font-semibold text-white">
                       {displayedStandardLucaRows.length}
                     </div>
                   </div>
-                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/60 px-3 py-2.5 shadow-sm shadow-black/10">
                     <div className="text-gray-500">Tanınan</div>
                     <div className="text-lg font-semibold text-emerald-300">
                       {previewSummary.recognized}
                     </div>
                   </div>
-                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/60 px-3 py-2.5 shadow-sm shadow-black/10">
                     <div className="text-gray-500">Tanınmayan</div>
                     <div className="text-lg font-semibold text-amber-300">
                       {previewSummary.unknown}
                     </div>
                   </div>
-                  <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/60 px-3 py-2.5 shadow-sm shadow-black/10">
                     <div className="text-gray-500">Riskli</div>
                     <div className="text-lg font-semibold text-red-300">
                       {previewSummary.risky}
@@ -1427,7 +1459,37 @@ export default function BankaParserPage() {
           )}
         </div>
       </div>
-    </main>
+    </div>
+  );
+}
+
+function SkeletonBlock({ className = "" }) {
+  return (
+    <div
+      className={`animate-pulse rounded-xl bg-slate-800/50 ${className}`}
+      aria-hidden="true"
+    />
+  );
+}
+
+function CompanySelectSkeleton() {
+  return <SkeletonBlock className="mb-6 h-12 w-full max-w-xl" />;
+}
+
+function CompanySummarySkeleton() {
+  return (
+    <div className="mb-6 space-y-3" aria-busy="true" aria-label="Firma bilgileri yükleniyor">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
+        {Array.from({ length: 5 }).map((_, index) => (
+          <SkeletonBlock key={index} className="h-24" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, index) => (
+          <SkeletonBlock key={index} className="h-20" />
+        ))}
+      </div>
+    </div>
   );
 }
 

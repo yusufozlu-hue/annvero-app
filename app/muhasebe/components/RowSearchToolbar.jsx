@@ -19,7 +19,7 @@ export default function RowSearchToolbar({
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
           placeholder={placeholder}
-          className="min-w-[320px] rounded-xl border border-gray-700 bg-gray-900 p-3 text-white"
+          className="min-w-0 w-full max-w-xl flex-1 rounded-xl border border-gray-700 bg-gray-900 p-3 text-white outline-none transition focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20"
         />
 
         {isActive && (

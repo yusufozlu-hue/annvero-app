@@ -80,17 +80,25 @@ export function normalizeCompany(c) {
       ),
     },
 
-    bankAccounts: (source.bankAccounts || []).map((account) => ({
-      id: account.id || crypto.randomUUID(),
-      bankName: account.bankName || "",
-      accountName: account.accountName || "",
-      iban: account.iban || "",
-      currency: account.currency || "TL",
-      accountType: account.accountType || "VADESIZ",
-      lucaAccountCode: account.lucaAccountCode || "",
-      isPosAccount: account.isPosAccount ?? false,
-      isActive: account.isActive ?? true,
-    })),
+    bankAccounts: (source.bankAccounts || [])
+      .map((account) => ({
+        id: account.id || crypto.randomUUID(),
+        bankName: account.bankName || "",
+        accountName: account.accountName || "",
+        iban: account.iban || "",
+        currency: account.currency || "TL",
+        accountType: account.accountType || "VADESIZ",
+        lucaAccountCode: account.lucaAccountCode || "",
+        isPosAccount: account.isPosAccount ?? false,
+        isActive: account.isActive ?? true,
+      }))
+      .sort((a, b) =>
+        (a.bankName || a.accountName || "").localeCompare(
+          b.bankName || b.accountName || "",
+          "tr",
+          { sensitivity: "base" }
+        )
+      ),
 
     creditCards: (source.creditCards || []).map((card) => ({
       id: card.id || crypto.randomUUID(),

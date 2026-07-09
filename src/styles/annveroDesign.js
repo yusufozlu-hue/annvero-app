@@ -19,6 +19,7 @@ export const annveroNavBtn =
 export const annveroStatCardClass =
   "min-w-[140px] flex-1 rounded-2xl border border-slate-800 bg-slate-950/70 p-4";
 
-export const annveroPageBg = "min-h-screen bg-[#06111f] text-slate-100";
+export const annveroPageBg =
+  "min-h-screen w-full max-w-full overflow-x-hidden bg-[#06111f] text-slate-100";
 
 export const annveroShellSidebarWidth = "302px";

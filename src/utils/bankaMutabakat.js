@@ -7,14 +7,9 @@ import { getMutabakatMatchMemoryBoost } from "@/src/utils/mutabakatMatchMemory";
 import { finalizeStandardLucaRow, KAYNAK_TIPI } from "@/src/utils/standardLucaRow";
 import { normalizeParserText } from "@/src/utils/textNormalize";
 
-export const BANK_OPTIONS = [
-  { id: "TEB", label: "TEB" },
-  { id: "VAKIFBANK", label: "Vakıfbank" },
-  { id: "GARANTI", label: "Garanti" },
-  { id: "ZIRAAT", label: "Ziraat" },
-  { id: "KUVEYT", label: "Kuveyt Türk" },
-  { id: "DIGER", label: "Diğer" },
-];
+import { BANK_MUTABAKAT_OPTIONS } from "@/src/config/bankParserOptions";
+
+export const BANK_OPTIONS = BANK_MUTABAKAT_OPTIONS;
 
 export const MUTABAKAT_DURUM = {
   TAM_ESLESTI: "Tam eşleşti",

@@ -9,6 +9,10 @@ import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
+  BANK_PARSER_OPTIONS,
+  getDefaultBankParserId,
+} from "@/src/config/bankParserOptions";
+import {
   getAccountPlanForCompany,
   getCompanyRules,
   loadAccountPlansFromStorage,
@@ -125,14 +129,6 @@ const SOURCE_OPTIONS = [
     uploadDesc:
       "Standart Luca kolonlarına sahip (Fiş No, Tarih, Hesap Kodu, Borç, Alacak...) Excel yükleyin.",
   },
-];
-
-const BANK_OPTIONS = [
-  { id: "GARANTI", label: "Garanti Bankası" },
-  { id: "VAKIFBANK", label: "Vakıfbank" },
-  { id: "TEB", label: "TEB" },
-  { id: "KUVEYT", label: "Kuveyt Türk" },
-  { id: "ZIRAAT", label: "Ziraat Bankası" },
 ];
 
 const PREVIEW_FILTERS = [
@@ -391,7 +387,7 @@ export default function FisDonusturmePage() {
   );
 
   const [sourceType, setSourceType] = useState(SOURCE_TYPES.BANKA);
-  const [selectedBank, setSelectedBank] = useState("GARANTI");
+  const [selectedBank, setSelectedBank] = useState(getDefaultBankParserId);
 
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
@@ -1057,7 +1053,7 @@ export default function FisDonusturmePage() {
                     }}
                     className="mb-6 w-full max-w-md rounded-xl border border-gray-700 bg-gray-950 p-3 text-white"
                   >
-                    {BANK_OPTIONS.map((bank) => (
+                    {BANK_PARSER_OPTIONS.map((bank) => (
                       <option key={bank.id} value={bank.id}>
                         {bank.label}
                       </option>

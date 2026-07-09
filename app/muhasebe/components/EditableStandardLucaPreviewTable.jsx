@@ -225,7 +225,7 @@ export default function EditableStandardLucaPreviewTable({
         </button>
       </div>
 
-      <div className="overflow-auto">
+      <div className="max-w-full min-w-0 overflow-x-auto rounded-xl border border-gray-800/70 bg-gray-950/40">
         <table className="w-full min-w-[1900px] text-sm">
           <thead className="bg-gray-800 text-gray-300">
             <tr>

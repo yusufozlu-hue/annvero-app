@@ -106,7 +106,25 @@ function readRawCompaniesFromStorage() {
   return [];
 }
 
-export async function fetchCompanies() {
+let companiesFetchCache = null;
+let companiesFetchCacheAt = 0;
+const COMPANIES_FETCH_CACHE_MS = 60_000;
+
+export function invalidateCompaniesCache() {
+  companiesFetchCache = null;
+  companiesFetchCacheAt = 0;
+}
+
+export async function fetchCompanies(options = {}) {
+  const now = Date.now();
+  if (
+    !options.force &&
+    companiesFetchCache &&
+    now - companiesFetchCacheAt < COMPANIES_FETCH_CACHE_MS
+  ) {
+    return companiesFetchCache;
+  }
+
   const supabase = getSupabaseClient();
 
   if (!supabase) {
@@ -117,8 +135,8 @@ export async function fetchCompanies() {
   try {
     const { data, error } = await supabase
       .from("companies")
-      .select("*")
-      .order("created_at", { ascending: true });
+      .select("id, company_name, data, created_at")
+      .order("company_name", { ascending: true });
 
     if (error) {
       throw error;
@@ -128,7 +146,9 @@ export async function fetchCompanies() {
       .map(formatCompanyFromSupabaseRow)
       .filter(Boolean);
 
-    return sortCompaniesForDisplay(companies);
+    companiesFetchCache = sortCompaniesForDisplay(companies);
+    companiesFetchCacheAt = Date.now();
+    return companiesFetchCache;
   } catch (error) {
     console.error("Firma listesi Supabase'den alınamadı:", error);
     return sortCompaniesForDisplay(readRawCompaniesFromStorage());

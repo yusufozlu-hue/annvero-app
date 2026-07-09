@@ -35,7 +35,9 @@ export default function AnnveroAppShell({ children }) {
         />
       ) : null}
 
-      <div className={`relative flex min-h-screen flex-col transition-[margin] duration-200 ${mainOffsetClass}`}>
+      <div
+        className={`relative flex min-h-screen min-w-0 flex-col overflow-x-hidden transition-[margin] duration-200 ${mainOffsetClass}`}
+      >
         <AnnveroTopbar onMenuToggle={() => setMobileMenuOpen((v) => !v)} sidebarCollapsed={sidebarCollapsed} />
 
         {showBanner ? (
@@ -44,7 +46,9 @@ export default function AnnveroAppShell({ children }) {
           </div>
         ) : null}
 
-        <main className="flex-1 px-4 pb-8 pt-4 sm:px-6 lg:px-8">{children}</main>
+        <main className="flex w-full min-w-0 max-w-full flex-1 flex-col overflow-x-hidden px-4 pb-8 pt-4 sm:px-6 lg:px-8">
+          {children}
+        </main>
       </div>
     </div>
   );

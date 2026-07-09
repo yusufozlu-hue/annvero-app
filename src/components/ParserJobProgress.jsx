@@ -22,7 +22,7 @@ export default function ParserJobProgress({
 
   return (
     <div
-      className={`rounded-2xl border px-4 py-3 text-sm ${
+      className={`min-w-0 rounded-2xl border px-4 py-3.5 text-sm shadow-lg shadow-black/15 ${
         isError
           ? "border-red-800/50 bg-red-950/30 text-red-100"
           : isDone
@@ -64,9 +64,9 @@ export default function ParserJobProgress({
       </div>
 
       {isRunning || isDone ? (
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-black/30">
+        <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-black/40 ring-1 ring-white/5">
           <div
-            className={`h-full rounded-full transition-all duration-300 ${
+            className={`h-full rounded-full transition-all duration-500 ease-out ${
               isDone ? "bg-emerald-400" : "bg-gradient-to-r from-cyan-500 to-indigo-500"
             }`}
             style={{ width: `${barPercent}%` }}
