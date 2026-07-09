@@ -6,12 +6,33 @@ import { resolveEntity } from "../entity/entityResolver.js";
 import { resolveCompanyMemory } from "../memory/memoryResolver.js";
 import { resolveCompanyRules } from "../rules/ruleResolver.js";
 import { resolveGlobalKnowledge, resolveAccountingRules } from "../knowledge/knowledgeResolver.js";
+import { resolvePatterns } from "../knowledge/patternResolver.js";
 import { applyConfidenceEngine } from "../confidence/confidenceEngine.js";
 import { applyRiskEngine } from "../risk/riskEngine.js";
 import { resolveAiStub } from "./aiStub.js";
 import { resolveManualQueue } from "./manualQueue.js";
 import { createCoreDecisionResult } from "../types/decisionResult.js";
-import { logCoreDecisionEvent } from "../audit/coreAudit.js";
+import { logCoreDecisionEvent, persistDecisionHistory } from "../audit/coreAudit.js";
+import { CORE_DECISION_STATUS } from "../types/constants.js";
+
+async function loadKnowledgeBundleSafe(context, companyId) {
+  try {
+    const { loadKnowledgeBundle } = await import("../db/knowledgeStore.js");
+    return await loadKnowledgeBundle(context, companyId);
+  } catch (error) {
+    return {
+      unavailable: true,
+      entities: [],
+      companyPatterns: [],
+      globalPatterns: [],
+      companyMemory: [],
+      companyRules: [],
+      globalRules: [],
+      entitiesById: new Map(),
+      error,
+    };
+  }
+}
 
 async function runStage(runner, input, context, state) {
   const started = Date.now();
@@ -43,24 +64,72 @@ function applyStageResult(state, result) {
   if (result.trace) traces.push(result.trace);
 
   if (result.matched && result.partial) {
-    Object.assign(nextState, result.partial);
+    const preserveMemory =
+      nextState.from_company_memory && !result.partial.from_company_memory;
+
+    if (!preserveMemory) {
+      Object.assign(nextState, result.partial);
+    } else if (result.partial.matched_entity && !nextState.matched_entity?.entity_name) {
+      nextState.matched_entity = {
+        ...nextState.matched_entity,
+        ...result.partial.matched_entity,
+      };
+    }
   }
 
   nextState.debug_trace = traces;
   return nextState;
 }
 
+function hasAnyMatch(state = {}) {
+  return Boolean(
+    state.from_company_memory ||
+      state.matched_entity?.id ||
+      state.matched_entity?.entity_name ||
+      state.matched_rule?.rule_id ||
+      state.suggested_account_code
+  );
+}
+
 /**
  * Tam karar pipeline'ını çalıştırır.
- * @param {object} input — normalize edilmiş input
- * @param {object} context — normalize edilmiş context
  */
 export async function runDecisionPipeline(input, context) {
-  let state = createCoreDecisionResult();
+  const initialTrace = Array.isArray(context.debug_trace) ? [...context.debug_trace] : [];
+  let state = createCoreDecisionResult({ debug_trace: initialTrace });
+
+  let enrichedContext = { ...context };
+
+  try {
+    const bundle = await loadKnowledgeBundleSafe(context, input.company_id);
+    enrichedContext = { ...context, knowledgeBundle: bundle };
+
+    if (bundle.unavailable) {
+      state.debug_trace.push({
+        stage: "knowledge_db",
+        outcome: "unavailable",
+        detail: bundle.error?.message || "Knowledge tables unavailable — fallback mode",
+      });
+    } else {
+      state.debug_trace.push({
+        stage: "knowledge_db",
+        outcome: "loaded",
+        detail: `entities=${bundle.entities.length} patterns=${bundle.companyPatterns.length + bundle.globalPatterns.length} memory=${bundle.companyMemory.length}`,
+      });
+    }
+  } catch (error) {
+    enrichedContext = { ...context, knowledgeBundle: null };
+    state.debug_trace.push({
+      stage: "knowledge_db",
+      outcome: "error",
+      detail: error?.message || "Bundle load failed",
+    });
+  }
 
   const stages = [
-    { fn: resolveEntity, passState: true },
     { fn: resolveCompanyMemory, passState: true },
+    { fn: resolveEntity, passState: true },
+    { fn: resolvePatterns, passState: true },
     { fn: resolveCompanyRules, passState: true },
     { fn: resolveGlobalKnowledge, passState: true },
     { fn: resolveAccountingRules, passState: true },
@@ -74,13 +143,30 @@ export async function runDecisionPipeline(input, context) {
     const result = await runStage(
       stage.fn,
       input,
-      context,
+      enrichedContext,
       stage.passState ? state : undefined
     );
     state = applyStageResult(state, result);
   }
 
+  if (!hasAnyMatch(state)) {
+    state.status = CORE_DECISION_STATUS.UNKNOWN;
+    state.confidence_score = 0;
+    state.needs_manual_review = true;
+    state.debug_trace.push({
+      stage: "fallback",
+      outcome: "unknown",
+      detail: "No knowledge match found",
+    });
+  }
+
   const finalResult = createCoreDecisionResult(state);
+
+  await persistDecisionHistory({
+    input,
+    context: enrichedContext,
+    result: finalResult,
+  });
 
   void logCoreDecisionEvent({
     module: context.module,

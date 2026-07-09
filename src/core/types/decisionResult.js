@@ -26,6 +26,7 @@ export function createCoreDecisionResult(partial = {}) {
     decision_source: empty(partial.decision_source || partial.decisionSource) || CORE_DECISION_SOURCE.UNKNOWN,
     confidence_score: num(partial.confidence_score ?? partial.confidenceScore, 0),
     matched_entity: partial.matched_entity ?? partial.matchedEntity ?? null,
+    matched_pattern_id: partial.matched_pattern_id || partial.matchedPatternId || null,
     matched_rule: partial.matched_rule ?? partial.matchedRule ?? null,
     suggested_account_code: empty(partial.suggested_account_code || partial.suggestedAccountCode) || null,
     suggested_account_name: empty(partial.suggested_account_name || partial.suggestedAccountName) || null,

@@ -16,12 +16,16 @@ import {
 export function applyConfidenceEngine(state = {}) {
   let score = Number(state.confidence_score) || 0;
 
-  if (state.matched_entity?.is_stub) {
-    score = Math.min(score, 0.75);
+  if (state.from_company_memory) {
+    score = Math.max(score, 0.95);
   }
-  if (state.matched_rule?.is_stub) {
+
+  if (state.matched_rule?.is_example) {
+    score = Math.min(score, 0.55);
+  } else if (state.matched_rule?.is_stub) {
     score = Math.min(score, 0.7);
   }
+
   if (state.risk_flags?.includes("example_global_rule")) {
     score = Math.min(score, 0.55);
   }

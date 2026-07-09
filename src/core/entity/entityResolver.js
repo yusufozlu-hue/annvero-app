@@ -1,61 +1,104 @@
 /**
- * Entity Recognition — stub (Görev 2: Knowledge Engine DB bağlantısı).
+ * Entity Recognition — Knowledge Engine DB + alias fallback.
  */
 
 import { CORE_DECISION_SOURCE } from "../types/constants.js";
+import {
+  findBestEntityMatch,
+  findBestPatternMatch,
+  mapEntityToMatched,
+} from "../knowledge/patternMatcher.js";
+
+function getBundle(context) {
+  return context.knowledgeBundle || null;
+}
 
 /**
- * @param {object} input
- * @param {object} context
- * @param {object} [state]
  * @returns {Promise<{ matched: boolean, partial: object, trace: object }>}
  */
 export async function resolveEntity(input, context, state = {}) {
-  void context;
-  void state;
+  if (state.from_company_memory) {
+    return {
+      matched: false,
+      partial: {},
+      trace: {
+        stage: "entity",
+        outcome: "skipped",
+        detail: "Company memory match already applied",
+      },
+    };
+  }
 
-  const haystack = [
-    input.raw_description,
-    input.counterparty_name,
-    input.bank_name,
-    input.tax_no,
-  ]
-    .join(" ")
-    .toLocaleUpperCase("tr");
+  const bundle = getBundle(context);
 
-  // Stub: basit keyword eşleşmesi (DB yok)
-  const stubEntities = [
-    { name: "Google", keywords: ["GOOGLE", "GOOGLE ADS"], family: "tech_ads" },
-    { name: "SGK", keywords: ["SGK", "SOSYAL GUVENLIK", "SOSYAL GÜVENLİK"], family: "public_institution" },
-    { name: "GİB", keywords: ["GIB", "GİB", "GELIR IDARESI"], family: "public_institution" },
-  ];
+  if (!bundle || bundle.unavailable) {
+    return {
+      matched: false,
+      partial: {},
+      trace: {
+        stage: "entity",
+        outcome: "db_unavailable",
+        detail: "Knowledge DB unavailable — entity recognition skipped",
+      },
+    };
+  }
 
-  for (const entity of stubEntities) {
-    if (entity.keywords.some((kw) => haystack.includes(kw))) {
-      return {
-        matched: true,
-        partial: {
-          decision_source: CORE_DECISION_SOURCE.ENTITY,
-          confidence_score: 0.65,
-          matched_entity: {
-            entity_name: entity.name,
-            entity_family: entity.family,
-            match_type: "stub_keyword",
-            is_stub: true,
-          },
-        },
-        trace: {
-          stage: "entity",
-          outcome: "matched",
-          detail: `Stub entity: ${entity.name}`,
-        },
-      };
-    }
+  const companyMatch = findBestPatternMatch(
+    input,
+    bundle.companyPatterns || [],
+    bundle.entitiesById
+  );
+
+  if (companyMatch?.entity) {
+    return {
+      matched: true,
+      partial: {
+        decision_source: CORE_DECISION_SOURCE.ENTITY,
+        confidence_score: Math.max(
+          Number(companyMatch.pattern.confidence) || 0,
+          Number(companyMatch.entity.default_confidence) || 0.7
+        ),
+        matched_entity: mapEntityToMatched(companyMatch.entity, companyMatch.pattern),
+        matched_pattern_id: companyMatch.pattern.id,
+        scope: "company",
+      },
+      trace: {
+        stage: "entity",
+        outcome: "matched",
+        detail: `Company pattern ${companyMatch.pattern.pattern_type}:${companyMatch.pattern.pattern_value}`,
+      },
+    };
+  }
+
+  const directEntity = findBestEntityMatch(input, bundle.entities.filter((e) => e.company_id));
+  if (directEntity) {
+    return {
+      matched: true,
+      partial: {
+        decision_source: CORE_DECISION_SOURCE.ENTITY,
+        confidence_score: Number(directEntity.default_confidence) || 0.72,
+        matched_entity: mapEntityToMatched(directEntity),
+        scope: "company",
+      },
+      trace: {
+        stage: "entity",
+        outcome: "matched",
+        detail: `Company entity alias: ${directEntity.entity_name}`,
+      },
+    };
+  }
+
+  if (state.matched_entity?.id) {
+    return {
+      matched: false,
+      partial: {},
+      trace: { stage: "entity", outcome: "already_set", detail: "Entity set by prior stage" },
+    };
   }
 
   return {
     matched: false,
     partial: {},
-    trace: { stage: "entity", outcome: "no_match", detail: "No entity matched (stub)" },
+    trace: { stage: "entity", outcome: "no_match", detail: "No company entity matched" },
   };
 }
