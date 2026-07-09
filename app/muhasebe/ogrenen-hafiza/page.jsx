@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/previewRowEdit";
 import {
+  buildLearningMemoryCreateDraft,
+  buildLearningMemoryCreatePayload,
   buildLearningMemoryEditDraft,
   buildLearningMemoryUpdatePayload,
   filterLearningMemoryRows,
@@ -17,6 +19,7 @@ import {
   mapLearningMemoryRecordToListRow,
 } from "@/src/utils/learningMemoryAdmin";
 import {
+  createLearningMemoryRecordDetailed,
   fetchAllLearningMemory,
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
@@ -26,12 +29,13 @@ const inputClassName =
   "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-white outline-none focus:border-indigo-500";
 
 export default function OgrenenHafizaPage() {
-  const { companies, selectedCompanyId, setSelectedCompanyId, getCompanyDisplayName } =
-    useCompanyList();
+  const { companies, selectedCompanyId, getCompanyDisplayName } = useCompanyList();
 
   const [records, setRecords] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
+  const [companyFilter, setCompanyFilter] = useState("");
   const [kaynakTipiFilter, setKaynakTipiFilter] = useState("TUMU");
   const [accountCodeFilter, setAccountCodeFilter] = useState("");
   const [documentTypeFilter, setDocumentTypeFilter] = useState("TUMU");
@@ -39,8 +43,13 @@ export default function OgrenenHafizaPage() {
   const [statusFilter, setStatusFilter] = useState("TUMU");
   const [editingRecordId, setEditingRecordId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [createDraft, setCreateDraft] = useState(() => buildLearningMemoryCreateDraft());
   const [isSaving, setIsSaving] = useState(false);
   const [toast, setToast] = useState(null);
+
+  const companiesRef = useRef(companies);
+  companiesRef.current = companies;
 
   const showToast = (message, type) => {
     setToast({ message, type });
@@ -52,41 +61,59 @@ export default function OgrenenHafizaPage() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const companyNameById = useMemo(() => {
-    const map = new Map();
-    companies.forEach((company) => {
-      map.set(company.id, getCompanyDisplayName(company));
-    });
-    return map;
-  }, [companies, getCompanyDisplayName]);
+  const mapRecordsWithCompanyNames = useCallback(
+    (rawRecords = []) => {
+      const nameMap = new Map();
+      companiesRef.current.forEach((company) => {
+        nameMap.set(company.id, getCompanyDisplayName(company));
+      });
+
+      return rawRecords.map((record) =>
+        mapLearningMemoryRecordToListRow(
+          record,
+          nameMap.get(record.company_id) || record.company_id
+        )
+      );
+    },
+    [getCompanyDisplayName]
+  );
 
   const loadRecords = useCallback(async () => {
     setIsLoading(true);
+    setLoadError("");
 
     try {
-      const data = await fetchAllLearningMemory({ includeInactive: true });
-      setRecords(
-        (data || []).map((record) =>
-          mapLearningMemoryRecordToListRow(
-            record,
-            companyNameById.get(record.company_id) || record.company_id
-          )
-        )
-      );
+      const { data, error } = await fetchAllLearningMemory({ includeInactive: true });
+
+      if (error) {
+        setLoadError(error);
+        setRecords([]);
+        return;
+      }
+
+      setRecords(mapRecordsWithCompanyNames(data));
+    } catch (error) {
+      setLoadError(error?.message || "Kayıtlar yüklenemedi.");
+      setRecords([]);
     } finally {
       setIsLoading(false);
     }
-  }, [companyNameById]);
+  }, [mapRecordsWithCompanyNames]);
 
   useEffect(() => {
     loadRecords();
   }, [loadRecords]);
 
+  useEffect(() => {
+    if (!records.length || !companies.length) return;
+    setRecords(mapRecordsWithCompanyNames(records.map((row) => row.raw)));
+  }, [companies, mapRecordsWithCompanyNames]);
+
   const filteredRows = useMemo(
     () =>
       filterLearningMemoryRows(records, {
         search,
-        companyId: selectedCompanyId,
+        companyId: companyFilter,
         kaynakTipi: kaynakTipiFilter,
         accountCode: accountCodeFilter,
         documentType: documentTypeFilter,
@@ -96,7 +123,7 @@ export default function OgrenenHafizaPage() {
     [
       records,
       search,
-      selectedCompanyId,
+      companyFilter,
       kaynakTipiFilter,
       accountCodeFilter,
       documentTypeFilter,
@@ -125,13 +152,65 @@ export default function OgrenenHafizaPage() {
     setEditDraft(null);
   };
 
+  const openCreatePanel = () => {
+    closeEditPanel();
+    setCreateDraft(
+      buildLearningMemoryCreateDraft({
+        company_id: companyFilter || selectedCompanyId || companies[0]?.id || "",
+      })
+    );
+    setIsCreateOpen(true);
+  };
+
+  const closeCreatePanel = () => {
+    if (isSaving) return;
+    setIsCreateOpen(false);
+    setCreateDraft(buildLearningMemoryCreateDraft());
+  };
+
+  const updateCreateField = (field, value) => {
+    setCreateDraft((prev) => ({ ...prev, [field]: value }));
+  };
+
   const openEditPanel = (row) => {
+    closeCreatePanel();
     setEditingRecordId(row.id);
     setEditDraft(buildLearningMemoryEditDraft(row.raw));
   };
 
   const updateDraftField = (field, value) => {
     setEditDraft((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const saveCreate = async () => {
+    const payload = buildLearningMemoryCreatePayload(createDraft);
+
+    if (!payload.company_id) {
+      showToast("Firma seçimi zorunludur", "error");
+      return;
+    }
+
+    if (!payload.keyword) {
+      showToast("Arama anahtarı boş olamaz", "error");
+      return;
+    }
+
+    setIsSaving(true);
+
+    try {
+      const { data, error } = await createLearningMemoryRecordDetailed(payload);
+
+      if (error || !data) {
+        showToast(error || "Kayıt oluşturulamadı", "error");
+        return;
+      }
+
+      showToast("Hafıza kaydı eklendi", "success");
+      closeCreatePanel();
+      await loadRecords();
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const saveEdit = async () => {
@@ -320,8 +399,8 @@ export default function OgrenenHafizaPage() {
         <label className="block">
           <span className="mb-1 block text-sm text-gray-400">Firma Filtresi</span>
           <select
-            value={selectedCompanyId}
-            onChange={(event) => setSelectedCompanyId(event.target.value)}
+            value={companyFilter}
+            onChange={(event) => setCompanyFilter(event.target.value)}
             className={inputClassName}
           >
             <option value="">Tüm Firmalar</option>
@@ -406,7 +485,7 @@ export default function OgrenenHafizaPage() {
             type="button"
             onClick={() => {
               setSearch("");
-              setSelectedCompanyId("");
+              setCompanyFilter("");
               setAccountCodeFilter("");
               setDocumentTypeFilter("TUMU");
               setBankFilter("TUMU");
@@ -423,14 +502,32 @@ export default function OgrenenHafizaPage() {
       <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-2xl font-semibold">Hafıza Kayıtları</h2>
-          <button
-            type="button"
-            onClick={loadRecords}
-            className="rounded-lg border border-gray-700 px-4 py-2 text-sm font-semibold text-gray-200 hover:bg-gray-800"
-          >
-            Yenile
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={openCreatePanel}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+            >
+              Yeni Hafıza Kaydı Ekle
+            </button>
+            <button
+              type="button"
+              onClick={loadRecords}
+              className="rounded-lg border border-gray-700 px-4 py-2 text-sm font-semibold text-gray-200 hover:bg-gray-800"
+            >
+              Yenile
+            </button>
+          </div>
         </div>
+
+        {loadError ? (
+          <div
+            role="alert"
+            className="mb-4 rounded-xl border border-red-800/60 bg-red-950/40 px-4 py-3 text-sm text-red-200"
+          >
+            {loadError}
+          </div>
+        ) : null}
 
         <AnnveroDataTable
           columns={memoryColumns}
@@ -440,7 +537,111 @@ export default function OgrenenHafizaPage() {
           pageSize={25}
           exportFilename="ogrenen-hafiza.csv"
           emptyMessage="Kayıt bulunamadı."
+          loadingMessage={loadError ? "Kayıtlar yüklenemedi." : "Kayıtlar yükleniyor..."}
         />
+
+        {isCreateOpen ? (
+          <div className="mt-4 rounded-xl border border-emerald-700/40 p-4">
+            <h3 className="mb-4 text-lg font-semibold">Yeni Hafıza Kaydı</h3>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <Field label="Firma">
+                <select
+                  value={createDraft.company_id}
+                  onChange={(event) => updateCreateField("company_id", event.target.value)}
+                  className={inputClassName}
+                >
+                  <option value="">Firma seçin</option>
+                  <CompanySelectOptions companies={companies} />
+                </select>
+              </Field>
+              <Field label="Açıklama / Keyword" className="md:col-span-2">
+                <input
+                  value={createDraft.keyword}
+                  onChange={(event) => updateCreateField("keyword", event.target.value)}
+                  placeholder="Banka açıklaması veya anahtar kelime"
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="İşlem Tipi">
+                <input
+                  value={createDraft.transaction_type}
+                  onChange={(event) => updateCreateField("transaction_type", event.target.value)}
+                  placeholder="BANKA, KART..."
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="Banka">
+                <input
+                  value={createDraft.bank_name}
+                  onChange={(event) => updateCreateField("bank_name", event.target.value)}
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="Hesap Kodu">
+                <input
+                  value={createDraft.account_code}
+                  onChange={(event) => updateCreateField("account_code", event.target.value)}
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="Hesap Adı">
+                <input
+                  value={createDraft.account_name}
+                  onChange={(event) => updateCreateField("account_name", event.target.value)}
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="Cari" className="md:col-span-2">
+                <input
+                  value={createDraft.cari_name}
+                  onChange={(event) => updateCreateField("cari_name", event.target.value)}
+                  className={inputClassName}
+                />
+              </Field>
+              <Field label="Belge Türü">
+                <select
+                  value={createDraft.document_type}
+                  onChange={(event) => updateCreateField("document_type", event.target.value)}
+                  className={inputClassName}
+                >
+                  {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Durum">
+                <select
+                  value={createDraft.status}
+                  onChange={(event) => updateCreateField("status", event.target.value)}
+                  className={inputClassName}
+                >
+                  <option value="active">Aktif</option>
+                  <option value="passive">Pasif</option>
+                </select>
+              </Field>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={saveCreate}
+                disabled={isSaving}
+                className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold hover:bg-emerald-700 disabled:opacity-60"
+              >
+                {isSaving ? "Kaydediliyor..." : "Kaydet"}
+              </button>
+              <button
+                type="button"
+                onClick={closeCreatePanel}
+                disabled={isSaving}
+                className="rounded-lg bg-gray-700 px-4 py-2 hover:bg-gray-600 disabled:opacity-60"
+              >
+                İptal
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {editingRecordId && editDraft ? (
           <div className="mt-4 rounded-xl border border-indigo-700/40 p-4">

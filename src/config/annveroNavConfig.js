@@ -40,6 +40,7 @@ export const ANNVERO_NAV_GROUPS = [
       { label: "Beyanname / Tahakkuk", href: "/muhasebe/beyanname-tahakkuk" },
       { label: "Poliçe Giderleştirme", href: "/muhasebe/police-giderlestirme" },
       { label: "Resmi Bildirimler", href: "/dashboard/ofis-takip/resmi-bildirimler" },
+      { label: "GİB Tebligat", href: "/dashboard/ofis-takip/resmi-bildirimler/gib" },
     ],
   },
   {

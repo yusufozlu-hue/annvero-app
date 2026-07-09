@@ -25,6 +25,23 @@ export async function fetchLearningMemoryForCompany(companyId, options = {}) {
   }
 }
 
+function normalizeLearningMemoryList(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.records)) return payload.records;
+  return [];
+}
+
+async function readLearningMemoryError(response) {
+  try {
+    const payload = await response.json();
+    return payload?.error || response.statusText || "Kayıtlar yüklenemedi.";
+  } catch {
+    const text = await response.text().catch(() => "");
+    return text || response.statusText || "Kayıtlar yüklenemedi.";
+  }
+}
+
 export async function fetchAllLearningMemory(options = {}) {
   const params = new URLSearchParams();
 
@@ -36,39 +53,53 @@ export async function fetchAllLearningMemory(options = {}) {
   const url = query ? `/api/learning-memory?${query}` : "/api/learning-memory";
 
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { cache: "no-store", credentials: "include" });
 
     if (!response.ok) {
-      console.error("learning_memory fetch failed", await response.text());
-      return [];
+      const error = await readLearningMemoryError(response);
+      console.error("learning_memory fetch failed", error);
+      return { data: [], error };
     }
 
     const payload = await response.json();
-    return payload.data || [];
+    return { data: normalizeLearningMemoryList(payload), error: null };
   } catch (error) {
     console.error("learning_memory fetch failed", error);
-    return [];
+    return {
+      data: [],
+      error: error?.message || "Kayıtlar yüklenemedi.",
+    };
   }
 }
 
 export async function createLearningMemoryRecord(record) {
+  const result = await createLearningMemoryRecordDetailed(record);
+  return result.data;
+}
+
+export async function createLearningMemoryRecordDetailed(record) {
   try {
     const response = await fetch("/api/learning-memory", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ record }),
     });
 
     if (!response.ok) {
-      console.error("learning_memory create failed", await response.text());
-      return null;
+      const error = await readLearningMemoryError(response);
+      console.error("learning_memory create failed", error);
+      return { data: null, error };
     }
 
     const payload = await response.json();
-    return payload.data || null;
+    return { data: payload.data || null, error: null };
   } catch (error) {
     console.error("learning_memory create failed", error);
-    return null;
+    return {
+      data: null,
+      error: error?.message || "Kayıt oluşturulamadı.",
+    };
   }
 }
 

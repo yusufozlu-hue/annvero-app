@@ -59,6 +59,40 @@ export function buildLearningMemoryEditDraft(record = {}) {
   };
 }
 
+export function buildLearningMemoryCreateDraft(defaults = {}) {
+  return {
+    company_id: defaults.company_id || defaults.companyId || "",
+    keyword: defaults.keyword || "",
+    transaction_type: defaults.transaction_type || defaults.transactionType || "",
+    bank_name: defaults.bank_name || defaults.bankName || "",
+    account_code: defaults.account_code || "",
+    account_name: defaults.account_name || "",
+    cari_name: defaults.cari_name || "",
+    document_type: defaults.document_type || "DK",
+    status: defaults.status || "active",
+    clean_description: defaults.clean_description || "",
+  };
+}
+
+export function buildLearningMemoryCreatePayload(draft = {}) {
+  const status = ["active", "passive", "deleted"].includes(draft.status)
+    ? draft.status
+    : "active";
+
+  return {
+    company_id: String(draft.company_id || "").trim(),
+    keyword: String(draft.keyword || "").trim(),
+    transaction_type: String(draft.transaction_type || "").trim(),
+    bank_name: String(draft.bank_name || "").trim(),
+    account_code: String(draft.account_code || "").trim(),
+    account_name: String(draft.account_name || "").trim(),
+    cari_name: String(draft.cari_name || "").trim(),
+    document_type: String(draft.document_type || "DK").trim(),
+    clean_description: String(draft.clean_description || draft.keyword || "").trim(),
+    status,
+  };
+}
+
 export function buildLearningMemoryUpdatePayload(draft = {}) {
   const status = ["active", "passive", "deleted"].includes(draft.status)
     ? draft.status
