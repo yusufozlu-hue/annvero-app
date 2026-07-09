@@ -111,6 +111,12 @@ export const ANNVERO_NAV_GROUPS = [
       { label: "Firma Yönetimi", href: "/muhasebe/firma-yonetimi", roles: ["admin", "partner"] },
       { label: "Entegrasyonlar", href: "/otomasyon?view=integrations", roles: ["admin", "partner", "mudur", "muhasebe_personeli"] },
       { label: "Kullanıcılar & Roller", href: "/admin/kullanicilar-roller", roles: ["admin", "partner"] },
+      {
+        label: "CORE Test Merkezi",
+        href: "/admin/core-test-merkezi",
+        roles: ["admin", "partner"],
+        devTool: true,
+      },
       { label: "Sistem Ayarları", href: "/admin/parametre-yonetimi", roles: ["admin"] },
       { label: "Backup / Migration", href: "/muhasebe/firma-yonetimi", roles: ["admin", "partner"] },
       { label: "Mevzuat Hap Notları (Genel)", href: "/mevzuat-hap-notlari" },

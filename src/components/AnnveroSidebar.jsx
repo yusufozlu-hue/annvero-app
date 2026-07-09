@@ -6,6 +6,7 @@ import { useEffect, useState, useMemo } from "react";
 import BuildVersionBadge from "@/app/components/BuildVersionBadge";
 import { ANNVERO_NAV_GROUPS } from "@/src/config/annveroNavConfig";
 import { canSeeNavGroup, canSeeNavItem } from "@/src/config/annveroRoles";
+import { canAccessCoreTestCenter, isDevelopmentEnvironment } from "@/src/lib/dev/coreTestCenterAccess";
 import { useUserRole } from "@/src/hooks/useUserRole";
 import { annveroShellSidebarWidth } from "@/src/styles/annveroDesign";
 
@@ -141,18 +142,32 @@ export default function AnnveroSidebar({
   onToggleCollapse,
 }) {
   const pathname = usePathname();
-  const { role } = useUserRole();
+  const { role, isManagementUser, isAdmin, isPartner } = useUserRole();
   const [openMenu, setOpenMenu] = useState("");
+
+  const coreTestVisible = canAccessCoreTestCenter({
+    isDevelopment: isDevelopmentEnvironment(),
+    isManagementUser,
+    isAdmin,
+    isPartner,
+  });
 
   const visibleNavGroups = useMemo(() => {
     return ANNVERO_NAV_GROUPS.map((group) => {
       if (!canSeeNavGroup(role, group.title)) return null;
       if (!group.items?.length) return group;
-      const items = group.items.filter((item) => canSeeNavItem(role, item));
+      const items = group.items.filter((item) => {
+        if (item.devTool) {
+          if (!coreTestVisible) return false;
+          if (isDevelopmentEnvironment()) return true;
+          return canSeeNavItem(role, item);
+        }
+        return canSeeNavItem(role, item);
+      });
       if (!items.length) return null;
       return { ...group, items };
     }).filter(Boolean);
-  }, [role]);
+  }, [role, coreTestVisible]);
 
   useEffect(() => {
     const activeGroup = visibleNavGroups.find((group) => isMenuGroupActive(group, pathname));
