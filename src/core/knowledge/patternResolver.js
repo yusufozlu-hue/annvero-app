@@ -75,10 +75,12 @@ export async function resolvePatterns(input, context, state = {}) {
       matched_pattern_id: globalMatch.pattern.id,
       scope: "global",
     },
-    trace: {
-      stage: "pattern_matching",
-      outcome: "matched",
-      detail: `Global pattern ${globalMatch.pattern.pattern_type}:${globalMatch.pattern.pattern_value}`,
-    },
+      trace: {
+        stage: "pattern_matching",
+        outcome: "matched",
+        detail: `Global pattern ${globalMatch.pattern.pattern_type}:${globalMatch.pattern.pattern_value}`,
+        matched_entity_id: globalMatch.entity.id,
+        matched_entity_name: globalMatch.entity.entity_name,
+      },
   };
 }

@@ -4,26 +4,7 @@
 
 import { CORE_DECISION_SOURCE } from "../types/constants.js";
 import { mapAccountingRuleToPartial } from "../knowledge/patternMatcher.js";
-
-function pickBestRule(rules = [], input, entityId) {
-  const filtered = rules.filter((rule) => {
-    if (entityId && rule.entity_id && rule.entity_id !== entityId) return false;
-    if (rule.source_type && input.source_type && rule.source_type !== input.source_type) {
-      return false;
-    }
-    return true;
-  });
-
-  if (!filtered.length) return null;
-
-  filtered.sort(
-    (a, b) =>
-      Number(a.priority || 100) - Number(b.priority || 100) ||
-      Number(b.confidence || 0) - Number(a.confidence || 0)
-  );
-
-  return filtered[0];
-}
+import { pickRuleWithDiagnostics, RULE_DB_WHERE, traceWithRuleLookup } from "../knowledge/ruleLookupDebug.js";
 
 /**
  * @returns {Promise<{ matched: boolean, partial: object, trace: object }>}
@@ -51,17 +32,30 @@ export async function resolveCompanyRules(input, context, state = {}) {
   }
 
   const entityId = state.matched_entity?.id || null;
-  const rule = pickBestRule(bundle.companyRules || [], input, entityId);
+  const { rule, diagnostics } = pickRuleWithDiagnostics(
+    bundle.companyRules || [],
+    input,
+    entityId,
+    {
+      dbWhere: RULE_DB_WHERE.company(input.company_id),
+      entitiesById: bundle.entitiesById,
+      entityName: state.matched_entity?.entity_name,
+    }
+  );
 
   if (!rule) {
     return {
       matched: false,
       partial: {},
-      trace: {
-        stage: "company_rules",
-        outcome: "no_match",
-        detail: `Checked ${bundle.companyRules?.length || 0} company rules`,
-      },
+      trace: traceWithRuleLookup(
+        {
+          stage: "company_rules",
+          outcome: "no_match",
+          detail: diagnostics.no_match_reason || `Checked ${bundle.companyRules?.length || 0} company rules`,
+        },
+        diagnostics,
+        false
+      ),
     };
   }
 
@@ -71,11 +65,15 @@ export async function resolveCompanyRules(input, context, state = {}) {
       decision_source: CORE_DECISION_SOURCE.COMPANY_RULE,
       ...mapAccountingRuleToPartial(rule, "company_rule"),
     },
-    trace: {
-      stage: "company_rules",
-      outcome: "matched",
-      detail: `Rule id=${rule.id}`,
-    },
+    trace: traceWithRuleLookup(
+      {
+        stage: "company_rules",
+        outcome: "matched",
+        detail: `Rule id=${rule.id}`,
+      },
+      diagnostics,
+      true
+    ),
   };
 }
 

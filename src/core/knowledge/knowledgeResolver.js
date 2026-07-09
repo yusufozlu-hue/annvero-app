@@ -4,6 +4,11 @@
 
 import { CORE_DECISION_SOURCE } from "../types/constants.js";
 import { mapAccountingRuleToPartial } from "../knowledge/patternMatcher.js";
+import {
+  pickRuleWithDiagnostics,
+  RULE_DB_WHERE,
+  traceWithRuleLookup,
+} from "../knowledge/ruleLookupDebug.js";
 
 export async function resolveGlobalKnowledge(input, context, state = {}) {
   void input;
@@ -59,26 +64,10 @@ export async function resolveGlobalKnowledge(input, context, state = {}) {
       stage: "global_knowledge",
       outcome: "enriched",
       detail: `Enriched entity ${entity.entity_name}`,
+      matched_entity_id: state.matched_entity.id,
+      matched_entity_name: entity.entity_name,
     },
   };
-}
-
-function pickGlobalRule(rules = [], input, entityId) {
-  const filtered = rules.filter((rule) => {
-    if (entityId && rule.entity_id && rule.entity_id !== entityId) return false;
-    if (rule.source_type && input.source_type && rule.source_type !== input.source_type) return false;
-    return true;
-  });
-
-  if (!filtered.length) return null;
-
-  filtered.sort(
-    (a, b) =>
-      Number(a.priority || 100) - Number(b.priority || 100) ||
-      Number(b.confidence || 0) - Number(a.confidence || 0)
-  );
-
-  return filtered[0];
 }
 
 export async function resolveAccountingRules(input, context, state = {}) {
@@ -116,17 +105,33 @@ export async function resolveAccountingRules(input, context, state = {}) {
   }
 
   const entityId = state.matched_entity?.id || null;
-  const rule = pickGlobalRule(bundle.globalRules || [], input, entityId);
+  const { rule, diagnostics } = pickRuleWithDiagnostics(
+    bundle.globalRules || [],
+    input,
+    entityId,
+    {
+      dbWhere: RULE_DB_WHERE.global,
+      entitiesById: bundle.entitiesById,
+      entityName: state.matched_entity?.entity_name,
+    }
+  );
 
   if (!rule) {
     return {
       matched: false,
       partial: {},
-      trace: {
-        stage: "accounting_rules",
-        outcome: "no_match",
-        detail: `Checked ${bundle.globalRules?.length || 0} global rules`,
-      },
+      trace: traceWithRuleLookup(
+        {
+          stage: "accounting_rules",
+          outcome: "no_match",
+          detail:
+            diagnostics.no_match_reason ||
+            diagnostics.google_rule_hint ||
+            `Checked ${bundle.globalRules?.length || 0} global rules`,
+        },
+        diagnostics,
+        false
+      ),
     };
   }
 
@@ -139,11 +144,15 @@ export async function resolveAccountingRules(input, context, state = {}) {
       ...partial,
       confidence_score: Math.max(Number(state.confidence_score) || 0, partial.confidence_score || 0),
     },
-    trace: {
-      stage: "accounting_rules",
-      outcome: "matched",
-      detail: `Global rule id=${rule.id}`,
-    },
+    trace: traceWithRuleLookup(
+      {
+        stage: "accounting_rules",
+        outcome: "matched",
+        detail: `Global rule id=${rule.id}`,
+      },
+      diagnostics,
+      true
+    ),
   };
 }
 
