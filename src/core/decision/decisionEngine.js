@@ -14,6 +14,7 @@ import { resolveManualQueue } from "./manualQueue.js";
 import { createCoreDecisionResult } from "../types/decisionResult.js";
 import { logCoreDecisionEvent, persistDecisionHistory } from "../audit/coreAudit.js";
 import { CORE_DECISION_STATUS } from "../types/constants.js";
+import { serializePostgrestError } from "../db/knowledgeStore.js";
 
 async function loadKnowledgeBundleSafe(context, companyId) {
   try {
@@ -106,21 +107,45 @@ export async function runDecisionPipeline(input, context) {
 
     if (bundle.unavailable) {
       const probe = bundle.dbProbe || null;
+      const conn = bundle.connectionMeta || {};
+      const diag = bundle.entitiesDiagnostic || null;
+      const queryErr =
+        bundle.queryError ||
+        bundle.unavailableSources?.[0]?.error ||
+        serializePostgrestError(bundle.error);
+
       state.debug_trace.push({
         stage: "knowledge_db",
         outcome: "unavailable",
-        detail: bundle.error?.message || probe?.reason || "Knowledge tables unavailable — fallback mode",
-        client_type: probe?.clientType || (context.supabase ? "context_service_role" : "unknown"),
-        missing_env: probe?.env?.missingEnv || null,
+        detail:
+          queryErr?.message ||
+          bundle.error?.message ||
+          probe?.reason ||
+          "Knowledge DB query failed",
+        supabase_url: conn.supabaseUrl || null,
+        project_ref: conn.projectRef || null,
+        client_type: conn.clientType || probe?.clientType || null,
+        used_context_client: conn.usedContextClient ?? null,
+        missing_env: probe?.env?.missingEnv || conn.missingEnv || null,
+        unavailable_sources: bundle.unavailableSources || null,
+        entities_select: diag?.queries || null,
+        supabase_error: queryErr,
         probe: probe?.tables || null,
       });
     } else {
       const probe = bundle.dbProbe || null;
+      const conn = bundle.connectionMeta || {};
+      const diag = bundle.entitiesDiagnostic || null;
+
       state.debug_trace.push({
         stage: "knowledge_db",
         outcome: "loaded",
         detail: `entities=${bundle.entities.length} patterns=${bundle.companyPatterns.length + bundle.globalPatterns.length} rules=${(bundle.companyRules?.length || 0) + (bundle.globalRules?.length || 0)} memory=${bundle.companyMemory.length}`,
-        client_type: probe?.clientType || (context.supabase ? "context_service_role" : "service_role_admin"),
+        supabase_url: conn.supabaseUrl || null,
+        project_ref: conn.projectRef || null,
+        client_type: conn.clientType || probe?.clientType || null,
+        used_context_client: conn.usedContextClient ?? null,
+        entities_select: diag?.queries || null,
         probe: probe?.tables || null,
       });
     }

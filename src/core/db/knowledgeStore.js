@@ -33,14 +33,137 @@ export async function resolveKnowledgeSupabase(context = {}) {
 }
 
 function isMissingTableError(error) {
-  const text = `${error?.message || ""} ${error?.code || ""}`.toLowerCase();
+  if (!error) return false;
+  // Sütun eksikliği tablo yok sanılmasın (42703 = undefined_column)
+  if (error.code === "42703") return false;
+
+  const text = `${error.message || ""} ${error.code || ""}`.toLowerCase();
   return (
-    error?.code === "42P01" ||
-    error?.code === "PGRST205" ||
-    /does not exist/i.test(text) ||
-    /could not find/i.test(text) ||
+    error.code === "42P01" ||
+    error.code === "PGRST205" ||
+    /relation .* does not exist/i.test(text) ||
+    /could not find the table/i.test(text) ||
+    /could not find the '.*' table/i.test(text) ||
     /schema cache/i.test(text)
   );
+}
+
+/** PostgREST / Supabase hata objesini debug_trace için serialize eder. */
+export function serializePostgrestError(error) {
+  if (!error) return null;
+  return {
+    message: error.message || String(error),
+    code: error.code ?? null,
+    details: error.details ?? null,
+    hint: error.hint ?? null,
+    status: error.status ?? null,
+    statusText: error.statusText ?? null,
+  };
+}
+
+function formatQueryOutcome({ data, error, count } = {}) {
+  return {
+    ok: !error,
+    count: count ?? (Array.isArray(data) ? data.length : null),
+    row_count: Array.isArray(data) ? data.length : null,
+    data: Array.isArray(data) ? data.slice(0, 5) : data ?? null,
+    error: serializePostgrestError(error),
+    status: error?.status ?? null,
+    statusText: error?.statusText ?? null,
+  };
+}
+
+/** CORE debug — bağlantı meta (URL, project ref, client tipi). */
+export async function getKnowledgeConnectionMeta(context = {}) {
+  const env = getKnowledgeEnvDiagnostics();
+  const supabaseUrl = readEnvFlag("NEXT_PUBLIC_SUPABASE_URL");
+  let projectRef = "unknown";
+
+  try {
+    const mod = await import("../../lib/supabase/serverAdmin.js");
+    projectRef = mod.extractSupabaseProjectRef(supabaseUrl);
+  } catch {
+    try {
+      const host = new URL(supabaseUrl).hostname;
+      const match = host.match(/^([a-z0-9-]+)\.supabase\.co$/i);
+      projectRef = match?.[1] || host;
+    } catch {
+      projectRef = "unknown";
+    }
+  }
+
+  const supabase = await resolveKnowledgeSupabase(context);
+  const hasContextClient = Boolean(context.supabase);
+
+  let clientType = "none";
+  if (hasContextClient && supabase && context.supabase === supabase) {
+    clientType = "context_service_role";
+  } else if (hasContextClient && supabase) {
+    clientType = "context_other";
+  } else if (supabase) {
+    clientType = "service_role_admin";
+  } else if (env.hasAnonKey && !env.hasServiceRoleKey) {
+    clientType = "anon_fallback_blocked";
+  }
+
+  return {
+    supabaseUrl,
+    projectRef,
+    clientType,
+    hasContextClient,
+    usedContextClient: hasContextClient && context.supabase === supabase,
+    clientResolved: Boolean(supabase),
+    missingEnv: env.missingEnv,
+  };
+}
+
+/**
+ * knowledge_entities üzerinde gerçek SELECT — debug_trace için.
+ */
+export async function runKnowledgeEntitiesSelectDiagnostic(context = {}) {
+  const connection = await getKnowledgeConnectionMeta(context);
+  const supabase = await resolveKnowledgeSupabase(context);
+
+  if (!supabase) {
+    return {
+      connection,
+      queries: null,
+      error: serializePostgrestError(
+        new Error(connection.missingEnv.length ? `Eksik env: ${connection.missingEnv.join(", ")}` : "Supabase client oluşturulamadı")
+      ),
+    };
+  }
+
+  const table = KNOWLEDGE_TABLES.ENTITIES;
+
+  const [rawHead, pipelineGlobal, relaxedGlobal, activeOnly] = await Promise.all([
+    supabase.from(table).select("id", { count: "exact", head: true }),
+    supabase
+      .from(table)
+      .select("id, entity_name, is_global, company_id, is_active, deleted_at")
+      .eq("is_active", true)
+      .is("deleted_at", null)
+      .eq("is_global", true)
+      .is("company_id", null)
+      .limit(5),
+    supabase
+      .from(table)
+      .select("id, entity_name, is_global, company_id")
+      .eq("is_global", true)
+      .or("company_id.is.null,company_id.eq.")
+      .limit(5),
+    supabase.from(table).select("id, entity_name").eq("is_active", true).limit(5),
+  ]);
+
+  return {
+    connection,
+    queries: {
+      raw_head_count: formatQueryOutcome(rawHead),
+      pipeline_global_filter: formatQueryOutcome(pipelineGlobal),
+      relaxed_global_filter: formatQueryOutcome(relaxedGlobal),
+      active_only_sample: formatQueryOutcome(activeOnly),
+    },
+  };
 }
 
 function readEnvFlag(name) {
@@ -83,6 +206,7 @@ async function probeTable(supabase, table, buildQuery) {
       ok: false,
       count: 0,
       error: error.message || String(error),
+      supabase_error: serializePostgrestError(error),
       code: error.code || null,
       hint: isMissingTableError(error) ? "table_or_schema_cache_missing" : "query_failed",
     };
@@ -171,25 +295,40 @@ export async function probeKnowledgeDatabase(context = {}, companyId = "") {
 }
 
 async function queryActiveRows(supabase, table, buildQuery) {
-  if (!supabase) return { data: [], error: null, unavailable: true };
+  if (!supabase) {
+    return {
+      data: [],
+      error: null,
+      queryError: serializePostgrestError(new Error("no_supabase_client")),
+      unavailable: true,
+      unavailableReason: "no_client",
+    };
+  }
 
   let query = supabase.from(table).select("*").eq("is_active", true).is("deleted_at", null);
   query = buildQuery(query);
 
   const { data, error } = await query;
   if (error) {
+    const queryError = serializePostgrestError(error);
     if (isMissingTableError(error)) {
-      return { data: [], error: null, unavailable: true };
+      return {
+        data: [],
+        error,
+        queryError,
+        unavailable: true,
+        unavailableReason: "missing_table_or_schema",
+      };
     }
-    return { data: [], error, unavailable: false };
+    return { data: [], error, queryError, unavailable: false, unavailableReason: null };
   }
 
-  return { data: data || [], error: null, unavailable: false };
+  return { data: data || [], error: null, queryError: null, unavailable: false, unavailableReason: null };
 }
 
 export async function fetchKnowledgeEntities(supabase, { companyId } = {}) {
   const globalResult = await queryActiveRows(supabase, KNOWLEDGE_TABLES.ENTITIES, (q) =>
-    q.eq("is_global", true).is("company_id", null)
+    q.eq("is_global", true).or("company_id.is.null,company_id.eq.")
   );
 
   let companyRows = [];
@@ -198,20 +337,30 @@ export async function fetchKnowledgeEntities(supabase, { companyId } = {}) {
       q.eq("company_id", companyId)
     );
     companyRows = companyResult.data;
-    if (companyResult.unavailable) return { entities: [], unavailable: true, error: companyResult.error };
+    if (companyResult.unavailable) {
+      return {
+        entities: [],
+        unavailable: true,
+        error: companyResult.error,
+        queryError: companyResult.queryError,
+        unavailableReason: companyResult.unavailableReason,
+      };
+    }
   }
 
   return {
     entities: [...companyRows, ...globalResult.data],
     unavailable: globalResult.unavailable,
     error: globalResult.error,
+    queryError: globalResult.queryError,
+    unavailableReason: globalResult.unavailableReason,
   };
 }
 
 export async function fetchKnowledgePatterns(supabase, { companyId, globalOnly = false } = {}) {
   if (globalOnly) {
     return queryActiveRows(supabase, KNOWLEDGE_TABLES.MATCH_PATTERNS, (q) =>
-      q.eq("is_global", true).is("company_id", null)
+      q.eq("is_global", true).or("company_id.is.null,company_id.eq.")
     );
   }
 
@@ -236,7 +385,7 @@ export async function fetchAccountingRules(supabase, { companyId, entityId, glob
   const applyFilters = (q) => {
     let next = q;
     if (globalOnly) {
-      next = next.eq("is_global", true).is("company_id", null);
+      next = next.eq("is_global", true).or("company_id.is.null,company_id.eq.");
     } else if (companyId) {
       next = next.eq("company_id", companyId);
     }
@@ -250,14 +399,24 @@ export async function fetchAccountingRules(supabase, { companyId, entityId, glob
 /**
  * Tek istekte CORE pipeline için knowledge paketi yükler.
  */
+function collectUnavailableSources(parts = []) {
+  return parts.filter((p) => p?.unavailable);
+}
+
 export async function loadKnowledgeBundle(context = {}, companyId = "") {
+  const connectionMeta = await getKnowledgeConnectionMeta(context);
+  const entitiesDiagnostic = await runKnowledgeEntitiesSelectDiagnostic(context);
+
   const supabase = await resolveKnowledgeSupabase(context);
   if (!supabase) {
     const dbProbe = await probeKnowledgeDatabase(context, companyId);
     return {
       unavailable: true,
       supabase: null,
+      connectionMeta,
+      entitiesDiagnostic,
       dbProbe,
+      unavailableSources: [{ source: "client", queryError: entitiesDiagnostic.error }],
       entities: [],
       companyPatterns: [],
       globalPatterns: [],
@@ -285,10 +444,13 @@ export async function loadKnowledgeBundle(context = {}, companyId = "") {
     fetchAccountingRules(supabase, { globalOnly: true }),
   ]);
 
-  const unavailable =
-    entityResult.unavailable ||
-    companyPatternResult.unavailable ||
-    globalPatternResult.unavailable;
+  const unavailableSources = collectUnavailableSources([
+    { source: "knowledge_entities", ...entityResult },
+    { source: "knowledge_match_patterns_company", ...companyPatternResult },
+    { source: "knowledge_match_patterns_global", ...globalPatternResult },
+  ]);
+
+  const unavailable = unavailableSources.length > 0;
 
   const entities = entityResult.entities || [];
   let dbProbe = null;
@@ -298,10 +460,25 @@ export async function loadKnowledgeBundle(context = {}, companyId = "") {
 
   const entitiesById = new Map(entities.map((row) => [row.id, row]));
 
+  const firstQueryError =
+    unavailableSources[0]?.queryError ||
+    entityResult.queryError ||
+    companyPatternResult.queryError ||
+    globalPatternResult.queryError ||
+    memoryResult.queryError ||
+    null;
+
   return {
     unavailable,
     supabase,
+    connectionMeta,
+    entitiesDiagnostic,
     dbProbe,
+    unavailableSources: unavailableSources.map((s) => ({
+      source: s.source,
+      reason: s.unavailableReason,
+      error: s.queryError,
+    })),
     entities,
     entitiesById,
     companyPatterns: companyPatternResult.data || [],
@@ -314,7 +491,8 @@ export async function loadKnowledgeBundle(context = {}, companyId = "") {
       companyPatternResult.error ||
       globalPatternResult.error ||
       memoryResult.error ||
-      null,
+      (firstQueryError ? new Error(firstQueryError.message) : null),
+    queryError: firstQueryError,
   };
 }
 

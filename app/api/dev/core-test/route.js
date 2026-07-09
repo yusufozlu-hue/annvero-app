@@ -6,7 +6,12 @@ import {
   requireApiSession,
 } from "@/src/lib/auth/apiGuard";
 import { resolveAccountingDecision } from "@/src/core/annveroCore.js";
-import { probeKnowledgeDatabase } from "@/src/core/db/knowledgeStore.js";
+import {
+  getKnowledgeConnectionMeta,
+  probeKnowledgeDatabase,
+  runKnowledgeEntitiesSelectDiagnostic,
+} from "@/src/core/db/knowledgeStore.js";
+import { getBuildInfo } from "@/src/lib/buildInfo.js";
 import { KNOWLEDGE_TABLES } from "@/src/lib/knowledge-engine/constants.js";
 
 export const runtime = "nodejs";
@@ -80,6 +85,9 @@ export async function POST(request) {
       : `core-test-${Date.now()}`);
 
   const knowledgeDbHealth = await probeKnowledgeDatabase({ supabase }, companyId);
+  const connectionMeta = await getKnowledgeConnectionMeta({ supabase });
+  const entitiesDiagnostic = await runKnowledgeEntitiesSelectDiagnostic({ supabase });
+  const buildInfo = getBuildInfo();
 
   const result = await resolveAccountingDecision(
     {
@@ -112,12 +120,22 @@ export async function POST(request) {
       request_id: requestId,
       company_id: companyId,
       environment: process.env.NODE_ENV || "unknown",
+      build: {
+        commit: buildInfo.commit,
+        full_commit: buildInfo.fullCommit,
+        built_at: buildInfo.builtAtLabel,
+      },
       knowledge_db: {
-        client_type: knowledgeDbHealth.clientType,
+        client_type: connectionMeta.clientType,
+        supabase_url: connectionMeta.supabaseUrl,
+        project_ref: connectionMeta.projectRef,
+        used_context_client: connectionMeta.usedContextClient,
         ok: knowledgeDbHealth.ok,
         reason: knowledgeDbHealth.reason,
         missing_env: knowledgeDbHealth.env?.missingEnv || [],
         tables: knowledgeDbHealth.tables,
+        entities_select: entitiesDiagnostic.queries,
+        entities_select_error: entitiesDiagnostic.error,
       },
     },
   });
