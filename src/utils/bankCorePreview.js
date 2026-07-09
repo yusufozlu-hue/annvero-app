@@ -86,6 +86,62 @@ export function formatCoreYesNo(value) {
 
 const LOW_CONFIDENCE_THRESHOLD = 0.55;
 
+function normalizeTeachHaystack(...parts) {
+  return parts
+    .flat()
+    .map((value) => String(value || "").trim().toLocaleLowerCase("tr"))
+    .filter(Boolean)
+    .join(" ");
+}
+
+/**
+ * StandardLuca satırı + movement için CORE'a Öğret butonu görünürlüğü.
+ * İlk etap: yönetim kullanıcı + CORE açık + problem sinyali.
+ */
+export function shouldShowCoreTeachButton(
+  row = {},
+  movement = null,
+  { isManagementUser = false, isCoreEnabled = false } = {}
+) {
+  if (!isCoreEnabled || !isManagementUser) return false;
+
+  const haystack = normalizeTeachHaystack(
+    row.kontrolNotu,
+    row.uyari,
+    row.warning,
+    row.riskDurumu,
+    movement?.warning
+  );
+
+  const preview = movement?.corePreview || (movement ? extractCorePreviewFields(null, movement) : {});
+  const confidence = Number(preview.confidence_score ?? movement?._coreConfidence ?? 0);
+
+  const ruleNotFound = haystack.includes("kural bulunamadı");
+  const cariNotFound =
+    haystack.includes("cari") &&
+    (haystack.includes("bulunamadı") || haystack.includes("eslesme"));
+  const accountPlanNotFound =
+    haystack.includes("hesap planında bulunamadı") ||
+    haystack.includes("hesap eşleşmesi bulunamadı") ||
+    haystack.includes("hesap eksik");
+  const lowConfidence = confidence > 0 && confidence < LOW_CONFIDENCE_THRESHOLD;
+  const manualReview = preview.needs_manual_review === true;
+  const missingCounterAccount =
+    !String(row.karsiHesapKodu || movement?.counterAccountCode || "").trim() &&
+    !String(preview.suggested_account_code || "").trim();
+
+  if (movement && isMovementTeachable(movement)) return true;
+
+  return (
+    ruleNotFound ||
+    cariNotFound ||
+    accountPlanNotFound ||
+    lowConfidence ||
+    manualReview ||
+    missingCounterAccount
+  );
+}
+
 export function isMovementTeachable(movement = {}) {
   const preview = movement.corePreview || extractCorePreviewFields(null, movement);
   const confidence = Number(preview.confidence_score ?? movement._coreConfidence ?? 0);

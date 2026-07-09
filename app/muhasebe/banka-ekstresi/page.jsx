@@ -74,7 +74,7 @@ import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 import { buildBankParserResultFromNormalizedRowsAsync } from "@/src/utils/bankParserCore";
 import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
 import { DEFAULT_CORE_PREVIEW_LIMIT } from "@/src/utils/bankCoreBridge";
-import { computeCoreIntegrationSummary, mergeCoreDecisionIntoMovement } from "@/src/utils/bankCorePreview";
+import { computeCoreIntegrationSummary, mergeCoreDecisionIntoMovement, shouldShowCoreTeachButton } from "@/src/utils/bankCorePreview";
 import CorePreviewTable from "./CorePreviewTable";
 import KnowledgeTeachModal from "./KnowledgeTeachModal";
 import { buildTeachFormFromMovement } from "@/src/utils/knowledgeBuilderForm";
@@ -341,6 +341,13 @@ export default function BankaParserPage() {
     movementRows.forEach((row) => map.set(row.id, row));
     return map;
   }, [movementRows]);
+
+  const fullMovementById = useMemo(() => {
+    const map = new Map();
+    const source = fullMovementRows.length ? fullMovementRows : movementRows;
+    source.forEach((row) => map.set(row.id, row));
+    return map;
+  }, [fullMovementRows, movementRows]);
 
   useEffect(() => {
     setPreviewLimit(PREVIEW_PAGE_SIZE);
@@ -877,6 +884,37 @@ export default function BankaParserPage() {
     setIsTeachModalOpen(true);
   };
 
+  const handleOpenTeachFromLucaRow = (row) => {
+    const movement = row?._movementId ? fullMovementById.get(row._movementId) : null;
+    if (movement) {
+      handleOpenTeachModal(movement);
+      return;
+    }
+
+    handleOpenTeachModal({
+      id: row?._movementId || row?.id,
+      description: row?.aciklama || row?.fisAciklama || "",
+      counterAccountCode: row?.karsiHesapKodu || "",
+      documentType: row?.belgeTuru || "",
+      bankName: selectedBank,
+      rawRow: {
+        aciklama: row?.aciklama || row?.fisAciklama || "",
+        belgeTuru: row?.belgeTuru || "",
+        banka: selectedBank,
+      },
+    });
+  };
+
+  const showCoreTeachForLucaRow = (row) =>
+    shouldShowCoreTeachButton(
+      row,
+      row?._movementId ? fullMovementById.get(row._movementId) : null,
+      {
+        isManagementUser,
+        isCoreEnabled: isAnnveroCoreEnabled(),
+      }
+    );
+
   const handleCloseTeachModal = () => {
     if (isSavingTeach) return;
     setIsTeachModalOpen(false);
@@ -1221,6 +1259,7 @@ export default function BankaParserPage() {
               movements={corePreviewMovements}
               displayedCount={PREVIEW_PAGE_SIZE}
               onTeachClick={handleOpenTeachModal}
+              showTeachButton={isManagementUser && isAnnveroCoreEnabled()}
             />
           </div>
         ) : null}
@@ -1311,6 +1350,8 @@ export default function BankaParserPage() {
                   onSaveAdvancedEdit={saveAdvancedPreviewEdit}
                   onAccountFieldChange={handleAccountMemorySave}
                   isSavingAdvancedEdit={isSavingPreviewEdit}
+                  onCoreTeachClick={handleOpenTeachFromLucaRow}
+                  showCoreTeachForRow={showCoreTeachForLucaRow}
                   renderKontrolCell={(row) => {
                     const movement = row._movementId
                       ? movementById.get(row._movementId)

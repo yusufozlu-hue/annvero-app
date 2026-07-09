@@ -14,6 +14,7 @@ export default function CorePreviewTable({
   movements = [],
   displayedCount = 100,
   onTeachClick,
+  showTeachButton = true,
 }) {
   const rows = movements.slice(0, displayedCount);
 
@@ -37,13 +38,13 @@ export default function CorePreviewTable({
             <th className={thClass}>Risk</th>
             <th className={thClass}>İnceleme Gerekli mi?</th>
             <th className={thClass}>Kaynak</th>
-            <th className={thClass}>Öğret</th>
+            {showTeachButton ? <th className={thClass}>Öğret</th> : null}
           </tr>
         </thead>
         <tbody>
           {rows.map((movement, index) => {
             const preview = movement.corePreview || {};
-            const teachable = isMovementTeachable(movement);
+            const teachable = showTeachButton && isMovementTeachable(movement);
 
             return (
               <tr key={movement.id || index} className="hover:bg-gray-900/50">
@@ -66,19 +67,21 @@ export default function CorePreviewTable({
                 <td className={tdClass}>
                   {preview.decision_source || movement._coreDecisionSource || "—"}
                 </td>
-                <td className={tdClass}>
-                  {teachable ? (
-                    <button
-                      type="button"
-                      onClick={() => onTeachClick?.(movement, index)}
-                      className="rounded border border-indigo-600 px-2 py-1 text-[11px] font-semibold text-indigo-200 hover:bg-indigo-950"
-                    >
-                      CORE&apos;a Öğret
-                    </button>
-                  ) : (
-                    <span className="text-gray-500">—</span>
-                  )}
-                </td>
+                {showTeachButton ? (
+                  <td className={tdClass}>
+                    {teachable ? (
+                      <button
+                        type="button"
+                        onClick={() => onTeachClick?.(movement, index)}
+                        className="rounded border border-indigo-600 px-2 py-1 text-[11px] font-semibold text-indigo-200 hover:bg-indigo-950"
+                      >
+                        CORE&apos;a Öğret
+                      </button>
+                    ) : (
+                      <span className="text-gray-500">—</span>
+                    )}
+                  </td>
+                ) : null}
               </tr>
             );
           })}

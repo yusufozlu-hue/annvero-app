@@ -30,6 +30,8 @@ export default function EditableStandardLucaPreviewTable({
   onAccountFieldChange,
   isSavingAdvancedEdit = false,
   showAdvancedEdit = true,
+  onCoreTeachClick,
+  showCoreTeachForRow,
 }) {
   const [editingRowId, setEditingRowId] = useState(null);
   const [draftRow, setDraftRow] = useState(null);
@@ -475,6 +477,15 @@ export default function EditableStandardLucaPreviewTable({
                               }`}
                             >
                               Detay
+                            </button>
+                          ) : null}
+                          {showCoreTeachForRow?.(row) && onCoreTeachClick ? (
+                            <button
+                              type="button"
+                              onClick={() => onCoreTeachClick(row)}
+                              className="rounded-lg border border-indigo-600/70 bg-indigo-950/40 px-3 py-1.5 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-950/70"
+                            >
+                              CORE&apos;a Öğret
                             </button>
                           ) : null}
                           <button
