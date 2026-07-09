@@ -295,6 +295,13 @@ function LoginForm() {
           setIsLoading(false);
           return;
         }
+
+        void fetch("/api/auth/login-event", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source: "password_login", event_type: "login" }),
+        });
       } catch {
         // fallback auth: login devam eder
       }

@@ -4,6 +4,7 @@ import {
   getApiSupabase,
   requireApiSession,
 } from "@/src/lib/auth/apiGuard";
+import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import {
   buildGibCheckPayload,
   computeNextCheckAt,
@@ -105,6 +106,12 @@ export async function POST(request) {
   const session = await requireApiSession();
   if (session.error) return session.error;
 
+  const rateLimited = enforceRateLimit(request, session, "official-notifications:gib-check", {
+    limit: 20,
+    windowMs: 600_000,
+  });
+  if (rateLimited) return rateLimited;
+
   const body = await request.json().catch(() => null);
   if (!body) {
     return NextResponse.json({ error: "Geçersiz istek gövdesi." }, { status: 400 });
@@ -128,6 +135,12 @@ export async function POST(request) {
 export async function PUT(request) {
   const session = await requireApiSession();
   if (session.error) return session.error;
+
+  const rateLimited = enforceRateLimit(request, session, "official-notifications:gib-check-bulk", {
+    limit: 5,
+    windowMs: 600_000,
+  });
+  if (rateLimited) return rateLimited;
 
   let body;
   try {

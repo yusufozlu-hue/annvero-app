@@ -11,6 +11,7 @@ import {
 
 export const AUDIT_ENTITY_TYPES = {
   COMPANY: "company",
+  COMPANY_BACKUP: "company_backup",
   LEARNING_MEMORY: "learning_memory",
   RULE_ENGINE: "rule_engine",
   ACCOUNT_PLAN: "account_plan",

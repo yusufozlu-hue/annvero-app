@@ -6,26 +6,94 @@
 import { ACCOUNT_PLAN_STORAGE_KEY, RULE_ENGINE_STORAGE_KEY } from "@/src/utils/companyCenter";
 import { BANK_CARD_OPS_SESSION_KEY } from "@/src/utils/bankCardOpsCenter";
 
-/** Tek firma yedek paketi şeması (v1) */
-export const COMPANY_BACKUP_SCHEMA_VERSION = 1;
+/** Tek firma yedek paketi şeması (v2 — Faz 2 export envelope) */
+export const COMPANY_BACKUP_SCHEMA_VERSION = 2;
 
 /**
  * DB tabanlı export kaynakları (API veya service_role ile).
+ * Gerçek export: GET /api/backup/company-export?companyId=...
  */
 export const COMPANY_DB_EXPORT_SOURCES = [
   {
-    key: "company",
+    key: "companies",
     table: "companies",
     filterColumn: "id",
-    apiPath: null,
+    apiPath: "/api/backup/company-export?companyId={companyId}",
     description: "Firma ana kaydı (companies.data jsonb)",
   },
   {
     key: "learning_memory",
     table: "learning_memory",
     filterColumn: "company_id",
-    apiPath: "/api/learning-memory?companyId={companyId}",
+    apiPath: "/api/backup/company-export?companyId={companyId}",
     description: "Öğrenen hafıza kayıtları",
+  },
+  {
+    key: "learned_bank_rules",
+    table: "learned_bank_rules",
+    filterColumn: "company_id",
+    apiPath: "/api/backup/company-export?companyId={companyId}",
+    description: "Öğrenilen banka kuralları",
+  },
+  {
+    key: "normalized_financial_transactions",
+    table: "normalized_financial_transactions",
+    filterColumn: "company_id",
+    apiPath: "/api/backup/company-export?companyId={companyId}",
+    description: "Banka & Kart operasyon hareketleri",
+  },
+  {
+    key: "reconciliation_matches",
+    table: "reconciliation_matches",
+    filterColumn: "company_id",
+    apiPath: "/api/backup/company-export?companyId={companyId}",
+    description: "Mutabakat eşleşmeleri",
+  },
+  {
+    key: "audit_events",
+    table: "audit_events",
+    filterColumn: "company_id",
+    apiPath: "/api/backup/company-export?companyId={companyId}",
+    description: "Audit log kayıtları",
+  },
+  {
+    key: "official_notifications",
+    table: "official_notifications",
+    filterColumn: "company_id",
+    apiPath: "/api/backup/company-export?companyId={companyId}",
+    description: "Resmi bildirimler",
+  },
+  {
+    key: "company_gib_credentials",
+    table: "company_gib_credentials",
+    filterColumn: "company_id",
+    apiPath: "/api/backup/company-export?companyId={companyId}",
+    description: "GİB kimlik bilgileri (şifreli)",
+    optional: true,
+  },
+  {
+    key: "gib_company_query_state",
+    table: "gib_company_query_state",
+    filterColumn: "company_id",
+    apiPath: "/api/backup/company-export?companyId={companyId}",
+    description: "GİB sorgu durumu",
+    optional: true,
+  },
+  {
+    key: "gib_query_sessions",
+    table: "gib_query_sessions",
+    filterColumn: "company_id",
+    apiPath: "/api/backup/company-export?companyId={companyId}",
+    description: "GİB sorgu oturumları",
+    optional: true,
+  },
+  {
+    key: "gib_check_reminders",
+    table: "gib_check_reminders",
+    filterColumn: "company_id",
+    apiPath: "/api/backup/company-export?companyId={companyId}",
+    description: "GİB kontrol hatırlatmaları",
+    optional: true,
   },
   {
     key: "unrecognized_transactions",
@@ -33,34 +101,7 @@ export const COMPANY_DB_EXPORT_SOURCES = [
     filterColumn: "company_id",
     apiPath: "/api/transaction-memory?companyId={companyId}",
     description: "Tanınmayan işlem kuyruğu",
-  },
-  {
-    key: "normalized_financial_transactions",
-    table: "normalized_financial_transactions",
-    filterColumn: "company_id",
-    apiPath: "/api/bank-card-ops?companyId={companyId}",
-    description: "Banka & Kart operasyon hareketleri",
-  },
-  {
-    key: "learned_bank_rules",
-    table: "learned_bank_rules",
-    filterColumn: "company_id",
-    apiPath: "/api/learned-bank-rules?companyId={companyId}",
-    description: "Öğrenilen banka kuralları",
-  },
-  {
-    key: "reconciliation_matches",
-    table: "reconciliation_matches",
-    filterColumn: "company_id",
-    apiPath: "/api/reconciliation-matches?companyId={companyId}",
-    description: "Mutabakat eşleşmeleri",
-  },
-  {
-    key: "official_notifications",
-    table: "official_notifications",
-    filterColumn: "company_id",
-    apiPath: "/api/official-notifications?companyId={companyId}",
-    description: "Resmi bildirimler",
+    optional: true,
   },
 ];
 
@@ -89,35 +130,31 @@ export const COMPANY_LOCAL_EXPORT_SOURCES = [
 ];
 
 /**
- * Firma yedek paketi iskeleti (export implementasyonu için).
+ * Firma yedek paketi iskeleti (Faz 2 envelope).
  */
 export function buildCompanyBackupEnvelope(companyId, partial = {}) {
   return {
-    schemaVersion: COMPANY_BACKUP_SCHEMA_VERSION,
-    exportedAt: new Date().toISOString(),
-    companyId: String(companyId || "").trim(),
-    sources: {
-      database: COMPANY_DB_EXPORT_SOURCES.map((s) => s.key),
-      localStorage: COMPANY_LOCAL_EXPORT_SOURCES.filter((s) => s.companyScoped).map(
-        (s) => s.key
-      ),
-    },
-    data: partial.data || {},
-    meta: partial.meta || {},
+    version: COMPANY_BACKUP_SCHEMA_VERSION,
+    exported_at: partial.exported_at || new Date().toISOString(),
+    company_id: String(companyId || "").trim(),
+    company_name: partial.company_name || partial.companyName || "",
+    exported_by: partial.exported_by || partial.exportedBy || "",
+    tables: partial.tables || partial.data || {},
+    metadata: partial.metadata || partial.meta || {},
   };
 }
 
 /**
- * Gelecekteki `scripts/export-company-backup.mjs` için adımlar:
- * 1. Oturumlu kullanıcı veya service_role ile DB kaynaklarını çek
- * 2. Browser export script ile localStorage birleştir (opsiyonel)
- * 3. buildCompanyBackupEnvelope ile tek JSON üret
- * 4. audit_events: action=export
+ * Export adımları:
+ * 1. GET /api/backup/company-export?companyId=... (management + company access)
+ * 2. audit_events + company_backup_runs metadata
+ * 3. Import/restore — Faz 3
  */
 
 export const COMPANY_BACKUP_IMPLEMENTATION_CHECKLIST = [
-  "Migration 015 uygulandıktan sonra API'ler auth + company scope ile export",
-  "scripts/export-company-backup.mjs — service_role + companyId argümanı",
-  "Import: scripts/import-companies-json.mjs genişletilecek (learning_memory dahil)",
+  "Migration 016 uygulandıktan sonra login_events + company_backup_runs hazır",
+  "GET /api/backup/company-export — management guard + rate limit",
+  "GET /api/recovery/deleted-records — soft delete listeleme",
+  "Import/restore — Faz 3",
   "Haftalık Supabase otomatik yedek + manuel export doğrulaması",
 ];

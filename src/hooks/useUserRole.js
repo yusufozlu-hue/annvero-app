@@ -9,6 +9,7 @@ import {
 } from "@/src/config/annveroRoles";
 import { createUserAccess } from "@/src/lib/auth/userAccess";
 import { canAccessCompany as checkCompanyAccess } from "@/src/lib/auth/permissions";
+import { invalidateAuthMeCache, fetchAuthMe } from "@/src/lib/auth/authMeClient";
 import { upsertCachedUser } from "@/src/utils/annveroUserStore";
 
 const STALE_ACCESS_KEYS = [
@@ -41,12 +42,11 @@ export function useUserRole() {
   const [apiShowAccessWarning, setApiShowAccessWarning] = useState(false);
   const [accountActive, setAccountActive] = useState(true);
 
-  const loadProfile = useCallback(async () => {
+  const loadProfile = useCallback(async (options = {}) => {
     setLoading(true);
     clearStaleAccessFlags();
     try {
-      const response = await fetch("/api/auth/me", { cache: "no-store", credentials: "include" });
-      const data = await response.json();
+      const { response, data } = await fetchAuthMe({ force: Boolean(options.force) });
 
       if (!data.authenticated) {
         setAuthenticated(false);
@@ -152,7 +152,10 @@ export function useUserRole() {
     needsInvite,
     showAccessWarning,
     userAccess: access,
-    refresh: loadProfile,
+    refresh: () => {
+      invalidateAuthMeCache();
+      return loadProfile({ force: true });
+    },
     setRole,
     canAccessRoute: (pathname) => canAccessRoute(role, pathname),
     canSeeNavGroup: (groupTitle) => canSeeNavGroup(role, groupTitle),

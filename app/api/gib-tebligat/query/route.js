@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { assertCompanyAccess, requireApiSession } from "@/src/lib/auth/apiGuard";
+import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import { getGibAutomationGuardResponse } from "@/src/lib/gibAutomationRouteGuard";
 import { getGibEncryptionKeyGuardResponse } from "@/src/lib/gibCredentialsRouteGuard";
 import {
@@ -16,6 +17,12 @@ export const maxDuration = 120;
 export async function POST(request) {
   const session = await requireApiSession();
   if (session.error) return session.error;
+
+  const rateLimited = enforceRateLimit(request, session, "gib-tebligat:query", {
+    limit: 10,
+    windowMs: 600_000,
+  });
+  if (rateLimited) return rateLimited;
 
   const encryptionKeyError = getGibEncryptionKeyGuardResponse();
   if (encryptionKeyError) return encryptionKeyError;

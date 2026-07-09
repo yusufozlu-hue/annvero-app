@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ANNVERO_COMPANY_CHANGED_EVENT,
   ANNVERO_SELECTED_COMPANY_KEY,
@@ -23,6 +23,8 @@ export function useCompanyList() {
   const [companies, setCompanies] = useState([]);
   const [selectedCompanyId, setSelectedCompanyIdState] = useState(readStoredCompanyId);
   const [isLoading, setIsLoading] = useState(true);
+  const lastRefreshAtRef = useRef(0);
+  const COMPANY_REFRESH_TTL_MS = 60_000;
 
   const persistCompanyId = useCallback((companyId = "") => {
     if (typeof window === "undefined") return;
@@ -45,12 +47,22 @@ export function useCompanyList() {
     [persistCompanyId]
   );
 
-  const refreshCompanies = useCallback(async () => {
+  const refreshCompanies = useCallback(async (options = {}) => {
+    const now = Date.now();
+    if (
+      !options.force &&
+      companies.length > 0 &&
+      now - lastRefreshAtRef.current < COMPANY_REFRESH_TTL_MS
+    ) {
+      return;
+    }
+
     setIsLoading(true);
 
     try {
       const loaded = await fetchCompanies();
       setCompanies(loaded);
+      lastRefreshAtRef.current = Date.now();
       setSelectedCompanyIdState((currentId) => {
         const storedId = readStoredCompanyId();
         const synced = syncSelectedCompanyId(loaded, currentId || storedId);
@@ -62,7 +74,7 @@ export function useCompanyList() {
     } finally {
       setIsLoading(false);
     }
-  }, [persistCompanyId]);
+  }, [companies.length, persistCompanyId]);
 
   useEffect(() => {
     refreshCompanies();

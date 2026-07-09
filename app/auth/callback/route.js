@@ -3,6 +3,11 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getSafeNextPath } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
+import {
+  buildLoginEventContextFromRequest,
+  LOGIN_EVENT_TYPES,
+  writeLoginEvent,
+} from "@/src/lib/audit/loginEvents";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,11 +41,21 @@ export async function GET(request) {
     },
   });
 
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
+  const { data: sessionData, error } = await supabase.auth.exchangeCodeForSession(code);
 
   if (error) {
     console.error("[auth/callback]", error.message);
     return NextResponse.redirect(`${origin}/login?error=auth_callback_failed`);
+  }
+
+  const user = sessionData?.session?.user;
+  if (user) {
+    void writeLoginEvent({
+      ...buildLoginEventContextFromRequest(request, user),
+      eventType: LOGIN_EVENT_TYPES.OAUTH_CALLBACK,
+      success: true,
+      metadata: { source: "auth_callback" },
+    });
   }
 
   try {

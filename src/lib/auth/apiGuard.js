@@ -239,4 +239,34 @@ export async function requireCompaniesRecordAccess(supabase, companyId, access) 
   return { ok: true, companyId };
 }
 
+/**
+ * Yönetim yetkisi (admin / partner / mudur) + oturum.
+ */
+export async function requireManagementApi(context = "management", table = null) {
+  const session = await requireApiSession();
+  if (session.error) {
+    return { ...session, supabase: null, companyId: "" };
+  }
+
+  if (!session.access?.isManagementUser) {
+    return {
+      ...session,
+      error: jsonForbidden("Bu işlem için yönetim yetkisi gerekli."),
+      supabase: null,
+      companyId: "",
+    };
+  }
+
+  if (!table) {
+    return { ...session, error: null, supabase: null, companyId: "" };
+  }
+
+  const { supabase, guard } = getApiSupabase(context, table);
+  if (guard) {
+    return { ...session, error: guard, supabase: null, companyId: "" };
+  }
+
+  return { ...session, error: null, supabase, companyId: "" };
+}
+
 export { requireAdminUser, requireManagementUser };
