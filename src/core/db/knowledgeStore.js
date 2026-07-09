@@ -540,3 +540,456 @@ export async function insertDecisionHistory(supabase, record = {}) {
 
   return { ok: true, id: data?.id || null };
 }
+
+function normalizeWriteText(value = "") {
+  return String(value || "")
+    .trim()
+    .toLocaleLowerCase("tr")
+    .replace(/\s+/g, " ");
+}
+
+export async function findGlobalEntityByName(supabase, entityName = "") {
+  if (!supabase || !entityName) return null;
+  const normalized = normalizeWriteText(entityName);
+
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ENTITIES)
+    .select("*")
+    .eq("is_global", true)
+    .is("deleted_at", null);
+
+  if (error) return null;
+
+  return (
+    (data || []).find(
+      (row) =>
+        normalizeWriteText(row.entity_name) === normalized ||
+        (Array.isArray(row.aliases) &&
+          row.aliases.some((alias) => normalizeWriteText(alias) === normalized))
+    ) || null
+  );
+}
+
+export async function findCompanyMemoryDuplicate(supabase, companyId = "", keyword = "") {
+  if (!supabase || !companyId || !keyword) return null;
+  const normalized = normalizeWriteText(keyword);
+
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.COMPANY_MEMORY)
+    .select("*")
+    .eq("company_id", companyId)
+    .is("deleted_at", null);
+
+  if (error) return null;
+
+  return (
+    (data || []).find((row) => {
+      const candidates = [row.normalized_description, row.raw_description]
+        .map(normalizeWriteText)
+        .filter(Boolean);
+      return candidates.includes(normalized);
+    }) || null
+  );
+}
+
+export async function findGlobalPatternDuplicate(supabase, entityId = "", keyword = "") {
+  if (!supabase || !entityId || !keyword) return null;
+  const normalized = normalizeWriteText(keyword);
+
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.MATCH_PATTERNS)
+    .select("*")
+    .eq("entity_id", entityId)
+    .eq("pattern_type", "keyword")
+    .is("deleted_at", null);
+
+  if (error) return null;
+
+  return (
+    (data || []).find(
+      (row) =>
+        normalizeWriteText(row.normalized_value || row.pattern_value) === normalized
+    ) || null
+  );
+}
+
+export async function findGlobalRuleDuplicate(supabase, entityId = "", sourceType = "bank") {
+  if (!supabase || !entityId) return null;
+
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ACCOUNTING_RULES)
+    .select("*")
+    .eq("entity_id", entityId)
+    .eq("source_type", sourceType)
+    .is("company_id", null)
+    .is("deleted_at", null);
+
+  if (error) return null;
+
+  return (data || [])[0] || null;
+}
+
+export async function insertCompanyMemoryRecord(supabase, record = {}) {
+  const payload = {
+    company_id: record.company_id,
+    entity_id: record.entity_id || null,
+    raw_description: record.raw_description || "",
+    normalized_description:
+      record.normalized_description || normalizeWriteText(record.raw_description),
+    bank_name: record.bank_name || null,
+    transaction_type: record.transaction_type || null,
+    suggested_account_code: record.suggested_account_code || null,
+    suggested_account_name: record.suggested_account_name || null,
+    suggested_counter_account_code: record.suggested_counter_account_code || null,
+    suggested_cari: record.suggested_cari || null,
+    suggested_document_type: record.suggested_document_type || null,
+    suggested_description: record.suggested_description || record.raw_description || "",
+    suggested_vat_rate:
+      record.suggested_vat_rate == null ? null : Number(record.suggested_vat_rate),
+    confidence: Number(record.confidence) || 1,
+    learned_from: record.learned_from || "manual",
+    is_active: record.is_active !== false,
+    created_by: record.created_by || null,
+    updated_by: record.updated_by || null,
+  };
+
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.COMPANY_MEMORY)
+    .insert([payload])
+    .select("*")
+    .maybeSingle();
+
+  if (error) return { ok: false, error };
+  return { ok: true, record: data };
+}
+
+export async function updateCompanyMemoryRecord(supabase, id, patch = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.COMPANY_MEMORY)
+    .update({
+      ...patch,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select("*")
+    .maybeSingle();
+
+  if (error) return { ok: false, error };
+  return { ok: true, record: data };
+}
+
+export async function insertKnowledgeEntity(supabase, record = {}) {
+  const payload = {
+    entity_name: record.entity_name,
+    entity_family: record.entity_family || "other",
+    entity_type: record.entity_type || "other",
+    aliases: Array.isArray(record.aliases) ? record.aliases : [],
+    risk_level: record.risk_level || "low",
+    default_confidence: Number(record.default_confidence) || 0.8,
+    is_global: record.is_global !== false,
+    company_id: record.company_id || null,
+    is_active: true,
+    created_by: record.created_by || null,
+    updated_by: record.updated_by || null,
+  };
+
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ENTITIES)
+    .insert([payload])
+    .select("*")
+    .maybeSingle();
+
+  if (error) return { ok: false, error };
+  return { ok: true, record: data };
+}
+
+export async function updateKnowledgeEntity(supabase, id, patch = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ENTITIES)
+    .update({
+      ...patch,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select("*")
+    .maybeSingle();
+
+  if (error) return { ok: false, error };
+  return { ok: true, record: data };
+}
+
+export async function insertKnowledgePattern(supabase, record = {}) {
+  const payload = {
+    entity_id: record.entity_id,
+    company_id: record.company_id || null,
+    pattern_type: record.pattern_type || "keyword",
+    pattern_value: record.pattern_value,
+    normalized_value:
+      record.normalized_value || normalizeWriteText(record.pattern_value),
+    priority: Number(record.priority) || 100,
+    confidence: Number(record.confidence) || 0.85,
+    is_global: record.is_global !== false,
+    is_active: true,
+    created_by: record.created_by || null,
+    updated_by: record.updated_by || null,
+  };
+
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.MATCH_PATTERNS)
+    .insert([payload])
+    .select("*")
+    .maybeSingle();
+
+  if (error) return { ok: false, error };
+  return { ok: true, record: data };
+}
+
+export async function updateKnowledgePattern(supabase, id, patch = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.MATCH_PATTERNS)
+    .update({
+      ...patch,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select("*")
+    .maybeSingle();
+
+  if (error) return { ok: false, error };
+  return { ok: true, record: data };
+}
+
+export async function insertKnowledgeAccountingRule(supabase, record = {}) {
+  const payload = {
+    entity_id: record.entity_id,
+    company_id: record.company_id || null,
+    source_type: record.source_type || "bank",
+    transaction_direction: record.transaction_direction || "debit",
+    debit_account_code: record.debit_account_code || null,
+    debit_account_name: record.debit_account_name || null,
+    credit_account_code: record.credit_account_code || null,
+    credit_account_name: record.credit_account_name || null,
+    vat_rate: record.vat_rate == null ? null : Number(record.vat_rate),
+    document_type: record.document_type || null,
+    cari_name: record.cari_name || null,
+    description_template: record.description_template || null,
+    rule_source: record.rule_source || "manual",
+    priority: Number(record.priority) || 100,
+    confidence: Number(record.confidence) || 0.85,
+    risk_level: record.risk_level || "low",
+    is_global: record.is_global !== false,
+    is_active: true,
+    created_by: record.created_by || null,
+    updated_by: record.updated_by || null,
+  };
+
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ACCOUNTING_RULES)
+    .insert([payload])
+    .select("*")
+    .maybeSingle();
+
+  if (error) return { ok: false, error };
+  return { ok: true, record: data };
+}
+
+export async function updateKnowledgeAccountingRule(supabase, id, patch = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ACCOUNTING_RULES)
+    .update({
+      ...patch,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select("*")
+    .maybeSingle();
+
+  if (error) return { ok: false, error };
+  return { ok: true, record: data };
+}
+
+function normalizeWriteText(value = "") {
+  return String(value || "")
+    .trim()
+    .toLocaleLowerCase("tr")
+    .replace(/\s+/g, " ");
+}
+
+export async function findGlobalEntityByName(supabase, entityName = "") {
+  if (!supabase || !entityName) return null;
+  const normalized = normalizeWriteText(entityName);
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ENTITIES)
+    .select("*")
+    .eq("is_global", true)
+    .is("deleted_at", null);
+
+  if (error) return null;
+  return (
+    (data || []).find(
+      (row) =>
+        row.is_active !== false &&
+        normalizeWriteText(row.entity_name) === normalized
+    ) || null
+  );
+}
+
+export async function findPatternByKeyword(supabase, { keyword = "", entityId = null, companyId = null, isGlobal = true } = {}) {
+  if (!supabase || !keyword) return null;
+  const normalized = normalizeWriteText(keyword);
+
+  let query = supabase
+    .from(KNOWLEDGE_TABLES.MATCH_PATTERNS)
+    .select("*")
+    .eq("pattern_type", "keyword")
+    .is("deleted_at", null);
+
+  if (entityId) query = query.eq("entity_id", entityId);
+  if (isGlobal) {
+    query = query.eq("is_global", true);
+  } else if (companyId) {
+    query = query.eq("company_id", companyId);
+  }
+
+  const { data, error } = await query;
+  if (error) return null;
+
+  return (
+    (data || []).find(
+      (row) =>
+        row.is_active !== false &&
+        (normalizeWriteText(row.normalized_value) === normalized ||
+          normalizeWriteText(row.pattern_value) === normalized)
+    ) || null
+  );
+}
+
+export async function findAccountingRuleByEntity(supabase, { entityId, sourceType, companyId = null, isGlobal = true } = {}) {
+  if (!supabase || !entityId || !sourceType) return null;
+
+  let query = supabase
+    .from(KNOWLEDGE_TABLES.ACCOUNTING_RULES)
+    .select("*")
+    .eq("entity_id", entityId)
+    .eq("source_type", sourceType)
+    .is("deleted_at", null);
+
+  if (isGlobal) {
+    query = query.eq("is_global", true).is("company_id", null);
+  } else if (companyId) {
+    query = query.eq("company_id", companyId);
+  }
+
+  const { data, error } = await query;
+  if (error) return null;
+  return (data || []).find((row) => row.is_active !== false) || null;
+}
+
+export async function findCompanyMemoryByKeyword(supabase, companyId = "", keyword = "") {
+  if (!supabase || !companyId || !keyword) return null;
+  const normalized = normalizeWriteText(keyword);
+
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.COMPANY_MEMORY)
+    .select("*")
+    .eq("company_id", companyId)
+    .is("deleted_at", null);
+
+  if (error) return null;
+
+  return (
+    (data || []).find((row) => {
+      if (row.is_active === false) return false;
+      const candidates = [row.normalized_description, row.raw_description]
+        .map(normalizeWriteText)
+        .filter(Boolean);
+      return candidates.some(
+        (candidate) => candidate === normalized || candidate.includes(normalized) || normalized.includes(candidate)
+      );
+    }) || null
+  );
+}
+
+export async function insertKnowledgeEntity(supabase, payload = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ENTITIES)
+    .insert([payload])
+    .select("*")
+    .maybeSingle();
+  if (error) return { ok: false, error };
+  return { ok: true, data };
+}
+
+export async function updateKnowledgeEntity(supabase, id, payload = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ENTITIES)
+    .update(payload)
+    .eq("id", id)
+    .select("*")
+    .maybeSingle();
+  if (error) return { ok: false, error };
+  return { ok: true, data };
+}
+
+export async function insertKnowledgePattern(supabase, payload = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.MATCH_PATTERNS)
+    .insert([payload])
+    .select("*")
+    .maybeSingle();
+  if (error) return { ok: false, error };
+  return { ok: true, data };
+}
+
+export async function updateKnowledgePattern(supabase, id, payload = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.MATCH_PATTERNS)
+    .update(payload)
+    .eq("id", id)
+    .select("*")
+    .maybeSingle();
+  if (error) return { ok: false, error };
+  return { ok: true, data };
+}
+
+export async function insertKnowledgeAccountingRule(supabase, payload = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ACCOUNTING_RULES)
+    .insert([payload])
+    .select("*")
+    .maybeSingle();
+  if (error) return { ok: false, error };
+  return { ok: true, data };
+}
+
+export async function updateKnowledgeAccountingRule(supabase, id, payload = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.ACCOUNTING_RULES)
+    .update(payload)
+    .eq("id", id)
+    .select("*")
+    .maybeSingle();
+  if (error) return { ok: false, error };
+  return { ok: true, data };
+}
+
+export async function insertCompanyMemory(supabase, payload = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.COMPANY_MEMORY)
+    .insert([payload])
+    .select("*")
+    .maybeSingle();
+  if (error) return { ok: false, error };
+  return { ok: true, data };
+}
+
+export async function updateCompanyMemory(supabase, id, payload = {}) {
+  const { data, error } = await supabase
+    .from(KNOWLEDGE_TABLES.COMPANY_MEMORY)
+    .update(payload)
+    .eq("id", id)
+    .select("*")
+    .maybeSingle();
+  if (error) return { ok: false, error };
+  return { ok: true, data };
+}

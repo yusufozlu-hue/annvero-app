@@ -83,3 +83,63 @@ export function formatCoreYesNo(value) {
   if (value === false) return "Hayır";
   return "—";
 }
+
+const LOW_CONFIDENCE_THRESHOLD = 0.55;
+
+export function isMovementTeachable(movement = {}) {
+  const preview = movement.corePreview || extractCorePreviewFields(null, movement);
+  const confidence = Number(preview.confidence_score ?? movement._coreConfidence ?? 0);
+  const status = String(preview.core_status || movement._coreStatus || "").toLowerCase();
+  const hasAccount = Boolean(
+    preview.suggested_account_code || movement.counterAccountCode
+  );
+
+  if (movement._coreMatched && confidence >= LOW_CONFIDENCE_THRESHOLD && hasAccount) {
+    return preview.needs_manual_review === true;
+  }
+
+  return (
+    !movement._coreMatched ||
+    status === "unknown" ||
+    status === "legacy_fallback" ||
+    status === "not_run" ||
+    status === "none" ||
+    preview.needs_manual_review === true ||
+    (confidence > 0 && confidence < LOW_CONFIDENCE_THRESHOLD) ||
+    !hasAccount
+  );
+}
+
+function isCoreDecisionUsableForPreview(coreResult = {}) {
+  const account = String(coreResult.suggested_account_code || "").trim();
+  return Boolean(account && String(coreResult.status || "").toLowerCase() !== "unknown");
+}
+
+export function mergeCoreDecisionIntoMovement(movement = {}, coreResult = null) {
+  if (!coreResult) return movement;
+
+  const preview = extractCorePreviewFields(coreResult, movement);
+  const usable = isCoreDecisionUsableForPreview(coreResult);
+
+  return {
+    ...movement,
+    ...preview,
+    corePreview: preview,
+    _coreMatched: usable,
+    _coreFallback: !usable,
+    _coreSkipped: false,
+    _coreStatus: coreResult.status || "unknown",
+    _coreConfidence: Number(coreResult.confidence_score) || 0,
+    _coreRiskLevel: coreResult.risk_level || "none",
+    _coreDecisionSource: coreResult.decision_source || "unknown",
+    _coreSuggestedAccountName: coreResult.suggested_account_name || "",
+    _coreVatRate: coreResult.suggested_vat_rate,
+    counterAccountCode: usable
+      ? coreResult.suggested_account_code || movement.counterAccountCode
+      : movement.counterAccountCode,
+    documentType: usable
+      ? coreResult.suggested_document_type || movement.documentType
+      : movement.documentType,
+  };
+}
+

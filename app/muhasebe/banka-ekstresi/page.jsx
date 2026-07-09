@@ -74,8 +74,12 @@ import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 import { buildBankParserResultFromNormalizedRowsAsync } from "@/src/utils/bankParserCore";
 import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
 import { DEFAULT_CORE_PREVIEW_LIMIT } from "@/src/utils/bankCoreBridge";
-import { computeCoreIntegrationSummary } from "@/src/utils/bankCorePreview";
+import { computeCoreIntegrationSummary, mergeCoreDecisionIntoMovement } from "@/src/utils/bankCorePreview";
 import CorePreviewTable from "./CorePreviewTable";
+import KnowledgeTeachModal from "./KnowledgeTeachModal";
+import { buildTeachFormFromMovement } from "@/src/utils/knowledgeBuilderForm";
+import { saveKnowledgeTeachRequest } from "@/src/utils/knowledgeBuilderClient";
+import { useUserRole } from "@/src/hooks/useUserRole";
 import { parseBankExcelOnMainThread } from "@/src/utils/bankExcelMainThreadParse";
 // Worker geçici olarak kapalı — bankParser.worker.js dosyası duruyor, çağrılmıyor.
 // import { runBankParserWorker } from "@/src/utils/workerParserBridge";
@@ -192,6 +196,12 @@ export default function BankaParserPage() {
   const [coreIntegrationSummary, setCoreIntegrationSummary] = useState(null);
   const [coreRowsProcessed, setCoreRowsProcessed] = useState(0);
   const [isApplyingCoreAll, setIsApplyingCoreAll] = useState(false);
+  const [teachMovement, setTeachMovement] = useState(null);
+  const [teachFormDefaults, setTeachFormDefaults] = useState(null);
+  const [isTeachModalOpen, setIsTeachModalOpen] = useState(false);
+  const [isSavingTeach, setIsSavingTeach] = useState(false);
+
+  const { isManagementUser } = useUserRole();
 
   const {
     companies,
@@ -852,6 +862,76 @@ export default function BankaParserPage() {
     coreIntegrationSummary?.notRun > 0 &&
     normalizedRowsCache.length > 0;
 
+  const handleOpenTeachModal = (movement) => {
+    if (!selectedCompanyId || !movement) return;
+
+    setTeachMovement(movement);
+    setTeachFormDefaults(
+      buildTeachFormFromMovement(movement, {
+        selectedCompanyId,
+        companyName: getCompanyDisplayName(selectedCompany),
+        selectedBank,
+        sourceType: "bank",
+      })
+    );
+    setIsTeachModalOpen(true);
+  };
+
+  const handleCloseTeachModal = () => {
+    if (isSavingTeach) return;
+    setIsTeachModalOpen(false);
+    setTeachMovement(null);
+    setTeachFormDefaults(null);
+  };
+
+  const handleSaveKnowledgeTeach = async (form) => {
+    if (!teachMovement || !selectedCompanyId) return;
+
+    setIsSavingTeach(true);
+    try {
+      const result = await saveKnowledgeTeachRequest({
+        teach: {
+          ...form,
+          company_id: selectedCompanyId,
+        },
+        movement: teachMovement,
+        movementContext: {
+          selected_bank: selectedBank,
+          sourceType: "bank",
+        },
+      });
+
+      const updatedMovement = mergeCoreDecisionIntoMovement(
+        teachMovement,
+        result?.core_decision || null
+      );
+
+      const applyMovementUpdate = (rows = []) =>
+        rows.map((row) => (row.id === teachMovement.id ? updatedMovement : row));
+
+      setFullMovementRows((prev) => {
+        const next = applyMovementUpdate(prev);
+        setCoreIntegrationSummary(computeCoreIntegrationSummary(next));
+        return next;
+      });
+      setMovementRows((prev) => applyMovementUpdate(prev).map(slimMovementForUi));
+
+      const saveMeta = result?.save || {};
+      showToast(
+        saveMeta.warning
+          ? `Kaydedildi (${saveMeta.action}). ${saveMeta.warning}`
+          : `CORE öğretme kaydı tamamlandı (${saveMeta.action || "CREATE"}).`,
+        "success"
+      );
+      handleCloseTeachModal();
+    } catch (error) {
+      console.error("[banka-ekstresi] knowledge teach failed", error);
+      showToast(error?.message || "CORE öğretme kaydı başarısız.", "error");
+    } finally {
+      setIsSavingTeach(false);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-gray-950 p-8 text-white">
       {toast && (
@@ -1140,9 +1220,19 @@ export default function BankaParserPage() {
             <CorePreviewTable
               movements={corePreviewMovements}
               displayedCount={PREVIEW_PAGE_SIZE}
+              onTeachClick={handleOpenTeachModal}
             />
           </div>
         ) : null}
+
+        <KnowledgeTeachModal
+          open={isTeachModalOpen}
+          initialForm={teachFormDefaults || {}}
+          canTeachGlobal={isManagementUser}
+          isSaving={isSavingTeach}
+          onClose={handleCloseTeachModal}
+          onSubmit={handleSaveKnowledgeTeach}
+        />
 
         <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
           <h2 className="mb-6 text-2xl font-semibold">StandardLucaRow Ön İzleme</h2>
