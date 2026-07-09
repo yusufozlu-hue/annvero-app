@@ -213,7 +213,10 @@ export async function buildBankParserResultFromNormalizedRowsAsync(options = {})
     const mapped = await mapParsedRowsWithCoreFallback(
       options.normalizedRows || [],
       mappingContext,
-      { companyId: options.selectedCompanyId }
+      {
+        companyId: options.selectedCompanyId,
+        coreRowLimit: options.coreRowLimit,
+      }
     );
     movementRows = mapped.movements;
     coreSummary = mapped.coreSummary;

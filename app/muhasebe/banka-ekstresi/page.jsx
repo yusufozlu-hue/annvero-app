@@ -73,6 +73,9 @@ import { buildBankCardOpsSideOutput } from "@/src/utils/bankCardOpsSideOutput";
 import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 import { buildBankParserResultFromNormalizedRowsAsync } from "@/src/utils/bankParserCore";
 import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
+import { DEFAULT_CORE_PREVIEW_LIMIT } from "@/src/utils/bankCoreBridge";
+import { computeCoreIntegrationSummary } from "@/src/utils/bankCorePreview";
+import CorePreviewTable from "./CorePreviewTable";
 import { parseBankExcelOnMainThread } from "@/src/utils/bankExcelMainThreadParse";
 // Worker geçici olarak kapalı — bankParser.worker.js dosyası duruyor, çağrılmıyor.
 // import { runBankParserWorker } from "@/src/utils/workerParserBridge";
@@ -98,6 +101,7 @@ const PREVIEW_PAGE_SIZE = 100;
 function slimMovementForUi(movement = {}) {
   return {
     id: movement.id,
+    description: movement.description || movement.lucaDescription || "",
     accountSuggestions: Array.isArray(movement.accountSuggestions)
       ? movement.accountSuggestions
       : [],
@@ -105,10 +109,20 @@ function slimMovementForUi(movement = {}) {
     matchedMemoryId: movement.matchedMemoryId || null,
     accountCode: movement.accountCode || "",
     counterAccountCode: movement.counterAccountCode || "",
+    documentType: movement.documentType || "",
     coreMatched: Boolean(movement._coreMatched),
     coreFallback: Boolean(movement._coreFallback),
+    coreSkipped: Boolean(movement._coreSkipped),
     coreDebug: movement._coreDebug || "",
     coreDecisionSource: movement._coreDecisionSource || "",
+    corePreview: movement.corePreview || null,
+    _coreMatched: movement._coreMatched,
+    _coreFallback: movement._coreFallback,
+    _coreSkipped: movement._coreSkipped,
+    _coreStatus: movement._coreStatus,
+    _coreConfidence: movement._coreConfidence,
+    _coreRiskLevel: movement._coreRiskLevel,
+    _coreDecisionSource: movement._coreDecisionSource,
   };
 }
 
@@ -173,6 +187,11 @@ export default function BankaParserPage() {
   const [previewErrorDetail, setPreviewErrorDetail] = useState("");
   const [previewLimit, setPreviewLimit] = useState(PREVIEW_PAGE_SIZE);
   const [previewSummary, setPreviewSummary] = useState(null);
+  const [normalizedRowsCache, setNormalizedRowsCache] = useState([]);
+  const [fullMovementRows, setFullMovementRows] = useState([]);
+  const [coreIntegrationSummary, setCoreIntegrationSummary] = useState(null);
+  const [coreRowsProcessed, setCoreRowsProcessed] = useState(0);
+  const [isApplyingCoreAll, setIsApplyingCoreAll] = useState(false);
 
   const {
     companies,
@@ -555,6 +574,77 @@ export default function BankaParserPage() {
     setPreviewErrorDetail("");
     setPreviewLimit(PREVIEW_PAGE_SIZE);
     setPreviewSummary(null);
+    setNormalizedRowsCache([]);
+    setFullMovementRows([]);
+    setCoreIntegrationSummary(null);
+    setCoreRowsProcessed(0);
+  };
+
+  const buildPipelineOptions = (normalizedRows, coreRowLimit) => ({
+    normalizedRows,
+    selectedBank,
+    selectedCompany,
+    companyPlans,
+    companyRules,
+    learningMemory,
+    accountMemoryRecords: loadAccountMemoryV1Records(),
+    accountingRules,
+    declarationAccrualRecords,
+    selectedCompanyId,
+    sourceFileName: selectedFile?.name || "",
+    sourceFileType: detectSourceFileType(
+      selectedFile?.name || "",
+      selectedFile?.type || ""
+    ),
+    sourceType: "bank",
+    coreRowLimit,
+  });
+
+  const applyPipelineResult = (mainResult, pipelineResult, coreRowLimit) => {
+    const result = buildBankCardOpsSideOutput(
+      {
+        ...pipelineResult,
+        rawCount: mainResult.rawCount || 0,
+      },
+      {
+        selectedBank,
+        selectedCompanyId,
+        sourceFileName: selectedFile?.name || "",
+        sourceFileType: detectSourceFileType(
+          selectedFile?.name || "",
+          selectedFile?.type || ""
+        ),
+        sourceType: "bank",
+        learningMemory,
+        accountingRules,
+        companyRules,
+      }
+    );
+
+    const lucaRows = result.standardLucaRows || [];
+    const movements = result.movementRows || [];
+    const slimMovements = movements.map(slimMovementForUi);
+    const summary = computePreviewSummary(lucaRows, result.opsDashboard);
+    const coreSummary = computeCoreIntegrationSummary(movements);
+    const coreMeta = pipelineResult?.opsMeta?.coreSummary;
+
+    setRawCount(result.rawCount || mainResult.rawCount || 0);
+    setPreviewSummary(summary);
+    setPreviewLimit(PREVIEW_PAGE_SIZE);
+    setMovementRows(slimMovements);
+    setFullMovementRows(movements);
+    setCoreIntegrationSummary(coreSummary);
+    setCoreRowsProcessed(coreMeta?.coreLimit ?? coreRowLimit ?? DEFAULT_CORE_PREVIEW_LIMIT);
+    setStandardLucaRows(lucaRows);
+    markAppliedDeclarationsPaid(result.declarationSummary);
+
+    if (coreMeta?.enabled) {
+      setParseModeDebug(
+        `ANNVERO CORE — ${coreMeta.core} CORE / ${coreMeta.fallback} legacy (${coreMeta.coreLimit}/${coreMeta.total} satır)`
+      );
+    }
+
+    return { result, summary, lucaRows, movements, coreMeta };
   };
 
   /** Dosya seçimi: yalnızca state; parse başlamaz */
@@ -622,6 +712,7 @@ export default function BankaParserPage() {
 
     try {
       const mainResult = await parseFileOnMainThread(selectedFile);
+      setNormalizedRowsCache(mainResult.normalizedRows || []);
 
       parserJob.onProgress({
         stage: BANK_PARSE_STAGES.LUCA,
@@ -631,74 +722,32 @@ export default function BankaParserPage() {
       // Büyük dosyalarda UI'nın nefes alması için yield
       await new Promise((r) => setTimeout(r, 0));
 
-      const pipelineResult = await buildBankParserResultFromNormalizedRowsAsync({
-        normalizedRows: mainResult.normalizedRows || [],
-        selectedBank,
-        selectedCompany,
-        companyPlans,
-        companyRules,
-        learningMemory,
-        accountMemoryRecords: loadAccountMemoryV1Records(),
-        accountingRules,
-        declarationAccrualRecords,
-        selectedCompanyId,
-        sourceFileName: selectedFile?.name || "",
-        sourceFileType: detectSourceFileType(
-          selectedFile?.name || "",
-          selectedFile?.type || ""
-        ),
-        sourceType: "bank",
-      });
+      const coreRowLimit = isAnnveroCoreEnabled() ? DEFAULT_CORE_PREVIEW_LIMIT : undefined;
+      const pipelineResult = await buildBankParserResultFromNormalizedRowsAsync(
+        buildPipelineOptions(mainResult.normalizedRows || [], coreRowLimit)
+      );
 
       if (pipelineResult?.opsMeta?.coreSummary) {
-        const summary = pipelineResult.opsMeta.coreSummary;
-        console.info("[banka-ekstresi] ANNVERO CORE özeti", summary);
-        if (summary.enabled) {
-          setParseModeDebug(
-            `ANNVERO CORE — ${summary.core} CORE / ${summary.fallback} legacy fallback (toplam ${summary.total})`
-          );
-        }
+        console.info("[banka-ekstresi] ANNVERO CORE özeti", pipelineResult.opsMeta.coreSummary);
       }
 
       await new Promise((r) => setTimeout(r, 0));
 
-      const result = buildBankCardOpsSideOutput(
-        {
-          ...pipelineResult,
-          rawCount: mainResult.rawCount || 0,
-        },
-        {
-          selectedBank,
-          selectedCompanyId,
-          sourceFileName: selectedFile?.name || "",
-          sourceFileType: detectSourceFileType(
-            selectedFile?.name || "",
-            selectedFile?.type || ""
-          ),
-          sourceType: "bank",
-          learningMemory,
-          accountingRules,
-          companyRules,
-        }
+      const { result, summary, lucaRows } = applyPipelineResult(
+        mainResult,
+        pipelineResult,
+        coreRowLimit
       );
-
-      const lucaRows = result.standardLucaRows || [];
-      const slimMovements = (result.movementRows || []).map(slimMovementForUi);
-      const summary = computePreviewSummary(lucaRows, result.opsDashboard);
 
       // Loading'i state commit'ten ÖNCE kapat — progress takılı kalmasın
       setIsParsing(false);
       parserJob.markSuccess(`${summary.totalMovements || lucaRows.length} hareket hazır`);
 
-      setRawCount(result.rawCount || mainResult.rawCount || 0);
-      setPreviewSummary(summary);
-      setPreviewLimit(PREVIEW_PAGE_SIZE);
-      setMovementRows(slimMovements);
-      setStandardLucaRows(lucaRows);
-      markAppliedDeclarationsPaid(result.declarationSummary);
-      setParseModeDebug(
-        `Worker bypass · ana thread · ${selectedBank} · ${summary.totalMovements} hareket · gösterilen ${PREVIEW_PAGE_SIZE}`
-      );
+      if (!isAnnveroCoreEnabled()) {
+        setParseModeDebug(
+          `Worker bypass · ana thread · ${selectedBank} · ${summary.totalMovements} hareket · gösterilen ${PREVIEW_PAGE_SIZE}`
+        );
+      }
 
       // Ops session: tüm işlemleri tut (export/ops merkezi) ama UI'ya basma
       if (Array.isArray(result.financialTransactions)) {
@@ -762,6 +811,46 @@ export default function BankaParserPage() {
       setIsParsing(false);
     }
   };
+
+  const handleApplyCoreToAllRows = async () => {
+    if (!isAnnveroCoreEnabled() || !normalizedRowsCache.length || isApplyingCoreAll) return;
+
+    setIsApplyingCoreAll(true);
+    parserJob.begin({
+      stage: "ANNVERO CORE",
+      detail: `Tüm satırlara CORE uygulanıyor (${normalizedRowsCache.length})`,
+    });
+
+    try {
+      const pipelineResult = await buildBankParserResultFromNormalizedRowsAsync(
+        buildPipelineOptions(normalizedRowsCache, Infinity)
+      );
+
+      const { summary, lucaRows } = applyPipelineResult(
+        { rawCount: rawCount || normalizedRowsCache.length },
+        pipelineResult,
+        normalizedRowsCache.length
+      );
+
+      parserJob.markSuccess(`CORE ${summary.totalMovements || lucaRows.length} satırda tamamlandı`);
+      showToast(
+        `CORE tüm ${summary.totalMovements || fullMovementRows.length} harekete uygulandı.`,
+        "success"
+      );
+    } catch (error) {
+      console.error("[banka-ekstresi] CORE apply-all failed", error);
+      showToast(error?.message || "CORE tüm satırlara uygulanamadı.", "error");
+      parserJob.markError(error);
+    } finally {
+      setIsApplyingCoreAll(false);
+    }
+  };
+
+  const corePreviewMovements = fullMovementRows.length ? fullMovementRows : movementRows;
+  const hasMoreCoreRows =
+    isAnnveroCoreEnabled() &&
+    coreIntegrationSummary?.notRun > 0 &&
+    normalizedRowsCache.length > 0;
 
   return (
     <main className="min-h-screen bg-gray-950 p-8 text-white">
@@ -995,6 +1084,66 @@ export default function BankaParserPage() {
           </Link>
         </div>
 
+        {isAnnveroCoreEnabled() && corePreviewMovements.length > 0 ? (
+          <div className="rounded-2xl border border-indigo-900/50 bg-gray-900 p-6">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-semibold">ANNVERO CORE Entegrasyon Önizleme</h2>
+                <p className="mt-1 text-sm text-gray-400">
+                  İlk {coreRowsProcessed} satırda CORE kararı çalıştırıldı.
+                  {hasMoreCoreRows ? " Kalan satırlar legacy mapping ile işlendi." : ""}
+                </p>
+              </div>
+              {hasMoreCoreRows ? (
+                <button
+                  type="button"
+                  onClick={handleApplyCoreToAllRows}
+                  disabled={isApplyingCoreAll || isParsing}
+                  className="rounded-lg border border-indigo-600 bg-indigo-950 px-4 py-2 text-sm font-semibold text-indigo-100 hover:bg-indigo-900 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isApplyingCoreAll ? "CORE uygulanıyor…" : "Tüm satırlara CORE uygula"}
+                </button>
+              ) : null}
+            </div>
+
+            {coreIntegrationSummary ? (
+              <div className="mb-4 grid grid-cols-2 gap-2 text-xs text-gray-300 sm:grid-cols-3 lg:grid-cols-6">
+                <CoreSummaryCard label="Toplam hareket" value={coreIntegrationSummary.total} />
+                <CoreSummaryCard
+                  label="CORE tanıdı"
+                  value={coreIntegrationSummary.coreRecognized}
+                  tone="emerald"
+                />
+                <CoreSummaryCard
+                  label="Kural buldu"
+                  value={coreIntegrationSummary.ruleFound}
+                  tone="sky"
+                />
+                <CoreSummaryCard
+                  label="Manuel inceleme"
+                  value={coreIntegrationSummary.manualReview}
+                  tone="amber"
+                />
+                <CoreSummaryCard
+                  label="Düşük güven"
+                  value={coreIntegrationSummary.lowConfidence}
+                  tone="yellow"
+                />
+                <CoreSummaryCard
+                  label="Riskli"
+                  value={coreIntegrationSummary.risky}
+                  tone="red"
+                />
+              </div>
+            ) : null}
+
+            <CorePreviewTable
+              movements={corePreviewMovements}
+              displayedCount={PREVIEW_PAGE_SIZE}
+            />
+          </div>
+        ) : null}
+
         <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
           <h2 className="mb-6 text-2xl font-semibold">StandardLucaRow Ön İzleme</h2>
 
@@ -1122,6 +1271,28 @@ export default function BankaParserPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+function CoreSummaryCard({ label, value, tone = "default" }) {
+  const toneClass =
+    tone === "emerald"
+      ? "text-emerald-300"
+      : tone === "sky"
+        ? "text-sky-300"
+        : tone === "amber"
+          ? "text-amber-300"
+          : tone === "yellow"
+            ? "text-yellow-300"
+            : tone === "red"
+              ? "text-red-300"
+              : "text-white";
+
+  return (
+    <div className="rounded border border-gray-800 bg-gray-950/60 px-3 py-2">
+      <div className="text-gray-500">{label}</div>
+      <div className={`text-lg font-semibold ${toneClass}`}>{value}</div>
+    </div>
   );
 }
 

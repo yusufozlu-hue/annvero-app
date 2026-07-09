@@ -13,10 +13,12 @@ import {
   mapParsedRowsToStandardMovements,
   mapSingleParsedRowToMovement,
 } from "@/src/utils/bankMovementMapper";
+import { extractCorePreviewFields } from "@/src/utils/bankCorePreview";
 import { resolve102BankAccount } from "@/src/utils/companyCenter";
 import { bankRowToStandardTransaction } from "@/src/utils/bankStandardTransaction";
 
 const BATCH_SIZE = 20;
+export const DEFAULT_CORE_PREVIEW_LIMIT = 100;
 
 function compactAccount(value = "") {
   return String(value || "")
@@ -106,6 +108,8 @@ export function mapCoreDecisionToMovement(coreResult = {}, rawRow = {}, context 
     ? formatCoreDebugText(description, coreResult)
     : "";
 
+  const preview = extractCorePreviewFields(coreResult);
+
   return {
     id: `core-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     date,
@@ -144,6 +148,18 @@ export function mapCoreDecisionToMovement(coreResult = {}, rawRow = {}, context 
     _coreVatRate: coreResult.suggested_vat_rate,
     _coreDebug: debugText,
     _coreDebugTrace: coreResult.debug_trace || [],
+    ...preview,
+    corePreview: preview,
+  };
+}
+
+function withCorePreview(movement, coreResult, extra = {}) {
+  const preview = extractCorePreviewFields(coreResult, { ...movement, ...extra });
+  return {
+    ...movement,
+    ...extra,
+    ...preview,
+    corePreview: preview,
   };
 }
 
@@ -184,13 +200,20 @@ async function fetchCoreDecisionsInChunks(transactions = [], fetchContext = {}) 
  */
 export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {}, fetchContext = {}) {
   if (!isAnnveroCoreEnabled()) {
+    const legacyMovements = mapParsedRowsToStandardMovements(parsedRows, context);
     return {
-      movements: mapParsedRowsToStandardMovements(parsedRows, context),
-      coreSummary: { enabled: false, core: 0, fallback: 0, total: 0 },
+      movements: legacyMovements.map((m) => withCorePreview(m, null, { _coreFallback: true })),
+      coreSummary: { enabled: false, core: 0, fallback: 0, total: 0, coreLimit: 0 },
     };
   }
 
   const activeRows = filterActiveBankParsedRows(parsedRows);
+  const coreRowLimit =
+    fetchContext.coreRowLimit === Infinity || fetchContext.coreRowLimit === "all"
+      ? activeRows.length
+      : fetchContext.coreRowLimit != null
+        ? Math.max(0, Number(fetchContext.coreRowLimit) || 0)
+        : Math.min(DEFAULT_CORE_PREVIEW_LIMIT, activeRows.length);
 
   const standardTransactions = activeRows.map((row) =>
     bankRowToStandardTransaction(row, {
@@ -203,15 +226,18 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
     })
   );
 
+  const transactionsForCore = standardTransactions.slice(0, coreRowLimit);
   let coreDecisions = [];
   let batchFailed = false;
 
   try {
-    coreDecisions = await fetchCoreDecisionsInChunks(standardTransactions, {
-      ...fetchContext,
-      companyId: context.selectedCompanyId,
-      includeDebug: isAnnveroCoreDebugEnabled(),
-    });
+    if (transactionsForCore.length > 0) {
+      coreDecisions = await fetchCoreDecisionsInChunks(transactionsForCore, {
+        ...fetchContext,
+        companyId: context.selectedCompanyId,
+        includeDebug: isAnnveroCoreDebugEnabled(),
+      });
+    }
   } catch (error) {
     console.warn("[bank-core] batch API failed — full legacy fallback", error);
     batchFailed = true;
@@ -219,12 +245,15 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
 
   if (batchFailed) {
     return {
-      movements: mapParsedRowsToStandardMovements(parsedRows, context),
+      movements: mapParsedRowsToStandardMovements(parsedRows, context).map((m) =>
+        withCorePreview(m, null, { _coreFallback: true })
+      ),
       coreSummary: {
         enabled: true,
         core: 0,
         fallback: activeRows.length,
         total: activeRows.length,
+        coreLimit: coreRowLimit,
         batchError: true,
       },
     };
@@ -233,8 +262,21 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
   const movements = [];
   let coreCount = 0;
   let fallbackCount = 0;
+  let skippedCount = 0;
 
   activeRows.forEach((row, index) => {
+    if (index >= coreRowLimit) {
+      movements.push(
+        withCorePreview(mapSingleParsedRowToMovement(row, context, index), null, {
+          _coreSkipped: true,
+          _coreFallback: true,
+        })
+      );
+      skippedCount += 1;
+      fallbackCount += 1;
+      return;
+    }
+
     const coreResult = coreDecisions[index] || null;
 
     if (isCoreDecisionUsable(coreResult)) {
@@ -243,10 +285,15 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
       return;
     }
 
-    movements.push({
-      ...mapSingleParsedRowToMovement(row, context, index),
-      _coreFallback: true,
-    });
+    movements.push(
+      withCorePreview(mapSingleParsedRowToMovement(row, context, index), coreResult, {
+        _coreFallback: true,
+        _coreDecisionSource: coreResult?.decision_source || "unknown",
+        _coreStatus: coreResult?.status || "unknown",
+        _coreConfidence: Number(coreResult?.confidence_score) || 0,
+        _coreRiskLevel: coreResult?.risk_level || "none",
+      })
+    );
     fallbackCount += 1;
   });
 
@@ -257,6 +304,8 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
       core: coreCount,
       fallback: fallbackCount,
       total: activeRows.length,
+      coreLimit: coreRowLimit,
+      skipped: skippedCount,
       batchError: false,
     },
   };
