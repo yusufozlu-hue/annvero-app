@@ -17,6 +17,7 @@ export const CORE_DECISION_SOURCE = {
   COMPANY_RULE: "company_rule",
   GLOBAL_KNOWLEDGE: "global_knowledge",
   ACCOUNTING_RULE: "accounting_rule",
+  ACCOUNTING_DECISION: "accounting_decision",
   CONFIDENCE: "confidence",
   RISK: "risk",
   AI_STUB: "ai_stub",
@@ -27,10 +28,14 @@ export const CORE_DECISION_SOURCE = {
 /** Karar pipeline sırası */
 export const CORE_PIPELINE_STAGES = [
   { key: "entity", label: "Entity Recognition", source: CORE_DECISION_SOURCE.ENTITY },
+  { key: "pattern_matching", label: "Pattern Matching", source: CORE_DECISION_SOURCE.GLOBAL_KNOWLEDGE },
   { key: "company_memory", label: "Company Memory", source: CORE_DECISION_SOURCE.COMPANY_MEMORY },
-  { key: "company_rules", label: "Company Rules", source: CORE_DECISION_SOURCE.COMPANY_RULE },
+  {
+    key: "accounting_decision",
+    label: "Accounting Decision Engine",
+    source: CORE_DECISION_SOURCE.ACCOUNTING_DECISION,
+  },
   { key: "global_knowledge", label: "Global Knowledge", source: CORE_DECISION_SOURCE.GLOBAL_KNOWLEDGE },
-  { key: "accounting_rules", label: "Accounting Rules", source: CORE_DECISION_SOURCE.ACCOUNTING_RULE },
   { key: "confidence", label: "Confidence Engine", source: CORE_DECISION_SOURCE.CONFIDENCE },
   { key: "risk", label: "Risk Engine", source: CORE_DECISION_SOURCE.RISK },
   { key: "ai_stub", label: "AI Stub", source: CORE_DECISION_SOURCE.AI_STUB },

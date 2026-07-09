@@ -4,9 +4,9 @@
 
 import { resolveEntity } from "../entity/entityResolver.js";
 import { resolveCompanyMemory } from "../memory/memoryResolver.js";
-import { resolveCompanyRules } from "../rules/ruleResolver.js";
-import { resolveGlobalKnowledge, resolveAccountingRules } from "../knowledge/knowledgeResolver.js";
+import { resolveGlobalKnowledge } from "../knowledge/knowledgeResolver.js";
 import { resolvePatterns } from "../knowledge/patternResolver.js";
+import { resolveAccountingDecisionLayer } from "./accountingDecisionEngine.js";
 import { applyConfidenceEngine } from "../confidence/confidenceEngine.js";
 import { applyRiskEngine } from "../risk/riskEngine.js";
 import { resolveAiStub } from "./aiStub.js";
@@ -159,14 +159,13 @@ export async function runDecisionPipeline(input, context) {
   }
 
   const stages = [
-    { fn: resolveCompanyMemory, passState: true },
     { fn: resolveEntity, passState: true },
     { fn: resolvePatterns, passState: true },
-    { fn: resolveCompanyRules, passState: true },
+    { fn: resolveCompanyMemory, passState: true },
+    { fn: resolveAccountingDecisionLayer, passState: true },
     { fn: resolveGlobalKnowledge, passState: true },
-    { fn: resolveAccountingRules, passState: true },
-    { fn: (_i, _c, s) => Promise.resolve(applyConfidenceEngine(s)), passState: true },
     { fn: (_i, _c, s) => Promise.resolve(applyRiskEngine(s)), passState: true },
+    { fn: (_i, _c, s) => Promise.resolve(applyConfidenceEngine(s)), passState: true },
     { fn: (_i, _c, s) => Promise.resolve(resolveAiStub(s)), passState: true },
     { fn: (_i, _c, s) => Promise.resolve(resolveManualQueue(s)), passState: true },
   ];

@@ -19,7 +19,29 @@ export function resolveTransactionDirection(input = {}) {
   return "both";
 }
 
-function rulePassesInMemoryFilters(rule, input, entityId) {
+export function resolveRuleLookupSourceTypes(input = {}, state = {}) {
+  const types = new Set();
+  if (input.source_type) types.add(input.source_type);
+
+  const desc = `${input.raw_description || ""} ${input.counterparty_name || ""}`.toUpperCase();
+  const entityFamily = String(state.matched_entity?.entity_family || "").toLowerCase();
+  const entityName = String(state.matched_entity?.entity_name || "").toLowerCase();
+
+  const cardLike =
+    input.source_type === "bank" ||
+    entityFamily === "tech_ads" ||
+    entityName === "google" ||
+    entityName === "meta" ||
+    /GOOGLE|FACEBK|META ADS|ADS|REKLAM/.test(desc);
+
+  if (cardLike) {
+    types.add("credit_card");
+  }
+
+  return [...types];
+}
+
+function rulePassesInMemoryFilters(rule, input, entityId, options = {}) {
   const rejectReasons = [];
 
   if (entityId && rule.entity_id && rule.entity_id !== entityId) {
@@ -28,10 +50,14 @@ function rulePassesInMemoryFilters(rule, input, entityId) {
     );
   }
 
-  const inputSourceType = input.source_type || null;
-  if (rule.source_type && inputSourceType && rule.source_type !== inputSourceType) {
+  const sourceTypes =
+    options.sourceTypes ||
+    input._rule_source_types ||
+    [input.source_type].filter(Boolean);
+
+  if (rule.source_type && sourceTypes.length && !sourceTypes.includes(rule.source_type)) {
     rejectReasons.push(
-      `source_type mismatch (rule=${rule.source_type}, input=${inputSourceType})`
+      `source_type mismatch (rule=${rule.source_type}, resolved_input=[${sourceTypes.join(", ")}])`
     );
   }
 
@@ -118,11 +144,25 @@ function buildGoogleHint(entityId, entityName, rejected, input) {
  * @returns {{ rule: object|null, diagnostics: object }}
  */
 export function pickRuleWithDiagnostics(rules = [], input = {}, entityId = null, options = {}) {
+  const sourceTypes =
+    options.sourceTypes ||
+    input._rule_source_types ||
+    resolveRuleLookupSourceTypes(input, {
+      matched_entity: {
+        id: entityId,
+        entity_name: options.entityName,
+        entity_family: options.entitiesById?.get?.(entityId)?.entity_family,
+      },
+    });
+
   const rejected = [];
   const candidates = [];
 
   for (const rule of rules) {
-    const rejectReasons = rulePassesInMemoryFilters(rule, input, entityId);
+    const rejectReasons = rulePassesInMemoryFilters(rule, input, entityId, {
+      ...options,
+      sourceTypes,
+    });
     if (rejectReasons.length) {
       rejected.push({
         rule_id: rule.id,
@@ -159,10 +199,11 @@ export function pickRuleWithDiagnostics(rules = [], input = {}, entityId = null,
     matched_entity_id: entityId,
     matched_entity_name: entityName,
     input_source_type: input.source_type || null,
+    resolved_source_types: sourceTypes,
     transaction_direction: resolveTransactionDirection(input),
     db_where: options.dbWhere || null,
     in_memory_where:
-      "entity_id match (if rule.entity_id set) AND (rule.source_type empty OR rule.source_type = input.source_type)",
+      "entity_id match (if rule.entity_id set) AND (rule.source_type empty OR rule.source_type IN resolved_source_types)",
     rules_loaded: rules.length,
     candidate_count: sortedCandidates.length,
     rejected_rules: rejected.slice(0, 15),

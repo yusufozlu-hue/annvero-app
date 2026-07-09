@@ -28,7 +28,9 @@ export function resolveManualQueue(state = {}) {
       trace: {
         stage: "manual_queue",
         outcome: "skipped",
-        detail: "Decision sufficient — manual queue not required",
+        detail: state.matched_rule?.rule_id
+          ? "Accounting rule applied — manual queue not required"
+          : "Decision sufficient — manual queue not required",
       },
     };
   }

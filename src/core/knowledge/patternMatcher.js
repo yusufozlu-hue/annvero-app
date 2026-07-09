@@ -203,7 +203,9 @@ export function mapAccountingRuleToPartial(rule, source = "accounting_rule") {
     suggested_vat_rate: rule.vat_rate == null ? null : Number(rule.vat_rate),
     suggested_description: rule.description_template || "",
     confidence_score: Number(rule.confidence) || 0.8,
+    risk_level: rule.risk_level || "low",
     risk_flags: isExample ? ["example_global_rule"] : [],
+    needs_manual_review: isExample,
   };
 }
 

@@ -16,6 +16,10 @@ import {
 export function applyConfidenceEngine(state = {}) {
   let score = Number(state.confidence_score) || 0;
 
+  if (state.matched_rule?.rule_id && state.suggested_account_code) {
+    score = Math.max(score, 0.75);
+  }
+
   if (state.from_company_memory) {
     score = Math.max(score, 0.95);
   }

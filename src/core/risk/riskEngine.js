@@ -20,7 +20,9 @@ export function applyRiskEngine(state = {}) {
 
   if (flags.includes("example_global_rule")) {
     riskLevel = CORE_RISK_LEVEL.MEDIUM;
-    needsManualReview = true;
+    if (!state.matched_rule?.rule_id || !state.suggested_account_code) {
+      needsManualReview = true;
+    }
     flags.push("unverified_account_codes");
   }
 
