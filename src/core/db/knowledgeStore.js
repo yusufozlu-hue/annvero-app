@@ -563,9 +563,10 @@ export async function findGlobalEntityByName(supabase, entityName = "") {
   return (
     (data || []).find(
       (row) =>
-        normalizeWriteText(row.entity_name) === normalized ||
-        (Array.isArray(row.aliases) &&
-          row.aliases.some((alias) => normalizeWriteText(alias) === normalized))
+        row.is_active !== false &&
+        (normalizeWriteText(row.entity_name) === normalized ||
+          (Array.isArray(row.aliases) &&
+            row.aliases.some((alias) => normalizeWriteText(alias) === normalized)))
     ) || null
   );
 }
