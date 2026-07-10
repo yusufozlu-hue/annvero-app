@@ -27,12 +27,18 @@ export function applyBankLearningToStandardRows(
 
 /**
  * Parser sonrası tanınmayan satırları üretir; learning_memory önerilerini ekler.
- * Satırlar zaten applyLearningMemoryToStandardLucaRows geçmiş olmalı — tekrar uygulama yok.
+ * Hafızadan tam eşleşen satırlar kuyruğa alınmaz.
  */
 export function buildUnrecognizedQueueItems(standardRows = [], context = {}) {
   const learningMemory = context.learningMemory || [];
 
-  const candidates = collectUnrecognizedFromStandardRows(standardRows, {
+  const enrichedRows = applyBankLearningToStandardRows(
+    standardRows,
+    learningMemory,
+    context
+  );
+
+  const candidates = collectUnrecognizedFromStandardRows(enrichedRows, {
     companyId: context.companyId,
     sourceModule: context.sourceModule || "banka",
     sourceBank: context.sourceBank || "",

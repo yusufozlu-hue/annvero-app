@@ -43,26 +43,25 @@ export default function EditableStandardLucaPreviewTable({
   const [editingRowId, setEditingRowId] = useState(null);
   const [draftRow, setDraftRow] = useState(null);
 
-  // Büyük listelerde (1000+ satır) tüm satırı validate etmek tab çökmesine yol açar.
-  // Canlı validasyon yalnızca ekranda görünen satırlar üzerinden yapılır.
+  // Büyük listelerde (1000+ satır) tüm satırı validate etmek beyaz ekrana düşürür.
+  // Canlı validasyon yalnızca ekranda görünen satırlar üzerinden yapılır;
+  // export doğrulaması exportExcel anında full set ile çalışır.
   const liveValidation = useMemo(() => {
     const source =
-      Array.isArray(displayedRows) && displayedRows.length > 0
+      Array.isArray(displayedRows) && displayedRows.length > 0 && rows.length > 200
         ? displayedRows
-        : Array.isArray(rows)
-          ? rows.slice(0, 100)
-          : [];
+        : rows;
     try {
       return validatePreviewForExport(source || []);
     } catch (error) {
       console.error("[EditableStandardLucaPreviewTable] validation failed", error);
       return {
         rowErrors: [],
-        globalErrors: [],
+        globalErrors: [error?.message || "Önizleme validasyonu başarısız"],
         hasBlockingErrors: false,
-        hasWarnings: false,
+        hasWarnings: true,
         blockingErrorCount: 0,
-        warningCount: 0,
+        warningCount: 1,
       };
     }
   }, [rows, displayedRows]);

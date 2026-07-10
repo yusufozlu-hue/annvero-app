@@ -8,7 +8,6 @@ import { enhanceHgsOgsLucaDescription } from "@/src/utils/plateParser";
 import {
   applyAccountingRuleToBankMovement,
   matchAccountingRule,
-  prepareAccountingRulesForMatch,
 } from "@/src/utils/accountingRuleEngine";
 import {
   buildCariNotFoundWarning,
@@ -386,7 +385,6 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         companyId: selectedCompany?.id || selectedCompanyId,
         kaynakTipi: "Banka",
         rules: accountingRules,
-        preparedRules: context.preparedAccountingRules,
       });
 
       if (accountingRule) {
@@ -608,45 +606,8 @@ export function mapSingleParsedRowToMovement(row, context, index = 0) {
 }
 
 export function mapParsedRowsToStandardMovements(parsedRows, context) {
-  const preparedAccountingRules =
-    context?.preparedAccountingRules ||
-    prepareAccountingRulesForMatch(context?.accountingRules || [], {
-      companyId: context?.selectedCompany?.id || context?.selectedCompanyId,
-      kaynakTipi: "Banka",
-    });
-
-  const mappingContext = {
-    ...context,
-    preparedAccountingRules,
-  };
-
   return filterActiveBankParsedRows(parsedRows).map((row, index) =>
-    mapSingleParsedRowToMovement(row, mappingContext, index)
-  );
-}
-
-export async function mapParsedRowsToStandardMovementsAsync(
-  parsedRows,
-  context,
-  { chunkSize = 40, signal = null, onChunk = null } = {}
-) {
-  const { mapInChunksAsync } = await import("@/src/utils/asyncChunkProcess");
-  const activeRows = filterActiveBankParsedRows(parsedRows);
-  const preparedAccountingRules =
-    context?.preparedAccountingRules ||
-    prepareAccountingRulesForMatch(context?.accountingRules || [], {
-      companyId: context?.selectedCompany?.id || context?.selectedCompanyId,
-      kaynakTipi: "Banka",
-    });
-  const mappingContext = {
-    ...context,
-    preparedAccountingRules,
-  };
-
-  return mapInChunksAsync(
-    activeRows,
-    (row, index) => mapSingleParsedRowToMovement(row, mappingContext, index),
-    { chunkSize, signal, onChunk }
+    mapSingleParsedRowToMovement(row, context, index)
   );
 }
 

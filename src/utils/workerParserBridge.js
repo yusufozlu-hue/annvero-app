@@ -174,8 +174,6 @@ export function runParserWorker({
       reject(new Error("Parser zaman aşımına uğradı."));
     }, timeoutMs);
 
-    const accumulatedRows = [];
-
     worker.onmessage = (event) => {
       const message = event.data || {};
       if (message.type === "progress") {
@@ -183,24 +181,6 @@ export function runParserWorker({
         emit({ type: "progress", jobId: requestId, jobType, ...message });
         return;
       }
-
-      // Chunk'lı satır akışı — tek ana-thread dizisine birikir (çift full clone yok)
-      if (message.type === "rows_chunk" && message.requestId === requestId) {
-        const chunk = Array.isArray(message.rows) ? message.rows : [];
-        for (let i = 0; i < chunk.length; i += 1) {
-          accumulatedRows.push(chunk[i]);
-        }
-        onProgress?.({
-          stage: message.stage || "Parser çalışıyor",
-          detail: `${accumulatedRows.length}/${message.total || accumulatedRows.length} hareket aktarıldı`,
-          percent:
-            message.total > 0
-              ? Math.min(99, Math.round((accumulatedRows.length / message.total) * 100))
-              : undefined,
-        });
-        return;
-      }
-
       if (message.requestId !== requestId) return;
 
       clearTimeout(timer);
@@ -209,15 +189,8 @@ export function runParserWorker({
       activeJob = null;
 
       if (message.type === "success") {
-        const result = {
-          ...message,
-          normalizedRows:
-            Array.isArray(message.normalizedRows) && message.normalizedRows.length
-              ? message.normalizedRows
-              : accumulatedRows,
-        };
-        emit({ type: "done", jobId: requestId, jobType, result });
-        resolve(result);
+        emit({ type: "done", jobId: requestId, jobType, result: message });
+        resolve(message);
         return;
       }
 

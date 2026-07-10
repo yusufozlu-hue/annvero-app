@@ -100,30 +100,13 @@ self.onmessage = async (event) => {
       (done, total) => postProgress(stage, `${done}/${total} hareket hazırlandı`)
     );
 
-    // Tam JSON clone yok — 200'lük chunk postMessage (structured clone spike sınırlı)
-    const CHUNK = 200;
-    const totalRows = normalizedRows.length;
-    for (let offset = 0; offset < totalRows; offset += CHUNK) {
-      const end = Math.min(offset + CHUNK, totalRows);
-      const chunk = normalizedRows.slice(offset, end);
-      for (let i = offset; i < end; i += 1) {
-        normalizedRows[i] = null;
-      }
-      self.postMessage({
-        type: "rows_chunk",
-        requestId,
-        offset,
-        total: totalRows,
-        rows: chunk,
-      });
-      await yieldToWorker();
-    }
+    const plainRows = JSON.parse(JSON.stringify(normalizedRows));
 
     self.postMessage({
       type: "success",
       requestId,
       rawCount,
-      rowCount: totalRows,
+      normalizedRows: plainRows,
       selectedBank: context.selectedBank,
     });
   } catch (error) {

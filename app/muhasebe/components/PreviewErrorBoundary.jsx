@@ -2,7 +2,7 @@
 
 import { Component } from "react";
 
-/** Tek satır/render hatası tüm Banka Parser sayfasını düşürmesin. */
+/** Beyaz ekran yerine hata mesajı gösterir */
 export default class PreviewErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -20,17 +20,14 @@ export default class PreviewErrorBoundary extends Component {
   render() {
     if (this.state.error) {
       return (
-        <div className="rounded-xl border border-amber-800/60 bg-amber-950/30 p-4 text-sm text-amber-100">
-          <p className="font-semibold">
-            Önizleme oluşturulurken bir hata oluştu. Tekrar deneyin.
-          </p>
-          <p className="mt-2 text-xs text-amber-200/80">
-            Dosya seçimi ve üst menü kullanılabilir durumda. Ön izlemeyi yeniden
-            oluşturabilirsiniz.
+        <div className="rounded-xl border border-red-800 bg-red-950/40 p-4 text-sm text-red-100">
+          <p className="font-semibold">Önizleme render hatası</p>
+          <p className="mt-2 text-xs text-red-200/90">
+            {this.state.error?.message || String(this.state.error)}
           </p>
           <button
             type="button"
-            className="mt-3 rounded border border-amber-700/70 px-3 py-1.5 text-xs hover:bg-amber-900/40"
+            className="mt-3 rounded border border-red-700 px-3 py-1.5 text-xs hover:bg-red-900/50"
             onClick={() => this.setState({ error: null })}
           >
             Yeniden dene
