@@ -3,6 +3,7 @@
 import { useState } from "react";
 import AnnveroSidebar from "@/src/components/AnnveroSidebar";
 import AnnveroTopbar from "@/src/components/AnnveroTopbar";
+import { CompanyWorkspaceProvider } from "@/src/contexts/CompanyWorkspaceContext";
 import { useUserRole } from "@/src/hooks/useUserRole";
 import { annveroPageBg } from "@/src/styles/annveroDesign";
 
@@ -16,7 +17,8 @@ export default function AnnveroAppShell({ children }) {
   const showBanner = !loading && userAccess?.showAccessWarning === true;
 
   return (
-    <div className={annveroPageBg}>
+    <CompanyWorkspaceProvider>
+      <div className={annveroPageBg}>
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_36%),radial-gradient(circle_at_top_right,rgba(124,58,237,0.1),transparent_32%)]" />
 
       <AnnveroSidebar
@@ -50,6 +52,7 @@ export default function AnnveroAppShell({ children }) {
           {children}
         </main>
       </div>
-    </div>
+      </div>
+    </CompanyWorkspaceProvider>
   );
 }

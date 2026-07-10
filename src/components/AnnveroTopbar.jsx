@@ -10,6 +10,7 @@ import {
   loadRecentCompanyIds,
   toggleFavoriteCompanyId,
 } from "@/src/utils/companyPreferences";
+import { fetchPendingTransactionCount } from "@/src/utils/transactionMemoryApi";
 import { annveroInputClass } from "@/src/styles/annveroDesign";
 
 export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }) {
@@ -43,12 +44,7 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
 
     async function loadNotifications() {
       try {
-        const [pendingRes, logsRes] = await Promise.all([
-          fetch("/api/transaction-memory?status=pending", { cache: "no-store" }),
-          fetch("/api/automation/webhook", { cache: "no-store" }).catch(() => null),
-        ]);
-        const pendingPayload = pendingRes.ok ? await pendingRes.json() : { data: [] };
-        const pendingCount = Array.isArray(pendingPayload.data) ? pendingPayload.data.length : 0;
+        const pendingCount = await fetchPendingTransactionCount(selectedCompanyId || "");
         if (active) setNotificationCount(pendingCount);
       } catch {
         if (active) setNotificationCount(0);

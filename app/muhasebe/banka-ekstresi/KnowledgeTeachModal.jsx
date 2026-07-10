@@ -1,16 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  KNOWLEDGE_BUILDER_DOCUMENT_TYPES,
-  KNOWLEDGE_BUILDER_ENTITY_FAMILIES,
-  KNOWLEDGE_BUILDER_RISK_LEVELS,
-  KNOWLEDGE_BUILDER_SOURCE_TYPES,
-} from "@/src/utils/knowledgeBuilderForm";
+import { KNOWLEDGE_BUILDER_DOCUMENT_TYPES } from "@/src/utils/knowledgeBuilderForm";
+import { annveroBtnPrimary, annveroCardClass, annveroInputClass } from "@/src/styles/annveroDesign";
 
-const labelClass = "mb-1 block text-xs font-medium text-gray-400";
-const inputClass =
-  "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white disabled:opacity-60";
+const labelClass = "mb-1 block text-xs font-medium text-slate-400";
 
 const EMPTY_FORM = {
   company_id: "",
@@ -18,7 +12,7 @@ const EMPTY_FORM = {
   keyword: "",
   entity_name: "",
   entity_family: "other",
-  transaction_type: "",
+  transaction_type: "bank_movement",
   source_type: "bank",
   bank_name: "",
   account_code: "",
@@ -34,6 +28,10 @@ const EMPTY_FORM = {
   is_global: false,
 };
 
+/**
+ * CORE 2.0 — sade öğretme: yalnızca gerekli alanlar görünür.
+ * Diğer alanlar initialForm'dan sessizce taşınır.
+ */
 export default function KnowledgeTeachModal({
   open,
   initialForm = {},
@@ -43,10 +41,12 @@ export default function KnowledgeTeachModal({
   onSubmit,
 }) {
   const [form, setForm] = useState({ ...EMPTY_FORM, ...initialForm });
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     if (open) {
       setForm({ ...EMPTY_FORM, ...initialForm, is_global: false });
+      setShowAdvanced(false);
     }
   }, [open, initialForm]);
 
@@ -58,42 +58,49 @@ export default function KnowledgeTeachModal({
 
   const handleSubmit = (event) => {
     event.preventDefault();
-    onSubmit?.(form);
+    onSubmit?.({
+      ...form,
+      description_template: form.description_template || form.keyword,
+      entity_name: form.entity_name || form.keyword,
+    });
   };
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4">
-      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-gray-700 bg-gray-900 p-6 shadow-2xl">
-        <div className="mb-4 flex items-start justify-between gap-3">
+      <div className={`max-h-[90vh] w-full max-w-lg overflow-y-auto p-6 ${annveroCardClass}`}>
+        <div className="mb-5 flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-xl font-semibold text-white">CORE&apos;a Öğret</h3>
-            <p className="mt-1 text-sm text-gray-400">
-              Tanınmayan veya düşük güvenli hareket için firma hafızası veya global kural kaydı.
+            <h3 className="text-lg font-semibold text-white">CORE&apos;a Öğret</h3>
+            <p className="mt-1 text-sm text-slate-400">
+              Bu işlem firma hafızasına kaydedilir; parser ve CORE bir sonraki seferde tanır.
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
             disabled={isSaving}
-            className="rounded-lg border border-gray-700 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800"
+            className="rounded-lg border border-slate-700 px-3 py-1 text-sm text-slate-300 hover:bg-slate-800"
           >
             Kapat
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Field label="Firma">
-            <input
-              className={inputClass}
-              value={form.company_name || form.company_id}
-              disabled
-              readOnly
-            />
-          </Field>
+        <p className="mb-4 rounded-lg border border-slate-800/80 bg-slate-950/50 px-3 py-2 text-sm text-slate-300">
+          <span className="text-slate-500">Firma: </span>
+          {form.company_name || form.company_id || "—"}
+          {form.bank_name ? (
+            <>
+              <span className="mx-2 text-slate-600">·</span>
+              <span className="text-slate-500">Banka: </span>
+              {form.bank_name}
+            </>
+          ) : null}
+        </p>
 
+        <form onSubmit={handleSubmit} className="space-y-4">
           <Field label="Açıklama *">
             <input
-              className={inputClass}
+              className={annveroInputClass}
               value={form.keyword}
               onChange={(e) => setField("keyword", e.target.value)}
               required
@@ -102,177 +109,97 @@ export default function KnowledgeTeachModal({
 
           <Field label="Hesap kodu *">
             <input
-              className={inputClass}
+              className={annveroInputClass}
               value={form.account_code}
               onChange={(e) => setField("account_code", e.target.value)}
               required
             />
           </Field>
 
-          <Field label="Entity">
-            <input
-              className={inputClass}
-              value={form.entity_name}
-              onChange={(e) => setField("entity_name", e.target.value)}
-              placeholder="Örn: Google"
-            />
-          </Field>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Cari">
+              <input
+                className={annveroInputClass}
+                value={form.cari}
+                onChange={(e) => setField("cari", e.target.value)}
+              />
+            </Field>
 
-          <Field label="Kural tipi">
-            <select
-              className={inputClass}
-              value={form.entity_family}
-              onChange={(e) => setField("entity_family", e.target.value)}
-            >
-              {KNOWLEDGE_BUILDER_ENTITY_FAMILIES.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="İşlem tipi">
-            <input
-              className={inputClass}
-              value={form.rule_type || form.transaction_type}
-              onChange={(e) => {
-                setField("rule_type", e.target.value);
-                setField("transaction_type", e.target.value);
-              }}
-            />
-          </Field>
-
-          <Field label="Kaynak banka">
-            <input
-              className={inputClass}
-              value={form.bank_name}
-              onChange={(e) => setField("bank_name", e.target.value)}
-            />
-          </Field>
-
-          <Field label="Kaynak tipi">
-            <select
-              className={inputClass}
-              value={form.source_type}
-              onChange={(e) => setField("source_type", e.target.value)}
-            >
-              {KNOWLEDGE_BUILDER_SOURCE_TYPES.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="Hesap adı">
-            <input
-              className={inputClass}
-              value={form.account_name}
-              onChange={(e) => setField("account_name", e.target.value)}
-            />
-          </Field>
-
-          <Field label="Cari">
-            <input
-              className={inputClass}
-              value={form.cari}
-              onChange={(e) => setField("cari", e.target.value)}
-            />
-          </Field>
-
-          <Field label="Belge türü *">
-            <select
-              className={inputClass}
-              value={form.document_type}
-              onChange={(e) => setField("document_type", e.target.value)}
-              required
-            >
-              {KNOWLEDGE_BUILDER_DOCUMENT_TYPES.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field label="KDV oranı">
-            <input
-              className={inputClass}
-              type="number"
-              step="0.01"
-              value={form.vat_rate}
-              onChange={(e) => setField("vat_rate", e.target.value)}
-            />
-          </Field>
-
-          <Field label="Güven seviyesi (CORE)">
-            <input
-              className={inputClass}
-              value={
-                form.confidence_score === "" || form.confidence_score == null
-                  ? ""
-                  : `${Math.round(Number(form.confidence_score) * 100)}%`
-              }
-              disabled
-              readOnly
-            />
-          </Field>
-
-          <Field label="Risk seviyesi">
-            <select
-              className={inputClass}
-              value={form.risk_level}
-              onChange={(e) => setField("risk_level", e.target.value)}
-            >
-              {KNOWLEDGE_BUILDER_RISK_LEVELS.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <div className="md:col-span-2">
-            <label className={labelClass}>Açıklama şablonu</label>
-            <textarea
-              className={`${inputClass} min-h-[72px]`}
-              value={form.description_template}
-              onChange={(e) => setField("description_template", e.target.value)}
-            />
+            <Field label="Belge türü *">
+              <select
+                className={annveroInputClass}
+                value={form.document_type}
+                onChange={(e) => setField("document_type", e.target.value)}
+                required
+              >
+                {KNOWLEDGE_BUILDER_DOCUMENT_TYPES.map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </Field>
           </div>
 
-          {canTeachGlobal ? (
-            <div className="md:col-span-2 rounded-lg border border-amber-800/50 bg-amber-950/20 px-3 py-2">
-              <label className="flex items-center gap-2 text-sm text-amber-100">
-                <input
-                  type="checkbox"
-                  checked={Boolean(form.is_global)}
-                  onChange={(e) => setField("is_global", e.target.checked)}
-                />
-                Global kural olarak kaydet (yönetici)
-              </label>
-            </div>
-          ) : (
-            <p className="md:col-span-2 text-xs text-gray-500">
-              Global kural eklemek için yönetim yetkisi gerekir. Bu kayıt firma özel hafızaya yazılır.
-            </p>
-          )}
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="text-xs font-medium text-indigo-300 hover:text-indigo-200"
+          >
+            {showAdvanced ? "Gelişmiş alanları gizle" : "Gelişmiş alanlar (isteğe bağlı)"}
+          </button>
 
-          <div className="md:col-span-2 flex flex-wrap justify-end gap-3 pt-2">
+          {showAdvanced ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Field label="Entity">
+                <input
+                  className={annveroInputClass}
+                  value={form.entity_name}
+                  onChange={(e) => setField("entity_name", e.target.value)}
+                />
+              </Field>
+              <Field label="Hesap adı">
+                <input
+                  className={annveroInputClass}
+                  value={form.account_name}
+                  onChange={(e) => setField("account_name", e.target.value)}
+                />
+              </Field>
+              {form.confidence_score !== "" && form.confidence_score != null ? (
+                <Field label="CORE güven">
+                  <input
+                    className={annveroInputClass}
+                    value={`${Math.round(Number(form.confidence_score) * 100)}%`}
+                    disabled
+                    readOnly
+                  />
+                </Field>
+              ) : null}
+              {canTeachGlobal ? (
+                <div className="sm:col-span-2 rounded-lg border border-amber-800/40 bg-amber-950/20 px-3 py-2">
+                  <label className="flex items-center gap-2 text-sm text-amber-100">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(form.is_global)}
+                      onChange={(e) => setField("is_global", e.target.checked)}
+                    />
+                    Global kural (yönetici)
+                  </label>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap justify-end gap-3 pt-2">
             <button
               type="button"
               onClick={onClose}
               disabled={isSaving}
-              className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-200 hover:bg-gray-800"
+              className="rounded-xl border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
             >
               Vazgeç
             </button>
-            <button
-              type="submit"
-              disabled={isSaving}
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
-            >
+            <button type="submit" disabled={isSaving} className={annveroBtnPrimary}>
               {isSaving ? "Kaydediliyor…" : "Kaydet"}
             </button>
           </div>

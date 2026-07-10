@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import EditableStandardLucaPreviewTable from "../components/EditableStandardLucaPreviewTable";
 import PreviewErrorBoundary from "../components/PreviewErrorBoundary";
@@ -82,6 +81,7 @@ import { buildBankCardOpsSideOutput } from "@/src/utils/bankCardOpsSideOutput";
 import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 import { buildBankParserResultFromNormalizedRowsAsync } from "@/src/utils/bankParserCore";
 import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
+import { ANNVERO_COMPANY_CHANGED_EVENT } from "@/src/config/annveroNavConfig";
 import { DEFAULT_CORE_PREVIEW_LIMIT } from "@/src/utils/bankCoreBridge";
 import { computeCoreIntegrationSummary, mergeCoreDecisionIntoMovement, shouldShowCoreTeachButton, isCoreAlreadyRecognized, shouldOpenCoreTeachModal, isMovementTaughtForDisplay, isCoreStatusUnknown } from "@/src/utils/bankCorePreview";
 import CorePreviewTable from "./CorePreviewTable";
@@ -250,22 +250,32 @@ export default function BankaParserPage() {
   }, [toast]);
 
   useEffect(() => {
-    const refreshCompanyData = () => {
+    const reloadLocalWorkspace = () => {
       setAccountPlans(loadAccountPlansFromStorage());
       setRuleEngine(loadRuleEngineFromStorage());
       setAccountingRules(loadAccountingRulesFromStorage());
       setDeclarationAccrualRecords(loadDeclarationAccrualRecords());
-      refreshCompanies();
     };
 
-    refreshCompanyData();
-
-    window.addEventListener("focus", refreshCompanyData);
+    reloadLocalWorkspace();
+    window.addEventListener("annvero:refresh-modules", reloadLocalWorkspace);
 
     return () => {
-      window.removeEventListener("focus", refreshCompanyData);
+      window.removeEventListener("annvero:refresh-modules", reloadLocalWorkspace);
     };
-  }, [refreshCompanies]);
+  }, []);
+
+  useEffect(() => {
+    const handleCompanyChange = () => {
+      setMovementRows([]);
+      setStandardLucaRows([]);
+      setSelectedFile(null);
+      setFileName("");
+    };
+
+    window.addEventListener(ANNVERO_COMPANY_CHANGED_EVENT, handleCompanyChange);
+    return () => window.removeEventListener(ANNVERO_COMPANY_CHANGED_EVENT, handleCompanyChange);
+  }, []);
 
   useEffect(() => {
     if (!selectedCompanyId) {
@@ -1065,29 +1075,22 @@ export default function BankaParserPage() {
             Firma ve Banka Ekstresi
           </h2>
           <p className="mb-5 text-sm text-slate-400">
-            Firma seçin, banka ekstresini yükleyin ve ön izlemeyi oluşturun.
+            Üst menüden aktif firmayı seçin, banka ekstresini yükleyin ve ön izlemeyi oluşturun.
           </p>
 
-          <label className="mb-2 block text-sm font-medium text-slate-300">
-            Firma Seç
-          </label>
-
-          {isLoadingCompanies && companies.length === 0 ? (
-            <CompanySelectSkeleton />
-          ) : (
-            <select
-              value={selectedCompanyId}
-              disabled={isParsing}
-              onChange={(e) => {
-                setSelectedCompanyId(e.target.value);
-                setMovementRows([]);
-                setStandardLucaRows([]);
-              }}
-              className={`mb-6 w-full max-w-xl disabled:opacity-60 ${annveroInputClass}`}
-            >
-              <CompanySelectOptions companies={companies} />
-            </select>
-          )}
+          <div className="mb-6 flex flex-wrap items-center gap-2 rounded-xl border border-slate-800/80 bg-slate-950/50 px-4 py-3">
+            <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Aktif firma
+            </span>
+            {isLoadingCompanies && !selectedCompany ? (
+              <span className="h-5 w-40 animate-pulse rounded bg-slate-800/60" />
+            ) : (
+              <span className="text-sm font-semibold text-white">
+                {selectedCompany ? getCompanyDisplayName(selectedCompany) : "Firma seçilmedi"}
+              </span>
+            )}
+            <span className="text-xs text-slate-500">(üst çubuktan değiştirilir)</span>
+          </div>
 
           {isLoadingCompanies && !selectedCompany ? (
             <CompanySummarySkeleton />
@@ -1489,7 +1492,7 @@ function SkeletonBlock({ className = "" }) {
 }
 
 function CompanySelectSkeleton() {
-  return <SkeletonBlock className="mb-6 h-12 w-full max-w-xl" />;
+  return null;
 }
 
 function CompanySummarySkeleton() {

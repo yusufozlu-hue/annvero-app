@@ -1,5 +1,8 @@
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import { ANNVERO_SELECTED_COMPANY_KEY } from "@/src/config/annveroNavConfig";
 import { formatCompanyFromSupabaseRow } from "@/src/utils/companyNormalize";
+
+export const COMPANIES_SESSION_STORAGE_KEY = "annvero_companies_session_v1";
 
 export const COMPANY_STORAGE_KEYS = [
   "annvero_companies_v24",
@@ -115,6 +118,44 @@ export function invalidateCompaniesCache() {
   companiesFetchCacheAt = 0;
 }
 
+export function readSessionCompanies() {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = sessionStorage.getItem(COMPANIES_SESSION_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeSessionCompanies(companies = []) {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(COMPANIES_SESSION_STORAGE_KEY, JSON.stringify(companies));
+  } catch {
+    // ignore quota errors
+  }
+}
+
+export function clearSessionCompanies() {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.removeItem(COMPANIES_SESSION_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/** Firma kaydı sonrası tüm modüllerde listeyi yenile. */
+export function broadcastCompaniesRefresh() {
+  invalidateCompaniesCache();
+  clearSessionCompanies();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("annvero:refresh-modules"));
+  }
+}
+
 export async function fetchCompanies(options = {}) {
   const now = Date.now();
   if (
@@ -172,7 +213,7 @@ export function syncSelectedCompanyId(loadedCompanies, currentId) {
 
   if (typeof window !== "undefined") {
     try {
-      const storedId = localStorage.getItem("annvero_selected_company_v1") || "";
+      const storedId = localStorage.getItem(ANNVERO_SELECTED_COMPANY_KEY) || "";
       if (storedId && loadedCompanies.some((company) => company.id === storedId)) {
         return storedId;
       }

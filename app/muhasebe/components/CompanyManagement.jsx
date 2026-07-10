@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
-import { fetchCompanies, persistCompaniesToLocalStorage } from "@/src/utils/companies";
+import { fetchCompanies, persistCompaniesToLocalStorage, broadcastCompaniesRefresh } from "@/src/utils/companies";
 import { deleteCompanyRecord, saveCompanyRecord } from "@/src/utils/companiesApi";
 import { emptyCompany, normalizeCompany } from "@/src/utils/companyNormalize";
 import {
@@ -284,6 +284,7 @@ export default function CompanyManagement() {
       setCompany(normalized);
       setSelectedId(normalized.id);
       persistCompaniesToLocalStorage(updated);
+      broadcastCompaniesRefresh();
 
       showToast(
         COMPANY_TAB_SAVE_MESSAGES[activeTab] || "Firma kaydedildi",
@@ -328,6 +329,7 @@ export default function CompanyManagement() {
       await deleteCompanyRecord(id);
 
       setCompanies(companies.filter((c) => c.id !== id));
+      broadcastCompaniesRefresh();
 
       if (selectedId === id) {
         closeCompanyPanel();
