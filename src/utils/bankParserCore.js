@@ -311,12 +311,19 @@ export async function buildBankParserResultFromNormalizedRowsAsync(options = {})
         companyId: selectedCompanyId,
         coreRowLimit: options.coreRowLimit,
         signal,
+        onProgress: reportProgress,
       }
     );
     movementRows = mapped.movements;
     coreSummary = mapped.coreSummary;
     timer.end("core");
-    await yieldToMain(0);
+    reportProgress(
+      BANK_PARSE_STAGES.LEARNING,
+      coreSummary?.partial
+        ? "CORE tamamlandı (kısmi — unknown satırlar var)"
+        : "CORE eşleştirmesi tamamlandı",
+      48
+    );
   } else {
     timer.start("mapping");
     reportProgress("Hesap eşleştirme", "Hareketler standartlaştırılıyor", 30);

@@ -17,7 +17,14 @@ import { resolve102BankAccount } from "@/src/utils/companyCenter";
 import { bankRowToStandardTransaction } from "@/src/utils/bankStandardTransaction";
 
 const BATCH_SIZE = 20;
+/** Batch başına CORE API bekleme süresi (ms) */
+export const CORE_BATCH_TIMEOUT_MS = 10_000;
+/** Tüm CORE aşaması için üst süre (ms) */
+export const CORE_TOTAL_BUDGET_MS = 45_000;
 export const DEFAULT_CORE_PREVIEW_LIMIT = 100;
+
+const CORE_PARTIAL_USER_WARNING =
+  "Bazı satırlar CORE tarafından değerlendirilemedi, unknown olarak işaretlendi.";
 
 function compactAccount(value = "") {
   return String(value || "")
@@ -162,43 +169,261 @@ function withCorePreview(movement, coreResult, extra = {}) {
   };
 }
 
-export async function fetchCoreDecisionsBatch(transactions = [], fetchContext = {}) {
-  if (!transactions.length) return [];
-
-  const response = await fetch("/api/core/accounting-decision", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      company_id: fetchContext.companyId || fetchContext.selectedCompanyId,
-      transactions,
-      include_debug: Boolean(fetchContext.includeDebug),
-    }),
-  });
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload?.error || `CORE API ${response.status}`);
-  }
-
-  return Array.isArray(payload?.data?.decisions) ? payload.data.decisions : [];
+function normalizeCoreMatchKey(transaction = {}) {
+  const desc = String(transaction.raw_description || "")
+    .replaceAll("ı", "i")
+    .toUpperCase()
+    .replaceAll("İ", "I")
+    .replaceAll("Ğ", "G")
+    .replaceAll("Ü", "U")
+    .replaceAll("Ş", "S")
+    .replaceAll("Ö", "O")
+    .replaceAll("Ç", "C")
+    .replace(/[.,/()\-_*:;]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const direction = String(transaction?.raw_payload?.direction || "").toUpperCase();
+  return `${desc}|${direction}`;
 }
 
+function buildUnknownCoreStub(reason = "unknown") {
+  return {
+    status: CORE_DECISION_STATUS.UNKNOWN || "unknown",
+    decision_source: reason,
+    confidence_score: 0,
+    suggested_account_code: "",
+  };
+}
+
+/**
+ * Tek CORE batch — AbortController timeout + parent signal.
+ * Sonsuza kadar beklemez; { status, decisions } döner.
+ */
+export async function fetchCoreDecisionsBatch(transactions = [], fetchContext = {}) {
+  if (!transactions.length) {
+    return { status: "success", decisions: [] };
+  }
+
+  const timeoutMs = Number(fetchContext.batchTimeoutMs) || CORE_BATCH_TIMEOUT_MS;
+  const parentSignal = fetchContext.signal || null;
+
+  if (parentSignal?.aborted) {
+    return { status: "aborted", decisions: [] };
+  }
+
+  const controller = new AbortController();
+  const onParentAbort = () => {
+    try {
+      controller.abort();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  if (parentSignal) {
+    parentSignal.addEventListener("abort", onParentAbort, { once: true });
+  }
+
+  const timer = setTimeout(() => {
+    try {
+      controller.abort();
+    } catch {
+      /* ignore */
+    }
+  }, timeoutMs);
+
+  try {
+    const response = await fetch("/api/core/accounting-decision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      signal: controller.signal,
+      body: JSON.stringify({
+        company_id: fetchContext.companyId || fetchContext.selectedCompanyId,
+        transactions,
+        include_debug: Boolean(fetchContext.includeDebug),
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return {
+        status: "error",
+        decisions: [],
+        errorCode: response.status,
+      };
+    }
+
+    return {
+      status: "success",
+      decisions: Array.isArray(payload?.data?.decisions) ? payload.data.decisions : [],
+    };
+  } catch (error) {
+    if (parentSignal?.aborted) {
+      return { status: "aborted", decisions: [] };
+    }
+    if (error?.name === "AbortError" || controller.signal.aborted) {
+      return { status: "timeout", decisions: [] };
+    }
+    return { status: "error", decisions: [] };
+  } finally {
+    clearTimeout(timer);
+    if (parentSignal) {
+      parentSignal.removeEventListener("abort", onParentAbort);
+    }
+  }
+}
+
+/**
+ * Unique açıklama anahtarlarıyla CORE batch'leri.
+ * Timeout/hata olan batch atlanır; sonraki batch'lere devam edilir.
+ */
 async function fetchCoreDecisionsInChunks(transactions = [], fetchContext = {}) {
-  const { yieldToMain, assertNotAborted } = await import("@/src/utils/asyncChunkProcess");
-  const results = [];
-  for (let offset = 0; offset < transactions.length; offset += BATCH_SIZE) {
+  const { yieldToMain, assertNotAborted, ParseAbortError } = await import(
+    "@/src/utils/asyncChunkProcess"
+  );
+
+  const startedAt = Date.now();
+  const totalBudgetMs = Number(fetchContext.totalBudgetMs) || CORE_TOTAL_BUDGET_MS;
+  const onProgress = fetchContext.onProgress || null;
+
+  const decisionsByIndex = new Array(transactions.length).fill(null);
+  const decisionCache = new Map();
+  const batchReports = [];
+
+  // Unique normalized description → representative + row indices
+  const uniqueOrder = [];
+  const uniqueByKey = new Map();
+
+  transactions.forEach((tx, index) => {
+    const key = normalizeCoreMatchKey(tx);
+    let entry = uniqueByKey.get(key);
+    if (!entry) {
+      entry = { key, sample: tx, indices: [] };
+      uniqueByKey.set(key, entry);
+      uniqueOrder.push(entry);
+    }
+    entry.indices.push(index);
+  });
+
+  let successBatches = 0;
+  let timeoutBatches = 0;
+  let errorBatches = 0;
+  let skippedByBudget = 0;
+  let uniqueRequested = 0;
+
+  for (let offset = 0; offset < uniqueOrder.length; offset += BATCH_SIZE) {
+    if (fetchContext.signal?.aborted) {
+      throw new ParseAbortError();
+    }
     assertNotAborted(fetchContext.signal);
-    const chunk = transactions.slice(offset, offset + BATCH_SIZE);
-    const chunkResults = await fetchCoreDecisionsBatch(chunk, fetchContext);
-    results.push(...chunkResults);
+
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= totalBudgetMs) {
+      skippedByBudget = uniqueOrder.length - offset;
+      break;
+    }
+
+    const slice = uniqueOrder.slice(offset, offset + BATCH_SIZE);
+    const chunkTxs = slice.map((entry) => entry.sample);
+    uniqueRequested += chunkTxs.length;
+
+    onProgress?.({
+      stage: "Öğrenme sistemi kontrol ediliyor",
+      detail: `CORE batch ${Math.floor(offset / BATCH_SIZE) + 1}/${Math.ceil(uniqueOrder.length / BATCH_SIZE) || 1}`,
+      percent: 35 + Math.round((offset / Math.max(uniqueOrder.length, 1)) * 10),
+    });
+
+    const remainingBudget = totalBudgetMs - elapsed;
+    const batchTimeoutMs = Math.min(
+      Number(fetchContext.batchTimeoutMs) || CORE_BATCH_TIMEOUT_MS,
+      Math.max(1_000, remainingBudget)
+    );
+
+    const batchResult = await fetchCoreDecisionsBatch(chunkTxs, {
+      ...fetchContext,
+      batchTimeoutMs,
+    });
+
+    batchReports.push({
+      offset,
+      size: chunkTxs.length,
+      status: batchResult.status,
+    });
+
+    if (batchResult.status === "aborted") {
+      throw new ParseAbortError();
+    }
+
+    if (batchResult.status === "success") {
+      successBatches += 1;
+      slice.forEach((entry, i) => {
+        const decision = batchResult.decisions[i] || buildUnknownCoreStub("unknown");
+        decisionCache.set(entry.key, decision);
+        for (const rowIndex of entry.indices) {
+          decisionsByIndex[rowIndex] = decision;
+        }
+      });
+    } else if (batchResult.status === "timeout") {
+      timeoutBatches += 1;
+      const stub = buildUnknownCoreStub("core_timeout");
+      slice.forEach((entry) => {
+        decisionCache.set(entry.key, stub);
+        for (const rowIndex of entry.indices) {
+          decisionsByIndex[rowIndex] = stub;
+        }
+      });
+    } else {
+      errorBatches += 1;
+      const stub = buildUnknownCoreStub("core_error");
+      slice.forEach((entry) => {
+        decisionCache.set(entry.key, stub);
+        for (const rowIndex of entry.indices) {
+          decisionsByIndex[rowIndex] = stub;
+        }
+      });
+    }
+
     await yieldToMain(0);
   }
-  return results;
+
+  // Bütçe nedeniyle hiç istenmeyen unique'ler → unknown
+  if (skippedByBudget > 0) {
+    const stub = buildUnknownCoreStub("core_budget");
+    for (let i = uniqueOrder.length - skippedByBudget; i < uniqueOrder.length; i += 1) {
+      const entry = uniqueOrder[i];
+      if (decisionCache.has(entry.key)) continue;
+      decisionCache.set(entry.key, stub);
+      for (const rowIndex of entry.indices) {
+        decisionsByIndex[rowIndex] = stub;
+      }
+    }
+  }
+
+  const partial =
+    timeoutBatches > 0 || errorBatches > 0 || skippedByBudget > 0;
+
+  return {
+    decisionsByIndex,
+    batchReports,
+    meta: {
+      uniqueDescriptions: uniqueOrder.length,
+      uniqueRequested,
+      successBatches,
+      timeoutBatches,
+      errorBatches,
+      skippedByBudget,
+      partial,
+      elapsedMs: Date.now() - startedAt,
+      batchTimeoutMs: Number(fetchContext.batchTimeoutMs) || CORE_BATCH_TIMEOUT_MS,
+      totalBudgetMs,
+    },
+  };
 }
 
 /**
  * CORE öncelikli movement mapping; unknown → legacy fallback.
+ * CORE API timeout/hata tüm önizlemeyi bloke etmez.
  */
 export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {}, fetchContext = {}) {
   if (!isAnnveroCoreEnabled()) {
@@ -221,6 +446,10 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
     };
   }
 
+  const { mapInChunksAsync, assertNotAborted, yieldToMain, ParseAbortError } = await import(
+    "@/src/utils/asyncChunkProcess"
+  );
+
   const activeRows = filterActiveBankParsedRows(parsedRows);
   const coreRowLimit =
     fetchContext.coreRowLimit === Infinity || fetchContext.coreRowLimit === "all"
@@ -241,51 +470,49 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
   );
 
   const transactionsForCore = standardTransactions.slice(0, coreRowLimit);
-  let coreDecisions = [];
-  let batchFailed = false;
+  let decisionsByIndex = new Array(coreRowLimit).fill(null);
+  let fetchMeta = {
+    uniqueDescriptions: 0,
+    uniqueRequested: 0,
+    successBatches: 0,
+    timeoutBatches: 0,
+    errorBatches: 0,
+    skippedByBudget: 0,
+    partial: false,
+    elapsedMs: 0,
+    batchTimeoutMs: CORE_BATCH_TIMEOUT_MS,
+    totalBudgetMs: CORE_TOTAL_BUDGET_MS,
+  };
 
-  try {
-    if (transactionsForCore.length > 0) {
-      coreDecisions = await fetchCoreDecisionsInChunks(transactionsForCore, {
+  if (transactionsForCore.length > 0) {
+    try {
+      const fetched = await fetchCoreDecisionsInChunks(transactionsForCore, {
         ...fetchContext,
         companyId: context.selectedCompanyId,
         includeDebug: isAnnveroCoreDebugEnabled(),
       });
+      decisionsByIndex = fetched.decisionsByIndex;
+      fetchMeta = { ...fetchMeta, ...fetched.meta };
+    } catch (error) {
+      if (error instanceof ParseAbortError || error?.name === "ParseAbortError") {
+        throw error;
+      }
+      // Beklenmeyen hata: tüm CORE satırları unknown stub; önizleme devam eder
+      console.warn("[bank-core] CORE fetch failed — unknown fallback", error?.message || error);
+      const stub = buildUnknownCoreStub("core_error");
+      decisionsByIndex = transactionsForCore.map(() => stub);
+      fetchMeta = {
+        ...fetchMeta,
+        partial: true,
+        errorBatches: 1,
+      };
     }
-  } catch (error) {
-    console.warn("[bank-core] batch API failed — full legacy fallback", error);
-    batchFailed = true;
   }
 
-  if (batchFailed) {
-    const { mapParsedRowsToStandardMovementsAsync } = await import(
-      "@/src/utils/bankMovementMapper"
-    );
-    const legacy = await mapParsedRowsToStandardMovementsAsync(parsedRows, context, {
-      chunkSize: 40,
-      signal: fetchContext.signal || null,
-    });
-    return {
-      movements: legacy.map((m) => withCorePreview(m, null, { _coreFallback: true })),
-      coreSummary: {
-        enabled: true,
-        core: 0,
-        fallback: activeRows.length,
-        total: activeRows.length,
-        coreLimit: coreRowLimit,
-        batchError: true,
-      },
-    };
-  }
-
-  const movements = [];
   let coreCount = 0;
   let fallbackCount = 0;
   let skippedCount = 0;
-
-  const { mapInChunksAsync, assertNotAborted, yieldToMain } = await import(
-    "@/src/utils/asyncChunkProcess"
-  );
+  let unknownFromCore = 0;
 
   const built = await mapInChunksAsync(
     activeRows,
@@ -299,7 +526,7 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
         });
       }
 
-      const coreResult = coreDecisions[index] || null;
+      const coreResult = decisionsByIndex[index] || buildUnknownCoreStub("unknown");
 
       if (isCoreDecisionUsable(coreResult)) {
         coreCount += 1;
@@ -307,6 +534,14 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
       }
 
       fallbackCount += 1;
+      if (
+        coreResult?.decision_source === "core_timeout" ||
+        coreResult?.decision_source === "core_error" ||
+        coreResult?.decision_source === "core_budget"
+      ) {
+        unknownFromCore += 1;
+      }
+
       return withCorePreview(mapSingleParsedRowToMovement(row, context, index), coreResult, {
         _coreFallback: true,
         _coreDecisionSource: coreResult?.decision_source || "unknown",
@@ -318,17 +553,18 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
     {
       chunkSize: 40,
       signal: fetchContext.signal || null,
-      onChunk: async () => {
+      onChunk: () => {
         assertNotAborted(fetchContext.signal);
       },
     }
   );
 
-  movements.push(...built);
   await yieldToMain(0);
 
+  const partial = Boolean(fetchMeta.partial) || unknownFromCore > 0;
+
   return {
-    movements,
+    movements: built,
     coreSummary: {
       enabled: true,
       core: coreCount,
@@ -336,6 +572,18 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
       total: activeRows.length,
       coreLimit: coreRowLimit,
       skipped: skippedCount,
+      unknownFromCore,
+      partial,
+      userWarning: partial ? CORE_PARTIAL_USER_WARNING : "",
+      batchTimeoutMs: fetchMeta.batchTimeoutMs,
+      totalBudgetMs: fetchMeta.totalBudgetMs,
+      coreElapsedMs: fetchMeta.elapsedMs,
+      uniqueDescriptions: fetchMeta.uniqueDescriptions,
+      uniqueRequested: fetchMeta.uniqueRequested,
+      successBatches: fetchMeta.successBatches,
+      timeoutBatches: fetchMeta.timeoutBatches,
+      errorBatches: fetchMeta.errorBatches,
+      skippedByBudget: fetchMeta.skippedByBudget,
       batchError: false,
     },
   };

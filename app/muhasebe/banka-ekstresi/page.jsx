@@ -834,6 +834,11 @@ export default function BankaParserPage() {
       );
       timer.report("[banka-ekstresi] timing");
 
+      const coreUserWarning = pipelineResult?.opsMeta?.coreSummary?.userWarning;
+      if (coreUserWarning) {
+        showToast(coreUserWarning, "error");
+      }
+
       // Ağır yan işler — UI render sonrası
       setTimeout(() => {
         if (signal.aborted) return;
@@ -963,10 +968,15 @@ export default function BankaParserPage() {
       );
 
       parserJob.markSuccess(`CORE ${summary.totalMovements || lucaRows.length} satırda tamamlandı`);
-      showToast(
-        `CORE tüm ${summary.totalMovements || fullMovementRows.length} harekete uygulandı.`,
-        "success"
-      );
+      const coreUserWarning = pipelineResult?.opsMeta?.coreSummary?.userWarning;
+      if (coreUserWarning) {
+        showToast(coreUserWarning, "error");
+      } else {
+        showToast(
+          `CORE tüm ${summary.totalMovements || fullMovementRows.length} harekete uygulandı.`,
+          "success"
+        );
+      }
     } catch (error) {
       if (error instanceof ParseAbortError) {
         showToast("CORE uygulaması iptal edildi.", "error");
