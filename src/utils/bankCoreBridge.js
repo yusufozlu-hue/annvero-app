@@ -188,36 +188,59 @@ export async function fetchCoreDecisionsBatch(transactions = [], fetchContext = 
     externalSignal.addEventListener("abort", onExternalAbort, { once: true });
   }
 
-  const timer = setTimeout(() => controller.abort("CORE_BATCH_TIMEOUT"), timeoutMs);
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const timeoutError = new Error("CORE_BATCH_TIMEOUT");
+      timeoutError.code = "CORE_BATCH_TIMEOUT";
+      try {
+        controller.abort("CORE_BATCH_TIMEOUT");
+      } catch {
+        /* ignore */
+      }
+      reject(timeoutError);
+    }, timeoutMs);
+  });
 
   try {
-    const response = await fetch("/api/core/accounting-decision", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      signal: controller.signal,
-      body: JSON.stringify({
-        company_id: fetchContext.companyId || fetchContext.selectedCompanyId,
-        transactions,
-        include_debug: Boolean(fetchContext.includeDebug),
-      }),
-    });
+    const fetchPromise = (async () => {
+      const response = await fetch("/api/core/accounting-decision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        signal: controller.signal,
+        body: JSON.stringify({
+          company_id: fetchContext.companyId || fetchContext.selectedCompanyId,
+          transactions,
+          include_debug: Boolean(fetchContext.includeDebug),
+        }),
+      });
 
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload?.error || `CORE API ${response.status}`);
-    }
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.error || `CORE API ${response.status}`);
+      }
 
-    return Array.isArray(payload?.data?.decisions) ? payload.data.decisions : [];
+      return Array.isArray(payload?.data?.decisions) ? payload.data.decisions : [];
+    })();
+
+    // Timeout kazanırsa fetch reject'i unhandled kalmasın
+    fetchPromise.catch(() => {});
+
+    return await Promise.race([fetchPromise, timeoutPromise]);
   } catch (error) {
-    if (controller.signal.reason === "CORE_BATCH_TIMEOUT" || /timeout/i.test(String(error?.message || ""))) {
+    if (
+      error?.code === "CORE_BATCH_TIMEOUT" ||
+      controller.signal.reason === "CORE_BATCH_TIMEOUT" ||
+      /timeout/i.test(String(error?.message || ""))
+    ) {
       const timeoutError = new Error("CORE_BATCH_TIMEOUT");
       timeoutError.code = "CORE_BATCH_TIMEOUT";
       throw timeoutError;
     }
     throw error;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     if (externalSignal) {
       externalSignal.removeEventListener("abort", onExternalAbort);
     }

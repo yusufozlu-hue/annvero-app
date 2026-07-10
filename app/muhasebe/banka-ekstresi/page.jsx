@@ -343,6 +343,10 @@ export default function BankaParserPage() {
     const handleCompanyChange = () => {
       pipelineRunIdRef.current += 1;
       abortRef.current?.abort();
+      setIsParsing(false);
+      setIsAnalyzing(false);
+      setIsPreparingLuca(false);
+      setIsApplyingCoreAll(false);
       normalizedRef.current = [];
       movementsRef.current = [];
       lucaRef.current = [];
@@ -989,7 +993,8 @@ export default function BankaParserPage() {
 
   /** AŞAMA 2 — muhasebe analizi */
   const handleStartAccountingAnalysis = async () => {
-    if (isJobBusy) return;
+    if (isAnalyzing) return;
+    if (isParsing || isPreparingLuca || isApplyingCoreAll) return;
     if (!movementsRef.current.length || !completedSteps.preview) {
       showToast("Önce ön izleme oluşturun.", "error");
       return;
@@ -997,11 +1002,15 @@ export default function BankaParserPage() {
 
     const { runId, signal } = beginPipelineRun();
     const t0 = performance.now();
+    const releaseAnalysisLock = () => {
+      setIsAnalyzing(false);
+    };
+
     setIsAnalyzing(true);
     setActiveStep("analysis");
     parserJob.begin({
       stage: BANK_PARSE_STAGES.ANALYSIS,
-      detail: `Muhasebe analizi (chunk ${ACCOUNTING_ANALYSIS_CHUNK_SIZE})`,
+      detail: "Muhasebe kuralları uygulanıyor",
     });
 
     try {
@@ -1010,10 +1019,16 @@ export default function BankaParserPage() {
         movementRows: movementsRef.current,
         signal,
         onProgress: (message) => {
-          if (isRunActive(runId)) parserJob.onProgress(message);
+          if (isRunActive(runId) && !signal.aborted) {
+            parserJob.onProgress(message);
+          }
         },
       });
-      if (!isRunActive(runId) || signal.aborted) return;
+
+      if (!isRunActive(runId) || signal.aborted) {
+        releaseAnalysisLock();
+        return;
+      }
 
       movementsRef.current = result.movementRows || [];
       setAccountingAnalyzed(true);
@@ -1040,13 +1055,19 @@ export default function BankaParserPage() {
         ...prev,
         analysisMs: Math.round(performance.now() - t0),
         analysisChunk: ACCOUNTING_ANALYSIS_CHUNK_SIZE,
+        analysisProcessed: result.processedCount ?? movementsRef.current.length,
+        analysisTimedOut: Boolean(result.timedOut),
       }));
-      setIsAnalyzing(false);
       parserJob.markSuccess(
         `Muhasebe analizi tamamlandı (${movementsRef.current.length})`
       );
       if (result.coreSummary?.userWarning) {
         showToast(result.coreSummary.userWarning, "error");
+      } else if (result.timedOut) {
+        showToast(
+          `Analiz süre sınırında tamamlandı (${result.processedCount || 0} satır). Luca hazırlanabilir.`,
+          "error"
+        );
       } else {
         showToast(
           "Muhasebe analizi tamamlandı. Sonraki: Luca Satırlarını Hazırla.",
@@ -1055,14 +1076,19 @@ export default function BankaParserPage() {
       }
     } catch (error) {
       if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
-        setIsAnalyzing(false);
+        releaseAnalysisLock();
         return;
       }
-      console.error("[banka-ekstresi] accounting analysis failed", error);
+      console.error("[banka-ekstresi] accounting analysis failed", {
+        error,
+        movementCount: movementsRef.current.length,
+      });
       parserJob.markError(error);
       showToast(error?.message || "Muhasebe analizi başarısız.", "error");
     } finally {
-      if (isRunActive(runId)) setIsAnalyzing(false);
+      // Her durumda kilidi aç: iptal/supersede erken return'lerde de unlock edildi;
+      // aktif run için burada garanti altına alınır.
+      releaseAnalysisLock();
     }
   };
 
@@ -1600,11 +1626,17 @@ export default function BankaParserPage() {
           <button
             type="button"
             onClick={handleStartAccountingAnalysis}
-            disabled={isJobBusy || !completedSteps.preview}
+            disabled={
+              isAnalyzing ||
+              !completedSteps.preview ||
+              isParsing ||
+              isPreparingLuca ||
+              isApplyingCoreAll
+            }
             className="rounded-xl border border-indigo-600/60 bg-indigo-950 px-6 py-3 font-semibold text-indigo-100 transition hover:bg-indigo-900 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isAnalyzing
-              ? parserJob.stage || "Analiz ediliyor…"
+              ? parserJob.detail || parserJob.stage || "Analiz ediliyor…"
               : "Muhasebe Analizini Başlat"}
           </button>
 
