@@ -567,6 +567,48 @@ export function filterActiveBankParsedRows(parsedRows = []) {
 }
 
 /**
+ * Aşama 1 — yalnızca parser çıktısı.
+ * Learning / kural / cari / CORE / Luca YOK.
+ */
+export function buildParserOnlyMovement(row = {}, context = {}, index = 0) {
+  const description = String(row?.aciklama || row?.description || "").trim();
+  const amount = Math.abs(Number(row?.tutar ?? row?.amount ?? 0));
+  const direction =
+    row?.yon === "CIKIS" || row?.direction === "CIKIS" ? "CIKIS" : "GIRIS";
+  const date = formatParserDate(row?.tarih || row?.date);
+
+  return {
+    id: `preview-${index + 1}-${String(date || "x")}-${amount}`,
+    date,
+    description,
+    amount,
+    direction,
+    bankName: row?.banka || row?.bankName || context?.selectedBank || "",
+    rawRow: row,
+    matchedRule: null,
+    accountCode: "",
+    counterAccountCode: "",
+    documentType: "DK",
+    lucaDescription: description,
+    warning: "Muhasebe analizi bekleniyor",
+    matchedMemoryId: null,
+    accountSuggestions: [],
+    accountPlanMissing: null,
+    normalizedPlate: "",
+    displayPlate: "",
+    cariSuggestions: [],
+    _parserOnly: true,
+    _accountingAnalyzed: false,
+  };
+}
+
+export function buildParserOnlyMovements(parsedRows = [], context = {}) {
+  return filterActiveBankParsedRows(parsedRows).map((row, index) =>
+    buildParserOnlyMovement(row, context, index)
+  );
+}
+
+/**
  * Tek satır legacy movement mapping — hata durumunda mevcut fallback objesi.
  * CORE bridge unknown satırlarda da bunu çağırır (parser yeniden yazılmaz).
  */

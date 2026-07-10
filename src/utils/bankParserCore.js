@@ -6,6 +6,7 @@ import {
   filterActiveBankParsedRows,
   mapParsedRowsToStandardMovements,
   mapSingleParsedRowToMovement,
+  buildParserOnlyMovement,
 } from "@/src/utils/bankMovementMapper";
 import { enrichTebParsedRows } from "@/src/utils/tebHavaleGrouping";
 import {
@@ -36,9 +37,11 @@ import {
 } from "@/src/utils/bankParserWorkerCore";
 import { resolveParserName } from "@/src/utils/financialSourceArchitecture";
 
-/** Önizleme / Luca chunk boyutu (hareket) */
+/** Önizleme / Luca / muhasebe analiz chunk boyutları */
 export const MOVEMENT_MAP_CHUNK_SIZE = 40;
 export const LUCA_MOVEMENT_CHUNK_SIZE = 40;
+export const ACCOUNTING_ANALYSIS_CHUNK_SIZE = 100;
+export const PARSER_PREVIEW_CHUNK_SIZE = 400;
 
 function yieldToMain() {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -259,96 +262,46 @@ export async function buildBankParserResultFromNormalizedRowsAsync(options = {})
 }
 
 /**
- * Önizleme: yalnızca hareket üretimi (Luca yok). Chunk + yield; CORE bütçeli.
+ * AŞAMA 1 — yalnızca parser hareketleri.
+ * CORE / learning / kural / cari / Luca YOK.
  */
-export async function buildMovementPreviewFromNormalizedRowsAsync(options = {}) {
-  const {
-    signal = null,
-    onProgress = null,
-    coreRowLimit = DEFAULT_CORE_PREVIEW_LIMIT,
-  } = options;
-  const mappingContext = buildMovementMappingContext(options);
+export async function buildParserPreviewFromNormalizedRowsAsync(options = {}) {
+  const { signal = null, onProgress = null } = options;
   const normalizedRows = options.normalizedRows || [];
   const activeRows = filterActiveBankParsedRows(normalizedRows);
-  const chunkSize = MOVEMENT_MAP_CHUNK_SIZE;
+  const context = { selectedBank: options.selectedBank };
+  const chunkSize = PARSER_PREVIEW_CHUNK_SIZE;
+  let lastProgressAt = 0;
 
   onProgress?.({
-    stage: "Hareketler",
-    detail: "Banka hareketleri eşleştiriliyor",
-    percent: 15,
+    stage: "Önizleme hazırlanıyor",
+    detail: "Hareket nesneleri oluşturuluyor",
+    percent: 40,
   });
 
-  const legacyMovements = [];
+  const movementRows = [];
   for (let offset = 0; offset < activeRows.length; offset += chunkSize) {
     assertNotAborted(signal);
     const end = Math.min(offset + chunkSize, activeRows.length);
     for (let index = offset; index < end; index += 1) {
-      legacyMovements.push(
-        mapSingleParsedRowToMovement(activeRows[index], mappingContext, index)
-      );
+      movementRows.push(buildParserOnlyMovement(activeRows[index], context, index));
     }
-    onProgress?.({
-      stage: "Hareketler",
-      detail: `${end}/${activeRows.length} hareket hazır`,
-      percent: 15 + Math.round((end / Math.max(activeRows.length, 1)) * 45),
-    });
-    await yieldToMain();
-  }
-
-  options.onLegacyReady?.(legacyMovements);
-
-  let movementRows = legacyMovements;
-  let coreSummary = {
-    enabled: false,
-    core: 0,
-    fallback: legacyMovements.length,
-    total: legacyMovements.length,
-    coreLimit: 0,
-  };
-
-  if (isAnnveroCoreEnabled()) {
-    onProgress?.({
-      stage: "ANNVERO CORE",
-      detail: "Hızlı CORE eşleştirme (önizlemeyi bloke etmez)",
-      percent: 65,
-    });
-    try {
-      // Önce chunk'lı legacy ile önizleme açılabilir; CORE üzerine yazar
-      const mapped = await mapParsedRowsWithCoreFallback(
-        normalizedRows,
-        mappingContext,
-        {
-          companyId: options.selectedCompanyId,
-          coreRowLimit,
-          signal,
-          batchTimeoutMs: CORE_BATCH_TIMEOUT_MS,
-          totalBudgetMs: CORE_TOTAL_BUDGET_MS,
-          prebuiltMovements: legacyMovements,
-        }
-      );
-      assertNotAborted(signal);
-      movementRows = mapped.movements;
-      coreSummary = mapped.coreSummary;
-    } catch (error) {
-      if (error?.name === "AbortError") throw error;
-      console.warn("[bank-parser] CORE overlay skipped — legacy önizleme", error);
-      coreSummary = {
-        enabled: true,
-        core: 0,
-        fallback: legacyMovements.length,
-        total: legacyMovements.length,
-        coreLimit: coreRowLimit,
-        batchError: true,
-        userWarning: "CORE yanıt vermedi — hareketler incelemeye bırakıldı.",
-      };
+    const now = Date.now();
+    if (now - lastProgressAt >= 250 || end >= activeRows.length) {
+      lastProgressAt = now;
+      onProgress?.({
+        stage: "Önizleme hazırlanıyor",
+        detail: `${end}/${activeRows.length} hareket`,
+        percent: 40 + Math.round((end / Math.max(activeRows.length, 1)) * 50),
+      });
     }
     await yieldToMain();
   }
 
   onProgress?.({
-    stage: "Önizleme",
-    detail: "Hareket önizlemesi hazır",
-    percent: 95,
+    stage: "Önizleme hazır",
+    detail: `${movementRows.length} hareket`,
+    percent: 100,
   });
 
   return {
@@ -370,13 +323,138 @@ export async function buildMovementPreviewFromNormalizedRowsAsync(options = {}) 
         options.sourceType || "bank"
       ),
       annveroCoreEnabled: isAnnveroCoreEnabled(),
-      coreSummary,
+      coreSummary: null,
       previewOnly: true,
+      parserOnly: true,
     },
   };
 }
 
-/** Yalnızca CORE yeniden eşleştirme — Luca üretmez */
+/** @deprecated Aşama 1 artık buildParserPreviewFromNormalizedRowsAsync kullanır */
+export async function buildMovementPreviewFromNormalizedRowsAsync(options = {}) {
+  return buildParserPreviewFromNormalizedRowsAsync(options);
+}
+
+/**
+ * AŞAMA 2 — muhasebe analizi (learning + kural + cari + CORE).
+ * Chunk 100 + yield; progress throttle.
+ */
+export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
+  const {
+    signal = null,
+    onProgress = null,
+    coreRowLimit = DEFAULT_CORE_PREVIEW_LIMIT,
+  } = options;
+  const mappingContext = buildMovementMappingContext(options);
+  const sourceMovements = Array.isArray(options.movementRows)
+    ? options.movementRows
+    : [];
+  const normalizedRows =
+    options.normalizedRows ||
+    sourceMovements.map((m) => m.rawRow).filter(Boolean);
+  const chunkSize = ACCOUNTING_ANALYSIS_CHUNK_SIZE;
+  let lastProgressAt = 0;
+
+  onProgress?.({
+    stage: "Muhasebe Analizi",
+    detail: "Learning / kural / cari uygulanıyor",
+    percent: 5,
+  });
+
+  const analyzed = [];
+  for (let offset = 0; offset < sourceMovements.length; offset += chunkSize) {
+    assertNotAborted(signal);
+    const end = Math.min(offset + chunkSize, sourceMovements.length);
+    for (let index = offset; index < end; index += 1) {
+      const raw = sourceMovements[index]?.rawRow || normalizedRows[index];
+      if (!raw) {
+        analyzed.push({
+          ...sourceMovements[index],
+          _accountingAnalyzed: true,
+          _parserOnly: false,
+        });
+        continue;
+      }
+      const mapped = mapSingleParsedRowToMovement(raw, mappingContext, index);
+      analyzed.push({
+        ...mapped,
+        id: sourceMovements[index]?.id || mapped.id,
+        _accountingAnalyzed: true,
+        _parserOnly: false,
+      });
+    }
+    const now = Date.now();
+    if (now - lastProgressAt >= 250 || end >= sourceMovements.length) {
+      lastProgressAt = now;
+      onProgress?.({
+        stage: "Muhasebe Analizi",
+        detail: `${end}/${sourceMovements.length} hareket analiz edildi`,
+        percent: 5 + Math.round((end / Math.max(sourceMovements.length, 1)) * 60),
+      });
+    }
+    await yieldToMain();
+  }
+
+  let movementRows = analyzed;
+  let coreSummary = {
+    enabled: false,
+    core: 0,
+    fallback: analyzed.length,
+    total: analyzed.length,
+    coreLimit: 0,
+  };
+
+  if (isAnnveroCoreEnabled()) {
+    onProgress?.({
+      stage: "Muhasebe Analizi",
+      detail: "CORE eşleştirme",
+      percent: 70,
+    });
+    try {
+      const mapped = await mapParsedRowsWithCoreFallback(
+        normalizedRows,
+        mappingContext,
+        {
+          companyId: options.selectedCompanyId,
+          coreRowLimit,
+          signal,
+          batchTimeoutMs: CORE_BATCH_TIMEOUT_MS,
+          totalBudgetMs: CORE_TOTAL_BUDGET_MS,
+          prebuiltMovements: analyzed,
+        }
+      );
+      assertNotAborted(signal);
+      movementRows = (mapped.movements || []).map((row) => ({
+        ...row,
+        _accountingAnalyzed: true,
+        _parserOnly: false,
+      }));
+      coreSummary = mapped.coreSummary;
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      console.warn("[bank-parser] CORE analysis overlay failed", error);
+      coreSummary = {
+        enabled: true,
+        batchError: true,
+        total: analyzed.length,
+        userWarning: "CORE yanıt vermedi — legacy analiz korundu.",
+      };
+    }
+    await yieldToMain();
+  }
+
+  onProgress?.({
+    stage: "Muhasebe Analizi",
+    detail: "Tamamlandı",
+    percent: 100,
+  });
+
+  return { movementRows, coreSummary };
+}
+
+/**
+ * Yalnızca CORE yeniden eşleştirme — Luca üretmez
+ */
 export async function remapMovementsWithCoreAsync(options = {}) {
   const mappingContext = buildMovementMappingContext(options);
   return mapParsedRowsWithCoreFallback(options.normalizedRows || [], mappingContext, {
@@ -385,6 +463,7 @@ export async function remapMovementsWithCoreAsync(options = {}) {
     signal: options.signal,
     batchTimeoutMs: options.batchTimeoutMs ?? CORE_BATCH_TIMEOUT_MS,
     totalBudgetMs: options.totalBudgetMs ?? CORE_TOTAL_BUDGET_MS,
+    prebuiltMovements: options.movementRows,
   });
 }
 

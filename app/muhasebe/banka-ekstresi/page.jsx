@@ -78,10 +78,12 @@ import { useParserJob } from "@/src/hooks/useParserJob";
 import { logParserJobError } from "@/src/utils/parserJobLogger";
 import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
 import {
-  buildMovementPreviewFromNormalizedRowsAsync,
+  buildParserPreviewFromNormalizedRowsAsync,
   buildLucaRowsFromMovementsAsync,
+  runAccountingAnalysisOnMovementsAsync,
   remapMovementsWithCoreAsync,
   LUCA_MOVEMENT_CHUNK_SIZE,
+  ACCOUNTING_ANALYSIS_CHUNK_SIZE,
 } from "@/src/utils/bankParserCore";
 import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
 import { ANNVERO_COMPANY_CHANGED_EVENT } from "@/src/config/annveroNavConfig";
@@ -104,7 +106,7 @@ import { buildTeachFormFromMovement } from "@/src/utils/knowledgeBuilderForm";
 import { saveKnowledgeTeachRequest } from "@/src/utils/knowledgeBuilderClient";
 import { useUserRole } from "@/src/hooks/useUserRole";
 import { parseBankExcelOnMainThread } from "@/src/utils/bankExcelMainThreadParse";
-// Worker geçici olarak kapalı — bankParser.worker.js dosyası duruyor, çağrılmıyor.
+import { runBankParserWorker } from "@/src/utils/workerParserBridge";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -117,13 +119,20 @@ const BANK_PREVIEW_FILTERS = [
 
 const BANK_PARSE_STAGES = {
   READING: "Dosya okunuyor",
-  PARSING: "Parser çalışıyor",
-  MOVEMENTS: "Hareketler hazırlanıyor",
+  PARSING: "Hareketler ayıklanıyor",
+  PREVIEW: "Önizleme hazırlanıyor",
+  ANALYSIS: "Muhasebe analizi",
   LUCA: "Luca satırları hazırlanıyor",
-  LEARNING: "Öğrenme sistemi kontrol ediliyor",
 };
 
 const PREVIEW_PAGE_SIZE = 50;
+
+const PIPELINE_STEPS = [
+  { id: "preview", label: "1 · Ön İzleme" },
+  { id: "analysis", label: "2 · Muhasebe Analizi" },
+  { id: "luca", label: "3 · Luca Hazırlama" },
+  { id: "excel", label: "4 · Excel" },
+];
 
 function slimMovementForUi(movement = {}) {
   return {
@@ -238,8 +247,17 @@ export default function BankaParserPage() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileName, setFileName] = useState("");
   const [isParsing, setIsParsing] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isPreparingLuca, setIsPreparingLuca] = useState(false);
   const [lucaReady, setLucaReady] = useState(false);
+  const [accountingAnalyzed, setAccountingAnalyzed] = useState(false);
+  const [activeStep, setActiveStep] = useState("preview"); // preview|analysis|luca|excel
+  const [completedSteps, setCompletedSteps] = useState({
+    preview: false,
+    analysis: false,
+    luca: false,
+    excel: false,
+  });
   const [rawCount, setRawCount] = useState(0);
   /** UI dilimi — en fazla PREVIEW_PAGE_SIZE */
   const [movementRows, setMovementRows] = useState([]);
@@ -333,6 +351,14 @@ export default function BankaParserPage() {
       setTotalMovementCount(0);
       setTotalLucaCount(0);
       setLucaReady(false);
+      setAccountingAnalyzed(false);
+      setActiveStep("preview");
+      setCompletedSteps({
+        preview: false,
+        analysis: false,
+        luca: false,
+        excel: false,
+      });
       setSelectedFile(null);
       setFileName("");
     };
@@ -469,7 +495,7 @@ export default function BankaParserPage() {
     setStandardLucaRows(filtered.slice(start, start + PREVIEW_PAGE_SIZE));
   };
 
-  const isJobBusy = isParsing || isPreparingLuca || isApplyingCoreAll;
+  const isJobBusy = isParsing || isAnalyzing || isPreparingLuca || isApplyingCoreAll;
 
   const beginPipelineRun = () => {
     abortRef.current?.abort();
@@ -654,6 +680,12 @@ export default function BankaParserPage() {
     }
 
     setExportValidation(null);
+    setCompletedSteps((prev) => ({ ...prev, excel: true }));
+    setLastTimings((prev) => ({
+      ...prev,
+      excelMs: Date.now(),
+      excelFiles: result.fileCount || 1,
+    }));
     showToast(
       result.fileCount > 1
         ? `${result.fileCount} adet Luca Excel dosyası oluşturuldu.`
@@ -759,6 +791,14 @@ export default function BankaParserPage() {
     setTotalLucaCount(0);
     setLucaPage(0);
     setLucaReady(false);
+    setAccountingAnalyzed(false);
+    setActiveStep("preview");
+    setCompletedSteps({
+      preview: false,
+      analysis: false,
+      luca: false,
+      excel: false,
+    });
     setExportValidation(null);
     setPreviewErrorDetail("");
     setPreviewSummary(null);
@@ -791,43 +831,59 @@ export default function BankaParserPage() {
     movementsRef.current = movements;
     setRawCount(raw || movements.length);
     setPreviewSummary(computeMovementPreviewSummary(movements));
-    setCoreIntegrationSummary(computeCoreIntegrationSummary(movements));
-    setCoreRowsProcessed(
-      coreMeta?.coreLimit ?? DEFAULT_CORE_PREVIEW_LIMIT
+    setCoreIntegrationSummary(
+      coreMeta ? computeCoreIntegrationSummary(movements) : null
     );
+    setCoreRowsProcessed(coreMeta?.coreLimit ?? 0);
     syncMovementPage(0);
-    // Luca bu aşamada üretilmez
     lucaRef.current = [];
     setLucaReady(false);
     setStandardLucaRows([]);
     setTotalLucaCount(0);
   };
 
-  const handleCancelJob = () => {
-    pipelineRunIdRef.current += 1;
-    abortRef.current?.abort();
-    setIsParsing(false);
-    setIsPreparingLuca(false);
-    setIsApplyingCoreAll(false);
-    parserJob.cancel("user");
-    showToast("İşlem iptal edildi. Önizleme korundu.", "error");
+  const parseExcelFile = async (file, signal) => {
+    const onProgress = (message) => {
+      if (!signal?.aborted) parserJob.onProgress(message);
+    };
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      if (signal?.aborted) {
+        const err = new Error("İşlem iptal edildi.");
+        err.name = "AbortError";
+        throw err;
+      }
+      const workerUrl = new URL("./bankParser.worker.js", import.meta.url);
+      const workerResult = await runBankParserWorker({
+        workerUrl,
+        arrayBuffer,
+        context: { selectedBank, selectedCompanyId },
+        onProgress,
+        timeoutMs: 120_000,
+      });
+      return {
+        rawCount: workerResult.rawCount || 0,
+        normalizedRows: workerResult.normalizedRows || [],
+        parseMode: "worker",
+      };
+    } catch (workerError) {
+      if (workerError?.name === "AbortError" || signal?.aborted) throw workerError;
+      console.warn("[banka-ekstresi] worker parse fallback", workerError);
+      onProgress({
+        stage: BANK_PARSE_STAGES.READING,
+        detail: "Worker kullanılamadı — ana thread",
+      });
+      return parseBankExcelOnMainThread(file, selectedBank, onProgress);
+    }
   };
 
-  const parseFileOnMainThread = async (file) => {
-    return parseBankExcelOnMainThread(file, selectedBank, (message) => {
-      parserJob.onProgress(message);
-    });
-  };
-
-  /** Ön izleme: Excel + normalize + hareketler (+ bütçeli CORE). Luca yok. */
+  /** AŞAMA 1 — yalnızca parser */
   const handleCreatePreview = async () => {
     if (isJobBusy) return;
-
     if (!selectedCompanyId) {
       showToast("Önce firma seçmelisin.", "error");
       return;
     }
-
     if (!selectedFile) {
       showToast("Önce banka ekstresi dosyası seçmelisin.", "error");
       return;
@@ -836,69 +892,63 @@ export default function BankaParserPage() {
     const { runId, signal } = beginPipelineRun();
     const t0 = performance.now();
     setIsParsing(true);
+    setActiveStep("preview");
+    setAccountingAnalyzed(false);
     setPreviewErrorDetail("");
     setPreviewSummary(null);
     lucaRef.current = [];
     setLucaReady(false);
     setStandardLucaRows([]);
+    setCompletedSteps({
+      preview: false,
+      analysis: false,
+      luca: false,
+      excel: false,
+    });
     parserJob.begin({
       stage: BANK_PARSE_STAGES.READING,
-      detail: "Excel okunuyor",
+      detail: "Dosya okunuyor",
     });
 
     try {
-      const mainResult = await parseFileOnMainThread(selectedFile);
+      const mainResult = await parseExcelFile(selectedFile, signal);
       if (!isRunActive(runId) || signal.aborted) return;
 
       normalizedRef.current = mainResult.normalizedRows || [];
-      const coreRowLimit = isAnnveroCoreEnabled()
-        ? DEFAULT_CORE_PREVIEW_LIMIT
-        : undefined;
-
       parserJob.onProgress({
-        stage: BANK_PARSE_STAGES.MOVEMENTS,
-        detail: "Banka hareketleri hazırlanıyor",
+        stage: BANK_PARSE_STAGES.PREVIEW,
+        detail: "Önizleme hazırlanıyor",
       });
 
-      const previewResult = await buildMovementPreviewFromNormalizedRowsAsync({
-        ...buildPipelineOptions(normalizedRef.current, coreRowLimit),
+      const previewResult = await buildParserPreviewFromNormalizedRowsAsync({
+        ...buildPipelineOptions(normalizedRef.current, undefined),
         signal,
         onProgress: (message) => {
           if (isRunActive(runId)) parserJob.onProgress(message);
-        },
-        onLegacyReady: (legacyMovements) => {
-          if (!isRunActive(runId) || signal.aborted) return;
-          // Önizlemeyi CORE bitmeden aç — sayfa kilitlenmesin
-          applyMovementPreview(
-            legacyMovements,
-            { coreLimit: coreRowLimit || 0 },
-            mainResult.rawCount
-          );
         },
       });
 
       if (!isRunActive(runId) || signal.aborted) return;
 
       const movements = previewResult.movementRows || [];
-      const coreMeta = previewResult.opsMeta?.coreSummary;
-      applyMovementPreview(movements, coreMeta, mainResult.rawCount);
-
-      const previewMs = Math.round(performance.now() - t0);
-      setLastTimings((prev) => ({ ...prev, previewMs, movementCount: movements.length }));
-
+      applyMovementPreview(movements, null, mainResult.rawCount);
+      setAccountingAnalyzed(false);
+      setCompletedSteps((prev) => ({ ...prev, preview: true }));
+      setActiveStep("analysis");
+      setLastTimings((prev) => ({
+        ...prev,
+        previewMs: Math.round(performance.now() - t0),
+        movementCount: movements.length,
+        parseMode: mainResult.parseMode || "main",
+      }));
       setIsParsing(false);
       parserJob.markSuccess(
-        `${movements.length} hareket önizlemede (Luca ayrı hazırlanır)`
+        `${movements.length} hareket önizlemede (muhasebe analizi ayrı)`
       );
-
-      if (coreMeta?.userWarning) {
-        showToast(coreMeta.userWarning, "error");
-      } else {
-        showToast(
-          `${movements.length} hareket önizlemeye alındı (ekranda ilk ${PREVIEW_PAGE_SIZE}). Luca için “Luca Satırlarını Hazırla”ya basın.`,
-          "success"
-        );
-      }
+      showToast(
+        `${movements.length} hareket hazır. Sonraki: Muhasebe Analizini Başlat.`,
+        "success"
+      );
     } catch (error) {
       if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
         setIsParsing(false);
@@ -927,17 +977,101 @@ export default function BankaParserPage() {
     }
   };
 
-  /** Luca: yalnızca kullanıcı butonu — chunk + yield */
-  const handlePrepareLuca = async () => {
+  /** AŞAMA 2 — muhasebe analizi */
+  const handleStartAccountingAnalysis = async () => {
     if (isJobBusy) return;
-    if (!movementsRef.current.length) {
+    if (!movementsRef.current.length || !completedSteps.preview) {
       showToast("Önce ön izleme oluşturun.", "error");
       return;
     }
 
     const { runId, signal } = beginPipelineRun();
     const t0 = performance.now();
+    setIsAnalyzing(true);
+    setActiveStep("analysis");
+    parserJob.begin({
+      stage: BANK_PARSE_STAGES.ANALYSIS,
+      detail: `Muhasebe analizi (chunk ${ACCOUNTING_ANALYSIS_CHUNK_SIZE})`,
+    });
+
+    try {
+      const result = await runAccountingAnalysisOnMovementsAsync({
+        ...buildPipelineOptions(normalizedRef.current, DEFAULT_CORE_PREVIEW_LIMIT),
+        movementRows: movementsRef.current,
+        signal,
+        onProgress: (message) => {
+          if (isRunActive(runId)) parserJob.onProgress(message);
+        },
+      });
+      if (!isRunActive(runId) || signal.aborted) return;
+
+      movementsRef.current = result.movementRows || [];
+      setAccountingAnalyzed(true);
+      setPreviewSummary(computeMovementPreviewSummary(movementsRef.current));
+      setCoreIntegrationSummary(
+        computeCoreIntegrationSummary(movementsRef.current)
+      );
+      setCoreRowsProcessed(
+        result.coreSummary?.coreLimit ?? DEFAULT_CORE_PREVIEW_LIMIT
+      );
+      syncMovementPage(movementPage);
+      lucaRef.current = [];
+      setLucaReady(false);
+      setStandardLucaRows([]);
+      setTotalLucaCount(0);
+      setCompletedSteps((prev) => ({
+        ...prev,
+        analysis: true,
+        luca: false,
+        excel: false,
+      }));
+      setActiveStep("luca");
+      setLastTimings((prev) => ({
+        ...prev,
+        analysisMs: Math.round(performance.now() - t0),
+        analysisChunk: ACCOUNTING_ANALYSIS_CHUNK_SIZE,
+      }));
+      setIsAnalyzing(false);
+      parserJob.markSuccess(
+        `Muhasebe analizi tamamlandı (${movementsRef.current.length})`
+      );
+      if (result.coreSummary?.userWarning) {
+        showToast(result.coreSummary.userWarning, "error");
+      } else {
+        showToast(
+          "Muhasebe analizi tamamlandı. Sonraki: Luca Satırlarını Hazırla.",
+          "success"
+        );
+      }
+    } catch (error) {
+      if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
+        setIsAnalyzing(false);
+        return;
+      }
+      console.error("[banka-ekstresi] accounting analysis failed", error);
+      parserJob.markError(error);
+      showToast(error?.message || "Muhasebe analizi başarısız.", "error");
+    } finally {
+      if (isRunActive(runId)) setIsAnalyzing(false);
+    }
+  };
+
+  /** AŞAMA 3 — Luca */
+  const handlePrepareLuca = async () => {
+    if (isJobBusy) return;
+    if (!movementsRef.current.length) {
+      showToast("Önce ön izleme oluşturun.", "error");
+      return;
+    }
+    if (!accountingAnalyzed) {
+      showToast("Önce Muhasebe Analizini Başlatın.", "error");
+      return;
+    }
+
+    const { runId, signal } = beginPipelineRun();
+    const t0 = performance.now();
     setIsPreparingLuca(true);
+    setActiveStep("luca");
     parserJob.begin({
       stage: BANK_PARSE_STAGES.LUCA,
       detail: `Luca satırları hazırlanıyor (chunk ${LUCA_MOVEMENT_CHUNK_SIZE})`,
@@ -955,7 +1089,6 @@ export default function BankaParserPage() {
           },
         }
       );
-
       if (!isRunActive(runId) || signal.aborted) return;
 
       lucaRef.current = lucaResult.standardLucaRows || [];
@@ -969,26 +1102,25 @@ export default function BankaParserPage() {
       }));
       syncLucaPage(0);
       markAppliedDeclarationsPaid(lucaResult.declarationSummary);
-
-      const lucaMs = Math.round(performance.now() - t0);
+      setCompletedSteps((prev) => ({ ...prev, luca: true }));
+      setActiveStep("excel");
       setLastTimings((prev) => ({
         ...prev,
-        lucaMs,
+        lucaMs: Math.round(performance.now() - t0),
         lucaChunk: LUCA_MOVEMENT_CHUNK_SIZE,
         lucaRows: lucaRef.current.length,
       }));
-
       setIsPreparingLuca(false);
       parserJob.markSuccess(`${lucaRef.current.length} Luca satırı hazır`);
-
       setTimeout(() => {
         if (!isRunActive(runId)) return;
         recordLearningMemoryUsage(lucaRef.current.slice(0, 300)).catch(() => {});
-        queueUnrecognizedFromWorker(lucaResult.unrecognizedItems || []).catch(() => {});
+        queueUnrecognizedFromWorker(lucaResult.unrecognizedItems || []).catch(
+          () => {}
+        );
       }, 0);
-
       showToast(
-        `${lucaRef.current.length} Luca satırı hazır. Excel artık kullanılabilir.`,
+        `${lucaRef.current.length} Luca satırı hazır. Excel kullanılabilir.`,
         "success"
       );
     } catch (error) {
@@ -1024,15 +1156,21 @@ export default function BankaParserPage() {
       if (!isRunActive(runId) || signal.aborted) return;
 
       movementsRef.current = mapped.movements || [];
+      setAccountingAnalyzed(true);
       setCoreIntegrationSummary(computeCoreIntegrationSummary(movementsRef.current));
       setCoreRowsProcessed(normalizedRef.current.length);
       syncMovementPage(movementPage);
-      // CORE değişti — Luca geçersiz
       lucaRef.current = [];
       setLucaReady(false);
       setStandardLucaRows([]);
       setTotalLucaCount(0);
       setPreviewSummary(computeMovementPreviewSummary(movementsRef.current));
+      setCompletedSteps((prev) => ({
+        ...prev,
+        analysis: true,
+        luca: false,
+        excel: false,
+      }));
 
       parserJob.markSuccess(`CORE ${movementsRef.current.length} harekette tamamlandı`);
       if (mapped.coreSummary?.userWarning) {
@@ -1056,6 +1194,7 @@ export default function BankaParserPage() {
   const corePreviewMovements = movementRows;
   const hasMoreCoreRows =
     isAnnveroCoreEnabled() &&
+    accountingAnalyzed &&
     coreIntegrationSummary?.notRun > 0 &&
     normalizedRef.current.length > 0;
 
@@ -1417,6 +1556,27 @@ export default function BankaParserPage() {
           ) : null}
         </div>
 
+        <div className="flex min-w-0 flex-wrap gap-2">
+          {PIPELINE_STEPS.map((step) => {
+            const done = completedSteps[step.id];
+            const active = activeStep === step.id && isJobBusy;
+            const tone = done
+              ? "border-emerald-600/50 bg-emerald-950/40 text-emerald-200"
+              : active
+                ? "border-sky-500/50 bg-sky-950/50 text-sky-100"
+                : "border-slate-700 bg-slate-950/40 text-slate-400";
+            return (
+              <div
+                key={step.id}
+                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${tone}`}
+              >
+                {step.label}
+                {done ? " ✓" : active ? " …" : ""}
+              </div>
+            );
+          })}
+        </div>
+
         <div className="flex min-w-0 flex-wrap gap-3">
           <button
             type="button"
@@ -1429,8 +1589,19 @@ export default function BankaParserPage() {
 
           <button
             type="button"
+            onClick={handleStartAccountingAnalysis}
+            disabled={isJobBusy || !completedSteps.preview}
+            className="rounded-xl border border-indigo-600/60 bg-indigo-950 px-6 py-3 font-semibold text-indigo-100 transition hover:bg-indigo-900 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isAnalyzing
+              ? parserJob.stage || "Analiz ediliyor…"
+              : "Muhasebe Analizini Başlat"}
+          </button>
+
+          <button
+            type="button"
             onClick={handlePrepareLuca}
-            disabled={isJobBusy || totalMovementCount === 0}
+            disabled={isJobBusy || !accountingAnalyzed}
             className="rounded-xl border border-amber-600/60 bg-amber-950 px-6 py-3 font-semibold text-amber-100 transition hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isPreparingLuca
@@ -1461,11 +1632,16 @@ export default function BankaParserPage() {
           </Link>
         </div>
 
-        {!lucaReady && totalMovementCount > 0 ? (
+        {completedSteps.preview && !accountingAnalyzed ? (
           <p className="text-sm text-amber-200/90">
-            Hareket önizlemesi hazır. Excel için önce{" "}
-            <span className="font-semibold">Luca Satırlarını Hazırla</span>{" "}
-            butonuna basın.
+            Parser önizlemesi hazır. Hesap/kural/CORE için{" "}
+            <span className="font-semibold">Muhasebe Analizini Başlat</span>.
+          </p>
+        ) : null}
+        {accountingAnalyzed && !lucaReady ? (
+          <p className="text-sm text-amber-200/90">
+            Muhasebe analizi tamam. Excel için{" "}
+            <span className="font-semibold">Luca Satırlarını Hazırla</span>.
           </p>
         ) : null}
 
@@ -1474,14 +1650,18 @@ export default function BankaParserPage() {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-semibold">
-                  {isAnnveroCoreEnabled()
-                    ? "ANNVERO CORE / Hareket Önizleme"
-                    : "Banka Hareketi Önizleme"}
+                  {!accountingAnalyzed
+                    ? "Banka Hareketi Önizleme (Parser)"
+                    : isAnnveroCoreEnabled()
+                      ? "ANNVERO CORE / Hareket Önizleme"
+                      : "Banka Hareketi Önizleme"}
                 </h2>
                 <p className="mt-1 text-sm text-gray-400">
-                  {isAnnveroCoreEnabled()
-                    ? `İlk ${coreRowsProcessed} satırda CORE denendi; dönmeyenler “${CORE_REVIEW_LEFT_LABEL}”.`
-                    : "Luca üretimi ayrı butonla başlar."}
+                  {!accountingAnalyzed
+                    ? "Yalnızca parse sonucu. Hesap/kural/CORE için Muhasebe Analizini Başlatın."
+                    : isAnnveroCoreEnabled()
+                      ? `İlk ${coreRowsProcessed} satırda CORE denendi; dönmeyenler “${CORE_REVIEW_LEFT_LABEL}”.`
+                      : "Muhasebe analizi uygulandı."}
                   {hasMoreCoreRows ? " Kalan satırlar legacy mapping ile işlendi." : ""}
                 </p>
               </div>
