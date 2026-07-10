@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import CalculatorAccordionSection from "./CalculatorAccordionSection";
 import KdvCalculator from "./KdvCalculator";
 import KdvDahilHaricCalculator from "./KdvDahilHaricCalculator";
 import {
@@ -62,45 +63,28 @@ function buildTools(basePath = PUBLIC_CALCULATOR_BASE) {
   ];
 }
 
-function ChevronIcon({ isOpen }) {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 20 20"
-      fill="currentColor"
-      className={`h-5 w-5 shrink-0 text-violet-600 transition-transform ${
-        isOpen ? "rotate-180" : ""
-      }`}
-    >
-      <path
-        fillRule="evenodd"
-        d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
-        clipRule="evenodd"
-      />
-    </svg>
-  );
-}
-
 export default function CalculatorToolsGrid({
   basePath = PUBLIC_CALCULATOR_BASE,
   includePlatformTools = false,
 }) {
-  const [activeCalculator, setActiveCalculator] = useState("kdv");
+  // Varsayılan: hiçbir sekme açık değil (accordion)
+  const [activeCalculatorId, setActiveCalculatorId] = useState(null);
   const tools = buildTools(basePath).filter(
     (tool) => includePlatformTools || !tool.platformOnly
   );
 
-  const handleActiveToolToggle = (toolId) => {
-    setActiveCalculator((current) => (current === toolId ? null : toolId));
+  const handleSectionToggle = (toolId) => {
+    setActiveCalculatorId((current) => (current === toolId ? null : toolId));
   };
 
   return (
-    <div className="mt-8 flex flex-col gap-4">
+    <div className="mt-8 flex flex-col gap-4" role="list">
       {tools.map((tool) => {
         if (tool.active && tool.href) {
           return (
             <article
               key={tool.id}
+              role="listitem"
               className="rounded-2xl border border-violet-100 bg-white p-5 shadow-sm transition hover:border-violet-200 hover:shadow-md hover:shadow-violet-500/5"
             >
               <div className="flex items-start justify-between gap-3">
@@ -124,42 +108,27 @@ export default function CalculatorToolsGrid({
 
         if (tool.active && tool.component) {
           const Calculator = tool.component;
-          const isOpen = activeCalculator === tool.id;
+          const isOpen = activeCalculatorId === tool.id;
 
           return (
-            <article
-              key={tool.id}
-              className={`rounded-2xl border p-5 shadow-sm transition ${
-                isOpen
-                  ? "border-violet-300 bg-violet-50/70"
-                  : "border-violet-100 bg-white hover:border-violet-200 hover:shadow-md hover:shadow-violet-500/5"
-              }`}
-            >
-              <button
-                type="button"
-                onClick={() => handleActiveToolToggle(tool.id)}
-                aria-expanded={isOpen}
-                className="flex w-full items-start justify-between gap-3 text-left"
+            <div key={tool.id} role="listitem">
+              <CalculatorAccordionSection
+                id={tool.id}
+                title={tool.title}
+                description={tool.description}
+                isOpen={isOpen}
+                onToggle={() => handleSectionToggle(tool.id)}
               >
-                <div>
-                  <h3 className="text-lg font-semibold text-slate-900">{tool.title}</h3>
-                  <p className="mt-1 text-sm text-slate-600">{tool.description}</p>
-                </div>
-                <ChevronIcon isOpen={isOpen} />
-              </button>
-
-              {isOpen ? (
-                <div className="mt-4 border-t border-violet-200/80 pt-4">
-                  <Calculator />
-                </div>
-              ) : null}
-            </article>
+                <Calculator />
+              </CalculatorAccordionSection>
+            </div>
           );
         }
 
         return (
           <article
             key={tool.id}
+            role="listitem"
             className="rounded-2xl border border-violet-100 bg-white p-5"
           >
             <div className="flex items-start justify-between gap-3">
