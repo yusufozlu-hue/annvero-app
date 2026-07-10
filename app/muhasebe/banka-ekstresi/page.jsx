@@ -508,6 +508,16 @@ export default function BankaParserPage() {
 
   const isRunActive = (runId) => pipelineRunIdRef.current === runId;
 
+  const handleCancelJob = () => {
+    pipelineRunIdRef.current += 1;
+    abortRef.current?.abort();
+    parserJob.cancel("user");
+    setIsParsing(false);
+    setIsAnalyzing(false);
+    setIsPreparingLuca(false);
+    setIsApplyingCoreAll(false);
+  };
+
   const handleApplyAccountSuggestion = async (row, suggestion) => {
     const updatedRow = applySuggestionToMovement(
       row,
