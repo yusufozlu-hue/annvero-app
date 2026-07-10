@@ -202,9 +202,20 @@ export function analyzeStandardLucaRows(rows = []) {
 
     if (movementKey.replace(/\|/g, "").length > 0) {
       const previousIndex = duplicateMovementKeys.get(movementKey);
+      const previousRow =
+        previousIndex !== undefined ? sourceRows[previousIndex] : null;
+      const sameFis =
+        previousRow &&
+        String(previousRow.fisNo ?? "").trim() !== "" &&
+        String(previousRow.fisNo ?? "").trim() === String(row.fisNo ?? "").trim();
+      const sameMovement =
+        previousRow &&
+        String(previousRow.sourceMovementId || previousRow._movementId || "").trim() &&
+        String(previousRow.sourceMovementId || previousRow._movementId || "").trim() ===
+          String(row.sourceMovementId || row._movementId || "").trim();
 
-      if (previousIndex !== undefined) {
-        const previousRow = sourceRows[previousIndex];
+      // Aynı fişin borç/alacak satırları veya aynı hareketin kalemleri mükerrer değil
+      if (previousIndex !== undefined && !sameFis && !sameMovement) {
         rowIssues[index].push(
           createIssue(
             KONTROL_TIP.MUKERRER_HAREKET,
@@ -212,7 +223,7 @@ export function analyzeStandardLucaRows(rows = []) {
             `Aynı tarih, tutar ve açıklama ${previousIndex + 1}. satır ile tekrar ediyor (Fiş ${previousRow?.fisNo || "—"}).`
           )
         );
-      } else {
+      } else if (previousIndex === undefined) {
         duplicateMovementKeys.set(movementKey, index);
       }
     }

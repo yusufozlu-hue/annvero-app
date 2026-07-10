@@ -300,6 +300,10 @@ export function finalizeStandardLucaRow(row) {
     ...(row.matchedMemoryId ? { matchedMemoryId: row.matchedMemoryId } : {}),
     ...(row.id ? { id: row.id } : {}),
     ...(row._movementId ? { _movementId: row._movementId } : {}),
+    ...(row.sourceMovementId ? { sourceMovementId: row.sourceMovementId } : {}),
+    ...(row.sourceRowIndex != null ? { sourceRowIndex: row.sourceRowIndex } : {}),
+    ...(row.lineRole ? { lineRole: row.lineRole } : {}),
+    ...(row.creationSource ? { creationSource: row.creationSource } : {}),
   };
 }
 
@@ -546,8 +550,13 @@ function buildBankLucaLine({
   fisAciklama,
   detayAciklama,
   belgeTuru,
+  lineRole,
+  sourceRowIndex,
 }) {
   const tarih = formatParserDate(movement.date);
+  const role =
+    lineRole ||
+    (Number(borc) > 0 ? "borc" : Number(alacak) > 0 ? "alacak" : "empty");
 
   return finalizeStandardLucaRow({
     id: `${movement.id}-${hesapKodu}-${borc}-${alacak}`,
@@ -568,6 +577,14 @@ function buildBankLucaLine({
     kontrolNotu: movement.warning || "",
     hafizaEslesme: String(movement.warning || "").includes(MEMORY_MATCH_LABEL),
     _movementId: movement.id,
+    sourceMovementId: movement.id,
+    sourceRowIndex:
+      sourceRowIndex ??
+      context.sourceRowIndex ??
+      movement.sourceRowIndex ??
+      null,
+    lineRole: role,
+    creationSource: context.creationSource || "bank_double_entry",
   });
 }
 
@@ -580,6 +597,7 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
   const matchedRule = movement.matchedRule;
   const bankaHesap = movement.accountCode;
   const karsiHesap = movement.counterAccountCode;
+  const sourceRowIndex = context.sourceRowIndex ?? null;
   const rows = [];
 
   if (matchedRule?.ozelIslem === "BINEK_ARAC_GIDER_KISITLAMASI") {
@@ -597,6 +615,8 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
         fisAciklama: lucaAciklama,
         detayAciklama: lucaAciklama,
         belgeTuru,
+        lineRole: "alacak",
+        sourceRowIndex,
       }),
       buildBankLucaLine({
         movement,
@@ -608,6 +628,8 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
         fisAciklama: lucaAciklama,
         detayAciklama: lucaAciklama,
         belgeTuru,
+        lineRole: "borc",
+        sourceRowIndex,
       }),
       buildBankLucaLine({
         movement,
@@ -619,34 +641,41 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
         fisAciklama: matchedRule.kkegAciklama,
         detayAciklama: matchedRule.kkegAciklama,
         belgeTuru,
+        lineRole: "borc",
+        sourceRowIndex,
       })
     );
 
     return rows;
   }
 
+  const bankIsBorc = movement.direction === "GIRIS";
   rows.push(
     buildBankLucaLine({
       movement,
       fisNo,
       context,
       hesapKodu: bankaHesap,
-      borc: movement.direction === "GIRIS" ? tutar : "",
-      alacak: movement.direction === "CIKIS" ? tutar : "",
+      borc: bankIsBorc ? tutar : "",
+      alacak: bankIsBorc ? "" : tutar,
       fisAciklama: lucaAciklama,
       detayAciklama: lucaAciklama,
       belgeTuru,
+      lineRole: bankIsBorc ? "borc" : "alacak",
+      sourceRowIndex,
     }),
     buildBankLucaLine({
       movement,
       fisNo,
       context,
       hesapKodu: karsiHesap,
-      borc: movement.direction === "CIKIS" ? tutar : "",
-      alacak: movement.direction === "GIRIS" ? tutar : "",
+      borc: bankIsBorc ? "" : tutar,
+      alacak: bankIsBorc ? tutar : "",
       fisAciklama: lucaAciklama,
       detayAciklama: lucaAciklama,
       belgeTuru,
+      lineRole: bankIsBorc ? "alacak" : "borc",
+      sourceRowIndex,
     })
   );
 

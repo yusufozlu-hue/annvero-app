@@ -45,36 +45,80 @@ export function computeCoreIntegrationSummary(movements = []) {
   const total = movements.length;
   let coreRecognized = 0;
   let ruleFound = 0;
+  let memoryFound = 0;
   let manualReview = 0;
   let lowConfidence = 0;
   let risky = 0;
   let notRun = 0;
   let legacyFallback = 0;
+  let reviewLeft = 0;
+  let timedOut = 0;
+  let coreAttempted = 0;
 
   for (const movement of movements) {
     const preview = movement.corePreview || extractCorePreviewFields(null, movement);
-    const status = preview.core_status || movement.core_status;
+    const status = String(preview.core_status || movement._coreStatus || "").toLowerCase();
     const confidence = Number(preview.confidence_score ?? movement._coreConfidence ?? 0);
     const risk = String(preview.risk_level || movement._coreRiskLevel || "").toLowerCase();
+    const warning = String(movement.warning || "");
+    const matchedRule = movement.matchedRule || {};
+    const ruleSource = String(matchedRule.source || "").toLowerCase();
 
     if (movement._coreMatched) coreRecognized += 1;
-    if (preview.matched_rule || movement.matchedRule?.rule_id) ruleFound += 1;
+
+    const hasAccountingRule =
+      ruleSource === "accountingruleengine" ||
+      ruleSource === "companyrule" ||
+      ruleSource === "legacyrule" ||
+      matchedRule.islem === "KURAL" ||
+      Boolean(preview.matched_rule) ||
+      Boolean(matchedRule.rule_id) ||
+      warning.includes("Kural Motoru:");
+    if (hasAccountingRule) ruleFound += 1;
+
+    if (
+      ruleSource === "learningmemory" ||
+      matchedRule.islem === "HAFIZA" ||
+      movement.matchedMemoryId ||
+      warning.includes("Hafızadan eşleşti") ||
+      warning.includes("Öğrenen Hafıza")
+    ) {
+      memoryFound += 1;
+    }
+
     if (preview.needs_manual_review === true) manualReview += 1;
     if (confidence > 0 && confidence < 0.55) lowConfidence += 1;
     if (risk === "high" || risk === "critical") risky += 1;
     if (status === "not_run" || movement._coreSkipped) notRun += 1;
     if (movement._coreFallback && status !== "not_run") legacyFallback += 1;
+    if (
+      warning.includes("İncelemeye bırakıldı") ||
+      status === "unknown" ||
+      movement._coreStatus === "unknown"
+    ) {
+      reviewLeft += 1;
+    }
+    if (movement._coreTimedOut || warning.includes("zaman aşımı")) timedOut += 1;
+    if (movement._coreMatched || movement._coreFallback || movement._coreSkipped === false) {
+      if (!movement._coreSkipped) coreAttempted += 1;
+    } else if (movement._coreDecisionSource || status && status !== "none" && status !== "not_run") {
+      coreAttempted += 1;
+    }
   }
 
   return {
     total,
     coreRecognized,
     ruleFound,
+    memoryFound,
     manualReview,
     lowConfidence,
     risky,
     notRun,
     legacyFallback,
+    reviewLeft,
+    timedOut,
+    coreAttempted,
   };
 }
 

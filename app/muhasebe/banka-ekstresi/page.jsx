@@ -681,6 +681,21 @@ export default function BankaParserPage() {
       }
 
       if (result.reason === "validation") {
+        const report = result.validation?.duplicateReport;
+        if (report?.reportLine) {
+          const criticalLines = (report.criticalRows || [])
+            .slice(0, 8)
+            .map(
+              (row) =>
+                `Satır ${row.rowIndex} · hareket ${row.sourceMovementId || "—"} · ${row.date} · ${row.amount} · ${row.hesapKodu} · ${row.reason}`
+            )
+            .join("\n");
+          window.alert(
+            `${report.reportLine}\n\n${
+              criticalLines || "Kritik satır detayı yok."
+            }\n\nYalnızca gerçek kritik mükerrerler Excel’i engeller.`
+          );
+        }
         showToast(
           result.validation?.hasCriticalDuplicates
             ? "Excel oluşturulamadı. Kritik mükerrer kayıtları düzeltin."
@@ -1057,6 +1072,8 @@ export default function BankaParserPage() {
         analysisChunk: ACCOUNTING_ANALYSIS_CHUNK_SIZE,
         analysisProcessed: result.processedCount ?? movementsRef.current.length,
         analysisTimedOut: Boolean(result.timedOut),
+        analysisTimings: result.timings || null,
+        analysisCallCounts: result.callCounts || null,
       }));
       parserJob.markSuccess(
         `Muhasebe analizi tamamlandı (${movementsRef.current.length})`
@@ -1069,8 +1086,11 @@ export default function BankaParserPage() {
           "error"
         );
       } else {
+        const unique = result.callCounts?.uniqueDescriptions;
         showToast(
-          "Muhasebe analizi tamamlandı. Sonraki: Luca Satırlarını Hazırla.",
+          unique
+            ? `Muhasebe analizi tamamlandı (${unique} unique açıklama). Sonraki: Luca Satırlarını Hazırla.`
+            : "Muhasebe analizi tamamlandı. Sonraki: Luca Satırlarını Hazırla.",
           "success"
         );
       }
@@ -1094,7 +1114,8 @@ export default function BankaParserPage() {
 
   /** AŞAMA 3 — Luca */
   const handlePrepareLuca = async () => {
-    if (isJobBusy) return;
+    if (isPreparingLuca) return;
+    if (isParsing || isAnalyzing || isApplyingCoreAll) return;
     if (!movementsRef.current.length) {
       showToast("Önce ön izleme oluşturun.", "error");
       return;
@@ -1106,8 +1127,11 @@ export default function BankaParserPage() {
 
     const { runId, signal } = beginPipelineRun();
     const t0 = performance.now();
+    const releaseLucaLock = () => setIsPreparingLuca(false);
+
     setIsPreparingLuca(true);
     setActiveStep("luca");
+    setLucaReady(false);
     parserJob.begin({
       stage: BANK_PARSE_STAGES.LUCA,
       detail: `Luca satırları hazırlanıyor (chunk ${LUCA_MOVEMENT_CHUNK_SIZE})`,
@@ -1120,12 +1144,23 @@ export default function BankaParserPage() {
         {
           chunkSize: LUCA_MOVEMENT_CHUNK_SIZE,
           signal,
+          earlyPreviewCount: PREVIEW_PAGE_SIZE,
+          onEarlyPreview: (partialRows) => {
+            if (!isRunActive(runId) || signal.aborted) return;
+            setStandardLucaRows(partialRows.slice(0, PREVIEW_PAGE_SIZE));
+            setTotalLucaCount(partialRows.length);
+          },
           onProgress: (message) => {
-            if (isRunActive(runId)) parserJob.onProgress(message);
+            if (isRunActive(runId) && !signal.aborted) {
+              parserJob.onProgress(message);
+            }
           },
         }
       );
-      if (!isRunActive(runId) || signal.aborted) return;
+      if (!isRunActive(runId) || signal.aborted) {
+        releaseLucaLock();
+        return;
+      }
 
       lucaRef.current = lucaResult.standardLucaRows || [];
       setLucaReady(true);
@@ -1145,9 +1180,12 @@ export default function BankaParserPage() {
         lucaMs: Math.round(performance.now() - t0),
         lucaChunk: LUCA_MOVEMENT_CHUNK_SIZE,
         lucaRows: lucaRef.current.length,
+        lucaTimings: lucaResult.timings || null,
+        lucaStats: lucaResult.lucaStats || null,
       }));
-      setIsPreparingLuca(false);
-      parserJob.markSuccess(`${lucaRef.current.length} Luca satırı hazır`);
+      parserJob.markSuccess(
+        `${lucaRef.current.length} Luca satırı hazır (${movementsRef.current.length} hareket × çift taraflı)`
+      );
       setTimeout(() => {
         if (!isRunActive(runId)) return;
         recordLearningMemoryUsage(lucaRef.current.slice(0, 300)).catch(() => {});
@@ -1155,20 +1193,23 @@ export default function BankaParserPage() {
           () => {}
         );
       }, 0);
+      const stats = lucaResult.lucaStats;
       showToast(
-        `${lucaRef.current.length} Luca satırı hazır. Excel kullanılabilir.`,
+        stats
+          ? `${stats.lucaRows} Luca satırı (${stats.movementsWith2Rows} hareket → 2 satır). Excel kullanılabilir.`
+          : `${lucaRef.current.length} Luca satırı hazır. Excel kullanılabilir.`,
         "success"
       );
     } catch (error) {
       if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
-        setIsPreparingLuca(false);
+        releaseLucaLock();
         return;
       }
       console.error("[banka-ekstresi] luca prepare failed", error);
       parserJob.markError(error);
       showToast(error?.message || "Luca satırları hazırlanamadı.", "error");
     } finally {
-      if (isRunActive(runId)) setIsPreparingLuca(false);
+      releaseLucaLock();
     }
   };
 
@@ -1720,7 +1761,7 @@ export default function BankaParserPage() {
             </div>
 
             {coreIntegrationSummary ? (
-              <div className="mb-4 grid grid-cols-2 gap-2 text-xs text-gray-300 sm:grid-cols-3 lg:grid-cols-6">
+              <div className="mb-4 grid grid-cols-2 gap-2 text-xs text-gray-300 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8">
                 <CoreSummaryCard label="Toplam hareket" value={coreIntegrationSummary.total} />
                 <CoreSummaryCard
                   label="CORE tanıdı"
@@ -1733,9 +1774,22 @@ export default function BankaParserPage() {
                   tone="sky"
                 />
                 <CoreSummaryCard
-                  label="Manuel inceleme"
-                  value={coreIntegrationSummary.manualReview}
+                  label="Hafızadan"
+                  value={coreIntegrationSummary.memoryFound || 0}
+                  tone="sky"
+                />
+                <CoreSummaryCard
+                  label="İncelemeye bırakıldı"
+                  value={coreIntegrationSummary.reviewLeft || 0}
                   tone="amber"
+                />
+                <CoreSummaryCard
+                  label="Timeout / atlandı"
+                  value={
+                    (coreIntegrationSummary.timedOut || 0) +
+                    (coreIntegrationSummary.notRun || 0)
+                  }
+                  tone="yellow"
                 />
                 <CoreSummaryCard
                   label="Düşük güven"
@@ -1748,6 +1802,20 @@ export default function BankaParserPage() {
                   tone="red"
                 />
               </div>
+            ) : null}
+            {accountingAnalyzed && coreIntegrationSummary ? (
+              <p className="mb-3 text-xs text-slate-400">
+                CORE denemesi: ilk {coreRowsProcessed || 0} hareket
+                {coreIntegrationSummary.coreRecognized === 0
+                  ? " · Bu turda CORE eşleşmesi yok (0 tanıdı) — legacy/kural/hafıza sonuçları geçerlidir."
+                  : ""}
+                {lastTimings?.analysisCallCounts?.uniqueDescriptions
+                  ? ` · Unique açıklama: ${lastTimings.analysisCallCounts.uniqueDescriptions}`
+                  : ""}
+                {lastTimings?.lucaStats
+                  ? ` · Luca: ${lastTimings.lucaStats.lucaRows} satır (${lastTimings.lucaStats.movementsWith2Rows}×2 çift taraflı)`
+                  : ""}
+              </p>
             ) : null}
 
             <CorePreviewTable

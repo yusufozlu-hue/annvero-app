@@ -63,8 +63,14 @@ export function validatePreviewForExport(rows = []) {
 
   if (duplicateAnalysis.summary.hasCritical) {
     globalErrors.push(
-      `${duplicateAnalysis.summary.criticalCount} satırda kritik mükerrer riski tespit edildi.`
+      duplicateAnalysis.summary.reportLine ||
+        `${duplicateAnalysis.summary.criticalCount} satırda kritik mükerrer riski tespit edildi.`
     );
+  } else if (
+    duplicateAnalysis.summary.suspiciousCount > 0 ||
+    duplicateAnalysis.summary.expectedDoubleEntryPairs > 0
+  ) {
+    // Bilgi amaçlı — engellemez
   }
 
   const blockingErrorCount =
@@ -128,6 +134,13 @@ export function validatePreviewForExport(rows = []) {
     canExportWithWarnings,
     blockingMessages,
     warningMessages,
+    duplicateReport: {
+      critical: duplicateAnalysis.summary.criticalCount || 0,
+      suspicious: duplicateAnalysis.summary.suspiciousCount || 0,
+      expectedPairs: duplicateAnalysis.summary.expectedDoubleEntryPairs || 0,
+      reportLine: duplicateAnalysis.summary.reportLine || "",
+      criticalRows: duplicateAnalysis.criticalRows || [],
+    },
     message: ok
       ? ""
       : hasBlockingErrors
@@ -138,13 +151,18 @@ export function validatePreviewForExport(rows = []) {
 
 export function buildExportWarningConfirmMessage(validation) {
   const lines = [];
+  const report = validation?.duplicateReport;
+
+  if (report?.reportLine) {
+    lines.push(report.reportLine);
+  }
 
   if (validation?.hasHighDuplicateRisk) {
-    lines.push("Yüksek mükerrer riski olan satırlar var.");
+    lines.push("Yüksek şüpheli benzer kayıtlar var (export engellenmez).");
   }
 
   if (validation?.hasMediumDuplicateRisk) {
-    lines.push("Orta mükerrer riski olan satırlar var.");
+    lines.push("Orta şüpheli benzer kayıtlar var (export engellenmez).");
   }
 
   for (const item of validation?.rowErrors || []) {

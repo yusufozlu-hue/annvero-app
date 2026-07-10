@@ -7,6 +7,7 @@ import {
   mapParsedRowsToStandardMovements,
   mapSingleParsedRowToMovement,
   buildParserOnlyMovement,
+  normalizeParserText,
 } from "@/src/utils/bankMovementMapper";
 import { enrichTebParsedRows } from "@/src/utils/tebHavaleGrouping";
 import {
@@ -337,9 +338,47 @@ export async function buildMovementPreviewFromNormalizedRowsAsync(options = {}) 
   return buildParserPreviewFromNormalizedRowsAsync(options);
 }
 
+function buildAnalysisMemoKey(raw = {}, fallbackDirection = "") {
+  const description = normalizeParserText(
+    String(raw?.aciklama || raw?.description || "")
+  );
+  const direction =
+    raw?.yon === "CIKIS" ||
+    raw?.direction === "CIKIS" ||
+    fallbackDirection === "CIKIS"
+      ? "CIKIS"
+      : "GIRIS";
+  return `${description}|${direction}`;
+}
+
+function cloneAnalyzedMovement(template, sourceMovement, index) {
+  const raw = sourceMovement?.rawRow || template.rawRow || {};
+  return {
+    ...template,
+    id: sourceMovement?.id || template.id || `analyzed-${index + 1}`,
+    date: formatParserDate(raw?.tarih || raw?.date || sourceMovement?.date || template.date),
+    amount: Math.abs(
+      Number(raw?.tutar ?? raw?.amount ?? sourceMovement?.amount ?? template.amount ?? 0)
+    ),
+    description:
+      String(raw?.aciklama || raw?.description || sourceMovement?.description || template.description || "").trim(),
+    direction:
+      raw?.yon === "CIKIS" ||
+      raw?.direction === "CIKIS" ||
+      sourceMovement?.direction === "CIKIS"
+        ? "CIKIS"
+        : template.direction || "GIRIS",
+    rawRow: raw,
+    sourceRowIndex: index,
+    _accountingAnalyzed: true,
+    _parserOnly: false,
+    _analysisMemoHit: true,
+  };
+}
+
 /**
  * AŞAMA 2 — muhasebe analizi (learning + kural + cari + CORE).
- * Chunk 100 + yield; progress throttle; toplam süre sınırı; satır hataları yutulur.
+ * Unique açıklama memo + chunk yield + süre ölçümü + CORE limit.
  */
 export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   const {
@@ -362,14 +401,42 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   let timedOut = false;
   let processedCount = 0;
   let rowErrors = 0;
+  let memoHits = 0;
+  let memoMisses = 0;
+  const analysisMemo = new Map();
+  const timings = {
+    memoryLoadMs: 0,
+    memoryIndexMs: 0,
+    learningMatchMs: 0,
+    accountingRuleMs: 0,
+    cariResolutionMs: 0,
+    accountSuggestionMs: 0,
+    mappingMs: 0,
+    coreApiMs: 0,
+    totalAnalysisMs: 0,
+  };
+  const callCounts = {
+    findLearningMemoryMatch: 0,
+    matchAccountingRule: 0,
+    collectAccountSuggestions: 0,
+    applyCariResolution: 0,
+    coreApiBatches: 0,
+    uniqueDescriptions: 0,
+    memoHits: 0,
+    memoMisses: 0,
+  };
 
   const emitProgress = (stage, detail, percent) => {
+    const now = Date.now();
+    if (now - lastProgressAt < 340 && percent < 100) return;
+    lastProgressAt = now;
     onProgress?.({ stage, detail, percent });
   };
 
   const budgetExceeded = () => Date.now() - startedAt > budgetMs;
 
   emitProgress("Muhasebe Analizi", "Muhasebe kuralları uygulanıyor", 5);
+  const mapStarted = Date.now();
 
   const analyzed = [];
   for (let offset = 0; offset < sourceMovements.length; offset += chunkSize) {
@@ -380,12 +447,14 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
         processedCount,
         total: sourceMovements.length,
         budgetMs,
+        uniqueDescriptions: analysisMemo.size,
       });
       for (let index = offset; index < sourceMovements.length; index += 1) {
         analyzed.push({
           ...sourceMovements[index],
           _accountingAnalyzed: true,
           _parserOnly: false,
+          sourceRowIndex: index,
           warning: [sourceMovements[index]?.warning, "Analiz süre sınırında kısmi"]
             .filter(Boolean)
             .join(" | "),
@@ -404,23 +473,40 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
 
     for (let index = offset; index < end; index += 1) {
       try {
-        const raw = sourceMovements[index]?.rawRow || normalizedRows[index];
+        const source = sourceMovements[index] || {};
+        const raw = source.rawRow || normalizedRows[index];
         if (!raw) {
           analyzed.push({
-            ...sourceMovements[index],
+            ...source,
             _accountingAnalyzed: true,
             _parserOnly: false,
+            sourceRowIndex: index,
           });
           processedCount += 1;
           continue;
         }
+
+        const memoKey = buildAnalysisMemoKey(raw, source.direction);
+        const cached = analysisMemo.get(memoKey);
+        if (cached) {
+          memoHits += 1;
+          analyzed.push(cloneAnalyzedMovement(cached, source, index));
+          processedCount += 1;
+          continue;
+        }
+
+        memoMisses += 1;
         const mapped = mapSingleParsedRowToMovement(raw, mappingContext, index);
-        analyzed.push({
+        const enriched = {
           ...mapped,
-          id: sourceMovements[index]?.id || mapped.id,
+          id: source.id || mapped.id,
+          sourceRowIndex: index,
           _accountingAnalyzed: true,
           _parserOnly: false,
-        });
+          _analysisMemoHit: false,
+        };
+        analysisMemo.set(memoKey, enriched);
+        analyzed.push(enriched);
         processedCount += 1;
       } catch (rowError) {
         rowErrors += 1;
@@ -432,6 +518,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
           ...sourceMovements[index],
           _accountingAnalyzed: true,
           _parserOnly: false,
+          sourceRowIndex: index,
           mappingError: true,
           warning: [
             sourceMovements[index]?.warning,
@@ -444,17 +531,23 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
       }
     }
 
-    const now = Date.now();
-    if (now - lastProgressAt >= 250 || end >= sourceMovements.length || timedOut) {
-      lastProgressAt = now;
-      emitProgress(
-        "Muhasebe Analizi",
-        `${phaseDetail} · ${Math.min(end, sourceMovements.length)}/${sourceMovements.length}`,
-        5 + Math.round((Math.min(end, sourceMovements.length) / Math.max(sourceMovements.length, 1)) * 60)
-      );
-    }
+    emitProgress(
+      "Muhasebe Analizi",
+      `${phaseDetail} · ${Math.min(end, sourceMovements.length)}/${sourceMovements.length} (unique ${analysisMemo.size})`,
+      5 + Math.round((Math.min(end, sourceMovements.length) / Math.max(sourceMovements.length, 1)) * 60)
+    );
     await yieldToMain();
   }
+
+  timings.mappingMs = Date.now() - mapStarted;
+  callCounts.uniqueDescriptions = analysisMemo.size;
+  callCounts.memoHits = memoHits;
+  callCounts.memoMisses = memoMisses;
+  // Her unique açıklama için bir mapping ≈ bir learning/rule/cari turu
+  callCounts.findLearningMemoryMatch = memoMisses;
+  callCounts.matchAccountingRule = memoMisses;
+  callCounts.collectAccountSuggestions = memoMisses;
+  callCounts.applyCariResolution = memoMisses;
 
   let movementRows = analyzed;
   let coreSummary = {
@@ -467,7 +560,12 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
 
   if (isAnnveroCoreEnabled() && !timedOut) {
     assertNotAborted(signal);
-    emitProgress("Muhasebe Analizi", "CORE değerlendiriyor", 70);
+    emitProgress(
+      "Muhasebe Analizi",
+      `CORE değerlendiriyor (ilk ${coreRowLimit} hareket)`,
+      70
+    );
+    const coreStarted = Date.now();
     try {
       const remainingBudget = Math.max(
         3_000,
@@ -486,12 +584,24 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
         }
       );
       assertNotAborted(signal);
-      movementRows = (mapped.movements || []).map((row) => ({
+      movementRows = (mapped.movements || []).map((row, index) => ({
         ...row,
+        id: analyzed[index]?.id || row.id,
+        sourceRowIndex: analyzed[index]?.sourceRowIndex ?? index,
         _accountingAnalyzed: true,
         _parserOnly: false,
       }));
-      coreSummary = mapped.coreSummary;
+      coreSummary = {
+        ...mapped.coreSummary,
+        userWarning:
+          mapped.coreSummary?.userWarning ||
+          (Number(coreRowLimit) > 0
+            ? `CORE yalnızca ilk ${coreRowLimit} harekette denendi.`
+            : ""),
+      };
+      callCounts.coreApiBatches = Math.ceil(
+        Math.min(Number(coreRowLimit) || 0, analyzed.length) / 20
+      );
     } catch (error) {
       if (error?.name === "AbortError") throw error;
       console.warn("[bank-parser] CORE analysis overlay failed — legacy korundu", error);
@@ -509,12 +619,14 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
         warning: [row.warning, "İncelemeye bırakıldı"].filter(Boolean).join(" | "),
       }));
     }
+    timings.coreApiMs = Date.now() - coreStarted;
     await yieldToMain();
   } else if (timedOut && isAnnveroCoreEnabled()) {
     coreSummary = {
       enabled: true,
       skipped: true,
       total: analyzed.length,
+      coreLimit: 0,
       userWarning:
         "Analiz süre sınırı — CORE atlandı; legacy analiz ile devam (İncelemeye bırakıldı).",
     };
@@ -526,7 +638,14 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     }));
   }
 
+  timings.totalAnalysisMs = Date.now() - startedAt;
   emitProgress("Muhasebe Analizi", "Tamamlandı", 100);
+
+  console.info("[bank-parser] analysis timings", {
+    ...timings,
+    ...callCounts,
+    movementCount: sourceMovements.length,
+  });
 
   return {
     movementRows,
@@ -535,6 +654,8 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     rowErrors,
     timedOut,
     total: sourceMovements.length,
+    timings,
+    callCounts,
   };
 }
 
@@ -554,12 +675,19 @@ export async function remapMovementsWithCoreAsync(options = {}) {
 }
 
 /**
- * Luca üretimi: kullanıcı butonu ile; muhasebe kuralları aynı, chunk + yield.
+ * Luca üretimi: analiz edilmiş movement'lardan doğrudan satır üretir.
+ * Learning/kural/CORE yeniden çalıştırılmaz. İlk 50 satır erken önizleme.
  */
 export async function buildLucaRowsFromMovementsAsync(
   movementRows = [],
   options = {},
-  { chunkSize = LUCA_MOVEMENT_CHUNK_SIZE, signal = null, onProgress = null } = {}
+  {
+    chunkSize = LUCA_MOVEMENT_CHUNK_SIZE,
+    signal = null,
+    onProgress = null,
+    onEarlyPreview = null,
+    earlyPreviewCount = 50,
+  } = {}
 ) {
   const selectedCompanyId = options.selectedCompanyId;
   const selectedBank = options.selectedBank;
@@ -569,21 +697,51 @@ export async function buildLucaRowsFromMovementsAsync(
   const lucaContext = {
     firmaId: selectedCompanyId,
     kaynakAdi: selectedBank,
+    creationSource: "bank_double_entry",
   };
   const bankName = String(selectedBank || "").trim().toUpperCase();
   const size = Math.max(25, Math.min(50, Number(chunkSize) || LUCA_MOVEMENT_CHUNK_SIZE));
+  const alreadyAnalyzed = movementRows.some((row) => row?._accountingAnalyzed);
+  const startedAt = Date.now();
+  let lastProgressAt = 0;
+  let earlyPreviewSent = false;
+  const timings = {
+    descriptionBuildMs: 0,
+    movementMappingMs: 0,
+    learningApplyMs: 0,
+    accountMemoryMs: 0,
+    declarationDistributionMs: 0,
+    duplicateCheckMs: 0,
+    sortingMs: 0,
+    totalLucaMs: 0,
+  };
 
-  onProgress?.({
-    stage: BANK_PARSE_STAGES.LUCA,
-    detail: "Luca satırları hazırlanıyor",
-    percent: 10,
-  });
+  const emitProgress = (stage, detail, percent) => {
+    const now = Date.now();
+    if (now - lastProgressAt < 340 && percent < 100) return;
+    lastProgressAt = now;
+    onProgress?.({ stage, detail, percent });
+  };
+
+  const maybeEarlyPreview = (rows) => {
+    if (earlyPreviewSent || !onEarlyPreview) return;
+    if (rows.length < earlyPreviewCount) return;
+    earlyPreviewSent = true;
+    onEarlyPreview(rows.slice(0, earlyPreviewCount), {
+      partial: true,
+      totalSoFar: rows.length,
+    });
+  };
+
+  emitProgress(BANK_PARSE_STAGES.LUCA, "Luca satırları hazırlanıyor", 10);
 
   let baseRows = [];
+  const mapStarted = Date.now();
   if (bankName === "TEB") {
     assertNotAborted(signal);
     await yieldToMain();
     baseRows = bankMovementsToStandardLucaRows(movementRows, lucaContext);
+    maybeEarlyPreview(baseRows);
     await yieldToMain();
   } else {
     for (let offset = 0; offset < movementRows.length; offset += size) {
@@ -591,100 +749,154 @@ export async function buildLucaRowsFromMovementsAsync(
       const end = Math.min(offset + size, movementRows.length);
       for (let index = offset; index < end; index += 1) {
         baseRows.push(
-          ...bankMovementToStandardLucaRows(
-            movementRows[index],
-            index + 1,
-            lucaContext
-          )
+          ...bankMovementToStandardLucaRows(movementRows[index], index + 1, {
+            ...lucaContext,
+            sourceRowIndex: index,
+          })
         );
       }
-      onProgress?.({
-        stage: BANK_PARSE_STAGES.LUCA,
-        detail: `Luca ${end}/${movementRows.length} hareket`,
-        percent: 10 + Math.round((end / Math.max(movementRows.length, 1)) * 35),
-      });
+      maybeEarlyPreview(baseRows);
+      emitProgress(
+        BANK_PARSE_STAGES.LUCA,
+        `Luca ${end}/${movementRows.length} hareket → ${baseRows.length} satır`,
+        10 + Math.round((end / Math.max(movementRows.length, 1)) * 55)
+      );
       await yieldToMain();
     }
+    const sortStarted = Date.now();
     baseRows = sortStandardLucaRows(baseRows);
+    timings.sortingMs = Date.now() - sortStarted;
+  }
+  timings.movementMappingMs = Date.now() - mapStarted;
+  timings.descriptionBuildMs = timings.movementMappingMs;
+
+  assertNotAborted(signal);
+  let workingRows = ensureStandardLucaRowIds(baseRows);
+  maybeEarlyPreview(workingRows);
+
+  // Analiz zaten yapıldıysa learning/kural/CORE tekrarlanmaz
+  if (!alreadyAnalyzed) {
+    const learningStarted = Date.now();
+    const learningRows = [];
+    for (let offset = 0; offset < workingRows.length; offset += size) {
+      assertNotAborted(signal);
+      const slice = workingRows.slice(offset, offset + size);
+      learningRows.push(
+        ...applyLearningMemoryToStandardLucaRows(slice, learningMemory, {
+          firmaId: selectedCompanyId,
+          kaynakTipi: KAYNAK_TIPI.BANKA,
+          kaynakAdi: selectedBank,
+        })
+      );
+      emitProgress(
+        "Öğrenme",
+        `Hafıza ${Math.min(offset + size, workingRows.length)}/${workingRows.length}`,
+        70 + Math.round(((offset + size) / Math.max(workingRows.length, 1)) * 10)
+      );
+      await yieldToMain();
+    }
+    workingRows = learningRows;
+    timings.learningApplyMs = Date.now() - learningStarted;
+  } else {
+    timings.learningApplyMs = 0;
+    emitProgress(BANK_PARSE_STAGES.LUCA, "Analiz sonuçları kullanılıyor (tekrar eşleşme yok)", 72);
   }
 
   assertNotAborted(signal);
-  const withIds = ensureStandardLucaRowIds(baseRows);
-  const learningRows = [];
-  for (let offset = 0; offset < withIds.length; offset += size) {
-    assertNotAborted(signal);
-    const slice = withIds.slice(offset, offset + size);
-    learningRows.push(
-      ...applyLearningMemoryToStandardLucaRows(slice, learningMemory, {
-        firmaId: selectedCompanyId,
-        kaynakTipi: KAYNAK_TIPI.BANKA,
-        kaynakAdi: selectedBank,
-      })
-    );
-    onProgress?.({
-      stage: "Öğrenme",
-      detail: `Hafıza ${Math.min(offset + size, withIds.length)}/${withIds.length}`,
-      percent: 50 + Math.round(((offset + size) / Math.max(withIds.length, 1)) * 15),
-    });
-    await yieldToMain();
+  const accountStarted = Date.now();
+  const needsAccountFill = workingRows.some((row) => !String(row.hesapKodu || "").trim());
+  if (needsAccountFill) {
+    const memoryRows = [];
+    for (let offset = 0; offset < workingRows.length; offset += size) {
+      assertNotAborted(signal);
+      const slice = workingRows.slice(offset, offset + size);
+      memoryRows.push(
+        ...applyAccountMemoryV1RecordsToRows(slice, accountMemoryRecords, {
+          firmaId: selectedCompanyId,
+          kaynakAdi: selectedBank,
+        })
+      );
+      await yieldToMain();
+    }
+    workingRows = memoryRows;
+    if (!alreadyAnalyzed) {
+      workingRows = applySmartBankSuggestionsToRows(workingRows, {
+        companyPlans: options.companyPlans,
+        selectedBank,
+        selectedCompanyId,
+      });
+    }
   }
-
-  assertNotAborted(signal);
-  const memoryRows = [];
-  for (let offset = 0; offset < learningRows.length; offset += size) {
-    assertNotAborted(signal);
-    const slice = learningRows.slice(offset, offset + size);
-    memoryRows.push(
-      ...applyAccountMemoryV1RecordsToRows(slice, accountMemoryRecords, {
-        firmaId: selectedCompanyId,
-        kaynakAdi: selectedBank,
-      })
-    );
-    await yieldToMain();
-  }
-
-  assertNotAborted(signal);
-  onProgress?.({
-    stage: "Öğrenme",
-    detail: "Akıllı öneriler uygulanıyor",
-    percent: 78,
-  });
-  const smartRows = applySmartBankSuggestionsToRows(memoryRows, {
-    companyPlans: options.companyPlans,
-    selectedBank,
-    selectedCompanyId,
-  });
+  timings.accountMemoryMs = Date.now() - accountStarted;
   await yieldToMain();
 
   assertNotAborted(signal);
+  emitProgress(BANK_PARSE_STAGES.LUCA, "Beyanname dağıtımı", 88);
+  const declarationStarted = Date.now();
   const declarationResult = applyDeclarationAccrualDistributionToRows(
-    smartRows,
+    workingRows,
     declarationAccrualRecords,
     {
       companyId: selectedCompanyId,
       selectedBank,
     }
   );
+  timings.declarationDistributionMs = Date.now() - declarationStarted;
   await yieldToMain();
 
   assertNotAborted(signal);
-  const unrecognizedItems = buildUnrecognizedQueueItems(declarationResult.rows, {
-    companyId: selectedCompanyId,
-    sourceModule: "banka",
-    sourceBank: selectedBank,
-    learningMemory,
-  });
+  const unrecognizedItems = alreadyAnalyzed
+    ? []
+    : buildUnrecognizedQueueItems(declarationResult.rows, {
+        companyId: selectedCompanyId,
+        sourceModule: "banka",
+        sourceBank: selectedBank,
+        learningMemory,
+      });
 
-  onProgress?.({
-    stage: BANK_PARSE_STAGES.LUCA,
-    detail: "Luca satırları tamamlandı",
-    percent: 100,
+  timings.totalLucaMs = Date.now() - startedAt;
+  emitProgress(BANK_PARSE_STAGES.LUCA, "Luca satırları tamamlandı", 100);
+
+  const rows = declarationResult.rows || [];
+  const perMovement = new Map();
+  for (const row of rows) {
+    const key = String(row.sourceMovementId || row._movementId || "");
+    if (!key) continue;
+    perMovement.set(key, (perMovement.get(key) || 0) + 1);
+  }
+  let pairs2 = 0;
+  let singles = 0;
+  let triplesOrMore = 0;
+  for (const count of perMovement.values()) {
+    if (count === 2) pairs2 += 1;
+    else if (count === 1) singles += 1;
+    else triplesOrMore += 1;
+  }
+
+  console.info("[bank-parser] luca timings", {
+    ...timings,
+    movementCount: movementRows.length,
+    lucaRows: rows.length,
+    alreadyAnalyzed,
+    pairs2,
+    singles,
+    triplesOrMore,
   });
 
   return {
-    standardLucaRows: declarationResult.rows,
+    standardLucaRows: rows,
     unrecognizedItems,
     declarationSummary: declarationResult.summary,
+    timings,
+    lucaStats: {
+      movementCount: movementRows.length,
+      lucaRows: rows.length,
+      expectedDoubleEntry: movementRows.length * 2,
+      movementsWith2Rows: pairs2,
+      movementsWith1Row: singles,
+      movementsWith3PlusRows: triplesOrMore,
+      alreadyAnalyzed,
+    },
   };
 }
 
