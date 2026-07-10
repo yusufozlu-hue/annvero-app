@@ -48,7 +48,7 @@ const ICON_MAP = {
 function MenuIcon({ title }) {
   const path = ICON_MAP[title] || "M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0";
   return (
-    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500/20 to-slate-500/10 text-slate-100 ring-1 ring-blue-400/30">
+    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--annvero-accent-soft)] text-[var(--annvero-accent)] ring-1 ring-[var(--annvero-border)]">
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d={path} />
       </svg>
@@ -60,7 +60,7 @@ function ChevronIcon({ open }) {
   return (
     <svg
       viewBox="0 0 20 20"
-      className={`h-4 w-4 shrink-0 text-slate-500 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+      className={`h-4 w-4 shrink-0 text-[var(--annvero-shell-muted)] transition-transform duration-200 ${open ? "rotate-180" : ""}`}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.8"
@@ -73,12 +73,12 @@ function ChevronIcon({ open }) {
 
 function SidebarGroup({ group, open, active, pathname, showDivider, onToggle, onNavigate, collapsed }) {
   const headerClass = active
-    ? "bg-gradient-to-r from-blue-600/90 via-blue-600/75 to-cyan-600/55 text-white shadow-[0_8px_24px_rgba(37,99,235,0.28)] ring-1 ring-blue-400/35"
-    : "text-slate-200 hover:bg-white/[0.04] hover:text-white hover:shadow-[0_0_18px_rgba(59,130,246,0.12)]";
+    ? "bg-[var(--annvero-active)] text-[var(--annvero-text)] shadow-sm ring-1 ring-[var(--annvero-accent)]/35"
+    : "text-[var(--annvero-shell-text)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)]";
 
   if (!group.items?.length) {
     return (
-      <div className={showDivider ? "border-t border-slate-800/70 pt-2" : ""}>
+      <div className={showDivider ? "border-t border-[var(--annvero-shell-separator)] pt-2" : ""}>
         <Link
           href={group.href || "/dashboard"}
           onClick={onNavigate}
@@ -95,7 +95,7 @@ function SidebarGroup({ group, open, active, pathname, showDivider, onToggle, on
   }
 
   return (
-    <div className={showDivider ? "border-t border-slate-800/70 pt-2" : ""}>
+    <div className={showDivider ? "border-t border-[var(--annvero-shell-separator)] pt-2" : ""}>
       <button
         type="button"
         onClick={onToggle}
@@ -111,7 +111,7 @@ function SidebarGroup({ group, open, active, pathname, showDivider, onToggle, on
         ) : null}
       </button>
       {open && !collapsed ? (
-        <div className="mb-2 space-y-0.5 border-b border-slate-800/50 pb-2 pl-2">
+        <div className="mb-2 space-y-0.5 border-b border-[var(--annvero-shell-separator)] pb-2 pl-2">
           {group.items.map((item) => {
             const itemActive = isMenuItemActive(item.href, pathname);
             return (
@@ -121,8 +121,8 @@ function SidebarGroup({ group, open, active, pathname, showDivider, onToggle, on
                 onClick={onNavigate}
                 className={`group/item relative flex items-center justify-between rounded-lg py-2 pl-8 pr-3 text-[13px] transition-colors duration-150 ${
                   itemActive
-                    ? "text-white before:bg-cyan-400"
-                    : "text-slate-500 hover:text-white before:bg-slate-600 group-hover/item:before:bg-slate-400"
+                    ? "bg-[var(--annvero-active)] font-semibold text-[var(--annvero-text)] before:bg-[var(--annvero-accent)]"
+                    : "text-[var(--annvero-shell-muted)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)] before:bg-[var(--annvero-border)] group-hover/item:before:bg-[var(--annvero-accent)]"
                 } before:absolute before:left-3 before:top-1/2 before:h-1.5 before:w-1.5 before:-translate-y-1/2 before:rounded-full before:content-['']`}
               >
                 <span>{item.label}</span>

@@ -57,14 +57,26 @@ html[data-annvero-theme="dark"] {
   --annvero-surface: #0b1628;
   --annvero-surface-2: #111c31;
   --annvero-text: #e2e8f0;
+  --annvero-text-secondary: #cbd5e1;
   --annvero-text-muted: #94a3b8;
   --annvero-border: rgba(148, 163, 184, 0.18);
   --annvero-input-bg: rgba(2, 8, 23, 0.72);
+  --annvero-input-border: rgba(148, 163, 184, 0.28);
   --annvero-hover: rgba(255, 255, 255, 0.06);
+  --annvero-active: rgba(99, 102, 241, 0.22);
   --annvero-accent: #6366f1;
   --annvero-accent-soft: rgba(99, 102, 241, 0.16);
+  --annvero-focus-ring: rgba(99, 102, 241, 0.35);
+  --annvero-disabled-bg: rgba(148, 163, 184, 0.12);
+  --annvero-disabled-text: rgba(148, 163, 184, 0.55);
+  --annvero-table-header: rgba(15, 23, 42, 0.55);
+  --annvero-table-row-hover: rgba(255, 255, 255, 0.04);
+  --annvero-card-shadow: 0 10px 28px -12px rgba(0, 0, 0, 0.55);
   --annvero-shell: #040b18;
   --annvero-shell-border: rgba(30, 58, 138, 0.45);
+  --annvero-shell-text: #e2e8f0;
+  --annvero-shell-muted: #94a3b8;
+  --annvero-shell-separator: rgba(148, 163, 184, 0.16);
   --annvero-overlay: rgba(0, 0, 0, 0.55);
   --annvero-page-bg: var(--annvero-bg);
   --annvero-page-fg: var(--annvero-text);
@@ -72,20 +84,33 @@ html[data-annvero-theme="dark"] {
   --foreground: var(--annvero-text);
 }
 
+/* Light Theme Design System — WCAG-oriented contrast */
 html[data-annvero-theme="light"] {
-  --annvero-bg: #f1f5f9;
+  --annvero-bg: #f6f8fc;
   --annvero-surface: #ffffff;
-  --annvero-surface-2: #f8fafc;
-  --annvero-text: #0f172a;
-  --annvero-text-muted: #64748b;
-  --annvero-border: rgba(15, 23, 42, 0.12);
+  --annvero-surface-2: #f9fafb;
+  --annvero-text: #111827;
+  --annvero-text-secondary: #4b5563;
+  --annvero-text-muted: #6b7280;
+  --annvero-border: #d9e1ec;
   --annvero-input-bg: #ffffff;
-  --annvero-hover: rgba(15, 23, 42, 0.05);
+  --annvero-input-border: #cbd5e1;
+  --annvero-hover: #eef2ff;
+  --annvero-active: #e0e7ff;
   --annvero-accent: #4f46e5;
-  --annvero-accent-soft: rgba(79, 70, 229, 0.1);
+  --annvero-accent-soft: #e0e7ff;
+  --annvero-focus-ring: rgba(79, 70, 229, 0.35);
+  --annvero-disabled-bg: #e5e7eb;
+  --annvero-disabled-text: #9ca3af;
+  --annvero-table-header: #f3f4f6;
+  --annvero-table-row-hover: #f8fafc;
+  --annvero-card-shadow: 0 8px 24px -10px rgba(15, 23, 42, 0.14);
   --annvero-shell: #ffffff;
-  --annvero-shell-border: rgba(15, 23, 42, 0.1);
-  --annvero-overlay: rgba(15, 23, 42, 0.35);
+  --annvero-shell-border: #d9e1ec;
+  --annvero-shell-text: #111827;
+  --annvero-shell-muted: #4b5563;
+  --annvero-shell-separator: #d9e1ec;
+  --annvero-overlay: rgba(15, 23, 42, 0.4);
   --annvero-page-bg: var(--annvero-bg);
   --annvero-page-fg: var(--annvero-text);
   --background: var(--annvero-bg);
@@ -101,6 +126,7 @@ html[data-annvero-theme="light"] {
   background: var(--annvero-surface);
   color: var(--annvero-text);
   border-color: var(--annvero-border);
+  box-shadow: var(--annvero-card-shadow);
 }
 
 .annvero-surface-2 {
@@ -113,10 +139,14 @@ html[data-annvero-theme="light"] {
   color: var(--annvero-text-muted);
 }
 
+.annvero-text-secondary {
+  color: var(--annvero-text-secondary);
+}
+
 .annvero-input {
   width: 100%;
   border-radius: 0.75rem;
-  border: 1px solid var(--annvero-border);
+  border: 1px solid var(--annvero-input-border);
   background: var(--annvero-input-bg);
   color: var(--annvero-text);
   padding: 0.625rem 0.75rem;
@@ -128,12 +158,32 @@ html[data-annvero-theme="light"] {
 }
 
 .annvero-input:focus {
-  border-color: color-mix(in srgb, var(--annvero-accent) 60%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--annvero-accent) 22%, transparent);
+  border-color: var(--annvero-accent);
+  box-shadow: 0 0 0 3px var(--annvero-focus-ring);
 }
 
 .annvero-input::placeholder {
   color: var(--annvero-text-muted);
+}
+
+.annvero-input:disabled,
+.annvero-btn:disabled,
+button:disabled {
+  background: var(--annvero-disabled-bg);
+  color: var(--annvero-disabled-text);
+  border-color: var(--annvero-border);
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+.annvero-table-header {
+  background: var(--annvero-table-header);
+  color: var(--annvero-text);
+  border-color: var(--annvero-border);
+}
+
+.annvero-table-row:hover {
+  background: var(--annvero-table-row-hover);
 }
 
 html {
