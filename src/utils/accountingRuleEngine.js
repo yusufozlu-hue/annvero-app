@@ -180,8 +180,12 @@ export function ruleMatchesText(rule, text) {
   return normalizeParserText(source).includes(normalizeParserText(pattern));
 }
 
+export function prepareAccountingRulesForMatch(rules = [], context = {}) {
+  return filterRulesForContext(rules, context);
+}
+
 export function getMatchingAccountingRules(text, context = {}) {
-  const rules = filterRulesForContext(context.rules || [], context);
+  const rules = context.preparedRules || filterRulesForContext(context.rules || [], context);
   return rules.filter((rule) => ruleMatchesText(rule, text));
 }
 

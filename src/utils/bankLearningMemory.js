@@ -100,6 +100,10 @@ function levenshteinSimilarity(left = "", right = "") {
   if (!a || !b) return 0;
   if (a === b) return 1;
 
+  // Uzun metinlerde Levenshtein O(n²) ana thread'i kilitler — atla.
+  if (a.length > 64 || b.length > 64) return 0;
+  if (Math.abs(a.length - b.length) > Math.max(a.length, b.length) * 0.35) return 0;
+
   const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
   const current = Array.from({ length: b.length + 1 }, () => 0);
 
@@ -118,6 +122,84 @@ function levenshteinSimilarity(left = "", right = "") {
 
   const distance = previous[b.length];
   return 1 - distance / Math.max(a.length, b.length);
+}
+
+function isActiveLearningRecord(record) {
+  if (record?.is_active === false) return false;
+  return !["passive", "deleted"].includes(
+    String(record?.status || "active").toLowerCase()
+  );
+}
+
+/**
+ * Öğrenme kayıtlarını tek seferde indeksle — satır başına O(M) tarama yerine O(1)/O(k).
+ */
+export function buildLearningMemoryIndex(learningMemory = []) {
+  const active = (learningMemory || []).filter(isActiveLearningRecord);
+  const byExactKeyword = new Map();
+  const byToken = new Map();
+  const records = [];
+
+  for (const record of active) {
+    const keyword = normalizeKaynakTipi(record.keyword);
+    const cleanDescription = normalizeKaynakTipi(record.clean_description || "");
+    const rawDescription = normalizeKaynakTipi(record.raw_description || "");
+    const candidates = [keyword, cleanDescription, rawDescription].filter(Boolean);
+    const indexed = {
+      record,
+      keyword,
+      cleanDescription,
+      rawDescription,
+      candidates,
+      tokens: tokenSet(candidates.join(" ")),
+    };
+    records.push(indexed);
+
+    for (const candidate of candidates) {
+      if (!byExactKeyword.has(candidate)) byExactKeyword.set(candidate, []);
+      byExactKeyword.get(candidate).push(indexed);
+    }
+
+    for (const token of indexed.tokens) {
+      if (!byToken.has(token)) byToken.set(token, []);
+      byToken.get(token).push(indexed);
+    }
+  }
+
+  return { records, byExactKeyword, byToken, size: records.length };
+}
+
+function collectCandidateRecords(index, rowKey) {
+  if (!rowKey || !index?.size) return [];
+
+  const exact = index.byExactKeyword.get(rowKey);
+  if (exact?.length) return exact;
+
+  const seen = new Set();
+  const candidates = [];
+  const tokens = tokenSet(rowKey);
+
+  for (const token of tokens) {
+    const bucket = index.byToken.get(token);
+    if (!bucket) continue;
+    for (const item of bucket) {
+      if (seen.has(item)) continue;
+      seen.add(item);
+      candidates.push(item);
+    }
+  }
+
+  // Token kesişimi yoksa kısa keyword includes taraması (yalnızca kısa anahtarlar)
+  if (!candidates.length) {
+    for (const item of index.records) {
+      if (!item.keyword || item.keyword.length < 4) continue;
+      if (rowKey.includes(item.keyword) || item.keyword.includes(rowKey)) {
+        candidates.push(item);
+      }
+    }
+  }
+
+  return candidates;
 }
 
 function getContextScores(record, row, context) {
@@ -139,28 +221,12 @@ function getContextScores(record, row, context) {
   return { companyBoost, bankBoost, typeBoost };
 }
 
-function scoreMemorySearchKey(record, row) {
-  const keyword = normalizeKaynakTipi(record.keyword);
-  const cleanDescription = normalizeKaynakTipi(record.clean_description || "");
-  const rawDescription = normalizeKaynakTipi(record.raw_description || "");
-  const bankName = normalizeKaynakTipi(record.bank_name || "");
-  const transactionType = normalizeKaynakTipi(record.transaction_type || "");
-  const accountName = normalizeKaynakTipi(record.account_name || "");
-  const cariName = normalizeKaynakTipi(
-    record.cari_name || record.counter_account_name || ""
-  );
-  const rowKey = normalizeKaynakTipi(buildBankLucaLearningMemorySearchKey(row));
+function scoreMemorySearchKeyFromIndexed(indexed, rowKey) {
+  const { keyword, cleanDescription, candidates } = indexed;
+  if (!rowKey) return { score: 0, rowKey, memoryKeyword: keyword, memoryCleanDescription: cleanDescription, normalizedMemory: "" };
 
-  if (!rowKey) return 0;
-
-  const candidates = [keyword, cleanDescription, rawDescription].filter(Boolean);
   let best = 0;
-  let bestDebug = {
-    memoryKeyword: keyword,
-    memoryCleanDescription: cleanDescription,
-    normalizedMemory: "",
-    score: 0,
-  };
+  let bestCandidate = "";
 
   for (const candidate of candidates) {
     let score = 0;
@@ -172,50 +238,60 @@ function scoreMemorySearchKey(record, row) {
       score = 88;
     } else {
       const overlap = tokenOverlapScore(rowKey, candidate);
-      const fuzzy = levenshteinSimilarity(rowKey, candidate);
+      // Fuzzy yalnızca anlamlı token kesişiminde
+      const fuzzy = overlap >= 0.35 ? levenshteinSimilarity(rowKey, candidate) : 0;
       score = Math.round(Math.max(overlap, fuzzy) * 100);
     }
 
     if (score > best) {
       best = score;
-      bestDebug = {
-        memoryKeyword: keyword,
-        memoryCleanDescription: cleanDescription,
-        normalizedMemory: candidate,
-        score,
-      };
+      bestCandidate = candidate;
     }
   }
 
-  // Context fields are not primary descriptions; they only help confidence.
+  const bankName = normalizeKaynakTipi(indexed.record.bank_name || "");
+  const transactionType = normalizeKaynakTipi(indexed.record.transaction_type || "");
+  const accountName = normalizeKaynakTipi(indexed.record.account_name || "");
+  const cariName = normalizeKaynakTipi(
+    indexed.record.cari_name || indexed.record.counter_account_name || ""
+  );
+
   if (bankName && rowKey.includes(bankName)) best += 5;
   if (transactionType && rowKey.includes(transactionType)) best += 3;
-  if (accountName && rowKey.includes(accountName)) best += 3;
+  if (accountName && rowKey.includes(accountName)) best += 5;
   if (cariName && rowKey.includes(cariName)) best += 5;
 
   return {
     score: Math.min(100, best),
     rowKey,
-    ...bestDebug,
+    memoryKeyword: keyword,
+    memoryCleanDescription: cleanDescription,
+    normalizedMemory: bestCandidate,
   };
 }
 
 export function findBankLucaLearningMemoryMatch(row, learningMemory = [], context = {}) {
   const firmaId = context.firmaId || context.companyId || row.firmaId || "";
-
   if (!firmaId) return null;
 
+  const index =
+    context.learningMemoryIndex ||
+    (Array.isArray(learningMemory)
+      ? buildLearningMemoryIndex(learningMemory)
+      : learningMemory);
+
+  if (!index?.size) return null;
+
+  const rowKey = normalizeKaynakTipi(buildBankLucaLearningMemorySearchKey(row));
+  if (!rowKey) return null;
+
+  const candidates = collectCandidateRecords(index, rowKey);
   let best = null;
   let bestScore = 0;
 
-  for (const record of learningMemory) {
-    if (record?.is_active === false) continue;
-    if (["passive", "deleted"].includes(String(record?.status || "active").toLowerCase())) {
-      continue;
-    }
-
-    const baseScore = scoreMemorySearchKey(record, row);
-    const contextScores = getContextScores(record, row, context);
+  for (const indexed of candidates) {
+    const baseScore = scoreMemorySearchKeyFromIndexed(indexed, rowKey);
+    const contextScores = getContextScores(indexed.record, row, context);
     const score = Math.max(
       0,
       Math.min(
@@ -227,19 +303,10 @@ export function findBankLucaLearningMemoryMatch(row, learningMemory = [], contex
       )
     );
 
-    console.log("memory match check", {
-      rowDescription: buildBankLucaLearningMemorySearchKey(row),
-      normalizedRow: baseScore.rowKey,
-      memoryKeyword: baseScore.memoryKeyword,
-      memoryCleanDescription: baseScore.memoryCleanDescription,
-      normalizedMemory: baseScore.normalizedMemory,
-      score,
-    });
-
     if (baseScore.score < 65 && score < 65) continue;
 
     if (!best || score >= bestScore) {
-      best = { ...record, _matchScore: score };
+      best = { ...indexed.record, _matchScore: score };
       bestScore = score;
     }
   }
@@ -263,63 +330,95 @@ export function applyLearningMemoryToStandardLucaRows(
   learningMemory = [],
   context = {}
 ) {
-  if (!rows.length || !learningMemory.length) return rows;
+  if (!rows.length || (!learningMemory?.length && !context.learningMemoryIndex)) {
+    return rows;
+  }
 
-  return rows.map((row) => {
-    const match = findBankLucaLearningMemoryMatch(row, learningMemory, context);
-    if (!match) return row;
+  const learningMemoryIndex =
+    context.learningMemoryIndex || buildLearningMemoryIndex(learningMemory);
+  if (!learningMemoryIndex.size) return rows;
 
-    const existingAccount = String(row.hesapKodu || "").trim();
-    // Banka GL satırını (102/103) öğrenilen gider hesabıyla ezme
-    if (existingAccount && isLikelyBankGlAccount(existingAccount)) {
-      return row;
-    }
+  const matchContext = { ...context, learningMemoryIndex };
 
-    const learnedAccount = String(match.account_code || "").trim();
-    const learnedDocument = String(match.document_type || row.belgeTuru || "DK")
-      .trim()
-      .toUpperCase();
-    const learnedCari = String(
-      match.cari_name || match.counter_account_name || ""
-    ).trim();
-    const learnedDescription =
-      String(match.clean_description || match.description_format || "").trim() ||
-      row.detayAciklama;
+  return rows.map((row) => applyLearningMatchToRow(row, matchContext));
+}
 
-    const matchedRow = finalizeStandardLucaRow({
-      ...row,
-      hesapKodu: learnedAccount || existingAccount,
-      hesapAdi: String(match.account_name || row.hesapAdi || "").trim(),
-      belgeTuru: learnedDocument,
-      account_code: learnedAccount || existingAccount,
-      account_name: String(match.account_name || row.hesapAdi || "").trim(),
-      document_type: learnedDocument,
-      cari_name: learnedCari,
-      transaction_type: match.transaction_type || row.kaynakTipi || "",
-      detayAciklama: learnedDescription,
-      fisAciklama: learnedCari || row.fisAciklama,
-      cariUnvan: learnedCari || row.cariUnvan,
-      aciklama: learnedDescription || row.detayAciklama || row.fisAciklama,
-      kontrolNotu: appendLearningMemoryNote(row.kontrolNotu),
-      hafizaEslesme: true,
-      memory_match: true,
-      match_source: "learning_memory",
-      confidence_score: match._matchScore || 100,
-      matchedMemoryId: match.id,
-      suggestedAccountCode: learnedAccount,
-      suggestedAccountName: match.account_name || "",
-      suggestedDocumentType: learnedDocument,
-      suggestedCari: learnedCari,
-      suggestedTransactionType: match.transaction_type || row.kaynakTipi || "",
-      suggestionScore: match._matchScore || 100,
-      suggestionConfidence:
-        (match._matchScore || 100) >= 85
-          ? "yüksek"
-          : (match._matchScore || 0) >= 65
-            ? "orta"
-            : "düşük",
-    });
+function applyLearningMatchToRow(row, matchContext) {
+  const match = findBankLucaLearningMemoryMatch(row, null, matchContext);
+  if (!match) return row;
 
-    return matchedRow;
+  const existingAccount = String(row.hesapKodu || "").trim();
+  // Banka GL satırını (102/103) öğrenilen gider hesabıyla ezme
+  if (existingAccount && isLikelyBankGlAccount(existingAccount)) {
+    return row;
+  }
+
+  const learnedAccount = String(match.account_code || "").trim();
+  const learnedDocument = String(match.document_type || row.belgeTuru || "DK")
+    .trim()
+    .toUpperCase();
+  const learnedCari = String(
+    match.cari_name || match.counter_account_name || ""
+  ).trim();
+  const learnedDescription =
+    String(match.clean_description || match.description_format || "").trim() ||
+    row.detayAciklama;
+
+  return finalizeStandardLucaRow({
+    ...row,
+    hesapKodu: learnedAccount || existingAccount,
+    hesapAdi: String(match.account_name || row.hesapAdi || "").trim(),
+    belgeTuru: learnedDocument,
+    account_code: learnedAccount || existingAccount,
+    account_name: String(match.account_name || row.hesapAdi || "").trim(),
+    document_type: learnedDocument,
+    cari_name: learnedCari,
+    transaction_type: match.transaction_type || row.kaynakTipi || "",
+    detayAciklama: learnedDescription,
+    fisAciklama: learnedCari || row.fisAciklama,
+    cariUnvan: learnedCari || row.cariUnvan,
+    aciklama: learnedDescription || row.detayAciklama || row.fisAciklama,
+    kontrolNotu: appendLearningMemoryNote(row.kontrolNotu),
+    hafizaEslesme: true,
+    memory_match: true,
+    match_source: "learning_memory",
+    confidence_score: match._matchScore || 100,
+    matchedMemoryId: match.id,
+    suggestedAccountCode: learnedAccount,
+    suggestedAccountName: match.account_name || "",
+    suggestedDocumentType: learnedDocument,
+    suggestedCari: learnedCari,
+    suggestedTransactionType: match.transaction_type || row.kaynakTipi || "",
+    suggestionScore: match._matchScore || 100,
+    suggestionConfidence:
+      (match._matchScore || 100) >= 85
+        ? "yüksek"
+        : (match._matchScore || 0) >= 65
+          ? "orta"
+          : "düşük",
+  });
+}
+
+export async function applyLearningMemoryToStandardLucaRowsAsync(
+  rows = [],
+  learningMemory = [],
+  context = {},
+  { chunkSize = 40, signal = null, onChunk = null } = {}
+) {
+  if (!rows.length || (!learningMemory?.length && !context.learningMemoryIndex)) {
+    return rows;
+  }
+
+  const { mapInChunksAsync } = await import("@/src/utils/asyncChunkProcess");
+  const learningMemoryIndex =
+    context.learningMemoryIndex || buildLearningMemoryIndex(learningMemory);
+  if (!learningMemoryIndex.size) return rows;
+
+  const matchContext = { ...context, learningMemoryIndex };
+
+  return mapInChunksAsync(rows, (row) => applyLearningMatchToRow(row, matchContext), {
+    chunkSize,
+    signal,
+    onChunk,
   });
 }

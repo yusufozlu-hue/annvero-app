@@ -90,8 +90,16 @@ import { buildTeachFormFromMovement } from "@/src/utils/knowledgeBuilderForm";
 import { saveKnowledgeTeachRequest } from "@/src/utils/knowledgeBuilderClient";
 import { useUserRole } from "@/src/hooks/useUserRole";
 import { parseBankExcelOnMainThread } from "@/src/utils/bankExcelMainThreadParse";
-// Worker geçici olarak kapalı — bankParser.worker.js dosyası duruyor, çağrılmıyor.
-// import { runBankParserWorker } from "@/src/utils/workerParserBridge";
+import {
+  cancelActiveParseJob,
+  runBankParserWorker,
+} from "@/src/utils/workerParserBridge";
+import {
+  ParseAbortError,
+  createStageTimer,
+  isDevTelemetryEnabled,
+} from "@/src/utils/asyncChunkProcess";
+import { BANK_PARSE_STAGES } from "@/src/utils/bankParserWorkerCore";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -101,13 +109,6 @@ const BANK_PREVIEW_FILTERS = [
   { id: "missingDescription", label: "Açıklama Eksik" },
   { id: "missingDocumentType", label: "Belge Türü Eksik" },
 ];
-
-const BANK_PARSE_STAGES = {
-  READING: "Dosya okunuyor",
-  PARSING: "Parser çalışıyor",
-  LUCA: "Luca satırları oluşturuluyor",
-  LEARNING: "Öğrenme sistemi kontrol ediliyor",
-};
 
 const PREVIEW_PAGE_SIZE = 100;
 
@@ -180,6 +181,7 @@ function computePreviewSummary(lucaRows = [], opsDashboard = null) {
 
 export default function BankaParserPage() {
   const fileInputRef = useRef(null);
+  const parseAbortRef = useRef(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileName, setFileName] = useState("");
   const [isParsing, setIsParsing] = useState(false);
@@ -634,26 +636,27 @@ export default function BankaParserPage() {
     coreRowLimit,
   });
 
-  const applyPipelineResult = (mainResult, pipelineResult, coreRowLimit) => {
-    const result = buildBankCardOpsSideOutput(
-      {
-        ...pipelineResult,
-        rawCount: mainResult.rawCount || 0,
-      },
-      {
-        selectedBank,
-        selectedCompanyId,
-        sourceFileName: selectedFile?.name || "",
-        sourceFileType: detectSourceFileType(
-          selectedFile?.name || "",
-          selectedFile?.type || ""
-        ),
-        sourceType: "bank",
-        learningMemory,
-        accountingRules,
-        companyRules,
-      }
-    );
+  const applyPipelineResult = (mainResult, pipelineResult, coreRowLimit, { withOps = false } = {}) => {
+    const baseResult = {
+      ...pipelineResult,
+      rawCount: mainResult.rawCount || 0,
+    };
+
+    const result = withOps
+      ? buildBankCardOpsSideOutput(baseResult, {
+          selectedBank,
+          selectedCompanyId,
+          sourceFileName: selectedFile?.name || "",
+          sourceFileType: detectSourceFileType(
+            selectedFile?.name || "",
+            selectedFile?.type || ""
+          ),
+          sourceType: "bank",
+          learningMemory,
+          accountingRules,
+          companyRules,
+        })
+      : baseResult;
 
     const lucaRows = result.standardLucaRows || [];
     const movements = result.movementRows || [];
@@ -704,13 +707,64 @@ export default function BankaParserPage() {
     }
   };
 
-  const parseFileOnMainThread = async (file) => {
-    return parseBankExcelOnMainThread(file, selectedBank, (message) => {
+  const parseExcelFile = async (file, signal) => {
+    const onProgress = (message) => {
+      if (signal?.aborted) return;
       parserJob.onProgress(message);
-    });
+    };
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      if (signal?.aborted) throw new ParseAbortError();
+
+      const workerUrl = new URL("./bankParser.worker.js", import.meta.url);
+      const workerResult = await runBankParserWorker({
+        workerUrl,
+        arrayBuffer,
+        context: {
+          selectedBank,
+          selectedCompanyId,
+        },
+        onProgress,
+        timeoutMs: 180_000,
+      });
+
+      if (signal?.aborted) throw new ParseAbortError();
+
+      return {
+        rawCount: workerResult.rawCount || 0,
+        normalizedRows: workerResult.normalizedRows || [],
+        selectedBank: workerResult.selectedBank || selectedBank,
+        parseMode: "worker",
+      };
+    } catch (workerError) {
+      if (signal?.aborted || workerError instanceof ParseAbortError) {
+        throw new ParseAbortError();
+      }
+      if (/iptal/i.test(String(workerError?.message || ""))) {
+        throw new ParseAbortError();
+      }
+
+      console.warn(
+        "[banka-ekstresi] worker parse failed — chunked main-thread fallback",
+        workerError
+      );
+      onProgress({
+        stage: BANK_PARSE_STAGES.READING,
+        detail: "Worker kullanılamadı — güvenli fallback",
+      });
+      return parseBankExcelOnMainThread(file, selectedBank, onProgress);
+    }
   };
 
-  /** Geçici: worker kapalı — Excel/parse ana thread'de */
+  const handleCancelParse = () => {
+    parseAbortRef.current?.abort();
+    cancelActiveParseJob("user");
+    parserJob.cancel("user");
+    setIsParsing(false);
+  };
+
+  /** Excel worker + chunk'lı Luca pipeline — ana thread kilidi yok */
   const handleCreatePreview = async () => {
     if (isParsing) return;
 
@@ -724,66 +778,107 @@ export default function BankaParserPage() {
       return;
     }
 
+    parseAbortRef.current?.abort();
+    const abortController = new AbortController();
+    parseAbortRef.current = abortController;
+    const { signal } = abortController;
+    const timer = createStageTimer(isDevTelemetryEnabled());
+
     setIsParsing(true);
     setPreviewErrorDetail("");
     setPreviewLimit(PREVIEW_PAGE_SIZE);
     setPreviewSummary(null);
     parserJob.begin({
       stage: BANK_PARSE_STAGES.READING,
-      detail: "Ana thread fallback — dosya okunuyor",
+      detail: "Excel okunuyor",
     });
 
     try {
-      const mainResult = await parseFileOnMainThread(selectedFile);
+      timer.start("excelParse");
+      const mainResult = await parseExcelFile(selectedFile, signal);
+      timer.end("excelParse");
+      if (signal.aborted) throw new ParseAbortError();
+
       setNormalizedRowsCache(mainResult.normalizedRows || []);
 
-      parserJob.onProgress({
-        stage: BANK_PARSE_STAGES.LUCA,
-        detail: "Luca satırları oluşturuluyor (ana thread)",
-      });
-
-      // Büyük dosyalarda UI'nın nefes alması için yield
-      await new Promise((r) => setTimeout(r, 0));
-
       const coreRowLimit = isAnnveroCoreEnabled() ? DEFAULT_CORE_PREVIEW_LIMIT : undefined;
-      const pipelineResult = await buildBankParserResultFromNormalizedRowsAsync(
-        buildPipelineOptions(mainResult.normalizedRows || [], coreRowLimit)
-      );
+      timer.start("pipeline");
+      const pipelineResult = await buildBankParserResultFromNormalizedRowsAsync({
+        ...buildPipelineOptions(mainResult.normalizedRows || [], coreRowLimit),
+        signal,
+        onProgress: (message) => {
+          if (!signal.aborted) parserJob.onProgress(message);
+        },
+      });
+      timer.end("pipeline");
 
-      if (pipelineResult?.opsMeta?.coreSummary) {
+      if (signal.aborted) throw new ParseAbortError();
+
+      if (pipelineResult?.opsMeta?.coreSummary && isDevTelemetryEnabled()) {
         console.info("[banka-ekstresi] ANNVERO CORE özeti", pipelineResult.opsMeta.coreSummary);
       }
 
-      await new Promise((r) => setTimeout(r, 0));
-
+      // Önce önizlemeyi bas — ops/NFT sonraya (UI donmasın)
+      timer.start("previewRender");
       const { result, summary, lucaRows } = applyPipelineResult(
         mainResult,
         pipelineResult,
-        coreRowLimit
+        coreRowLimit,
+        { withOps: false }
       );
+      timer.end("previewRender");
 
-      // Loading'i state commit'ten ÖNCE kapat — progress takılı kalmasın
       setIsParsing(false);
-      parserJob.markSuccess(`${summary.totalMovements || lucaRows.length} hareket hazır`);
+      parserJob.markSuccess(
+        `${summary.totalMovements || lucaRows.length} hareket hazır (${mainResult.parseMode || "parse"})`
+      );
+      timer.report("[banka-ekstresi] timing");
 
-      // Ops session: tüm işlemleri tut (export/ops merkezi) ama UI'ya basma
-      if (Array.isArray(result.financialTransactions)) {
+      // Ağır yan işler — UI render sonrası
+      setTimeout(() => {
+        if (signal.aborted) return;
+
         try {
-          saveBankCardOpsSession({
-            company_id: selectedCompanyId,
-            bank_name: selectedBank,
-            source_file_name: selectedFile?.name || "",
-            transactions: result.financialTransactions,
-            dashboard: result.opsDashboard,
-            declarationSummary: result.declarationSummary,
-          });
+          const withOps = buildBankCardOpsSideOutput(
+            {
+              ...pipelineResult,
+              rawCount: mainResult.rawCount || 0,
+            },
+            {
+              selectedBank,
+              selectedCompanyId,
+              sourceFileName: selectedFile?.name || "",
+              sourceFileType: detectSourceFileType(
+                selectedFile?.name || "",
+                selectedFile?.type || ""
+              ),
+              sourceType: "bank",
+              learningMemory,
+              accountingRules,
+              companyRules,
+            }
+          );
+
+          if (Array.isArray(withOps.financialTransactions)) {
+            saveBankCardOpsSession({
+              company_id: selectedCompanyId,
+              bank_name: selectedBank,
+              source_file_name: selectedFile?.name || "",
+              transactions: withOps.financialTransactions,
+              dashboard: withOps.opsDashboard,
+              declarationSummary: withOps.declarationSummary,
+            });
+          }
+
+          if (withOps.opsDashboard) {
+            setPreviewSummary((prev) =>
+              computePreviewSummary(lucaRows, withOps.opsDashboard) || prev
+            );
+          }
         } catch (sessionError) {
           console.error("[banka-ekstresi] ops session save failed", sessionError);
         }
-      }
 
-      // Ağır yan işler — UI render'ını engellemesin
-      setTimeout(() => {
         recordLearningMemoryUsage(lucaRows).catch((err) =>
           console.error("[banka-ekstresi] learning usage failed", err)
         );
@@ -805,7 +900,14 @@ export default function BankaParserPage() {
           });
       }, 0);
     } catch (error) {
-      console.error("[banka-ekstresi] preview failed (main-thread)", error);
+      if (error instanceof ParseAbortError || signal.aborted) {
+        setIsParsing(false);
+        clearPreviewState();
+        showToast("Ön izleme iptal edildi.", "error");
+        return;
+      }
+
+      console.error("[banka-ekstresi] preview failed", error);
       const detail =
         error?.userMessage ||
         error?.message ||
@@ -817,19 +919,26 @@ export default function BankaParserPage() {
         companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
         fileName: selectedFile?.name || "",
         errorType: SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
-        source: "parser-main-thread",
-        jobType: "bank-excel-main-thread",
+        source: "parser-pipeline",
+        jobType: "bank-excel",
       });
       parserJob.markError(error);
       clearPreviewState();
       showToast(detail, "error");
     } finally {
+      if (parseAbortRef.current === abortController) {
+        parseAbortRef.current = null;
+      }
       setIsParsing(false);
     }
   };
 
   const handleApplyCoreToAllRows = async () => {
     if (!isAnnveroCoreEnabled() || !normalizedRowsCache.length || isApplyingCoreAll) return;
+
+    parseAbortRef.current?.abort();
+    const abortController = new AbortController();
+    parseAbortRef.current = abortController;
 
     setIsApplyingCoreAll(true);
     parserJob.begin({
@@ -838,14 +947,19 @@ export default function BankaParserPage() {
     });
 
     try {
-      const pipelineResult = await buildBankParserResultFromNormalizedRowsAsync(
-        buildPipelineOptions(normalizedRowsCache, Infinity)
-      );
+      const pipelineResult = await buildBankParserResultFromNormalizedRowsAsync({
+        ...buildPipelineOptions(normalizedRowsCache, Infinity),
+        signal: abortController.signal,
+        onProgress: (message) => parserJob.onProgress(message),
+      });
+
+      if (abortController.signal.aborted) throw new ParseAbortError();
 
       const { summary, lucaRows } = applyPipelineResult(
         { rawCount: rawCount || normalizedRowsCache.length },
         pipelineResult,
-        normalizedRowsCache.length
+        normalizedRowsCache.length,
+        { withOps: false }
       );
 
       parserJob.markSuccess(`CORE ${summary.totalMovements || lucaRows.length} satırda tamamlandı`);
@@ -854,10 +968,17 @@ export default function BankaParserPage() {
         "success"
       );
     } catch (error) {
+      if (error instanceof ParseAbortError) {
+        showToast("CORE uygulaması iptal edildi.", "error");
+        return;
+      }
       console.error("[banka-ekstresi] CORE apply-all failed", error);
       showToast(error?.message || "CORE tüm satırlara uygulanamadı.", "error");
       parserJob.markError(error);
     } finally {
+      if (parseAbortRef.current === abortController) {
+        parseAbortRef.current = null;
+      }
       setIsApplyingCoreAll(false);
     }
   };
@@ -1203,7 +1324,7 @@ export default function BankaParserPage() {
             timeoutWarning={parserJob.timeoutWarning}
             status={parserJob.status}
             error={parserJob.error}
-            onCancel={isParsing ? () => parserJob.cancel("user") : undefined}
+            onCancel={isParsing ? handleCancelParse : undefined}
             className="mt-4"
           />
 

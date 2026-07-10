@@ -75,7 +75,7 @@ export async function parseBankExcelOnMainThread(file, selectedBank, onProgress)
 
   let arrayBuffer;
   try {
-    onProgress?.({ stage: "Dosya okunuyor", detail: "Ana thread — dosya okunuyor" });
+    onProgress?.({ stage: "Dosya okunuyor", detail: "Dosya okunuyor" });
     arrayBuffer = await file.arrayBuffer();
     await yieldToMain();
   } catch (error) {
@@ -97,7 +97,7 @@ export async function parseBankExcelOnMainThread(file, selectedBank, onProgress)
 
   let sheetRows;
   try {
-    onProgress?.({ stage: "Dosya okunuyor", detail: "xlsx yükleniyor (ana thread)" });
+    onProgress?.({ stage: "Dosya okunuyor", detail: "xlsx yükleniyor" });
     const { readSheetRowsFromArrayBuffer } = await import("@/src/utils/excelBufferUtils");
     await yieldToMain();
     onProgress?.({ stage: "Dosya okunuyor", detail: "Excel sayfası okunuyor" });
@@ -123,7 +123,7 @@ export async function parseBankExcelOnMainThread(file, selectedBank, onProgress)
 
   onProgress?.({
     stage: "Parser çalışıyor",
-    detail: `${rawCount} ham satır — ${selectedBank} (ana thread)`,
+    detail: `${rawCount} ham satır — ${selectedBank}`,
   });
   await yieldToMain();
 
