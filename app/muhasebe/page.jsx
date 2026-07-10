@@ -393,7 +393,7 @@ const categories = [
       {
         title: "Kıdem ve İhbar Tazminatı",
         desc: "Hizmet süresi ve ücret bileşenlerine göre kıdem/ihbar tazminatı hesaplama.",
-        href: "/hesaplama-araclari/kidem-ihbar",
+        href: "/ik-personel/kidem-ihbar",
       },
       {
         title: "Toplu Kıdem ve İhbar Tazminatı Hesaplama",

@@ -77,7 +77,7 @@ const quickActions = [
   { label: "Fiş Kontrol Et", href: "/muhasebe/fis-kontrol" },
   { label: "Unknown Kuyruk", href: "/muhasebe/islem-hafizasi" },
   { label: "Sistem Logları", href: "/sistem-loglari" },
-  { label: "Kıdem Hesapla", href: "/hesaplama-araclari/kidem-ihbar" },
+  { label: "Kıdem Hesapla", href: "/ik-personel/kidem-ihbar" },
 ];
 
 export default function DashboardPage() {

@@ -25,9 +25,9 @@ const tools = [
     id: "kidem-ihbar",
     title: "Kıdem ve İhbar Tazminatı Hesaplama",
     active: true,
-    href: "/hesaplama-araclari/kidem-ihbar",
+    href: "/ik-personel/kidem-ihbar",
     description:
-      "Hizmet süresi, brüt ücret ve menfaatlere göre kıdem ve ihbar tazminatı brüt/net hesaplama.",
+      "İK modülünde hizmet süresi, brüt ücret ve menfaatlere göre kıdem ve ihbar tazminatı hesaplama.",
   },
   { id: "sgk", title: "SGK İşveren Maliyeti" },
   { id: "binek", title: "Binek Araç Gider Kısıtlaması" },

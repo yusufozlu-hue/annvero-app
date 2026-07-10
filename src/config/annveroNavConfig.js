@@ -98,7 +98,6 @@ export const ANNVERO_NAV_GROUPS = [
     title: "Hesaplama Araçları",
     items: [
       { label: "Araçlar Merkezi", href: "/hesaplama-araclari" },
-      { label: "Kıdem İhbar", href: "/hesaplama-araclari/kidem-ihbar" },
       { label: "Maaş Hesaplama", href: "/hesaplama-araclari/maas-hesaplama" },
     ],
   },
