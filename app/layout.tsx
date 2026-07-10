@@ -55,8 +55,16 @@ export default function RootLayout({
     <html
       lang="tr"
       className={`${geistSans.variable} ${geistMono.variable} h-full overflow-x-hidden antialiased`}
+      suppressHydrationWarning
     >
-      <body className="flex min-h-full min-w-0 flex-col overflow-x-hidden">
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var k='annvero_theme_v1';var t=localStorage.getItem(k);if(t!=='light'&&t!=='dark')t='dark';document.documentElement.dataset.annveroTheme=t;}catch(e){document.documentElement.dataset.annveroTheme='dark';}})();`,
+          }}
+        />
+      </head>
+      <body className="flex min-h-full min-w-0 flex-col overflow-x-hidden bg-[var(--annvero-bg)] text-[var(--annvero-text)]">
         {children}
         <AnnveroSupportWidget />
         <PwaRegister />

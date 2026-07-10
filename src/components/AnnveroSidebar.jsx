@@ -181,27 +181,27 @@ export default function AnnveroSidebar({
   return (
     <aside
       style={{ width }}
-      className={`fixed inset-y-0 left-0 z-40 border-r border-blue-950/50 bg-[#040b18] shadow-[inset_-1px_0_0_rgba(59,130,246,0.08),0_0_48px_rgba(15,23,42,0.65)] backdrop-blur-xl transition-all duration-200 lg:translate-x-0 ${
+      className={`fixed inset-y-0 left-0 z-40 border-r border-[var(--annvero-shell-border)] bg-[var(--annvero-shell)] shadow-xl backdrop-blur-xl transition-all duration-200 lg:translate-x-0 ${
         mobileOpen ? "translate-x-0" : "-translate-x-full"
       }`}
     >
       <div className="flex h-full flex-col">
-        <div className="border-b border-slate-800/80 bg-gradient-to-r from-[#061225] to-[#040b18] px-4 py-5">
+        <div className="border-b border-[var(--annvero-border)] bg-[var(--annvero-surface)] px-4 py-5">
           <div className="flex items-center justify-between gap-2">
             {!collapsed ? (
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.32em] text-blue-300/90">
+                <p className="text-[10px] font-bold uppercase tracking-[0.32em] text-[var(--annvero-accent)]">
                   ANNVERO
                 </p>
-                <h1 className="mt-1 text-lg font-bold text-white">Operasyon Paneli</h1>
+                <h1 className="mt-1 text-lg font-bold text-[var(--annvero-text)]">Operasyon Paneli</h1>
               </div>
             ) : (
-              <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-cyan-500/10 text-lg font-black text-cyan-100 ring-1 ring-blue-400/30">
+              <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--annvero-accent-soft)] text-lg font-black text-[var(--annvero-accent)] ring-1 ring-[var(--annvero-border)]">
                 A
               </div>
             )}
             {!collapsed ? (
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-cyan-500/10 text-lg font-black text-cyan-100 ring-1 ring-blue-400/30">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--annvero-accent-soft)] text-lg font-black text-[var(--annvero-accent)] ring-1 ring-[var(--annvero-border)]">
                 A
               </div>
             ) : null}
@@ -227,23 +227,23 @@ export default function AnnveroSidebar({
         </nav>
 
         {!collapsed ? (
-          <div className="border-t border-slate-800 p-4">
+          <div className="border-t border-[var(--annvero-border)] p-4">
             <BuildVersionBadge className="mb-3" />
             <button
               type="button"
               onClick={onToggleCollapse}
-              className="hidden w-full rounded-xl border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-400 transition hover:bg-slate-900 lg:block"
+              className="hidden w-full rounded-xl border border-[var(--annvero-border)] px-3 py-2 text-xs font-semibold text-[var(--annvero-text-muted)] transition hover:bg-[var(--annvero-hover)] lg:block"
             >
               Menüyü daralt
             </button>
           </div>
         ) : (
-          <div className="border-t border-slate-800 p-2">
+          <div className="border-t border-[var(--annvero-border)] p-2">
             <button
               type="button"
               onClick={onToggleCollapse}
               title="Menüyü genişlet"
-              className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700 text-slate-400 hover:bg-slate-900"
+              className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--annvero-border)] text-[var(--annvero-text-muted)] hover:bg-[var(--annvero-hover)]"
             >
               →
             </button>

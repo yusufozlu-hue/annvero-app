@@ -1,36 +1,36 @@
 export const annveroInputClass =
-  "w-full rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-blue-500/60 focus:ring-2 focus:ring-blue-500/20";
+  "annvero-input w-full rounded-xl border px-3 py-2.5 text-sm outline-none transition";
 
 export const annveroCardClass =
-  "rounded-2xl border border-slate-800 bg-slate-950/60 shadow-xl shadow-black/20 backdrop-blur-xl";
+  "rounded-2xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] shadow-xl shadow-black/10 backdrop-blur-xl";
 
 export const annveroPanelClass =
-  "rounded-[28px] border border-slate-800 bg-slate-950/60 p-5 shadow-2xl shadow-black/20 backdrop-blur-xl";
+  "rounded-[28px] border border-[var(--annvero-border)] bg-[var(--annvero-surface)] p-5 shadow-2xl shadow-black/10 backdrop-blur-xl";
 
 export const annveroBtnPrimary =
   "inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:from-blue-500 hover:to-cyan-500";
 
 export const annveroBtnSecondary =
-  "inline-flex items-center justify-center rounded-xl border border-slate-700 bg-slate-950 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-900";
+  "inline-flex items-center justify-center rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface-2)] px-4 py-2.5 text-sm font-semibold text-[var(--annvero-text)] transition hover:bg-[var(--annvero-hover)]";
 
 export const annveroNavBtn =
-  "inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:border-white/20 hover:bg-white/10 hover:text-white";
+  "inline-flex items-center gap-2 rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-hover)] px-4 py-2.5 text-sm font-semibold text-[var(--annvero-text)] transition hover:border-[var(--annvero-accent)]";
 
 export const annveroStatCardClass =
-  "min-w-[140px] flex-1 rounded-2xl border border-slate-800 bg-slate-950/70 p-4";
+  "min-w-[140px] flex-1 rounded-2xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] p-4";
 
 export const annveroPageBg =
-  "min-h-screen w-full max-w-full overflow-x-hidden bg-[var(--annvero-page-bg,#06111f)] text-[var(--annvero-page-fg,#e2e8f0)]";
+  "min-h-screen w-full max-w-full overflow-x-hidden bg-[var(--annvero-bg)] text-[var(--annvero-text)]";
 
 export const annveroShellSidebarWidth = "302px";
 
 export const annveroTableScrollWrap =
-  "annvero-table-scroll max-w-full min-w-0 overflow-x-auto rounded-xl border border-slate-800/80 bg-slate-950/40";
+  "annvero-table-scroll max-w-full min-w-0 overflow-x-auto rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface-2)]";
 
 export const annveroTableStickyRightTh =
-  "sticky right-0 z-20 min-w-[132px] border-l border-slate-700/60 bg-slate-900 shadow-[-8px_0_16px_-8px_rgba(0,0,0,0.55)]";
+  "sticky right-0 z-20 min-w-[132px] border-l border-[var(--annvero-border)] bg-[var(--annvero-surface)] shadow-[-8px_0_16px_-8px_rgba(0,0,0,0.25)]";
 
 export const annveroTableStickyRightTd =
-  "sticky right-0 z-10 min-w-[132px] border-l border-slate-800/70 shadow-[-6px_0_14px_-8px_rgba(0,0,0,0.45)]";
+  "sticky right-0 z-10 min-w-[132px] border-l border-[var(--annvero-border)] shadow-[-6px_0_14px_-8px_rgba(0,0,0,0.2)]";
 
 export const annveroPreviewRowClass = "annvero-preview-row h-14 max-h-14";

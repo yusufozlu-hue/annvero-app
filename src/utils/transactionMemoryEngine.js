@@ -1,5 +1,6 @@
 import { normalizeParserText } from "@/src/utils/textNormalize";
 import { extractDescriptionKeyword } from "@/src/utils/previewRowEdit";
+import { parseSmartDate } from "@/src/utils/smartDateInput";
 
 export const UNRECOGNIZED_STATUS = {
   PENDING: "pending",
@@ -142,6 +143,18 @@ export function parseTransactionDateValue(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function toFilterBound(value, endOfDay = false) {
+  if (!value) return null;
+  const date = parseSmartDate(value);
+  if (!date) return null;
+  if (endOfDay) {
+    date.setHours(23, 59, 59, 999);
+  } else {
+    date.setHours(0, 0, 0, 0);
+  }
+  return date;
+}
+
 export function filterUnrecognizedRows(rows = [], filters = {}) {
   const {
     search = "",
@@ -154,8 +167,8 @@ export function filterUnrecognizedRows(rows = [], filters = {}) {
   } = filters;
 
   const query = String(search || "").trim().toLocaleLowerCase("tr-TR");
-  const fromDate = dateFrom ? new Date(`${dateFrom}T00:00:00`) : null;
-  const toDate = dateTo ? new Date(`${dateTo}T23:59:59`) : null;
+  const fromDate = toFilterBound(dateFrom, false);
+  const toDate = toFilterBound(dateTo, true);
 
   return rows.filter((row) => {
     if (status && status !== "all" && row.status !== status) return false;

@@ -19,7 +19,7 @@ export default function AnnveroAppShell({ children }) {
   return (
     <CompanyWorkspaceProvider>
       <div className={annveroPageBg}>
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_36%),radial-gradient(circle_at_top_right,rgba(124,58,237,0.1),transparent_32%)]" />
+      <div className="pointer-events-none fixed inset-0 opacity-80 [background:radial-gradient(circle_at_top_left,color-mix(in_srgb,var(--annvero-accent)_18%,transparent),transparent_36%),radial-gradient(circle_at_top_right,color-mix(in_srgb,cyan_12%,transparent),transparent_32%)]" />
 
       <AnnveroSidebar
         mobileOpen={mobileMenuOpen}
@@ -33,7 +33,8 @@ export default function AnnveroAppShell({ children }) {
           type="button"
           aria-label="Menüyü kapat"
           onClick={() => setMobileMenuOpen(false)}
-          className="fixed inset-0 z-30 bg-black/60 lg:hidden"
+          className="fixed inset-0 z-30 lg:hidden"
+          style={{ background: "var(--annvero-overlay)" }}
         />
       ) : null}
 

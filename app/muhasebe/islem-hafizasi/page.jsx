@@ -12,6 +12,8 @@ import {
 } from "@/src/utils/transactionMemoryApi";
 import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
 import AnnveroEditableDataTable from "@/src/components/AnnveroEditableDataTable";
+import SmartDateInput from "@/src/components/SmartDateInput";
+import { annveroInputClass } from "@/src/styles/annveroDesign";
 import {
   buildUnrecognizedStats,
   filterUnrecognizedRows,
@@ -22,8 +24,7 @@ import {
   UNRECOGNIZED_STATUS_LABEL,
 } from "@/src/utils/transactionMemoryEngine";
 
-const inputClassName =
-  "w-full rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20";
+const inputClassName = annveroInputClass;
 
 function formatAmount(value) {
   const amount = Number(value || 0);
@@ -74,16 +75,18 @@ function StatCard({ label, value, accent, active, onClick }) {
       onClick={onClick}
       className={`rounded-2xl border p-4 text-left transition ${
         active
-          ? "border-indigo-500/50 bg-indigo-500/10 shadow-lg shadow-indigo-950/40"
-          : "border-white/10 bg-gray-900/70 hover:border-white/20 hover:bg-gray-900"
+          ? "border-[var(--annvero-accent)] bg-[var(--annvero-accent-soft)] shadow-lg"
+          : "border-[var(--annvero-border)] bg-[var(--annvero-surface)] hover:bg-[var(--annvero-hover)]"
       }`}
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-400">
+          <p className="annvero-text-muted text-xs font-medium uppercase tracking-wide">
             {label}
           </p>
-          <p className="mt-2 text-3xl font-bold tabular-nums text-white">{value}</p>
+          <p className="mt-2 text-3xl font-bold tabular-nums text-[var(--annvero-text)]">
+            {value}
+          </p>
         </div>
         <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${accent}`} />
       </div>
@@ -485,7 +488,7 @@ export default function IslemHafizasiPage() {
   };
 
   return (
-    <main className="min-h-screen bg-[#050816] px-4 py-6 text-white sm:px-6 lg:px-8">
+    <main className="annvero-page min-h-0 px-0 py-2 sm:py-4">
       {toast ? (
         <div
           role="status"
@@ -502,13 +505,13 @@ export default function IslemHafizasiPage() {
 
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300/80">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--annvero-accent)]">
             Kural &amp; Hafıza
           </p>
-          <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+          <h1 className="text-3xl font-bold tracking-tight text-[var(--annvero-text)] sm:text-4xl">
             İşlem Hafızası / Öğrenme Merkezi
           </h1>
-          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-gray-400 sm:text-base">
+          <p className="annvero-text-muted mt-2 max-w-3xl text-sm leading-relaxed sm:text-base">
             Banka parser&apos;ın tanıyamadığı işlemleri düzeltin. Sistem hesap, belge türü ve
             cari bilgisini öğrenir; sonraki ekstrelerde benzer açıklamalar için öneri üretir.
           </p>
@@ -516,13 +519,13 @@ export default function IslemHafizasiPage() {
         <div className="flex flex-wrap gap-2">
           <Link
             href="/muhasebe/ogrenen-hafiza"
-            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-white/10"
+            className="rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] px-4 py-2.5 text-sm font-semibold text-[var(--annvero-text)] transition hover:bg-[var(--annvero-hover)]"
           >
             Öğrenilen Kurallar
           </Link>
           <Link
             href="/muhasebe/banka-ekstresi"
-            className="rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-4 py-2.5 text-sm font-semibold shadow-lg shadow-indigo-950/40 transition hover:from-indigo-500 hover:to-violet-500"
+            className="rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:from-indigo-500 hover:to-violet-500"
           >
             Banka Ekstresi
           </Link>
@@ -582,13 +585,13 @@ export default function IslemHafizasiPage() {
         />
       </div>
 
-      <div className="mb-6 rounded-2xl border border-white/10 bg-gray-900/60 p-4 shadow-xl shadow-black/20 backdrop-blur sm:p-5">
+      <div className="mb-6 rounded-2xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] p-4 shadow-xl shadow-black/10 backdrop-blur sm:p-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-gray-200">Filtreler</h2>
+          <h2 className="text-sm font-semibold text-[var(--annvero-text)]">Filtreler</h2>
           <button
             type="button"
             onClick={clearFilters}
-            className="text-xs font-medium text-indigo-300 hover:text-indigo-200"
+            className="text-xs font-medium text-[var(--annvero-accent)] hover:opacity-80"
           >
             Filtreleri temizle
           </button>
@@ -596,7 +599,7 @@ export default function IslemHafizasiPage() {
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <label className="block sm:col-span-2 xl:col-span-2">
-            <span className="mb-1.5 block text-xs font-medium text-gray-400">
+            <span className="annvero-text-muted mb-1.5 block text-xs font-medium">
               Açıklama arama
             </span>
             <input
@@ -608,31 +611,31 @@ export default function IslemHafizasiPage() {
           </label>
 
           <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-gray-400">
+            <span className="annvero-text-muted mb-1.5 block text-xs font-medium">
               Başlangıç tarihi
             </span>
-            <input
-              type="date"
+            <SmartDateInput
               value={dateFrom}
-              onChange={(event) => setDateFrom(event.target.value)}
+              onChange={setDateFrom}
               className={inputClassName}
+              aria-label="Başlangıç tarihi"
             />
           </label>
 
           <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-gray-400">
+            <span className="annvero-text-muted mb-1.5 block text-xs font-medium">
               Bitiş tarihi
             </span>
-            <input
-              type="date"
+            <SmartDateInput
               value={dateTo}
-              onChange={(event) => setDateTo(event.target.value)}
+              onChange={setDateTo}
               className={inputClassName}
+              aria-label="Bitiş tarihi"
             />
           </label>
 
           <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-gray-400">
+            <span className="annvero-text-muted mb-1.5 block text-xs font-medium">
               Banka hesabı
             </span>
             <select
@@ -650,7 +653,7 @@ export default function IslemHafizasiPage() {
           </label>
 
           <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-gray-400">Durum</span>
+            <span className="annvero-text-muted mb-1.5 block text-xs font-medium">Durum</span>
             <select
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value)}
@@ -713,8 +716,8 @@ export default function IslemHafizasiPage() {
         </div>
       </div>
 
-      <section className="overflow-hidden rounded-2xl border border-white/10 bg-gray-900/60 shadow-xl shadow-black/20 backdrop-blur">
-        <div className="flex flex-col gap-3 border-b border-white/10 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+      <section className="overflow-hidden rounded-2xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] shadow-xl shadow-black/10 backdrop-blur">
+        <div className="flex flex-col gap-3 border-b border-[var(--annvero-border)] px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
           <div>
             <h2 className="text-xl font-semibold sm:text-2xl">Tanınmayan İşlemler</h2>
             <p className="mt-1 text-sm text-gray-400">

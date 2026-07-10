@@ -251,12 +251,12 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
   let optionIndex = 0;
 
   return (
-    <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#040b18]/95 px-4 py-3 backdrop-blur-xl sm:px-6">
+    <header className="sticky top-0 z-30 border-b border-[var(--annvero-border)] bg-[color-mix(in_srgb,var(--annvero-shell)_92%,transparent)] px-4 py-3 backdrop-blur-xl sm:px-6">
       <div className="flex flex-wrap items-center gap-3 lg:gap-4">
         <button
           type="button"
           onClick={onMenuToggle}
-          className="rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm font-semibold text-slate-200 lg:hidden"
+          className="rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] px-3 py-2 text-sm font-semibold text-[var(--annvero-text)] lg:hidden"
         >
           Menü
         </button>
@@ -267,40 +267,43 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
             onClick={() => setDropdownOpen((v) => !v)}
             aria-haspopup="listbox"
             aria-expanded={dropdownOpen}
-            className="flex w-full max-w-[520px] items-center gap-2.5 rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-left transition hover:border-blue-500/40"
+            className="flex w-full max-w-[520px] items-center gap-2.5 rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] px-3 py-2 text-left transition hover:border-[var(--annvero-accent)]"
           >
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-500/15 text-xs font-bold text-blue-200">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--annvero-accent-soft)] text-xs font-bold text-[var(--annvero-accent)]">
               {selectedCompany
                 ? getCompanyDisplayName(selectedCompany).slice(0, 1).toUpperCase()
                 : "?"}
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-white" title={companyLabel}>
+              <span
+                className="block truncate text-sm font-semibold text-[var(--annvero-text)]"
+                title={companyLabel}
+              >
                 {companyLabel}
               </span>
-              <span className="block text-[11px] text-slate-500">Aktif firma</span>
+              <span className="annvero-text-muted block text-[11px]">Aktif firma</span>
             </span>
-            <span className="text-slate-500 text-xs">▾</span>
+            <span className="annvero-text-muted text-xs">▾</span>
           </button>
 
           {dropdownOpen ? (
             <>
-              {/* Mobil backdrop */}
               <div
-                className="fixed inset-0 z-40 bg-black/40 sm:hidden"
+                className="fixed inset-0 z-40 sm:hidden"
+                style={{ background: "var(--annvero-overlay)" }}
                 aria-hidden="true"
                 onClick={() => setDropdownOpen(false)}
               />
 
               <div
-                className="fixed inset-x-0 bottom-0 z-50 flex max-h-[70vh] flex-col rounded-t-2xl border border-slate-700 bg-[#06111f] shadow-2xl shadow-black/50 sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-0 sm:top-[calc(100%+6px)] sm:max-h-[360px] sm:w-full sm:max-w-[520px] sm:rounded-xl"
+                className="fixed inset-x-0 bottom-0 z-50 flex max-h-[70vh] flex-col rounded-t-2xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] shadow-2xl sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-0 sm:top-[calc(100%+6px)] sm:max-h-[360px] sm:w-full sm:max-w-[520px] sm:rounded-xl"
                 style={{ maxWidth: DROPDOWN_MAX_WIDTH }}
                 role="listbox"
                 aria-label="Firma seçimi"
                 onKeyDown={handleListKeyDown}
               >
-                <div className="shrink-0 border-b border-slate-800 p-2.5">
-                  <div className="mx-auto mb-2 h-1 w-10 rounded-full bg-slate-700 sm:hidden" />
+                <div className="shrink-0 border-b border-[var(--annvero-border)] p-2.5">
+                  <div className="mx-auto mb-2 h-1 w-10 rounded-full bg-[var(--annvero-border)] sm:hidden" />
                   <input
                     ref={searchInputRef}
                     value={companySearch}
@@ -405,7 +408,7 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
         <div className="flex items-center gap-2">
           <Link
             href="/muhasebe/islem-hafizasi"
-            className="relative rounded-xl border border-slate-700 bg-slate-950/80 p-2.5 text-slate-300 transition hover:border-amber-500/40 hover:text-amber-200"
+            className="relative rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] p-2.5 text-[var(--annvero-text-muted)] transition hover:border-amber-500/40 hover:text-amber-600"
             title="Bildirimler"
           >
             <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -421,7 +424,7 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
           <button
             type="button"
             onClick={toggleTheme}
-            className="rounded-xl border border-slate-700 bg-slate-950/80 p-2.5 text-slate-300 transition hover:border-blue-500/40 hover:text-blue-200"
+            className="rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] p-2.5 text-[var(--annvero-text-muted)] transition hover:border-[var(--annvero-accent)] hover:text-[var(--annvero-accent)]"
             title={theme === "dark" ? "Açık tema" : "Koyu tema"}
           >
             {theme === "dark" ? "☀" : "☾"}
@@ -438,7 +441,7 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
 
 function SectionLabel({ children }) {
   return (
-    <p className="sticky top-0 z-[1] bg-[#06111f]/95 px-2.5 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 backdrop-blur-sm">
+    <p className="annvero-text-muted sticky top-0 z-[1] bg-[var(--annvero-surface)]/95 px-2.5 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wider backdrop-blur-sm">
       {children}
     </p>
   );
@@ -461,10 +464,10 @@ function CompanyRow({
       data-option-index={dataIndex}
       className={`group flex h-9 w-full items-center gap-1 rounded-lg px-2 text-left text-sm transition ${
         selected
-          ? "bg-blue-600/25 text-white"
+          ? "bg-[var(--annvero-accent-soft)] text-[var(--annvero-text)]"
           : highlighted
-            ? "bg-white/10 text-white"
-            : "text-slate-300 hover:bg-white/5"
+            ? "bg-[var(--annvero-hover)] text-[var(--annvero-text)]"
+            : "text-[var(--annvero-text)] hover:bg-[var(--annvero-hover)]"
       }`}
     >
       <button
@@ -482,8 +485,8 @@ function CompanyRow({
           onClick={onToggleFavorite}
           className={`shrink-0 rounded p-1 text-xs transition ${
             isFavorite
-              ? "text-amber-400 opacity-100"
-              : "text-slate-600 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-amber-300 focus-visible:opacity-100"
+              ? "text-amber-500 opacity-100"
+              : "annvero-text-muted opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-amber-500 focus-visible:opacity-100"
           }`}
           title={isFavorite ? "Favoriden çıkar" : "Favoriye ekle"}
           aria-label={isFavorite ? "Favoriden çıkar" : "Favoriye ekle"}
