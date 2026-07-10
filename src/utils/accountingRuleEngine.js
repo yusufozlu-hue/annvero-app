@@ -1,5 +1,6 @@
 import { formatDateTime } from "@/src/utils/companyCenter";
 import { normalizeParserText } from "@/src/utils/textNormalize";
+import { buildStandardLucaDescription } from "@/src/utils/muhasebeDescriptionStandards";
 
 export const ACCOUNTING_RULE_STORAGE_KEY = "annvero_accounting_rules_v1";
 
@@ -201,7 +202,12 @@ export function testAccountingRule(text, context = {}) {
 export function applyAccountingRuleToBankMovement(rule, description, direction) {
   const lucaDescription =
     formatAccountingRuleTemplate(rule.fisAciklamaSablonu, description) ||
-    buildFallbackDescription(description, direction);
+    buildStandardLucaDescription({
+      aciklama: description,
+      description,
+      yon: direction,
+      direction,
+    });
 
   return {
     counterAccountCode: String(rule.hesapKodu || "").trim(),
@@ -209,11 +215,6 @@ export function applyAccountingRuleToBankMovement(rule, description, direction) 
     lucaDescription,
     ruleAciklama: lucaDescription,
   };
-}
-
-function buildFallbackDescription(description, direction) {
-  if (direction === "GIRIS") return `GLN. HVL / ${description}`;
-  return `GÖND. HVL / ${description}`;
 }
 
 export function mapAccountingRuleToListRow(rule, companyName = "") {

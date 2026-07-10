@@ -197,7 +197,6 @@ export default function BankaParserPage() {
   const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
   const [exportValidation, setExportValidation] = useState(null);
   const [standardLucaRows, setStandardLucaRows] = useState([]);
-  const [parseModeDebug, setParseModeDebug] = useState("");
   const [previewErrorDetail, setPreviewErrorDetail] = useState("");
   const [previewLimit, setPreviewLimit] = useState(PREVIEW_PAGE_SIZE);
   const [previewSummary, setPreviewSummary] = useState(null);
@@ -214,11 +213,8 @@ export default function BankaParserPage() {
   const { isManagementUser } = useUserRole();
 
   const {
-    companies,
     selectedCompanyId,
-    setSelectedCompanyId,
     selectedCompany: selectedCompanyRaw,
-    refreshCompanies,
     isLoading: isLoadingCompanies,
   } = useCompanyList();
 
@@ -676,12 +672,6 @@ export default function BankaParserPage() {
     setStandardLucaRows(lucaRows);
     markAppliedDeclarationsPaid(result.declarationSummary);
 
-    if (coreMeta?.enabled) {
-      setParseModeDebug(
-        `ANNVERO CORE — ${coreMeta.core} CORE / ${coreMeta.fallback} legacy (${coreMeta.coreLimit}/${coreMeta.total} satır)`
-      );
-    }
-
     return { result, summary, lucaRows, movements, coreMeta };
   };
 
@@ -738,11 +728,6 @@ export default function BankaParserPage() {
     setPreviewErrorDetail("");
     setPreviewLimit(PREVIEW_PAGE_SIZE);
     setPreviewSummary(null);
-    setParseModeDebug(
-      isAnnveroCoreEnabled()
-        ? "ANNVERO CORE aktif — karar motoru server-side"
-        : "Worker bypass — ana thread fallback parse"
-    );
     parserJob.begin({
       stage: BANK_PARSE_STAGES.READING,
       detail: "Ana thread fallback — dosya okunuyor",
@@ -780,12 +765,6 @@ export default function BankaParserPage() {
       // Loading'i state commit'ten ÖNCE kapat — progress takılı kalmasın
       setIsParsing(false);
       parserJob.markSuccess(`${summary.totalMovements || lucaRows.length} hareket hazır`);
-
-      if (!isAnnveroCoreEnabled()) {
-        setParseModeDebug(
-          `Worker bypass · ana thread · ${selectedBank} · ${summary.totalMovements} hareket · gösterilen ${PREVIEW_PAGE_SIZE}`
-        );
-      }
 
       // Ops session: tüm işlemleri tut (export/ops merkezi) ama UI'ya basma
       if (Array.isArray(result.financialTransactions)) {
@@ -832,7 +811,6 @@ export default function BankaParserPage() {
         error?.message ||
         "Dosya okunamadı. Excel'de açıp .xlsx olarak kaydedip tekrar deneyin.";
       setPreviewErrorDetail(detail);
-      setParseModeDebug("Worker bypass — ana thread fallback (hata)");
       logParserJobError(error, {
         module: "Banka Parser",
         companyId: selectedCompanyId,
@@ -964,11 +942,18 @@ export default function BankaParserPage() {
   const showCoreTeachForMovement = (movement, row = {}) =>
     shouldShowCoreTeachButton(row, movement, coreTeachOptions);
 
-  const showCoreTeachForLucaRow = (row) =>
-    showCoreTeachForMovement(
-      row?._movementId ? fullMovementById.get(row._movementId) : null,
-      row
-    );
+  const showCoreTeachForLucaRow = (row) => {
+    const movement = row?._movementId
+      ? fullMovementById.get(row._movementId)
+      : null;
+    if (
+      isAnnveroCoreEnabled() &&
+      (isCoreStatusUnknown(movement) || isCoreStatusUnknown(row))
+    ) {
+      return !isMovementTaughtForDisplay(movement || {}, row);
+    }
+    return showCoreTeachForMovement(movement, row);
+  };
 
   const handleCloseTeachModal = () => {
     if (isSavingTeach) return;
@@ -1105,13 +1090,7 @@ export default function BankaParserPage() {
                 </h3>
               </div>
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
-                <ControlStat
-                  label="Firma"
-                  value={getCompanyDisplayName(selectedCompany)}
-                  clamp
-                  wide
-                />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <ControlStat
                   label="Banka Hesabı"
                   value={activeBankCount}
@@ -1227,12 +1206,6 @@ export default function BankaParserPage() {
             onCancel={isParsing ? () => parserJob.cancel("user") : undefined}
             className="mt-4"
           />
-
-          {parseModeDebug ? (
-            <p className="mt-2 text-[11px] text-amber-300/90">
-              Debug: {parseModeDebug}
-            </p>
-          ) : null}
 
           {previewErrorDetail ? (
             <p className="mt-2 rounded-lg border border-red-800/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">
@@ -1498,8 +1471,8 @@ function CompanySelectSkeleton() {
 function CompanySummarySkeleton() {
   return (
     <div className="mb-6 space-y-3" aria-busy="true" aria-label="Firma bilgileri yükleniyor">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
-        {Array.from({ length: 5 }).map((_, index) => (
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, index) => (
           <SkeletonBlock key={index} className="h-24" />
         ))}
       </div>

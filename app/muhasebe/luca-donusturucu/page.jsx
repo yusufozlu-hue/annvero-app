@@ -28,7 +28,7 @@ import {
   buildCreditCardPaymentDescription,
   getCreditCardAccount,
 } from "@/src/utils/creditCardAccountResolver";
-import { findCariAccountInPlan } from "@/src/utils/bankMovementMapper";
+import { findCariAccountInPlan, buildStandardLucaDescription } from "@/src/utils/bankMovementMapper";
 import {
   buildAccountPlanNotFoundWarning,
   collectAccountSuggestions,
@@ -168,7 +168,6 @@ export default function LucaDonusturucuPage() {
     selectedCompanyId,
     setSelectedCompanyId,
     selectedCompany: selectedCompanyRaw,
-    refreshCompanies,
   } = useCompanyList();
 
   useEffect(() => {
@@ -206,20 +205,19 @@ export default function LucaDonusturucuPage() {
     applyAccountMemoryV1ToRows(rows, getAccountMemoryContext(rows));
 
   useEffect(() => {
-    const refreshCompanyData = () => {
+    const refreshLocalCompanyData = () => {
       setAccountPlans(loadAccountPlansFromStorage());
       setRuleEngine(loadRuleEngineFromStorage());
-      refreshCompanies();
     };
 
-    refreshCompanyData();
+    refreshLocalCompanyData();
 
-    window.addEventListener("focus", refreshCompanyData);
+    window.addEventListener("focus", refreshLocalCompanyData);
 
     return () => {
-      window.removeEventListener("focus", refreshCompanyData);
+      window.removeEventListener("focus", refreshLocalCompanyData);
     };
-  }, [refreshCompanies]);
+  }, []);
 
   useEffect(() => {
     const pending = loadPendingLucaRows();
@@ -531,37 +529,6 @@ export default function LucaDonusturucuPage() {
   const needsCariResolve = (code) =>
     isGenericCariFallback(code) ||
     (isCariCode(code) && !accountExistsInPlan(code));
-
-  const buildDescription = ({
-    islemTipi,
-    rawDescription,
-    matchedAccount,
-    paymentDate,
-  }) => {
-    const type = normalizeText(islemTipi);
-
-    if (type.includes("POS TAHSILATI")) return "POS TAHSİLATI";
-    if (type.includes("POS KOMISYONU")) return "POS KOMİSYONU";
-    if (type.includes("TRAFIK")) return "TRAFİK CEZASI ÖDEMESİ";
-    if (type.includes("SGK")) return "SGK ÖDEMESİ";
-
-    if (type.includes("VERGI")) return "VERGİ ÖDEMESİ";
-    if (type.includes("CEK") || type.includes("CEK ODEME")) return "ÇEK ÖDEMESİ";
-    if (type.includes("MAAS")) return "MAAŞ ÖDEMESİ";
-    if (type.includes("AVANS")) return "AVANS ÖDEMESİ";
-    if (type.includes("DOVIZ ALIS")) return "DÖVİZ ALIŞ";
-    if (type.includes("DOVIZ SATIS")) return "DÖVİZ SATIŞ";
-
-    const name =
-      matchedAccount?.hesapAdi ||
-      matchedAccount?.accountName ||
-      String(rawDescription || "").replace(/\s+/g, " ").trim().slice(0, 80);
-
-    if (type.includes("GELEN")) return `GLN. HVL / ${name}`;
-    if (type.includes("GIDEN")) return `GÖND. HVL / ${name}`;
-
-    return name;
-  };
 
   const resolve102 = (accountCode, lucaBankaHesabi) =>
     resolve102BankAccount(
@@ -934,12 +901,22 @@ export default function LucaDonusturucuPage() {
           const fisAciklama =
             pendingLucaAciklama ||
             customAciklama ||
-            buildDescription({
-              islemTipi,
-              rawDescription,
-              matchedAccount,
-              paymentDate: tarih,
-            });
+            buildStandardLucaDescription(
+              {
+                aciklama: rawDescription,
+                description: rawDescription,
+                yon: type.includes("GELEN")
+                  ? "GIRIS"
+                  : type.includes("GIDEN")
+                    ? "CIKIS"
+                    : undefined,
+                matchedAccountName:
+                  matchedAccount?.hesapAdi || matchedAccount?.accountName || "",
+                unvan:
+                  matchedAccount?.hesapAdi || matchedAccount?.accountName || "",
+              },
+              { islemTipi }
+            );
 
           const belgeTuru = resolveBelgeTuru({
             explicit:

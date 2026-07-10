@@ -22,7 +22,7 @@ export function lucaConverter(items: any[], banka: Banka) {
     const cariDesc = item.unvan
       ? `GÖND. HVL / ${item.unvan}`
       : item.aciklama || "BANKA HAREKETİ";
-    const fisAciklama = anaTutar > 0 ? cariDesc : "HAVALE/EFT MASRAFI";
+    const fisAciklama = anaTutar > 0 ? cariDesc : "HAVALE / EFT MASRAFI";
     const bankAccount = bankaHesapKodlari[banka];
 
     result.push({
@@ -69,7 +69,7 @@ export function lucaConverter(items: any[], banka: Banka) {
         "Hesap Kodu": "780.01.001",
         "Evrak No": item.dekont || "",
         "Evrak Tarihi": item.tarih,
-        "Detay Açıklama": "HAVALE/EFT MASRAFI",
+        "Detay Açıklama": "HAVALE / EFT MASRAFI",
         Borç: Number(masrafTutar.toFixed(2)),
         Alacak: "",
         Miktar: "",

@@ -21,11 +21,16 @@ import {
 
 import { normalizeParserText } from "@/src/utils/textNormalize";
 import {
+  buildFallbackLucaDescription,
+  buildStandardLucaDescription,
+} from "@/src/utils/muhasebeDescriptionStandards";
+import {
   extractSeriesPrefix,
   MEMORY_MATCH_LABEL,
 } from "@/src/utils/previewRowEdit";
 
 export { normalizeParserText };
+export { buildFallbackLucaDescription, buildStandardLucaDescription };
 
 function compactAccount(value) {
   return normalizeParserText(value).replace(/\s+/g, "");
@@ -250,44 +255,6 @@ function applyCariResolution(
 
   appendWarning(warnings, buildCariNotFoundWarning(result.suggestions));
   return { counterAccountCode: "", cariSuggestions: result.suggestions };
-}
-
-export function buildFallbackLucaDescription(row) {
-  const raw = String(row.aciklama || row.description || "");
-  const text = normalizeParserText(raw);
-  const direction = row.yon || row.direction;
-
-  const temiz = raw
-    .replace(/^INT[-\s]*/i, "")
-    .replace(/^MOBİL[-\s]*/i, "")
-    .replace(/^MOBIL[-\s]*/i, "")
-    .replace(/^CEP ŞUBE[-\s]*/i, "")
-    .replace(/^CEP SUBE[-\s]*/i, "")
-    .trim();
-
-  if (
-    text.includes("HAVALE/EFT MASRAFI") ||
-    text.includes("HAVALE MASRAF") ||
-    text.includes("EFT MASRAF") ||
-    text.includes("BSMV") ||
-    text.includes("KESINTI") ||
-    text.includes("BKM UCR") ||
-    text.includes("MASRAF") ||
-    text.includes("KOMISYON") ||
-    text.includes("KOMİSYON")
-  ) {
-    return "HAVALE/EFT MASRAFI";
-  }
-
-  if (text.includes("POS") && direction === "GIRIS") return "POS TAHSİLATI";
-  if (text.includes("POS") && direction === "CIKIS") return "POS KOMİSYONU";
-  if (text.includes("DOVIZ")) return "DÖVİZ ALIŞ / SATIŞ İŞLEMİ";
-  if (text.includes("SGK")) return "SGK ÖDEMESİ";
-  if (text.includes("VERGI") || text.includes("VERGİ")) return "VERGİ ÖDEMESİ";
-  if (text.includes("KENDI HESABIMIZA")) return "VİRMAN";
-  if (direction === "GIRIS") return `GLN. HVL / ${temiz}`;
-
-  return `GÖND. HVL / ${temiz}`;
 }
 
 function formatRuleDescription(rule, description) {

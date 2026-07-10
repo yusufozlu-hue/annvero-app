@@ -21,6 +21,7 @@ export function tebParser(jsonData: any[]) {
   
       const normalizedAciklama = aciklama.toUpperCase();
       const isMasraf =
+        normalizedAciklama.includes("HAVALE / EFT MASRAFI") ||
         normalizedAciklama.includes("HAVALE/EFT MASRAFI") ||
         normalizedAciklama.includes("HAVALE MASRAF") ||
         normalizedAciklama.includes("EFT MASRAF") ||

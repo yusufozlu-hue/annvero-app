@@ -19,7 +19,7 @@ export const bankaKurallari = [
         "KOMISYON",
       ],
       hesap: "780.01.001",
-      aciklama: "HAVALE/EFT MASRAFI",
+      aciklama: "HAVALE / EFT MASRAFI",
     },
   
     // MAAŞ / AVANS

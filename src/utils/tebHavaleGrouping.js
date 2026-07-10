@@ -5,11 +5,12 @@ import {
 } from "@/src/utils/bankMovementMapper";
 
 export const TEB_MASRAF_ACCOUNT = "780.01.001";
-export const TEB_MASRAF_DESCRIPTION = "HAVALE/EFT MASRAFI";
+export const TEB_MASRAF_DESCRIPTION = "HAVALE / EFT MASRAFI";
 export const TEB_UNMATCHED_MASRAF_NOTE =
   "Masraf ana havale hareketiyle eşleştirilemedi";
 
 const EXPLICIT_MASRAF_KEYWORDS = [
+  "HAVALE / EFT MASRAFI",
   "HAVALE/EFT MASRAFI",
   "HAVALE MASRAF",
   "EFT MASRAF",
