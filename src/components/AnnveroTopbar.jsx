@@ -13,6 +13,16 @@ import {
 import { fetchPendingTransactionCount } from "@/src/utils/transactionMemoryApi";
 import { annveroInputClass } from "@/src/styles/annveroDesign";
 
+const DROPDOWN_MAX_WIDTH = 520;
+const DROPDOWN_MAX_HEIGHT = 360;
+const RECENT_LIMIT = 3;
+
+function sortCompaniesTr(list, getLabel) {
+  return [...list].sort((a, b) =>
+    getLabel(a).localeCompare(getLabel(b), "tr", { sensitivity: "base" })
+  );
+}
+
 export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }) {
   const {
     companies,
@@ -29,7 +39,11 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
   const [recentIds, setRecentIds] = useState([]);
   const [theme, setTheme] = useState("dark");
   const [notificationCount, setNotificationCount] = useState(0);
+  const [highlightIndex, setHighlightIndex] = useState(-1);
+
   const dropdownRef = useRef(null);
+  const searchInputRef = useRef(null);
+  const listRef = useRef(null);
 
   useEffect(() => {
     setFavoriteIds(loadFavoriteCompanyIds());
@@ -60,36 +74,119 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
   }, [selectedCompanyId]);
 
   useEffect(() => {
-    function handleClickOutside(event) {
+    if (!dropdownOpen) return;
+
+    function handlePointerOutside(event) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
         setDropdownOpen(false);
       }
     }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
 
-  const filteredCompanies = useMemo(() => {
-    const query = companySearch.trim().toLowerCase();
-    if (!query) return companies;
-    return companies.filter((company) =>
-      getCompanyDisplayName(company).toLowerCase().includes(query)
-    );
-  }, [companies, companySearch, getCompanyDisplayName]);
+    function handleEscape(event) {
+      if (event.key === "Escape") {
+        setDropdownOpen(false);
+      }
+    }
 
-  const favoriteCompanies = useMemo(
-    () => companies.filter((c) => favoriteIds.includes(c.id)),
-    [companies, favoriteIds]
+    document.addEventListener("mousedown", handlePointerOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [dropdownOpen]);
+
+  useEffect(() => {
+    if (!dropdownOpen) {
+      setCompanySearch("");
+      setHighlightIndex(-1);
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [dropdownOpen]);
+
+  // Mobilde body scroll kilidi — yalnızca dar ekranda
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const isMobile = window.matchMedia("(max-width: 639px)").matches;
+    if (!isMobile) return;
+
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [dropdownOpen]);
+
+  const getLabel = useCallback(
+    (company) => getCompanyDisplayName(company),
+    [getCompanyDisplayName]
   );
 
-  const recentCompanies = useMemo(
-    () =>
-      recentIds
-        .map((id) => companies.find((c) => c.id === id))
-        .filter(Boolean)
-        .slice(0, 5),
-    [companies, recentIds]
+  const favoriteCompanies = useMemo(() => {
+    const list = companies.filter((c) => favoriteIds.includes(c.id));
+    return sortCompaniesTr(list, getLabel);
+  }, [companies, favoriteIds, getLabel]);
+
+  const favoriteIdSet = useMemo(
+    () => new Set(favoriteCompanies.map((c) => c.id)),
+    [favoriteCompanies]
   );
+
+  const recentCompanies = useMemo(() => {
+    return recentIds
+      .map((id) => companies.find((c) => c.id === id))
+      .filter((c) => c && !favoriteIdSet.has(c.id))
+      .slice(0, RECENT_LIMIT);
+  }, [companies, recentIds, favoriteIdSet]);
+
+  const recentIdSet = useMemo(
+    () => new Set(recentCompanies.map((c) => c.id)),
+    [recentCompanies]
+  );
+
+  const allCompaniesSorted = useMemo(() => {
+    const query = companySearch.trim().toLocaleLowerCase("tr");
+    const filtered = companies.filter((company) => {
+      // Favori / son kullanılanlarda gösterilenleri "Tüm firmalar"da tekrarlama
+      if (!query && (favoriteIdSet.has(company.id) || recentIdSet.has(company.id))) {
+        return false;
+      }
+      if (!query) return true;
+      return getLabel(company).toLocaleLowerCase("tr").includes(query);
+    });
+    return sortCompaniesTr(filtered, getLabel);
+  }, [companies, companySearch, favoriteIdSet, recentIdSet, getLabel]);
+
+  /** Klavye navigasyonu için düz seçenek listesi */
+  const flatOptions = useMemo(() => {
+    const options = [{ type: "all", id: "", label: "Tüm firmalar" }];
+
+    if (!companySearch.trim()) {
+      favoriteCompanies.forEach((c) => {
+        options.push({ type: "company", id: c.id, label: getLabel(c) });
+      });
+      recentCompanies.forEach((c) => {
+        options.push({ type: "company", id: c.id, label: getLabel(c) });
+      });
+    }
+
+    allCompaniesSorted.forEach((c) => {
+      options.push({ type: "company", id: c.id, label: getLabel(c) });
+    });
+
+    return options;
+  }, [
+    companySearch,
+    favoriteCompanies,
+    recentCompanies,
+    allCompaniesSorted,
+    getLabel,
+  ]);
 
   const selectCompany = useCallback(
     (id) => {
@@ -97,6 +194,7 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
       setRecentIds(loadRecentCompanyIds());
       setDropdownOpen(false);
       setCompanySearch("");
+      setHighlightIndex(-1);
       window.dispatchEvent(new Event("annvero:refresh-modules"));
     },
     [setSelectedCompanyId]
@@ -104,6 +202,7 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
 
   const toggleFavorite = useCallback((event, companyId) => {
     event.stopPropagation();
+    event.preventDefault();
     setFavoriteIds(toggleFavoriteCompanyId(companyId));
   }, []);
 
@@ -114,11 +213,42 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
     document.documentElement.dataset.annveroTheme = next;
   };
 
+  const handleListKeyDown = (event) => {
+    if (!flatOptions.length) return;
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlightIndex((i) => Math.min(i + 1, flatOptions.length - 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlightIndex((i) => Math.max(i - 1, 0));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const option = flatOptions[highlightIndex];
+      if (option) selectCompany(option.id);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setHighlightIndex(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setHighlightIndex(flatOptions.length - 1);
+    }
+  };
+
+  useEffect(() => {
+    if (highlightIndex < 0 || !listRef.current) return;
+    const el = listRef.current.querySelector(`[data-option-index="${highlightIndex}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [highlightIndex]);
+
   const companyLabel = selectedCompany
     ? getCompanyDisplayName(selectedCompany)
     : isLoading
       ? "Firmalar yükleniyor..."
       : "Firma seçin";
+
+  const showPinnedSections = !companySearch.trim();
+  let optionIndex = 0;
 
   return (
     <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#040b18]/95 px-4 py-3 backdrop-blur-xl sm:px-6">
@@ -135,98 +265,140 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
           <button
             type="button"
             onClick={() => setDropdownOpen((v) => !v)}
-            className="flex w-full max-w-xl items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/80 px-4 py-2.5 text-left transition hover:border-blue-500/40"
+            aria-haspopup="listbox"
+            aria-expanded={dropdownOpen}
+            className="flex w-full max-w-[520px] items-center gap-2.5 rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-left transition hover:border-blue-500/40"
           >
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500/15 text-sm font-bold text-blue-200">
-              {selectedCompany ? getCompanyDisplayName(selectedCompany).slice(0, 1).toUpperCase() : "?"}
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-500/15 text-xs font-bold text-blue-200">
+              {selectedCompany
+                ? getCompanyDisplayName(selectedCompany).slice(0, 1).toUpperCase()
+                : "?"}
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-white">{companyLabel}</span>
-              <span className="block text-xs text-slate-500">Aktif firma · hızlı arama</span>
+              <span className="block truncate text-sm font-semibold text-white" title={companyLabel}>
+                {companyLabel}
+              </span>
+              <span className="block text-[11px] text-slate-500">Aktif firma</span>
             </span>
-            <span className="text-slate-500">▾</span>
+            <span className="text-slate-500 text-xs">▾</span>
           </button>
 
           {dropdownOpen ? (
-            <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-50 max-h-[70vh] overflow-y-auto rounded-2xl border border-slate-700 bg-[#06111f] p-3 shadow-2xl shadow-black/40">
-              <input
-                value={companySearch}
-                onChange={(e) => setCompanySearch(e.target.value)}
-                placeholder="Firma ara..."
-                className={annveroInputClass}
-                autoFocus
+            <>
+              {/* Mobil backdrop */}
+              <div
+                className="fixed inset-0 z-40 bg-black/40 sm:hidden"
+                aria-hidden="true"
+                onClick={() => setDropdownOpen(false)}
               />
 
-              {favoriteCompanies.length ? (
-                <div className="mt-3">
-                  <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-amber-400/90">
-                    Favoriler
-                  </p>
-                  <div className="space-y-1">
-                    {favoriteCompanies.map((company) => (
-                      <CompanyRow
-                        key={`fav-${company.id}`}
-                        company={company}
-                        label={getCompanyDisplayName(company)}
-                        selected={company.id === selectedCompanyId}
-                        isFavorite
-                        onSelect={() => selectCompany(company.id)}
-                        onToggleFavorite={(e) => toggleFavorite(e, company.id)}
-                      />
-                    ))}
-                  </div>
+              <div
+                className="fixed inset-x-0 bottom-0 z-50 flex max-h-[70vh] flex-col rounded-t-2xl border border-slate-700 bg-[#06111f] shadow-2xl shadow-black/50 sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-0 sm:top-[calc(100%+6px)] sm:max-h-[360px] sm:w-full sm:max-w-[520px] sm:rounded-xl"
+                style={{ maxWidth: DROPDOWN_MAX_WIDTH }}
+                role="listbox"
+                aria-label="Firma seçimi"
+                onKeyDown={handleListKeyDown}
+              >
+                <div className="shrink-0 border-b border-slate-800 p-2.5">
+                  <div className="mx-auto mb-2 h-1 w-10 rounded-full bg-slate-700 sm:hidden" />
+                  <input
+                    ref={searchInputRef}
+                    value={companySearch}
+                    onChange={(e) => {
+                      setCompanySearch(e.target.value);
+                      setHighlightIndex(0);
+                    }}
+                    onKeyDown={handleListKeyDown}
+                    placeholder="Firma ara..."
+                    className={`${annveroInputClass} !py-2 !text-sm`}
+                    aria-autocomplete="list"
+                    aria-controls="annvero-company-list"
+                  />
                 </div>
-              ) : null}
 
-              {recentCompanies.length ? (
-                <div className="mt-3">
-                  <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-cyan-400/90">
-                    Son kullanılan
-                  </p>
-                  <div className="space-y-1">
-                    {recentCompanies.map((company) => (
-                      <CompanyRow
-                        key={`recent-${company.id}`}
-                        company={company}
-                        label={getCompanyDisplayName(company)}
-                        selected={company.id === selectedCompanyId}
-                        isFavorite={favoriteIds.includes(company.id)}
-                        onSelect={() => selectCompany(company.id)}
-                        onToggleFavorite={(e) => toggleFavorite(e, company.id)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ) : null}
+                <div
+                  id="annvero-company-list"
+                  ref={listRef}
+                  className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 py-1.5"
+                  style={{ maxHeight: DROPDOWN_MAX_HEIGHT - 56 }}
+                >
+                  {/* Tüm firmalar seçeneği — arama yokken üstte kısa */}
+                  <CompanyRow
+                    label="Tüm firmalar"
+                    selected={!selectedCompanyId}
+                    highlighted={highlightIndex === optionIndex}
+                    dataIndex={optionIndex++}
+                    onSelect={() => selectCompany("")}
+                    showFavorite={false}
+                  />
 
-              <div className="mt-3">
-                <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  Tüm firmalar
-                </p>
-                <div className="space-y-1">
-                  <button
-                    type="button"
-                    onClick={() => selectCompany("")}
-                    className={`flex w-full items-center rounded-xl px-3 py-2 text-left text-sm ${
-                      !selectedCompanyId ? "bg-blue-600/20 text-white" : "text-slate-300 hover:bg-white/5"
-                    }`}
-                  >
-                    Tüm firmalar
-                  </button>
-                  {filteredCompanies.map((company) => (
-                    <CompanyRow
-                      key={company.id}
-                      company={company}
-                      label={getCompanyDisplayName(company)}
-                      selected={company.id === selectedCompanyId}
-                      isFavorite={favoriteIds.includes(company.id)}
-                      onSelect={() => selectCompany(company.id)}
-                      onToggleFavorite={(e) => toggleFavorite(e, company.id)}
-                    />
-                  ))}
+                  {showPinnedSections && favoriteCompanies.length > 0 ? (
+                    <SectionLabel>Favoriler</SectionLabel>
+                  ) : null}
+                  {showPinnedSections
+                    ? favoriteCompanies.map((company) => {
+                        const idx = optionIndex++;
+                        return (
+                          <CompanyRow
+                            key={`fav-${company.id}`}
+                            label={getLabel(company)}
+                            selected={company.id === selectedCompanyId}
+                            highlighted={highlightIndex === idx}
+                            dataIndex={idx}
+                            isFavorite
+                            onSelect={() => selectCompany(company.id)}
+                            onToggleFavorite={(e) => toggleFavorite(e, company.id)}
+                          />
+                        );
+                      })
+                    : null}
+
+                  {showPinnedSections && recentCompanies.length > 0 ? (
+                    <SectionLabel>Son kullanılan</SectionLabel>
+                  ) : null}
+                  {showPinnedSections
+                    ? recentCompanies.map((company) => {
+                        const idx = optionIndex++;
+                        return (
+                          <CompanyRow
+                            key={`recent-${company.id}`}
+                            label={getLabel(company)}
+                            selected={company.id === selectedCompanyId}
+                            highlighted={highlightIndex === idx}
+                            dataIndex={idx}
+                            isFavorite={favoriteIds.includes(company.id)}
+                            onSelect={() => selectCompany(company.id)}
+                            onToggleFavorite={(e) => toggleFavorite(e, company.id)}
+                          />
+                        );
+                      })
+                    : null}
+
+                  <SectionLabel>
+                    {companySearch.trim() ? "Sonuçlar" : "Tüm firmalar"}
+                  </SectionLabel>
+                  {allCompaniesSorted.length === 0 ? (
+                    <p className="px-2.5 py-2 text-xs text-slate-500">Firma bulunamadı.</p>
+                  ) : (
+                    allCompaniesSorted.map((company) => {
+                      const idx = optionIndex++;
+                      return (
+                        <CompanyRow
+                          key={company.id}
+                          label={getLabel(company)}
+                          selected={company.id === selectedCompanyId}
+                          highlighted={highlightIndex === idx}
+                          dataIndex={idx}
+                          isFavorite={favoriteIds.includes(company.id)}
+                          onSelect={() => selectCompany(company.id)}
+                          onToggleFavorite={(e) => toggleFavorite(e, company.id)}
+                        />
+                      );
+                    })
+                  )}
                 </div>
               </div>
-            </div>
+            </>
           ) : null}
         </div>
 
@@ -264,26 +436,61 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
   );
 }
 
-function CompanyRow({ label, selected, isFavorite, onSelect, onToggleFavorite }) {
+function SectionLabel({ children }) {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition ${
-        selected ? "bg-blue-600/20 text-white" : "text-slate-300 hover:bg-white/5"
+    <p className="sticky top-0 z-[1] bg-[#06111f]/95 px-2.5 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 backdrop-blur-sm">
+      {children}
+    </p>
+  );
+}
+
+function CompanyRow({
+  label,
+  selected,
+  highlighted = false,
+  dataIndex,
+  isFavorite = false,
+  showFavorite = true,
+  onSelect,
+  onToggleFavorite,
+}) {
+  return (
+    <div
+      role="option"
+      aria-selected={selected}
+      data-option-index={dataIndex}
+      className={`group flex h-9 w-full items-center gap-1 rounded-lg px-2 text-left text-sm transition ${
+        selected
+          ? "bg-blue-600/25 text-white"
+          : highlighted
+            ? "bg-white/10 text-white"
+            : "text-slate-300 hover:bg-white/5"
       }`}
     >
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      <span
-        role="button"
-        tabIndex={0}
-        onClick={onToggleFavorite}
-        onKeyDown={(e) => e.key === "Enter" && onToggleFavorite(e)}
-        className={`shrink-0 text-base ${isFavorite ? "text-amber-400" : "text-slate-600 hover:text-amber-300"}`}
-        title={isFavorite ? "Favoriden çıkar" : "Favoriye ekle"}
+      <button
+        type="button"
+        onClick={onSelect}
+        className="min-w-0 flex-1 truncate py-1.5 text-left"
+        title={label}
       >
-        {isFavorite ? "★" : "☆"}
-      </span>
-    </button>
+        {label}
+      </button>
+      {showFavorite ? (
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={onToggleFavorite}
+          className={`shrink-0 rounded p-1 text-xs transition ${
+            isFavorite
+              ? "text-amber-400 opacity-100"
+              : "text-slate-600 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-amber-300 focus-visible:opacity-100"
+          }`}
+          title={isFavorite ? "Favoriden çıkar" : "Favoriye ekle"}
+          aria-label={isFavorite ? "Favoriden çıkar" : "Favoriye ekle"}
+        >
+          {isFavorite ? "★" : "☆"}
+        </button>
+      ) : null}
+    </div>
   );
 }
