@@ -19,6 +19,17 @@ import { bankRowToStandardTransaction } from "@/src/utils/bankStandardTransactio
 
 const BATCH_SIZE = 20;
 export const DEFAULT_CORE_PREVIEW_LIMIT = 100;
+/** Önizlemeyi bloke etmemek için batch / toplam bütçe */
+export const CORE_BATCH_TIMEOUT_MS = 8_000;
+export const CORE_TOTAL_BUDGET_MS = 20_000;
+export const CORE_REVIEW_LEFT_LABEL = "İncelemeye bırakıldı";
+
+function isAbortError(error) {
+  return (
+    error?.name === "AbortError" ||
+    /abort|iptal/i.test(String(error?.message || ""))
+  );
+}
 
 function compactAccount(value = "") {
   return String(value || "")
@@ -166,33 +177,91 @@ function withCorePreview(movement, coreResult, extra = {}) {
 export async function fetchCoreDecisionsBatch(transactions = [], fetchContext = {}) {
   if (!transactions.length) return [];
 
-  const response = await fetch("/api/core/accounting-decision", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      company_id: fetchContext.companyId || fetchContext.selectedCompanyId,
-      transactions,
-      include_debug: Boolean(fetchContext.includeDebug),
-    }),
-  });
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload?.error || `CORE API ${response.status}`);
+  const timeoutMs = Number(fetchContext.batchTimeoutMs) || CORE_BATCH_TIMEOUT_MS;
+  const externalSignal = fetchContext.signal || null;
+  const controller = new AbortController();
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    externalSignal.addEventListener("abort", onExternalAbort, { once: true });
   }
 
-  return Array.isArray(payload?.data?.decisions) ? payload.data.decisions : [];
+  const timer = setTimeout(() => controller.abort("CORE_BATCH_TIMEOUT"), timeoutMs);
+
+  try {
+    const response = await fetch("/api/core/accounting-decision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      signal: controller.signal,
+      body: JSON.stringify({
+        company_id: fetchContext.companyId || fetchContext.selectedCompanyId,
+        transactions,
+        include_debug: Boolean(fetchContext.includeDebug),
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.error || `CORE API ${response.status}`);
+    }
+
+    return Array.isArray(payload?.data?.decisions) ? payload.data.decisions : [];
+  } catch (error) {
+    if (controller.signal.reason === "CORE_BATCH_TIMEOUT" || /timeout/i.test(String(error?.message || ""))) {
+      const timeoutError = new Error("CORE_BATCH_TIMEOUT");
+      timeoutError.code = "CORE_BATCH_TIMEOUT";
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener("abort", onExternalAbort);
+    }
+  }
 }
 
 async function fetchCoreDecisionsInChunks(transactions = [], fetchContext = {}) {
   const results = [];
+  const startedAt = Date.now();
+  const budgetMs = Number(fetchContext.totalBudgetMs) || CORE_TOTAL_BUDGET_MS;
+  let timedOut = false;
+  let timeoutBatches = 0;
+  let errorBatches = 0;
+
   for (let offset = 0; offset < transactions.length; offset += BATCH_SIZE) {
+    if (fetchContext.signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    if (Date.now() - startedAt > budgetMs) {
+      timedOut = true;
+      for (let i = offset; i < transactions.length; i += 1) results.push(null);
+      break;
+    }
+
     const chunk = transactions.slice(offset, offset + BATCH_SIZE);
-    const chunkResults = await fetchCoreDecisionsBatch(chunk, fetchContext);
-    results.push(...chunkResults);
+    try {
+      const chunkResults = await fetchCoreDecisionsBatch(chunk, fetchContext);
+      for (let i = 0; i < chunk.length; i += 1) {
+        results.push(chunkResults[i] || null);
+      }
+    } catch (error) {
+      if (isAbortError(error) && fetchContext.signal?.aborted) throw error;
+      if (error?.code === "CORE_BATCH_TIMEOUT") {
+        timedOut = true;
+        timeoutBatches += 1;
+      } else {
+        errorBatches += 1;
+        console.warn("[bank-core] batch failed — satırlar incelemeye bırakıldı", error);
+      }
+      for (let i = 0; i < chunk.length; i += 1) results.push(null);
+    }
   }
-  return results;
+
+  return { decisions: results, timedOut, timeoutBatches, errorBatches };
 }
 
 /**
@@ -229,16 +298,27 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
   const transactionsForCore = standardTransactions.slice(0, coreRowLimit);
   let coreDecisions = [];
   let batchFailed = false;
+  let timedOut = false;
+  let timeoutBatches = 0;
+  let errorBatches = 0;
+  let unknownFromCore = 0;
 
   try {
     if (transactionsForCore.length > 0) {
-      coreDecisions = await fetchCoreDecisionsInChunks(transactionsForCore, {
+      const fetched = await fetchCoreDecisionsInChunks(transactionsForCore, {
         ...fetchContext,
         companyId: context.selectedCompanyId,
         includeDebug: isAnnveroCoreDebugEnabled(),
+        batchTimeoutMs: fetchContext.batchTimeoutMs ?? CORE_BATCH_TIMEOUT_MS,
+        totalBudgetMs: fetchContext.totalBudgetMs ?? CORE_TOTAL_BUDGET_MS,
       });
+      coreDecisions = fetched.decisions || [];
+      timedOut = Boolean(fetched.timedOut);
+      timeoutBatches = Number(fetched.timeoutBatches) || 0;
+      errorBatches = Number(fetched.errorBatches) || 0;
     }
   } catch (error) {
+    if (isAbortError(error)) throw error;
     console.warn("[bank-core] batch API failed — full legacy fallback", error);
     batchFailed = true;
   }
@@ -246,7 +326,11 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
   if (batchFailed) {
     return {
       movements: mapParsedRowsToStandardMovements(parsedRows, context).map((m) =>
-        withCorePreview(m, null, { _coreFallback: true })
+        withCorePreview(m, null, {
+          _coreFallback: true,
+          _coreSkipped: true,
+          warning: [m.warning, CORE_REVIEW_LEFT_LABEL].filter(Boolean).join(" | "),
+        })
       ),
       coreSummary: {
         enabled: true,
@@ -255,6 +339,8 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
         total: activeRows.length,
         coreLimit: coreRowLimit,
         batchError: true,
+        unknownFromCore: activeRows.length,
+        userWarning: `CORE yanıt vermedi — hareketler ${CORE_REVIEW_LEFT_LABEL.toLocaleLowerCase("tr")}.`,
       },
     };
   }
@@ -263,18 +349,25 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
   let coreCount = 0;
   let fallbackCount = 0;
   let skippedCount = 0;
+  const prebuilt = Array.isArray(fetchContext.prebuiltMovements)
+    ? fetchContext.prebuiltMovements
+    : null;
 
-  activeRows.forEach((row, index) => {
+  for (let index = 0; index < activeRows.length; index += 1) {
+    const row = activeRows[index];
+    const legacyBase =
+      prebuilt?.[index] || mapSingleParsedRowToMovement(row, context, index);
+
     if (index >= coreRowLimit) {
       movements.push(
-        withCorePreview(mapSingleParsedRowToMovement(row, context, index), null, {
+        withCorePreview(legacyBase, null, {
           _coreSkipped: true,
           _coreFallback: true,
         })
       );
       skippedCount += 1;
       fallbackCount += 1;
-      return;
+      continue;
     }
 
     const coreResult = coreDecisions[index] || null;
@@ -282,20 +375,27 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
     if (isCoreDecisionUsable(coreResult)) {
       movements.push(mapCoreDecisionToMovement(coreResult, row, context));
       coreCount += 1;
-      return;
+      continue;
     }
 
+    const reviewLeft = !coreResult || coreResult.status === CORE_DECISION_STATUS.UNKNOWN;
+    if (reviewLeft) unknownFromCore += 1;
+
     movements.push(
-      withCorePreview(mapSingleParsedRowToMovement(row, context, index), coreResult, {
+      withCorePreview(legacyBase, coreResult, {
         _coreFallback: true,
+        _coreSkipped: !coreResult,
         _coreDecisionSource: coreResult?.decision_source || "unknown",
-        _coreStatus: coreResult?.status || "unknown",
+        _coreStatus: coreResult?.status || (coreResult ? "unknown" : "not_run"),
         _coreConfidence: Number(coreResult?.confidence_score) || 0,
         _coreRiskLevel: coreResult?.risk_level || "none",
+        warning: [legacyBase.warning, reviewLeft ? CORE_REVIEW_LEFT_LABEL : ""]
+          .filter(Boolean)
+          .join(" | "),
       })
     );
     fallbackCount += 1;
-  });
+  }
 
   return {
     movements,
@@ -307,6 +407,14 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
       coreLimit: coreRowLimit,
       skipped: skippedCount,
       batchError: false,
+      timedOut,
+      timeoutBatches,
+      errorBatches,
+      unknownFromCore,
+      partial: timedOut || unknownFromCore > 0,
+      userWarning: timedOut
+        ? `CORE zaman aşımı — bazı hareketler ${CORE_REVIEW_LEFT_LABEL.toLocaleLowerCase("tr")}.`
+        : "",
     },
   };
 }
