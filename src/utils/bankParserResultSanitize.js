@@ -1,69 +1,9 @@
 /**
- * Banka parser sonuçlarını UI/state için güvenli plain object'e indirger.
- * Ağır rawRow / debug izleri React state ve localStorage'a girmez (tab OOM önlemi).
+ * Movement / Luca satırı — yalnızca ekran dilimi için hafif kopya.
+ * Full dataset üzerinde map etme; sadece verilen slice için çağır.
  */
 
-export const EMPTY_CORE_SUMMARY = Object.freeze({
-  enabled: false,
-  core: 0,
-  fallback: 0,
-  total: 0,
-  coreLimit: 0,
-  skipped: 0,
-  unknownFromCore: 0,
-  partial: false,
-  userWarning: "",
-  timeoutBatches: 0,
-  errorBatches: 0,
-  skippedByBudget: 0,
-  successBatches: 0,
-  uniqueDescriptions: 0,
-  uniqueRequested: 0,
-  batchTimeoutMs: 0,
-  totalBudgetMs: 0,
-  coreElapsedMs: 0,
-  batchError: false,
-});
-
-export function normalizeCoreSummary(input = null) {
-  if (!input || typeof input !== "object") {
-    return { ...EMPTY_CORE_SUMMARY };
-  }
-  return {
-    ...EMPTY_CORE_SUMMARY,
-    ...input,
-    unknownFromCore: Number(input.unknownFromCore) || 0,
-    timeoutBatches: Number(input.timeoutBatches) || 0,
-    errorBatches: Number(input.errorBatches) || 0,
-    skippedByBudget: Number(input.skippedByBudget) || 0,
-    successBatches: Number(input.successBatches) || 0,
-    core: Number(input.core) || 0,
-    fallback: Number(input.fallback) || 0,
-    total: Number(input.total) || 0,
-    coreLimit: Number(input.coreLimit) || 0,
-    skipped: Number(input.skipped) || 0,
-    partial: Boolean(input.partial),
-    userWarning: String(input.userWarning || ""),
-    enabled: Boolean(input.enabled),
-    batchError: Boolean(input.batchError),
-  };
-}
-
-function slimRawRow(rawRow) {
-  if (!rawRow || typeof rawRow !== "object") return undefined;
-  return {
-    dekontNo: String(rawRow.dekontNo || rawRow.Dekont || rawRow.dekont || "").slice(0, 64),
-    aciklama: String(rawRow.aciklama || rawRow.description || rawRow.Açıklama || "").slice(
-      0,
-      240
-    ),
-  };
-}
-
-/**
- * Movement → React state için güvenli kopya (circular/Map/Error yok).
- */
-export function sanitizeMovementForState(movement = {}) {
+export function sanitizeMovementForPreview(movement = {}) {
   if (!movement || typeof movement !== "object") return null;
 
   const suggestions = Array.isArray(movement.accountSuggestions)
@@ -112,14 +52,10 @@ export function sanitizeMovementForState(movement = {}) {
           needs_manual_review: Boolean(movement.corePreview.needs_manual_review),
         }
       : undefined,
-    rawRow: slimRawRow(movement.rawRow),
   };
 }
 
-/**
- * Luca satırı → state için güvenli kopya.
- */
-export function sanitizeLucaRowForState(row = {}) {
+export function sanitizeLucaRowForPreview(row = {}) {
   if (!row || typeof row !== "object") return null;
   return {
     id: String(row.id || ""),
@@ -145,48 +81,71 @@ export function sanitizeLucaRowForState(row = {}) {
   };
 }
 
-export function sanitizeMovementsForState(movements = []) {
-  if (!Array.isArray(movements)) return [];
+/** Yalnızca verilen dilimi sanitize eder — full dizi map edilmez. */
+export function sanitizeLucaSliceForPreview(rows = [], start = 0, end = rows.length) {
   const out = [];
-  for (const item of movements) {
-    const safe = sanitizeMovementForState(item);
+  const from = Math.max(0, start);
+  const to = Math.min(rows.length, end);
+  for (let i = from; i < to; i += 1) {
+    const safe = sanitizeLucaRowForPreview(rows[i]);
     if (safe) out.push(safe);
   }
   return out;
 }
 
-export function sanitizeLucaRowsForState(rows = []) {
-  if (!Array.isArray(rows)) return [];
+export function sanitizeMovementSliceForPreview(rows = [], start = 0, end = rows.length) {
   const out = [];
-  for (const item of rows) {
-    const safe = sanitizeLucaRowForState(item);
+  const from = Math.max(0, start);
+  const to = Math.min(rows.length, end);
+  for (let i = from; i < to; i += 1) {
+    const safe = sanitizeMovementForPreview(rows[i]);
     if (safe) out.push(safe);
   }
   return out;
 }
 
-/**
- * Pipeline sonucunu UI commit öncesi doğrula / normalize et.
- */
-export function normalizePipelineResultForUi(pipelineResult = {}, mainResult = {}) {
-  const movements = sanitizeMovementsForState(pipelineResult?.movementRows);
-  const lucaRows = sanitizeLucaRowsForState(pipelineResult?.standardLucaRows);
-  const coreSummary = normalizeCoreSummary(pipelineResult?.opsMeta?.coreSummary);
+export const EMPTY_CORE_SUMMARY = Object.freeze({
+  enabled: false,
+  core: 0,
+  fallback: 0,
+  total: 0,
+  coreLimit: 0,
+  skipped: 0,
+  unknownFromCore: 0,
+  partial: false,
+  userWarning: "",
+  timeoutBatches: 0,
+  errorBatches: 0,
+  skippedByBudget: 0,
+  successBatches: 0,
+  uniqueDescriptions: 0,
+  uniqueRequested: 0,
+  batchTimeoutMs: 0,
+  totalBudgetMs: 0,
+  coreElapsedMs: 0,
+  batchError: false,
+});
 
+export function normalizeCoreSummary(input = null) {
+  if (!input || typeof input !== "object") {
+    return { ...EMPTY_CORE_SUMMARY };
+  }
   return {
-    rawCount: Number(mainResult?.rawCount || pipelineResult?.rawCount) || 0,
-    movementRows: movements,
-    standardLucaRows: lucaRows,
-    unrecognizedItems: Array.isArray(pipelineResult?.unrecognizedItems)
-      ? pipelineResult.unrecognizedItems
-      : [],
-    declarationSummary: pipelineResult?.declarationSummary || null,
-    opsMeta: {
-      ...(pipelineResult?.opsMeta && typeof pipelineResult.opsMeta === "object"
-        ? pipelineResult.opsMeta
-        : {}),
-      coreSummary,
-    },
-    warning: coreSummary.userWarning || null,
+    ...EMPTY_CORE_SUMMARY,
+    ...input,
+    unknownFromCore: Number(input.unknownFromCore) || 0,
+    timeoutBatches: Number(input.timeoutBatches) || 0,
+    errorBatches: Number(input.errorBatches) || 0,
+    skippedByBudget: Number(input.skippedByBudget) || 0,
+    successBatches: Number(input.successBatches) || 0,
+    core: Number(input.core) || 0,
+    fallback: Number(input.fallback) || 0,
+    total: Number(input.total) || 0,
+    coreLimit: Number(input.coreLimit) || 0,
+    skipped: Number(input.skipped) || 0,
+    partial: Boolean(input.partial),
+    userWarning: String(input.userWarning || ""),
+    enabled: Boolean(input.enabled),
+    batchError: Boolean(input.batchError),
   };
 }

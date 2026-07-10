@@ -102,9 +102,18 @@ import {
 import { BANK_PARSE_STAGES } from "@/src/utils/bankParserWorkerCore";
 import {
   normalizeCoreSummary,
-  normalizePipelineResultForUi,
-  sanitizeLucaRowsForState,
+  sanitizeLucaSliceForPreview,
+  sanitizeMovementSliceForPreview,
 } from "@/src/utils/bankParserResultSanitize";
+import {
+  BANK_PREVIEW_PAGE_SIZE,
+  clearBankParserStore,
+  createEmptyBankParserStore,
+  getMovementById,
+  replaceLucaRowInStore,
+  replaceMovementInStore,
+  setStoreDataset,
+} from "@/src/utils/bankParserStore";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -115,7 +124,7 @@ const BANK_PREVIEW_FILTERS = [
   { id: "missingDocumentType", label: "Belge Türü Eksik" },
 ];
 
-const PREVIEW_PAGE_SIZE = 100;
+const PREVIEW_PAGE_SIZE = BANK_PREVIEW_PAGE_SIZE;
 
 function slimMovementForUi(movement = {}) {
   return {
@@ -187,16 +196,13 @@ function computePreviewSummary(lucaRows = [], opsDashboard = null) {
 export default function BankaParserPage() {
   const fileInputRef = useRef(null);
   const parseAbortRef = useRef(null);
-  /** Ağır ham veri React state dışında — tab OOM önlemi */
-  const pipelineCacheRef = useRef({
-    normalizedRows: [],
-    movements: [],
-    lucaRows: [],
-  });
+  /** Full dataset — tek bellek kopyası (React state dışında) */
+  const storeRef = useRef(createEmptyBankParserStore());
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileName, setFileName] = useState("");
   const [isParsing, setIsParsing] = useState(false);
   const [rawCount, setRawCount] = useState(0);
+  /** Önizleme dilimi — en fazla PREVIEW_PAGE_SIZE satır */
   const [movementRows, setMovementRows] = useState([]);
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
@@ -210,11 +216,12 @@ export default function BankaParserPage() {
   const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
   const [exportValidation, setExportValidation] = useState(null);
   const [standardLucaRows, setStandardLucaRows] = useState([]);
+  const [totalLucaCount, setTotalLucaCount] = useState(0);
+  const [totalMovementCount, setTotalMovementCount] = useState(0);
+  const [filteredLucaCount, setFilteredLucaCount] = useState(0);
+  const [previewPage, setPreviewPage] = useState(0);
   const [previewErrorDetail, setPreviewErrorDetail] = useState("");
-  const [previewLimit, setPreviewLimit] = useState(PREVIEW_PAGE_SIZE);
   const [previewSummary, setPreviewSummary] = useState(null);
-  const [normalizedRowsCache, setNormalizedRowsCache] = useState([]);
-  const [fullMovementRows, setFullMovementRows] = useState([]);
   const [coreIntegrationSummary, setCoreIntegrationSummary] = useState(null);
   const [coreRowsProcessed, setCoreRowsProcessed] = useState(0);
   const [isApplyingCoreAll, setIsApplyingCoreAll] = useState(false);
@@ -276,8 +283,14 @@ export default function BankaParserPage() {
 
   useEffect(() => {
     const handleCompanyChange = () => {
+      clearBankParserStore(storeRef.current);
       setMovementRows([]);
       setStandardLucaRows([]);
+      setTotalLucaCount(0);
+      setTotalMovementCount(0);
+      setFilteredLucaCount(0);
+      setPreviewPage(0);
+      setPreviewSummary(null);
       setSelectedFile(null);
       setFileName("");
     };
@@ -343,44 +356,72 @@ export default function BankaParserPage() {
     [selectedCompanyId, accountPlans, movementRows]
   );
 
+  const syncPreviewPage = (page = 0, search = previewSearch, quickFilter = previewQuickFilter) => {
+    const store = storeRef.current;
+    const hasFilter =
+      Boolean(String(search || "").trim()) || quickFilter !== "all";
+    // Filtre yokken full dizi shallow-copy üretme — doğrudan store referansı
+    const filtered = hasFilter
+      ? filterStandardLucaRows(store.lucaRows, search, quickFilter)
+      : store.lucaRows;
+    const maxPage = Math.max(0, Math.ceil(filtered.length / PREVIEW_PAGE_SIZE) - 1);
+    const safePage = Math.min(Math.max(0, page), maxPage);
+    const start = safePage * PREVIEW_PAGE_SIZE;
+    const pageRows = sanitizeLucaSliceForPreview(
+      filtered,
+      start,
+      start + PREVIEW_PAGE_SIZE
+    );
+    setPreviewPage(safePage);
+    setFilteredLucaCount(filtered.length);
+    setTotalLucaCount(store.lucaRows.length);
+    setTotalMovementCount(store.movements.length);
+    setStandardLucaRows(pageRows);
+    // CORE tablosu da yalnızca ilk sayfa dilimini state'te tutar
+    setMovementRows(
+      sanitizeMovementSliceForPreview(store.movements, 0, PREVIEW_PAGE_SIZE)
+    );
+  };
+
+  const syncPageRowsIntoStore = (pageRows = []) => {
+    const store = storeRef.current;
+    const previousPageIds = new Set(standardLucaRows.map((row) => row?.id));
+    const nextIds = new Set(pageRows.map((row) => row?.id));
+
+    if (previousPageIds.size) {
+      store.lucaRows = store.lucaRows.filter(
+        (row) => !previousPageIds.has(row?.id) || nextIds.has(row?.id)
+      );
+    }
+
+    for (const row of pageRows) {
+      if (!row?.id) continue;
+      const idx = store.lucaRows.findIndex((item) => item?.id === row.id);
+      if (idx >= 0) store.lucaRows[idx] = row;
+      else store.lucaRows.push(row);
+    }
+
+    setTotalLucaCount(store.lucaRows.length);
+    setStandardLucaRows(pageRows);
+  };
+
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), 3000);
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const filteredStandardLucaRows = useMemo(
-    () =>
-      filterStandardLucaRows(
-        standardLucaRows,
-        previewSearch,
-        previewQuickFilter
-      ),
-    [standardLucaRows, previewSearch, previewQuickFilter]
-  );
-
-  const displayedStandardLucaRows = useMemo(
-    () => filteredStandardLucaRows.slice(0, previewLimit),
-    [filteredStandardLucaRows, previewLimit]
-  );
-
-  const canShowMore = displayedStandardLucaRows.length < filteredStandardLucaRows.length;
-
-  const movementById = useMemo(() => {
-    const map = new Map();
-    movementRows.forEach((row) => map.set(row.id, row));
-    return map;
-  }, [movementRows]);
-
-  const fullMovementById = useMemo(() => {
-    const map = new Map();
-    const source = fullMovementRows.length ? fullMovementRows : movementRows;
-    source.forEach((row) => map.set(row.id, row));
-    return map;
-  }, [fullMovementRows, movementRows]);
+  const displayedStandardLucaRows = standardLucaRows;
+  const canShowMore =
+    (previewPage + 1) * PREVIEW_PAGE_SIZE < filteredLucaCount;
+  const canShowPrev = previewPage > 0;
 
   useEffect(() => {
-    setPreviewLimit(PREVIEW_PAGE_SIZE);
+    setPreviewPage(0);
+    if (storeRef.current.lucaRows.length) {
+      syncPreviewPage(0, previewSearch, previewQuickFilter);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewSearch, previewQuickFilter]);
 
   const handleApplyAccountSuggestion = async (row, suggestion) => {
@@ -390,8 +431,9 @@ export default function BankaParserPage() {
       selectedCompany?.bankAccounts || []
     );
 
+    replaceMovementInStore(storeRef.current, row.id, updatedRow);
     setMovementRows((prev) =>
-      prev.map((item) => (item.id === row.id ? updatedRow : item))
+      prev.map((item) => (item.id === row.id ? slimMovementForUi(updatedRow) : item))
     );
 
     if (!row.matchedMemoryId) return;
@@ -424,7 +466,10 @@ export default function BankaParserPage() {
   const saveAdvancedPreviewEdit = async (editingRowId, draftRow) => {
     if (!editingRowId || !draftRow) return null;
 
-    const currentRow = standardLucaRows.find((row) => row.id === editingRowId);
+    const store = storeRef.current;
+    const currentRow =
+      store.lucaRows.find((row) => row.id === editingRowId) ||
+      standardLucaRows.find((row) => row.id === editingRowId);
     if (!currentRow) return null;
 
     if (draftRow.saveToMemory && !selectedCompanyId) {
@@ -466,6 +511,7 @@ export default function BankaParserPage() {
         showToast("Satır güncellendi", "success");
       }
 
+      replaceLucaRowInStore(store, editingRowId, updatedRow);
       setExportValidation(null);
       return updatedRow;
     } finally {
@@ -483,29 +529,32 @@ export default function BankaParserPage() {
   };
 
   const exportExcel = (ignoreWarnings = false) => {
-    const allRows =
-      (pipelineCacheRef.current.lucaRows?.length
-        ? sanitizeLucaRowsForState(pipelineCacheRef.current.lucaRows)
-        : null) ||
-      standardLucaRows ||
-      [];
+    // Full veri yalnızca store'dan — React state'e geri yükleme yok
+    const allRows = storeRef.current.lucaRows;
     if (!allRows.length) {
       showToast("Önce dosyayı yükleyip ön izleme oluşturun.", "error");
       return;
     }
 
-    const readyRows = allRows.filter((row) => {
+    const readyRows = [];
+    let unknownCount = 0;
+    for (let i = 0; i < allRows.length; i += 1) {
+      const row = allRows[i];
       const hesap = String(row?.hesapKodu || "").trim();
       const karsi = String(row?.karsiHesapKodu || "").trim();
-      const warning = String(row?.uyari || row?.warning || "");
-      if (!hesap) return false;
-      if (warning.includes("Hesap eşleşmesi bulunamadı")) return false;
-      if (row?.riskDurumu === "HESAP_EKSIK") return false;
-      // Çift satırlı fişlerde karşı hesap boş olabilir (banka satırı); en az banka hesabı olsun
-      return Boolean(hesap || karsi);
-    });
+      const warning = String(row?.uyari || row?.warning || row?.kontrolNotu || "");
+      const skip =
+        !hesap ||
+        warning.includes("Hesap eşleşmesi bulunamadı") ||
+        row?.riskDurumu === "HESAP_EKSIK";
+      if (skip) {
+        unknownCount += 1;
+        continue;
+      }
+      if (hesap || karsi) readyRows.push(row);
+      else unknownCount += 1;
+    }
 
-    const unknownCount = allRows.length - readyRows.length;
     if (unknownCount > 0 && !ignoreWarnings) {
       const confirmed = window.confirm(
         `${unknownCount} satır hesap eşleşmesi olmadığı için Excel’e alınmayacak.\n` +
@@ -565,12 +614,9 @@ export default function BankaParserPage() {
   };
 
   const handleGoToLucaProducer = (event) => {
-    const transferRows =
-      (pipelineCacheRef.current.lucaRows?.length
-        ? pipelineCacheRef.current.lucaRows
-        : null) || standardLucaRows;
+    const transferRows = storeRef.current.lucaRows;
 
-    if (!movementRows.length || !transferRows.length) {
+    if (!totalMovementCount || !transferRows.length) {
       event.preventDefault();
       alert("Önce dosyayı yükleyip ön izleme oluşturun.");
       return;
@@ -624,20 +670,17 @@ export default function BankaParserPage() {
   };
 
   const clearPreviewState = () => {
-    pipelineCacheRef.current = {
-      normalizedRows: [],
-      movements: [],
-      lucaRows: [],
-    };
+    clearBankParserStore(storeRef.current);
     setRawCount(0);
     setMovementRows([]);
     setStandardLucaRows([]);
+    setTotalLucaCount(0);
+    setTotalMovementCount(0);
+    setFilteredLucaCount(0);
+    setPreviewPage(0);
     setExportValidation(null);
     setPreviewErrorDetail("");
-    setPreviewLimit(PREVIEW_PAGE_SIZE);
     setPreviewSummary(null);
-    setNormalizedRowsCache([]);
-    setFullMovementRows([]);
     setCoreIntegrationSummary(null);
     setCoreRowsProcessed(0);
   };
@@ -664,44 +707,67 @@ export default function BankaParserPage() {
 
   const applyPipelineResult = (mainResult, pipelineResult, coreRowLimit) => {
     try {
-      const safe = normalizePipelineResultForUi(pipelineResult, mainResult);
-      const lucaRows = safe.standardLucaRows;
-      const movements = safe.movementRows;
+      const lucaRows = Array.isArray(pipelineResult?.standardLucaRows)
+        ? pipelineResult.standardLucaRows
+        : [];
+      const movements = Array.isArray(pipelineResult?.movementRows)
+        ? pipelineResult.movementRows
+        : [];
+      const normalizedRows = Array.isArray(mainResult?.normalizedRows)
+        ? mainResult.normalizedRows
+        : storeRef.current.normalizedRows;
 
-      pipelineCacheRef.current = {
-        normalizedRows: Array.isArray(mainResult?.normalizedRows)
-          ? mainResult.normalizedRows
-          : pipelineCacheRef.current.normalizedRows,
-        movements: Array.isArray(pipelineResult?.movementRows)
-          ? pipelineResult.movementRows
-          : [],
-        lucaRows: Array.isArray(pipelineResult?.standardLucaRows)
-          ? pipelineResult.standardLucaRows
-          : [],
-      };
+      // Tek in-memory kopya — full diziler React state'e yazılmaz
+      setStoreDataset(storeRef.current, {
+        normalizedRows,
+        movements,
+        lucaRows,
+        rawCount: Number(mainResult?.rawCount) || normalizedRows.length || 0,
+      });
+      storeRef.current.declarationSummary = pipelineResult?.declarationSummary || null;
+      storeRef.current.unrecognizedItems = Array.isArray(
+        pipelineResult?.unrecognizedItems
+      )
+        ? pipelineResult.unrecognizedItems
+        : [];
+      storeRef.current.coreSummary = pipelineResult?.opsMeta?.coreSummary || null;
 
       const summary = computePreviewSummary(lucaRows, null);
       const coreSummary = computeCoreIntegrationSummary(movements);
-      const coreMeta = normalizeCoreSummary(safe.opsMeta?.coreSummary);
+      const coreMeta = normalizeCoreSummary(pipelineResult?.opsMeta?.coreSummary);
 
-      setRawCount(safe.rawCount);
+      setRawCount(Number(mainResult?.rawCount) || lucaRows.length || 0);
       setPreviewSummary(summary);
-      setPreviewLimit(PREVIEW_PAGE_SIZE);
-      setMovementRows(movements);
-      setFullMovementRows(movements);
       setCoreIntegrationSummary(coreSummary);
       setCoreRowsProcessed(
         coreMeta.coreLimit || coreRowLimit || DEFAULT_CORE_PREVIEW_LIMIT
       );
-      setStandardLucaRows(lucaRows);
-      setNormalizedRowsCache([]);
-      markAppliedDeclarationsPaid(safe.declarationSummary);
+      setPreviewPage(0);
+      syncPreviewPage(0);
+      markAppliedDeclarationsPaid(pipelineResult?.declarationSummary);
+
+      if (isDevTelemetryEnabled() && typeof performance !== "undefined" && performance.memory) {
+        console.info("[banka-ekstresi] memory after preview", {
+          usedJSHeapMB: Math.round(performance.memory.usedJSHeapSize / 1048576),
+          totalJSHeapMB: Math.round(performance.memory.totalJSHeapSize / 1048576),
+          jsHeapLimitMB: Math.round(performance.memory.jsHeapSizeLimit / 1048576),
+          lucaRows: lucaRows.length,
+          movements: movements.length,
+          stateLucaRows: Math.min(PREVIEW_PAGE_SIZE, lucaRows.length),
+          fullDatasetCopies: 1,
+        });
+      }
 
       return {
-        result: safe,
+        result: {
+          rawCount: Number(mainResult?.rawCount) || 0,
+          warning: pipelineResult?.warning || null,
+          declarationSummary: pipelineResult?.declarationSummary || null,
+          unrecognizedItems: storeRef.current.unrecognizedItems,
+        },
         summary,
-        lucaRows,
-        movements,
+        lucaRowCount: lucaRows.length,
+        movementCount: movements.length,
         coreMeta,
       };
     } catch (error) {
@@ -712,10 +778,9 @@ export default function BankaParserPage() {
       return {
         result: {
           rawCount: Number(mainResult?.rawCount) || 0,
-          movementRows: [],
-          standardLucaRows: [],
-          unrecognizedItems: [],
           warning: null,
+          declarationSummary: null,
+          unrecognizedItems: [],
         },
         summary: {
           totalMovements: 0,
@@ -725,8 +790,8 @@ export default function BankaParserPage() {
           risky: 0,
           suggested: 0,
         },
-        lucaRows: [],
-        movements: [],
+        lucaRowCount: 0,
+        movementCount: 0,
         coreMeta: normalizeCoreSummary(null),
       };
     }
@@ -840,7 +905,7 @@ export default function BankaParserPage() {
 
     setIsParsing(true);
     setPreviewErrorDetail("");
-    setPreviewLimit(PREVIEW_PAGE_SIZE);
+    setPreviewPage(0);
     setPreviewSummary(null);
     parserJob.begin({
       stage: BANK_PARSE_STAGES.READING,
@@ -853,7 +918,8 @@ export default function BankaParserPage() {
       timer.end("excelParse");
       if (signal.aborted) throw new ParseAbortError();
 
-      pipelineCacheRef.current.normalizedRows = mainResult.normalizedRows || [];
+      // Normalize satırlar geçici olarak pipeline'a gider; kalıcı tek kopya apply'da store'a alınır
+      storeRef.current.normalizedRows = mainResult.normalizedRows || [];
 
       const coreRowLimit = isAnnveroCoreEnabled() ? DEFAULT_CORE_PREVIEW_LIMIT : undefined;
       timer.start("pipeline");
@@ -874,7 +940,7 @@ export default function BankaParserPage() {
 
       // Önce önizlemeyi bas — ağır ops/NFT localStorage yazımı yok (tab OOM)
       timer.start("previewRender");
-      const { result, summary, lucaRows, coreMeta } = applyPipelineResult(
+      const { result, summary, lucaRowCount, coreMeta } = applyPipelineResult(
         mainResult,
         pipelineResult,
         coreRowLimit
@@ -883,7 +949,7 @@ export default function BankaParserPage() {
 
       setIsParsing(false);
       parserJob.markSuccess(
-        `${summary.totalMovements || lucaRows.length} hareket hazır (${mainResult.parseMode || "parse"})`
+        `${summary.totalMovements || lucaRowCount} hareket hazır (${mainResult.parseMode || "parse"})`
       );
       timer.report("[banka-ekstresi] timing");
 
@@ -897,14 +963,14 @@ export default function BankaParserPage() {
         if (signal.aborted) return;
 
         try {
-          const movementCount = pipelineCacheRef.current.movements?.length || 0;
+          const movementCount = storeRef.current.movements.length;
           // Küçük dosyalarda yalnızca dashboard metrikleri; transactions yazılmaz
           if (movementCount > 0 && movementCount <= 120) {
             const withOps = buildBankCardOpsSideOutput(
               {
                 normalizedRows: [],
-                movementRows: pipelineCacheRef.current.movements,
-                standardLucaRows: lucaRows,
+                movementRows: storeRef.current.movements,
+                standardLucaRows: storeRef.current.lucaRows,
                 rawCount: mainResult.rawCount || 0,
               },
               {
@@ -931,7 +997,8 @@ export default function BankaParserPage() {
             });
             if (withOps.opsDashboard) {
               setPreviewSummary((prev) =>
-                computePreviewSummary(lucaRows, withOps.opsDashboard) || prev
+                computePreviewSummary(storeRef.current.lucaRows, withOps.opsDashboard) ||
+                prev
               );
             }
           }
@@ -939,7 +1006,7 @@ export default function BankaParserPage() {
           console.error("[banka-ekstresi] ops session save failed", sessionError);
         }
 
-        const usageRows = (pipelineCacheRef.current.lucaRows || lucaRows).slice(0, 300);
+        const usageRows = storeRef.current.lucaRows.slice(0, 300);
         recordLearningMemoryUsage(usageRows).catch((err) =>
           console.error("[banka-ekstresi] learning usage failed", err)
         );
@@ -999,7 +1066,7 @@ export default function BankaParserPage() {
   };
 
   const handleApplyCoreToAllRows = async () => {
-    const cachedNormalized = pipelineCacheRef.current.normalizedRows || [];
+    const cachedNormalized = storeRef.current.normalizedRows || [];
     if (!isAnnveroCoreEnabled() || !cachedNormalized.length || isApplyingCoreAll) return;
 
     parseAbortRef.current?.abort();
@@ -1021,18 +1088,18 @@ export default function BankaParserPage() {
 
       if (abortController.signal.aborted) throw new ParseAbortError();
 
-      const { summary, lucaRows, coreMeta } = applyPipelineResult(
-        { rawCount: rawCount || cachedNormalized.length },
+      const { summary, lucaRowCount, movementCount, coreMeta } = applyPipelineResult(
+        { rawCount: rawCount || cachedNormalized.length, normalizedRows: cachedNormalized },
         pipelineResult,
         cachedNormalized.length
       );
 
-      parserJob.markSuccess(`CORE ${summary.totalMovements || lucaRows.length} satırda tamamlandı`);
+      parserJob.markSuccess(`CORE ${summary.totalMovements || lucaRowCount} satırda tamamlandı`);
       if (coreMeta?.userWarning) {
         showToast(coreMeta.userWarning, "error");
       } else {
         showToast(
-          `CORE tüm ${summary.totalMovements || fullMovementRows.length} harekete uygulandı.`,
+          `CORE tüm ${summary.totalMovements || movementCount} harekete uygulandı.`,
           "success"
         );
       }
@@ -1052,11 +1119,12 @@ export default function BankaParserPage() {
     }
   };
 
-  const corePreviewMovements = fullMovementRows.length ? fullMovementRows : movementRows;
+  // CORE tablosu: yalnızca state'teki sayfa dilimi (full dizi prop olarak verilmez)
+  const corePreviewMovements = movementRows;
   const hasMoreCoreRows =
     isAnnveroCoreEnabled() &&
     coreIntegrationSummary?.notRun > 0 &&
-    (pipelineCacheRef.current.normalizedRows?.length || 0) > 0;
+    (storeRef.current.normalizedRows?.length || 0) > 0;
 
   const requestCoreTeach = (movement, row = {}) => {
     if (!selectedCompanyId || !movement) return;
@@ -1102,7 +1170,9 @@ export default function BankaParserPage() {
   };
 
   const handleOpenTeachFromLucaRow = (row) => {
-    const movement = row?._movementId ? fullMovementById.get(row._movementId) : null;
+    const movement = row?._movementId
+      ? getMovementById(storeRef.current, row._movementId)
+      : null;
     if (movement) {
       requestCoreTeach(movement, row);
       return;
@@ -1134,7 +1204,7 @@ export default function BankaParserPage() {
 
   const showCoreTeachForLucaRow = (row) => {
     const movement = row?._movementId
-      ? fullMovementById.get(row._movementId)
+      ? getMovementById(storeRef.current, row._movementId)
       : null;
     if (
       isAnnveroCoreEnabled() &&
@@ -1174,15 +1244,15 @@ export default function BankaParserPage() {
         _knowledgeTeachSaved: true,
       };
 
-      const applyMovementUpdate = (rows = []) =>
-        rows.map((row) => (row.id === teachMovement.id ? updatedMovement : row));
-
-      setFullMovementRows((prev) => {
-        const next = applyMovementUpdate(prev);
-        setCoreIntegrationSummary(computeCoreIntegrationSummary(next));
-        return next;
-      });
-      setMovementRows((prev) => applyMovementUpdate(prev).map(slimMovementForUi));
+      replaceMovementInStore(storeRef.current, teachMovement.id, updatedMovement);
+      setCoreIntegrationSummary(
+        computeCoreIntegrationSummary(storeRef.current.movements)
+      );
+      setMovementRows((prev) =>
+        prev.map((row) =>
+          row.id === teachMovement.id ? slimMovementForUi(updatedMovement) : row
+        )
+      );
 
       const saveMeta = result?.save || {};
       const recognizedAfterTeach =
@@ -1570,14 +1640,14 @@ export default function BankaParserPage() {
                 activeFilter={previewQuickFilter}
                 onFilterChange={setPreviewQuickFilter}
                 shownCount={displayedStandardLucaRows.length}
-                totalCount={filteredStandardLucaRows.length}
+                totalCount={filteredLucaCount}
               />
 
               <PreviewErrorBoundary>
                 <EditableStandardLucaPreviewTable
                   rows={standardLucaRows}
                   onRowsChange={(nextRows) => {
-                    setStandardLucaRows(nextRows);
+                    syncPageRowsIntoStore(nextRows);
                     setExportValidation(null);
                   }}
                   displayedRows={displayedStandardLucaRows}
@@ -1595,7 +1665,7 @@ export default function BankaParserPage() {
                   showCoreTeachForRow={showCoreTeachForLucaRow}
                   renderKontrolCell={(row) => {
                     const movement = row._movementId
-                      ? movementById.get(row._movementId)
+                      ? getMovementById(storeRef.current, row._movementId)
                       : null;
                     const suggestions = movement
                       ? movement.accountSuggestions?.length
@@ -1622,21 +1692,32 @@ export default function BankaParserPage() {
               </PreviewErrorBoundary>
 
               <div className="mt-4 flex flex-wrap items-center gap-3">
+                {canShowPrev ? (
+                  <button
+                    type="button"
+                    onClick={() => syncPreviewPage(previewPage - 1)}
+                    className="rounded-lg border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-medium text-gray-100 hover:bg-gray-800"
+                  >
+                    Önceki sayfa
+                  </button>
+                ) : null}
                 {canShowMore ? (
                   <button
                     type="button"
-                    onClick={() =>
-                      setPreviewLimit((prev) => prev + PREVIEW_PAGE_SIZE)
-                    }
+                    onClick={() => syncPreviewPage(previewPage + 1)}
                     className="rounded-lg border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-medium text-gray-100 hover:bg-gray-800"
                   >
-                    Daha fazla göster (+{PREVIEW_PAGE_SIZE})
+                    Sonraki sayfa (+{PREVIEW_PAGE_SIZE})
                   </button>
                 ) : null}
                 <p className="text-sm text-gray-400">
-                  Toplam {standardLucaRows.length} Luca satırı.
-                  {` Ekranda ${displayedStandardLucaRows.length}/${filteredStandardLucaRows.length}.`}
-                  {" Luca Excel tüm satırlar üzerinden çalışır."}
+                  Toplam {totalLucaCount} Luca satırı
+                  {filteredLucaCount !== totalLucaCount
+                    ? ` (${filteredLucaCount} filtreli)`
+                    : ""}
+                  .
+                  {` Ekranda sayfa ${previewPage + 1}: ${displayedStandardLucaRows.length}/${filteredLucaCount || totalLucaCount} (state ≤${PREVIEW_PAGE_SIZE}).`}
+                  {" Luca Excel store’daki tüm satırlar üzerinden çalışır."}
                 </p>
               </div>
             </>
