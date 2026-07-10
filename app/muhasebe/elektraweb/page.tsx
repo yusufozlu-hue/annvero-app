@@ -306,8 +306,6 @@ export default function ElektrawebPage() {
       return;
     }
 
-    console.log("LUCA EXPORT INPUT", standardLucaRows.slice(0, 10));
-
     savePendingLucaRows(
       buildStandardLucaTransferPayload({
         firmaId: selectedCompanyId,
@@ -320,7 +318,7 @@ export default function ElektrawebPage() {
 
     logStandardLucaReport("elektraweb-transfer", standardLucaRows.map(stripStandardLucaRow));
 
-    router.push("/muhasebe/luca-donusturucu");
+    router.push("/muhasebe/luca-donusturucu?source=elektraweb");
   };
 
   const yuksekRiskli = useMemo(

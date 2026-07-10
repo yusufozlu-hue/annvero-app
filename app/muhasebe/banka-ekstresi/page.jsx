@@ -1267,7 +1267,7 @@ export default function BankaParserPage() {
           </button>
 
           <Link
-            href="/muhasebe/luca-donusturucu"
+            href="/muhasebe/luca-donusturucu?source=bank"
             onClick={handleGoToLucaProducer}
             className={annveroBtnSecondary}
           >

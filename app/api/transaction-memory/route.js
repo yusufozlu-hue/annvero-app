@@ -21,6 +21,7 @@ import {
   isLearningMemorySchemaError,
   LEARNING_MEMORY_SCHEMA_MESSAGE,
 } from "@/src/utils/learningMemorySafePayload";
+import { mapTransactionMemoryError } from "@/src/utils/transactionMemoryErrors";
 
 const TABLE = "unrecognized_transactions";
 const MEMORY_TABLE = "learning_memory";
@@ -73,7 +74,10 @@ export async function GET(request) {
 
   const { data, error: queryError } = await scoped;
   if (queryError) {
-    return NextResponse.json({ error: queryError.message }, { status: 500 });
+    return NextResponse.json(
+      { error: mapTransactionMemoryError(queryError, "Tanınmayan işlemler yüklenemedi.") },
+      { status: 500 }
+    );
   }
 
   return NextResponse.json({
@@ -123,7 +127,10 @@ export async function POST(request) {
       .in("status", [UNRECOGNIZED_STATUS.PENDING, UNRECOGNIZED_STATUS.LEARNED]);
 
     if (existingError) {
-      return NextResponse.json({ error: existingError.message }, { status: 500 });
+      return NextResponse.json(
+        { error: mapTransactionMemoryError(existingError, "Kuyruk kontrol edilemedi.") },
+        { status: 500 }
+      );
     }
 
     const existingByFingerprint = new Map();
@@ -195,7 +202,10 @@ export async function POST(request) {
       .select("*");
 
     if (insertError) {
-      return NextResponse.json({ error: insertError.message }, { status: 500 });
+      return NextResponse.json(
+        { error: mapTransactionMemoryError(insertError, "Tanınmayan işlemler kaydedilemedi.") },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
@@ -220,7 +230,10 @@ export async function POST(request) {
       .maybeSingle();
 
     if (readError) {
-      return NextResponse.json({ error: readError.message }, { status: 500 });
+      return NextResponse.json(
+        { error: mapTransactionMemoryError(readError, "Kayıt okunamadı.") },
+        { status: 500 }
+      );
     }
 
     if (!queueItem) {
@@ -253,8 +266,6 @@ export async function POST(request) {
       amount: queueItem.amount ?? null,
       status: "active",
     });
-
-    console.log("learning memory safe payload", insertMemory);
 
     let memoryRow = null;
     let memoryError = null;
@@ -297,7 +308,10 @@ export async function POST(request) {
       .maybeSingle();
 
     if (updateError) {
-      return NextResponse.json({ error: updateError.message }, { status: 500 });
+      return NextResponse.json(
+        { error: mapTransactionMemoryError(updateError, "Kuyruk güncellenemedi.") },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
@@ -364,7 +378,10 @@ export async function PATCH(request) {
     .maybeSingle();
 
   if (updateError) {
-    return NextResponse.json({ error: updateError.message }, { status: 500 });
+    return NextResponse.json(
+      { error: mapTransactionMemoryError(updateError, "İşlem güncellenemedi.") },
+      { status: 500 }
+    );
   }
 
   return NextResponse.json({ data: mapUnrecognizedDbRow(data) });

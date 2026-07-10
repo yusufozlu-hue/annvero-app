@@ -192,7 +192,7 @@ export default function IkPersonelCompanyPanel({
                     </p>
                   </div>
                   <Link
-                    href="/hesaplama-araclari/kidem-ihbar"
+                    href="/ik-personel/kidem-ihbar"
                     onClick={() => saveKidemIhbarPrefill(card)}
                     className="text-xs text-violet-300 hover:text-violet-200"
                   >

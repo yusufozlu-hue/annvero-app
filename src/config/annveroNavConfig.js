@@ -48,7 +48,7 @@ export const ANNVERO_NAV_GROUPS = [
     items: [
       { label: "Personel Operasyon Merkezi", href: "/ik-personel" },
       { label: "Toplu Kıdem İhbar", href: "/muhasebe/toplu-kidem-ihbar" },
-      { label: "Kıdem İhbar", href: "/hesaplama-araclari/kidem-ihbar" },
+      { label: "Kıdem İhbar", href: "/ik-personel/kidem-ihbar" },
     ],
   },
   {

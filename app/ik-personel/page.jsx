@@ -170,7 +170,7 @@ export default function IkPersonelPage() {
             <Link href="/muhasebe/firma-yonetimi" className={navBtn}>
               Firma Yönetimi
             </Link>
-            <Link href="/hesaplama-araclari/kidem-ihbar" className={navBtn}>
+            <Link href="/ik-personel/kidem-ihbar" className={navBtn}>
               Kıdem/İhbar
             </Link>
           </nav>
@@ -331,7 +331,7 @@ export default function IkPersonelPage() {
                       </p>
                     </div>
                     <Link
-                      href="/hesaplama-araclari/kidem-ihbar"
+                      href="/ik-personel/kidem-ihbar"
                       onClick={() => saveKidemIhbarPrefill(card)}
                       className="text-xs font-semibold text-violet-300 hover:text-violet-200"
                     >

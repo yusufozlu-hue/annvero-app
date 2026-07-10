@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import * as XLSX from "xlsx";
-import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import EditableStandardLucaPreviewTable from "../components/EditableStandardLucaPreviewTable";
 import { useCompanyList } from "../hooks/useCompanyList";
@@ -86,9 +86,9 @@ const SOURCE_UI = {
     description: "Elektraweb fiş Excel dosyasını yükleyin.",
   },
   [SOURCE_TYPES.BANKA]: {
-    label: "Elektraweb",
-    title: "Elektraweb Fiş Dosyası",
-    description: "Elektraweb fiş Excel dosyasını yükleyin.",
+    label: "Banka Parser",
+    title: "Banka Hareket Dosyası",
+    description: "Banka ekstresi Excel dosyasını yükleyin.",
   },
 };
 
@@ -136,10 +136,18 @@ function resolvePendingSourceType(pending) {
   return SOURCE_TYPES.ELEKTRAWEB;
 }
 
-export default function LucaDonusturucuPage() {
-  console.log("LUCA FIS DONUSTURUCU ELEKTRAWEB MODE ACTIVE");
+function resolveUrlSourceType(param) {
+  const value = String(param || "").trim().toLowerCase();
+  if (value === "bank" || value === "banka") return SOURCE_TYPES.BANKA;
+  if (value === "elektraweb" || value === "elektra") return SOURCE_TYPES.ELEKTRAWEB;
+  return null;
+}
 
-  const [sourceType, setSourceType] = useState("ELEKTRAWEB");
+export default function LucaDonusturucuPage() {
+  const searchParams = useSearchParams();
+  const [sourceType, setSourceType] = useState(SOURCE_TYPES.ELEKTRAWEB);
+  const [sourceLocked, setSourceLocked] = useState(false);
+  const [hasTransferredRows, setHasTransferredRows] = useState(false);
   const [uploadedFile, setUploadedFile] = useState(null);
   const [learningMemory, setLearningMemory] = useState([]);
   const [yukleniyor, setYukleniyor] = useState(false);
@@ -157,12 +165,19 @@ export default function LucaDonusturucuPage() {
   const [toast, setToast] = useState(null);
 
   const {
-    companies,
     selectedCompanyId,
     setSelectedCompanyId,
     selectedCompany: selectedCompanyRaw,
     refreshCompanies,
   } = useCompanyList();
+
+  useEffect(() => {
+    const urlSource = resolveUrlSourceType(searchParams.get("source"));
+    if (urlSource) {
+      setSourceType(urlSource);
+      setSourceLocked(true);
+    }
+  }, [searchParams]);
 
   const selectedCompany = useMemo(
     () => normalizeCompanyRecord(selectedCompanyRaw),
@@ -216,6 +231,8 @@ export default function LucaDonusturucuPage() {
 
     const pendingSourceType = resolvePendingSourceType(pending);
     setSourceType(pendingSourceType);
+    setSourceLocked(true);
+    setHasTransferredRows(true);
 
     const rows = ensureStandardLucaRowIds(
       sortStandardLucaRows(
@@ -249,12 +266,8 @@ export default function LucaDonusturucuPage() {
     );
   }, [setSelectedCompanyId]);
 
-  useEffect(() => {
-    console.log("CURRENT SOURCE TYPE:", sourceType);
-  }, [sourceType]);
-
   const changeSourceType = (nextType) => {
-    if (nextType === sourceType) return;
+    if (sourceLocked || nextType === sourceType) return;
 
     setSourceType(nextType);
     setRawRows([]);
@@ -263,8 +276,6 @@ export default function LucaDonusturucuPage() {
     setUploadedFile(null);
     setHareketFileName("");
     setPreviewError("");
-    setEditingRowIndex(null);
-    setDraftRow(null);
   };
 
   useEffect(() => {
@@ -314,13 +325,37 @@ export default function LucaDonusturucuPage() {
     [selectedCompany]
   );
 
-  const activeCreditCardCount = useMemo(
-    () =>
-      (selectedCompany?.creditCards || []).filter(
-        (card) => card.isActive !== false
-      ).length,
-    [selectedCompany]
-  );
+  const readinessItems = useMemo(() => {
+    if (!selectedCompanyId) {
+      return [{ label: "Firma", value: "Üst menüden seçin", status: "missing" }];
+    }
+
+    return [
+      {
+        label: "Hesap planı",
+        value: companyPlans.length > 0 ? "Hazır" : "Eksik",
+        status: companyPlans.length > 0 ? "ready" : "missing",
+      },
+      {
+        label: "Kurallar",
+        value: hasRules ? "Hazır" : "Eksik",
+        status: hasRules ? "ready" : "missing",
+      },
+      {
+        label: "Banka",
+        value: String(activeBankCount),
+        status: activeBankCount > 0 ? "ready" : "missing",
+      },
+      {
+        label: "Kaynak",
+        value: getSourceTypeLabel(sourceType),
+        status: "ready",
+      },
+    ];
+  }, [selectedCompanyId, companyPlans.length, hasRules, activeBankCount, sourceType]);
+
+  const showSourcePicker = !sourceLocked;
+  const showFileUpload = !hasTransferredRows && standardLucaRows.length === 0;
 
   const documentSeriesCount = selectedCompany?.documentSeriesRules?.length || 0;
 
@@ -690,8 +725,6 @@ export default function LucaDonusturucuPage() {
 
     setYukleniyor(true);
     setPreviewError("");
-    setEditingRowIndex(null);
-    setDraftRow(null);
 
     try {
       const formData = new FormData();
@@ -726,10 +759,7 @@ export default function LucaDonusturucuPage() {
 
       const parsedRows = ensureStandardLucaRowIds(sortStandardLucaRows(apiRows));
 
-      console.log("PREVIEW CLICKED");
-      console.log("PARSED ROWS", parsedRows);
       setStandardLucaRows(applyPreviewAccountMemory(parsedRows));
-      console.log("STANDARD ROWS STATE", parsedRows);
       setFisler(groupStandardLucaRowsToFisler(parsedRows));
       setRawRows([]);
       setHareketFileName(
@@ -758,10 +788,7 @@ export default function LucaDonusturucuPage() {
   };
 
   const createPreview = async () => {
-    console.log("PREVIEW CLICKED");
     setPreviewError("");
-    setEditingRowIndex(null);
-    setDraftRow(null);
 
     if (sourceType === SOURCE_TYPES.BANKA) {
       createFisler();
@@ -773,8 +800,6 @@ export default function LucaDonusturucuPage() {
 
   const createFisler = () => {
     setPreviewError("");
-    setEditingRowIndex(null);
-    setDraftRow(null);
 
     try {
       if (!selectedCompany) {
@@ -999,14 +1024,7 @@ export default function LucaDonusturucuPage() {
         })
       );
 
-      console.log("CURRENT SOURCE TYPE:", sourceType);
-      console.log("USING PARSER", "BANKA");
-      console.log("PARSED ROWS", parsedRows.slice(0, 10));
-
       setStandardLucaRows(applyPreviewAccountMemory(parsedRows));
-      console.log("PREVIEW CLICKED");
-      console.log("PARSED ROWS", parsedRows);
-      console.log("STANDARD ROWS STATE", parsedRows);
       setHareketFileName(
         uploadedFile
           ? `${uploadedFile.name} — ${formatRowCountLabel(parsedRows.length, sourceType)}`
@@ -1145,165 +1163,119 @@ export default function LucaDonusturucuPage() {
           {toast.message}
         </div>
       )}
-      <p className="mb-6 text-3xl font-bold text-yellow-400">
-        TEST - BU DOSYA ÇALIŞIYOR
+      <h1 className="mb-2 text-3xl font-bold">Luca Fiş Üretici</h1>
+      <p className="mb-8 text-sm text-gray-400">
+        Aktif firmayı üst menüden yönetin. Kaynak biliniyorsa seçim otomatik yapılır.
       </p>
 
-      <h1 className="mb-10 text-4xl font-bold">Luca Fiş Üretici</h1>
-
       <div className="grid max-w-6xl gap-6">
-        <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
-          <h2 className="mb-4 text-2xl font-semibold">Firma Seçimi</h2>
-
-          <select
-            value={selectedCompanyId}
-            onChange={(e) => {
-              setSelectedCompanyId(e.target.value);
-              setFisler([]);
-            }}
-            className="mb-4 min-w-[320px] rounded-xl border border-gray-700 bg-gray-950 p-3 text-white"
-          >
-            <CompanySelectOptions companies={companies} />
-          </select>
-
-          {selectedCompany && (
-            <div className="mt-2 rounded-2xl border border-gray-800 bg-gray-950/60 p-5">
-              <div className="mb-4 flex items-center gap-2">
-                <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
-                <h3 className="text-base font-semibold text-gray-100">
-                  Seçili Firma Kontrol Özeti
-                </h3>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
-                <ControlStat
-                  label="Firma"
-                  value={getCompanyDisplayName(selectedCompany)}
-                  clamp
-                  wide
-                />
-                <ControlStat
-                  label="Banka Hesabı"
-                  value={activeBankCount}
-                  status={activeBankCount > 0 ? "ready" : "missing"}
-                />
-                <ControlStat
-                  label="Kredi Kartı"
-                  value={activeCreditCardCount}
-                  status={activeCreditCardCount > 0 ? "ready" : "missing"}
-                />
-                <ControlStat
-                  label="Hesap Planı"
-                  value={companyPlans.length > 0 ? "Hazır" : "Eksik"}
-                  status={companyPlans.length > 0 ? "ready" : "missing"}
-                />
-                <ControlStat
-                  label="Kural Durumu"
-                  value={hasRules ? "Hazır" : "Eksik"}
-                  status={hasRules ? "ready" : "missing"}
-                />
-              </div>
-
-              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <ControlStat
-                  label="Son Hesap Planı Yükleme"
-                  value={lastPlanUploadedAt || "Kayıt yok"}
-                  secondary
-                />
-                <ControlStat
-                  label="Son Kural Güncelleme"
-                  value={lastRuleUpdatedAt || "Kayıt yok"}
-                  secondary
-                />
-                <ControlStat
-                  label="Bekleyen Luca Satırı"
-                  value={pendingRowCount}
-                  badge={pendingRowCount > 0 ? "warning" : "ok"}
-                />
-              </div>
-
-              <p className="mt-4 text-xs text-gray-500">
-                Fiş üretimi öncesi firma yapılandırma kontrolü
-              </p>
-
-              {documentSeriesCount > 0 && (
-                <p className="mt-1 text-xs text-gray-500">
-                  Belge serisi kuralı: {documentSeriesCount} kayıt bağlı.
-                </p>
-              )}
-            </div>
+        <div className="rounded-2xl border border-gray-800 bg-gray-900 p-5">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-400">
+            Hazırlık durumu
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {readinessItems.map((item) => (
+              <ReadinessBadge key={item.label} {...item} />
+            ))}
+          </div>
+          {(lastPlanUploadedAt || lastRuleUpdatedAt || documentSeriesCount > 0) && (
+            <details className="mt-4 text-xs text-gray-500">
+              <summary className="cursor-pointer text-gray-400 hover:text-gray-300">
+                Detaylı bilgi
+              </summary>
+              <ul className="mt-2 space-y-1">
+                {lastPlanUploadedAt ? (
+                  <li>Son hesap planı: {lastPlanUploadedAt}</li>
+                ) : null}
+                {lastRuleUpdatedAt ? <li>Son kural güncelleme: {lastRuleUpdatedAt}</li> : null}
+                {documentSeriesCount > 0 ? (
+                  <li>Belge serisi kuralı: {documentSeriesCount} kayıt</li>
+                ) : null}
+                {pendingRowCount > 0 ? (
+                  <li>Bekleyen Luca satırı: {pendingRowCount}</li>
+                ) : null}
+              </ul>
+            </details>
           )}
         </div>
 
+        {(showSourcePicker || showFileUpload) && (
         <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
-          <h2 className="mb-4 text-2xl font-semibold">Kaynak Tipi</h2>
+          {showSourcePicker ? (
+            <>
+              <h2 className="mb-4 text-lg font-semibold">Kaynak</h2>
+              <div
+                className="mb-6 flex flex-wrap gap-3"
+                role="radiogroup"
+                aria-label="Kaynak tipi seçimi"
+              >
+                <label
+                  className={`flex cursor-pointer items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                    sourceType === SOURCE_TYPES.ELEKTRAWEB
+                      ? "bg-violet-600 text-white"
+                      : "border border-gray-700 bg-gray-950 text-gray-300 hover:text-white"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="luca-source-type"
+                    value={SOURCE_TYPES.ELEKTRAWEB}
+                    checked={sourceType === SOURCE_TYPES.ELEKTRAWEB}
+                    onChange={() => changeSourceType(SOURCE_TYPES.ELEKTRAWEB)}
+                    className="accent-violet-500"
+                  />
+                  Elektraweb
+                </label>
+                <label
+                  className={`flex cursor-pointer items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                    sourceType === SOURCE_TYPES.BANKA
+                      ? "bg-blue-600 text-white"
+                      : "border border-gray-700 bg-gray-950 text-gray-300 hover:text-white"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="luca-source-type"
+                    value={SOURCE_TYPES.BANKA}
+                    checked={sourceType === SOURCE_TYPES.BANKA}
+                    onChange={() => changeSourceType(SOURCE_TYPES.BANKA)}
+                    className="accent-blue-500"
+                  />
+                  Banka Parser
+                </label>
+              </div>
+            </>
+          ) : (
+            <p className="mb-4 text-sm text-gray-400">
+              Kaynak: <span className="font-medium text-white">{getSourceTypeLabel(sourceType)}</span>
+            </p>
+          )}
 
-          <div
-            className="mb-6 flex flex-wrap gap-4"
-            role="radiogroup"
-            aria-label="Kaynak tipi seçimi"
-          >
-            <label
-              className={`flex cursor-pointer items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition ${
-                sourceType === SOURCE_TYPES.ELEKTRAWEB
-                  ? "bg-violet-600 text-white"
-                  : "border border-gray-700 bg-gray-950 text-gray-300 hover:text-white"
-              }`}
-            >
-              <input
-                type="radio"
-                name="luca-source-type"
-                value={SOURCE_TYPES.ELEKTRAWEB}
-                checked={sourceType === SOURCE_TYPES.ELEKTRAWEB}
-                onChange={() => changeSourceType(SOURCE_TYPES.ELEKTRAWEB)}
-                className="accent-violet-500"
-              />
-              Elektraweb
-            </label>
-            <label
-              className={`flex cursor-pointer items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition ${
-                sourceType === SOURCE_TYPES.BANKA
-                  ? "bg-blue-600 text-white"
-                  : "border border-gray-700 bg-gray-950 text-gray-300 hover:text-white"
-              }`}
-            >
-              <input
-                type="radio"
-                name="luca-source-type"
-                value={SOURCE_TYPES.BANKA}
-                checked={sourceType === SOURCE_TYPES.BANKA}
-                onChange={() => changeSourceType(SOURCE_TYPES.BANKA)}
-                className="accent-blue-500"
-              />
-              Banka Parser
-            </label>
-          </div>
+          {showFileUpload ? (
+            <>
+              <h2 className="mb-2 text-lg font-semibold">{getFileSectionTitle(sourceType)}</h2>
+              <p className="mb-4 text-sm text-gray-400">{getFileSectionDescription(sourceType)}</p>
 
-          <p className="mb-4 text-xs font-medium uppercase tracking-wide text-violet-300">
-            Aktif kaynak: {getSourceTypeLabel(sourceType)}
-          </p>
-
-          <h2 className="mb-4 text-2xl font-semibold">
-            {getFileSectionTitle(sourceType)}
-          </h2>
-
-          <p className="mb-6 text-gray-400">{getFileSectionDescription(sourceType)}</p>
-
-          <div className="flex items-center gap-4">
-            <label className="cursor-pointer rounded-lg bg-blue-600 px-5 py-2 font-medium hover:bg-blue-700">
-              Dosya Seç
-              <input
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                onChange={handleHareketFile}
-                className="hidden"
-              />
-            </label>
-
-            <span className="text-gray-400">
-              {hareketFileName || "Henüz dosya seçilmedi"}
-            </span>
-          </div>
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="cursor-pointer rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium hover:bg-blue-700">
+                  Dosya Seç
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    onChange={handleHareketFile}
+                    className="hidden"
+                  />
+                </label>
+                <span className="text-sm text-gray-400">
+                  {hareketFileName || "Henüz dosya seçilmedi"}
+                </span>
+              </div>
+            </>
+          ) : hasTransferredRows ? (
+            <p className="text-sm text-emerald-400">
+              {hareketFileName || `${standardLucaRows.length} satır aktarıldı`}
+            </p>
+          ) : null}
 
           <ParserJobProgress
             visible={parserJob.isRunning || parserJob.isDone || parserJob.isError}
@@ -1336,8 +1308,10 @@ export default function LucaDonusturucuPage() {
             </p>
           )}
         </div>
+        )}
 
         <div className="flex flex-wrap gap-4">
+          {!(hasTransferredRows && standardLucaRows.length > 0) ? (
           <button
             type="button"
             onClick={() => void createPreview()}
@@ -1346,6 +1320,7 @@ export default function LucaDonusturucuPage() {
           >
             {yukleniyor ? "İşleniyor..." : "Ön İzleme Oluştur"}
           </button>
+          ) : null}
 
           <button
             onClick={exportExcel}
@@ -1409,108 +1384,18 @@ export default function LucaDonusturucuPage() {
   );
 }
 
-function InfoStat({ label, value, truncate = false }) {
-  return (
-    <div className="min-w-0 rounded-xl border border-gray-800 bg-gray-950 p-4">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
-        {label}
-      </div>
-      <div
-        className={`mt-2 text-lg font-bold leading-snug text-gray-100 ${
-          truncate ? "truncate" : ""
-        }`}
-        title={truncate ? String(value) : undefined}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function ControlStat({
-  label,
-  value,
-  status,
-  badge,
-  secondary = false,
-  truncate = false,
-  clamp = false,
-  wide = false,
-}) {
-  const statusStyles = {
-    ready: "border-emerald-800/60 bg-emerald-950/40",
-    missing: "border-red-800/60 bg-red-950/40",
-  };
-
-  const valueStyles = {
-    ready: "text-emerald-300",
-    missing: "text-red-300",
-  };
-
-  const cardClass = status
-    ? statusStyles[status]
-    : "border-gray-800 bg-gray-900/60";
-
-  const wideClass = wide ? "sm:col-span-2 lg:col-span-2" : "";
-
-  let valueClass = "text-white";
-
-  if (status) valueClass = valueStyles[status];
-  if (secondary) valueClass = "text-slate-100";
-
-  const labelClass =
-    "text-xs font-semibold uppercase tracking-normal text-slate-200";
-
-  if (badge) {
-    const badgeStyles = {
-      ok: "bg-emerald-900/50 text-emerald-300 border border-emerald-800/60",
-      warning: "bg-yellow-900/40 text-yellow-300 border border-yellow-700/60",
-    };
-
-    return (
-      <div
-        className={`flex h-full min-w-0 flex-col rounded-xl border p-5 ${cardClass} ${wideClass}`}
-      >
-        <div className={labelClass}>{label}</div>
-        <div className="mt-3 flex flex-1 items-end">
-          <span
-            className={`inline-flex items-center rounded-lg px-4 py-1.5 text-xl font-bold ${badgeStyles[badge]}`}
-          >
-            {value}
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-
-  const valueSizeClass = secondary
-    ? "text-lg tracking-tight"
-    : clamp
-    ? "text-xl"
-    : "text-2xl";
+function ReadinessBadge({ label, value, status }) {
+  const tone =
+    status === "ready"
+      ? "border-emerald-800/50 bg-emerald-950/40 text-emerald-200"
+      : status === "missing"
+        ? "border-amber-800/50 bg-amber-950/40 text-amber-200"
+        : "border-gray-700 bg-gray-950 text-gray-300";
 
   return (
-    <div
-      className={`flex h-full min-w-0 flex-col rounded-xl border p-5 ${cardClass} ${wideClass}`}
-    >
-      <div className={labelClass}>{label}</div>
-      <div
-        className={`mt-3 flex flex-1 items-end font-bold leading-snug ${valueSizeClass} ${valueClass}`}
-      >
-        <span
-          className={
-            clamp
-              ? "line-clamp-2 break-words"
-              : truncate
-              ? "truncate"
-              : ""
-          }
-          title={truncate || clamp ? String(value) : undefined}
-        >
-          {value}
-        </span>
-      </div>
-    </div>
+    <span className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs ${tone}`}>
+      <span className="font-medium text-gray-400">{label}:</span>
+      <span className="font-semibold">{value}</span>
+    </span>
   );
 }
