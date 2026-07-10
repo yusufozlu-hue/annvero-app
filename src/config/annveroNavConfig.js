@@ -97,8 +97,8 @@ export const ANNVERO_NAV_GROUPS = [
   {
     title: "Hesaplama Araçları",
     items: [
-      { label: "Araçlar Merkezi", href: "/hesaplama-araclari" },
-      { label: "Maaş Hesaplama", href: "/hesaplama-araclari/maas-hesaplama" },
+      { label: "Araçlar Merkezi", href: "/platform/hesaplama-araclari" },
+      { label: "Maaş Hesaplama", href: "/platform/hesaplama-araclari/maas-hesaplama" },
     ],
   },
   {

@@ -1,7 +1,7 @@
 import AuthGate from "@/src/components/AuthGate";
 import AnnveroAppShell from "@/src/components/AnnveroAppShell";
 
-export default function HesaplamaAraclariLayout({ children }) {
+export default function PlatformHesaplamaAraclariLayout({ children }) {
   return (
     <AuthGate>
       <AnnveroAppShell>{children}</AnnveroAppShell>

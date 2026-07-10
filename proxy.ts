@@ -23,6 +23,8 @@ export const config = {
     "/ai-ofis-asistani/:path*",
     "/ik-personel",
     "/ik-personel/:path*",
+    "/platform",
+    "/platform/:path*",
     "/login",
     "/auth/callback",
   ],

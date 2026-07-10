@@ -368,7 +368,7 @@ const categories = [
       {
         title: "Vergi Hesaplama Araçları",
         desc: "Sık kullanılan vergi hesaplamalarını tek merkezden yapın.",
-        href: "/hesaplama-araclari",
+        href: "/platform/hesaplama-araclari",
       },
       {
         title: "Poliçe Giderleştirme",
@@ -388,7 +388,7 @@ const categories = [
       {
         title: "Maaş Hesaplama Merkezi",
         desc: "Brüt-net, net-brüt maaş ve işveren maliyeti hesaplama.",
-        href: "/hesaplama-araclari/maas-hesaplama",
+        href: "/platform/hesaplama-araclari/maas-hesaplama",
       },
       {
         title: "Kıdem ve İhbar Tazminatı",

@@ -4,49 +4,63 @@ import Link from "next/link";
 import { useState } from "react";
 import KdvCalculator from "./KdvCalculator";
 import KdvDahilHaricCalculator from "./KdvDahilHaricCalculator";
+import {
+  KIDEM_IHBAR_ROUTE,
+  PUBLIC_CALCULATOR_BASE,
+} from "@/src/config/calculatorRoutes";
 
-const tools = [
-  {
-    id: "kdv",
-    title: "KDV Hesaplama",
-    active: true,
-    component: KdvCalculator,
-    description: "Matrah ve KDV oranına göre anlık hesaplama yapın.",
-  },
-  {
-    id: "kdv-dahil",
-    title: "KDV Dahil / Hariç",
-    active: true,
-    component: KdvDahilHaricCalculator,
-    description:
-      "KDV hariç tutardan dahile veya KDV dahil tutardan hariç tutarı hesaplayın.",
-  },
-  {
-    id: "kidem-ihbar",
-    title: "Kıdem ve İhbar Tazminatı Hesaplama",
-    active: true,
-    href: "/ik-personel/kidem-ihbar",
-    description:
-      "İK modülünde hizmet süresi, brüt ücret ve menfaatlere göre kıdem ve ihbar tazminatı hesaplama.",
-  },
-  { id: "sgk", title: "SGK İşveren Maliyeti" },
-  { id: "binek", title: "Binek Araç Gider Kısıtlaması" },
-  { id: "finansman", title: "Finansman Gider Kısıtlaması" },
-  { id: "adat", title: "Adat Hesaplama" },
-  { id: "police", title: "Poliçe Giderleştirme" },
-  { id: "ihracat", title: "İhracat İndirimi Hesaplama" },
-  { id: "kar-dagitim", title: "Kar Dağıtım Tablosu" },
-  {
-    id: "maas-hesaplama",
-    title: "Maaş Hesaplama Merkezi",
-    active: true,
-    href: "/hesaplama-araclari/maas-hesaplama",
-    description:
-      "Brüt-net ve net-brüt maaş, SGK primleri, gelir vergisi ve işveren maliyeti hesaplayın.",
-  },
-  { id: "bordro", title: "Bordro Hesaplama", href: "/hesaplama-araclari/maas-hesaplama", description: "Maaş Hesaplama Merkezi'ne yönlendirir." },
-  { id: "tazminat-toplu", title: "Tazminat Hesaplama Toplu" },
-];
+function buildTools(basePath = PUBLIC_CALCULATOR_BASE) {
+  const maasHref = `${basePath}/maas-hesaplama`;
+
+  return [
+    {
+      id: "kdv",
+      title: "KDV Hesaplama",
+      active: true,
+      component: KdvCalculator,
+      description: "Matrah ve KDV oranına göre anlık hesaplama yapın.",
+    },
+    {
+      id: "kdv-dahil",
+      title: "KDV Dahil / Hariç",
+      active: true,
+      component: KdvDahilHaricCalculator,
+      description:
+        "KDV hariç tutardan dahile veya KDV dahil tutardan hariç tutarı hesaplayın.",
+    },
+    {
+      id: "kidem-ihbar",
+      title: "Kıdem ve İhbar Tazminatı Hesaplama",
+      active: true,
+      href: KIDEM_IHBAR_ROUTE,
+      description:
+        "İK modülünde hizmet süresi, brüt ücret ve menfaatlere göre kıdem ve ihbar tazminatı hesaplama.",
+      platformOnly: true,
+    },
+    { id: "sgk", title: "SGK İşveren Maliyeti" },
+    { id: "binek", title: "Binek Araç Gider Kısıtlaması" },
+    { id: "finansman", title: "Finansman Gider Kısıtlaması" },
+    { id: "adat", title: "Adat Hesaplama" },
+    { id: "police", title: "Poliçe Giderleştirme" },
+    { id: "ihracat", title: "İhracat İndirimi Hesaplama" },
+    { id: "kar-dagitim", title: "Kar Dağıtım Tablosu" },
+    {
+      id: "maas-hesaplama",
+      title: "Maaş Hesaplama Merkezi",
+      active: true,
+      href: maasHref,
+      description:
+        "Brüt-net ve net-brüt maaş, SGK primleri, gelir vergisi ve işveren maliyeti hesaplayın.",
+    },
+    {
+      id: "bordro",
+      title: "Bordro Hesaplama",
+      href: maasHref,
+      description: "Maaş Hesaplama Merkezi'ne yönlendirir.",
+    },
+    { id: "tazminat-toplu", title: "Tazminat Hesaplama Toplu" },
+  ];
+}
 
 function ChevronIcon({ isOpen }) {
   return (
@@ -67,8 +81,14 @@ function ChevronIcon({ isOpen }) {
   );
 }
 
-export default function CalculatorToolsGrid() {
+export default function CalculatorToolsGrid({
+  basePath = PUBLIC_CALCULATOR_BASE,
+  includePlatformTools = false,
+}) {
   const [activeCalculator, setActiveCalculator] = useState("kdv");
+  const tools = buildTools(basePath).filter(
+    (tool) => includePlatformTools || !tool.platformOnly
+  );
 
   const handleActiveToolToggle = (toolId) => {
     setActiveCalculator((current) => (current === toolId ? null : toolId));
@@ -122,12 +142,8 @@ export default function CalculatorToolsGrid() {
                 className="flex w-full items-start justify-between gap-3 text-left"
               >
                 <div>
-                  <h3 className="text-lg font-semibold text-slate-900">
-                    {tool.title}
-                  </h3>
-                  <p className="mt-1 text-sm text-slate-600">
-                    {tool.description}
-                  </p>
+                  <h3 className="text-lg font-semibold text-slate-900">{tool.title}</h3>
+                  <p className="mt-1 text-sm text-slate-600">{tool.description}</p>
                 </div>
                 <ChevronIcon isOpen={isOpen} />
               </button>
@@ -152,9 +168,7 @@ export default function CalculatorToolsGrid() {
                 Yakında
               </span>
             </div>
-            <p className="mt-3 text-sm text-slate-500">
-              Bu araç üzerinde çalışılıyor.
-            </p>
+            <p className="mt-3 text-sm text-slate-500">Bu araç üzerinde çalışılıyor.</p>
           </article>
         );
       })}

@@ -15,7 +15,8 @@ function isProtectedPath(pathname) {
     pathname.startsWith("/sistem-loglari") ||
     pathname.startsWith("/otomasyon") ||
     pathname.startsWith("/ai-ofis-asistani") ||
-    pathname.startsWith("/ik-personel")
+    pathname.startsWith("/ik-personel") ||
+    pathname.startsWith("/platform")
   );
 }
 
