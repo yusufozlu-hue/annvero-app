@@ -319,6 +319,9 @@ export default function ElektrawebPage() {
       kaynakAdi: "ELEKTRAWEB",
       source: "elektraweb",
       runId,
+      movementCount: 0,
+      bankId: "",
+      bankName: "",
       rows: standardLucaRows,
     });
 
