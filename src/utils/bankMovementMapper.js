@@ -8,6 +8,7 @@ import {
   applyAccountingRuleToBankMovement,
   matchAccountingRule,
 } from "@/src/utils/accountingRuleEngine";
+import { matchSafeSystemBankRule } from "@/src/utils/bankSmartSuggestions";
 import {
   buildCariNotFoundWarning,
   resolveCariAccountMatch,
@@ -395,6 +396,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   let documentType = "DK";
   let ruleAciklama = "";
   let cariSuggestions = [];
+  let accountSuggestions = [];
 
   const bankLucaBase = resolve102BankAccount(
     selectedCompany?.bankAccounts || [],
@@ -567,12 +569,65 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
             });
           counterAccountCode = legacyRule.hesap || "";
         } else {
-          appendWarning(warnings, "Kural bulunamadı");
-          lucaDescription = buildFallbackLucaDescription({
-            ...rawRow,
-            yon: direction,
-            aciklama: description,
+          // 3) Güvenli sistem kuralı (firma hafızası / özel kural sonrası)
+          const systemMatch = matchSafeSystemBankRule(description, direction, {
+            companyPlans,
+            cariUnvan: rawRow.unvan || rawRow.cariUnvan || "",
+            personelAdi: rawRow.personelAdi || "",
           });
+
+          if (systemMatch) {
+            matchedRule = {
+              source: "safeSystemRule",
+              islem: systemMatch.family,
+              anahtar: systemMatch.id,
+            };
+            documentType = systemMatch.documentType || documentType;
+            lucaDescription = systemMatch.lucaDescription || lucaDescription;
+            if (systemMatch.autoApplied && systemMatch.accountCode) {
+              counterAccountCode = systemMatch.accountCode;
+              appendWarning(
+                warnings,
+                `Sistem kuralı: ${systemMatch.family}`
+              );
+            } else if (systemMatch.planMissing) {
+              accountSuggestions = systemMatch.accountSuggestions || [];
+              appendWarning(warnings, "Hesap planında karşılığı yok");
+              appendWarning(warnings, `Sistem ailesi: ${systemMatch.family}`);
+            } else if (systemMatch.needsEntity) {
+              appendWarning(warnings, "Kural bulunamadı");
+              appendWarning(
+                warnings,
+                `Sistem ailesi: ${systemMatch.family} (cari/personel gerekli)`
+              );
+              lucaDescription =
+                systemMatch.lucaDescription ||
+                buildFallbackLucaDescription({
+                  ...rawRow,
+                  yon: direction,
+                  aciklama: description,
+                });
+            } else {
+              accountSuggestions = systemMatch.accountSuggestions || [];
+              appendWarning(warnings, "Kural bulunamadı");
+              appendWarning(warnings, `Sistem ailesi: ${systemMatch.family}`);
+            }
+            if (analysisStats) {
+              analysisStats.safeSystemHit =
+                (analysisStats.safeSystemHit || 0) + 1;
+              if (systemMatch.autoApplied) {
+                analysisStats.safeSystemAutoApplied =
+                  (analysisStats.safeSystemAutoApplied || 0) + 1;
+              }
+            }
+          } else {
+            appendWarning(warnings, "Kural bulunamadı");
+            lucaDescription = buildFallbackLucaDescription({
+              ...rawRow,
+              yon: direction,
+              aciklama: description,
+            });
+          }
         }
       }
       addTiming("ruleMatchMs", ruleStarted);
@@ -594,6 +649,15 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 
     counterAccountCode = cariResolution.counterAccountCode;
     cariSuggestions = cariResolution.cariSuggestions;
+
+    // Hesap çözüldüyse “Kural bulunamadı” uyarı gürültüsünü temizle
+    if (counterAccountCode) {
+      for (let i = warnings.length - 1; i >= 0; i -= 1) {
+        if (String(warnings[i]).includes("Kural bulunamadı")) {
+          warnings.splice(i, 1);
+        }
+      }
+    }
   }
 
   const faturaRule = findFaturaRule(companyRules, description);
@@ -637,12 +701,12 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     accountPlanMissing.counterAccountCode = counterAccountCode;
   }
 
-  let accountSuggestions = [];
+  let accountSuggestionsMerged = accountSuggestions;
 
   if (missingPlanAccounts.length > 0) {
     const suggestionStarted = Date.now();
     const contextText = [description, lucaDescription].join(" ");
-    accountSuggestions = collectAccountSuggestions(
+    const planSuggestions = collectAccountSuggestions(
       companyPlans,
       missingPlanAccounts,
       contextText,
@@ -651,6 +715,16 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       planIndex,
       analysisStats
     );
+    const seen = new Set(
+      accountSuggestionsMerged.map((item) => compactAccount(item.code || item.label))
+    );
+    for (const item of planSuggestions) {
+      const key = compactAccount(item.code || item.label);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      accountSuggestionsMerged.push(item);
+    }
+    accountSuggestions = accountSuggestionsMerged;
     appendWarning(
       warnings,
       accountSuggestions.length === 0

@@ -57,6 +57,7 @@ import {
   downloadMissingHesapExcelReport,
   getRowAnalysisKey,
 } from "@/src/utils/previewExportValidation";
+import { groupUnresolvedRuleRows } from "@/src/utils/bankSmartSuggestions";
 import {
   buildBankStandardLucaLearningMemoryPayload,
   mapLearningMemoryRecordToItem,
@@ -280,6 +281,8 @@ export default function BankaParserPage() {
   const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
   const [exportValidation, setExportValidation] = useState(null);
   const [missingHesapReport, setMissingHesapReport] = useState(null);
+  const [ruleGroupReport, setRuleGroupReport] = useState(null);
+  const [selectedRuleGroupKey, setSelectedRuleGroupKey] = useState("");
   const [standardLucaRows, setStandardLucaRows] = useState([]);
   const [totalLucaCount, setTotalLucaCount] = useState(0);
   const [lucaPage, setLucaPage] = useState(0);
@@ -872,7 +875,9 @@ export default function BankaParserPage() {
         kontrolNotu: [
           String(item.kontrolNotu || "")
             .replace(/Hesap eşleşmesi bulunamadı/gi, "")
+            .replace(/Kural bulunamadı/gi, "")
             .replace(/\s+\|\s+/g, " | ")
+            .replace(/^\s*\|\s*|\s*\|\s*$/g, "")
             .trim(),
           "Manuel hesap uygulandı",
         ]
@@ -881,6 +886,9 @@ export default function BankaParserPage() {
       };
     });
     setMissingHesapReport(analyzeMissingHesapRows(lucaRef.current));
+    setRuleGroupReport(
+      groupUnresolvedRuleRows(lucaRef.current, { companyPlans })
+    );
     syncLucaPage(lucaPage);
     if (learn && selectedCompanyId) {
       saveAccountMemoryFromEdit(
@@ -890,6 +898,45 @@ export default function BankaParserPage() {
     }
     showToast(
       `${updated} satıra ${code} uygulandı${learn ? " (öğrenildi)" : ""}.`,
+      "success"
+    );
+  };
+
+  const handleApplyHesapToSingleRow = (row, accountCode, { learn = false } = {}) => {
+    const code = String(accountCode || "").trim();
+    if (!code || !row?.id) return;
+    lucaRef.current = (lucaRef.current || []).map((item) => {
+      if (item.id !== row.id) return item;
+      return {
+        ...item,
+        hesapKodu: code,
+        riskDurumu: "",
+        kontrolNotu: [
+          String(item.kontrolNotu || "")
+            .replace(/Hesap eşleşmesi bulunamadı/gi, "")
+            .replace(/Kural bulunamadı/gi, "")
+            .replace(/\s+\|\s+/g, " | ")
+            .replace(/^\s*\|\s*|\s*\|\s*$/g, "")
+            .trim(),
+          "Manuel hesap uygulandı (tek satır)",
+        ]
+          .filter(Boolean)
+          .join(" | "),
+      };
+    });
+    setMissingHesapReport(analyzeMissingHesapRows(lucaRef.current));
+    setRuleGroupReport(
+      groupUnresolvedRuleRows(lucaRef.current, { companyPlans })
+    );
+    syncLucaPage(lucaPage);
+    if (learn && selectedCompanyId) {
+      saveAccountMemoryFromEdit(
+        { ...row, hesapKodu: code },
+        { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
+      );
+    }
+    showToast(
+      `1 satıra ${code} uygulandı${learn ? " (öğrenildi)" : ""}.`,
       "success"
     );
   };
@@ -1359,6 +1406,19 @@ export default function BankaParserPage() {
       setLucaReady(true);
       setTotalLucaCount(lucaRef.current.length);
       setMissingHesapReport(analyzeMissingHesapRows(lucaRef.current));
+      {
+        const grouped = groupUnresolvedRuleRows(lucaRef.current, {
+          companyPlans,
+        });
+        setRuleGroupReport(grouped);
+        console.info("[ANNVERO][RULE-GROUPS]", {
+          unresolved: grouped.totalUnresolved,
+          groups: grouped.groupCount,
+          top30CoveragePct: grouped.top30CoveragePct,
+          top30Count: grouped.top30Coverage,
+          safeFamilyGroups: grouped.safeFamilyGroupCount,
+        });
+      }
       setPreviewSummary((prev) => ({
         ...(prev || computeMovementPreviewSummary(movementsRef.current)),
         lucaRows: lucaRef.current.length,
@@ -1942,7 +2002,18 @@ export default function BankaParserPage() {
             <ul className="mt-2 list-inside list-disc text-xs text-rose-100/90">
               {(missingHesapReport.categories || []).map((item) => (
                 <li key={item.category}>
-                  {item.category}: {item.count}
+                  <button
+                    type="button"
+                    className="underline decoration-rose-400/60 hover:text-white"
+                    onClick={() => {
+                      setPreviewQuickFilter("missingAccount");
+                      if (item.category === "Kural bulunamadı") {
+                        setSelectedRuleGroupKey("");
+                      }
+                    }}
+                  >
+                    {item.category}: {item.count}
+                  </button>
                   {item.samples?.[0]?.aciklama
                     ? ` — örn. ${String(item.samples[0].aciklama).slice(0, 60)}`
                     : ""}
@@ -1953,6 +2024,107 @@ export default function BankaParserPage() {
               Tam Excel engellendi. İnceleyin veya açıkça kısmi export seçin. Kayıtlar
               sessizce atılmaz.
             </p>
+          </div>
+        ) : null}
+
+        {ruleGroupReport?.totalUnresolved > 0 ? (
+          <div className="rounded-xl border border-indigo-700/40 bg-indigo-950/30 px-4 py-3 text-sm text-indigo-100">
+            <p className="font-semibold">
+              Kural bulunamadı grupları: {ruleGroupReport.totalUnresolved} satır ·{" "}
+              {ruleGroupReport.groupCount} grup · İlk 30 kapsama{" "}
+              {ruleGroupReport.top30CoveragePct}%
+            </p>
+            <div className="mt-2 max-h-64 space-y-2 overflow-y-auto text-xs">
+              {(ruleGroupReport.top30 || []).map((group) => (
+                <div
+                  key={group.analysisKey}
+                  className="rounded-lg border border-indigo-800/50 bg-slate-950/50 px-3 py-2"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      className="font-semibold text-left hover:underline"
+                      onClick={() => {
+                        setSelectedRuleGroupKey(group.analysisKey);
+                        setPreviewQuickFilter("missingAccount");
+                        setPreviewSearch(group.samples?.[0]?.slice(0, 40) || "");
+                      }}
+                    >
+                      {group.count}× · {group.suggestedFamily}
+                    </button>
+                    <span className="text-indigo-200/80">
+                      {group.directions.join("/")} · öneri{" "}
+                      {group.suggestedAccount || "—"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-indigo-100/70">
+                    {group.samples?.[0] || group.analysisKey}
+                  </p>
+                  <p className="mt-1 text-indigo-200/60">
+                    {group.directions.join("/")} ·{" "}
+                    {group.amountMin === group.amountMax
+                      ? `${group.amountMin}`
+                      : `${group.amountMin}–${group.amountMax}`}{" "}
+                    · {group.whyUnmatched}
+                  </p>
+                  {group.suggestedAccount ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded border border-emerald-700/50 bg-emerald-950/40 px-2 py-1 text-emerald-100"
+                        onClick={() => {
+                          const sampleRow = lucaRef.current.find((row) =>
+                            (group.rowIds || []).includes(row.id)
+                          );
+                          if (!sampleRow) return;
+                          handleApplyHesapToAnalysisGroup(
+                            { ...sampleRow, analysisKey: group.analysisKey },
+                            group.suggestedAccount,
+                            { learn: false }
+                          );
+                        }}
+                      >
+                        Toplu uygula ({group.suggestedAccount})
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-amber-700/50 bg-amber-950/40 px-2 py-1 text-amber-100"
+                        onClick={() => {
+                          const sampleRow = lucaRef.current.find((row) =>
+                            (group.rowIds || []).includes(row.id)
+                          );
+                          if (!sampleRow) return;
+                          handleApplyHesapToAnalysisGroup(
+                            { ...sampleRow, analysisKey: group.analysisKey },
+                            group.suggestedAccount,
+                            { learn: true }
+                          );
+                        }}
+                      >
+                        Toplu uygula + firma için öğren
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-slate-600/50 bg-slate-900/40 px-2 py-1 text-slate-100"
+                        onClick={() => {
+                          const sampleRow = lucaRef.current.find((row) =>
+                            (group.rowIds || []).includes(row.id)
+                          );
+                          if (!sampleRow) return;
+                          handleApplyHesapToSingleRow(
+                            sampleRow,
+                            group.suggestedAccount,
+                            { learn: false }
+                          );
+                        }}
+                      >
+                        Sadece bu satır
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 
@@ -2081,6 +2253,12 @@ export default function BankaParserPage() {
                   : ""}
                 {lastTimings?.lucaStats
                   ? ` · Luca: ${lastTimings.lucaStats.lucaRows} satır (${lastTimings.lucaStats.movementsWith2Rows}×2 çift taraflı)`
+                  : ""}
+                {lastTimings?.analysisCallCounts?.safeSystemAutoApplied
+                  ? ` · Sistem kuralı otomatik: ${lastTimings.analysisCallCounts.safeSystemAutoApplied}`
+                  : ""}
+                {lastTimings?.analysisCallCounts?.safeSystemHit
+                  ? ` · Sistem ailesi: ${lastTimings.analysisCallCounts.safeSystemHit}`
                   : ""}
               </p>
             ) : null}

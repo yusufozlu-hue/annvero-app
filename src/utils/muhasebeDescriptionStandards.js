@@ -4,7 +4,7 @@
  */
 import { normalizeParserText } from "@/src/utils/textNormalize";
 
-export const STANDARD_MASRAF_DESCRIPTION = "HAVALE / EFT MASRAFI";
+export const STANDARD_MASRAF_DESCRIPTION = "HAVALE/EFT MASRAFI";
 export const STANDARD_POS_TAHSILATI = "POS TAHSİLATI";
 export const STANDARD_POS_BATCH_TAHSILATI = "POS BATCH TAHSİLATI";
 export const STANDARD_POS_KOMISYONU = "POS KOMİSYONU";
