@@ -156,6 +156,7 @@ export default function LucaDonusturucuPage() {
   const [sourceType, setSourceType] = useState(SOURCE_TYPES.ELEKTRAWEB);
   const [sourceLocked, setSourceLocked] = useState(false);
   const [hasTransferredRows, setHasTransferredRows] = useState(false);
+  const [transferMeta, setTransferMeta] = useState(null);
   const [uploadedFile, setUploadedFile] = useState(null);
   const [learningMemory, setLearningMemory] = useState([]);
   const [yukleniyor, setYukleniyor] = useState(false);
@@ -252,6 +253,14 @@ export default function LucaDonusturucuPage() {
       setSourceType(pendingSourceType);
       setSourceLocked(true);
       setHasTransferredRows(true);
+      setTransferMeta({
+        source: pendingSourceType,
+        bankName: pending.bankName || pending.kaynakAdi || "",
+        bankId: pending.bankId || "",
+        runId: pending.runId || pending.datasetId || "",
+        lucaRowCount: pending.rows?.length || 0,
+        movementCount: pending.movementCount || 0,
+      });
 
       const rows = ensureStandardLucaRowIds(
         sortStandardLucaRows(
@@ -398,6 +407,22 @@ export default function LucaDonusturucuPage() {
       return [{ label: "Firma", value: "Üst menüden seçin", status: "missing" }];
     }
 
+    const transferBankName = String(transferMeta?.bankName || "").trim();
+    const bankReady =
+      activeBankCount > 0 ||
+      (hasTransferredRows && sourceType === SOURCE_TYPES.BANKA && transferBankName);
+
+    let bankValue = String(activeBankCount);
+    if (hasTransferredRows && sourceType === SOURCE_TYPES.BANKA) {
+      bankValue = transferBankName
+        ? activeBankCount > 0
+          ? `${transferBankName} (${activeBankCount})`
+          : `${transferBankName} (firma 102 eksik)`
+        : activeBankCount > 0
+          ? String(activeBankCount)
+          : "0 — kurulum eksik";
+    }
+
     return [
       {
         label: "Hesap planı",
@@ -411,8 +436,8 @@ export default function LucaDonusturucuPage() {
       },
       {
         label: "Banka",
-        value: String(activeBankCount),
-        status: activeBankCount > 0 ? "ready" : "missing",
+        value: bankValue,
+        status: bankReady ? (activeBankCount > 0 ? "ready" : "warn") : "missing",
       },
       {
         label: "Kaynak",
@@ -420,7 +445,15 @@ export default function LucaDonusturucuPage() {
         status: "ready",
       },
     ];
-  }, [selectedCompanyId, companyPlans.length, hasRules, activeBankCount, sourceType]);
+  }, [
+    selectedCompanyId,
+    companyPlans.length,
+    hasRules,
+    activeBankCount,
+    sourceType,
+    hasTransferredRows,
+    transferMeta,
+  ]);
 
   const showSourcePicker = !sourceLocked;
   const showFileUpload = !hasTransferredRows && standardLucaRows.length === 0;
@@ -1441,7 +1474,9 @@ function ReadinessBadge({ label, value, status }) {
       ? "border-emerald-800/50 bg-emerald-950/40 text-emerald-200"
       : status === "missing"
         ? "border-amber-800/50 bg-amber-950/40 text-amber-200"
-        : "border-gray-700 bg-gray-950 text-gray-300";
+        : status === "warn"
+          ? "border-orange-800/50 bg-orange-950/40 text-orange-200"
+          : "border-gray-700 bg-gray-950 text-gray-300";
 
   return (
     <span className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs ${tone}`}>

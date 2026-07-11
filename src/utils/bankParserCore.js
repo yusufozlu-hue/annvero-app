@@ -764,6 +764,7 @@ export async function buildLucaRowsFromMovementsAsync(
     firmaId: selectedCompanyId,
     kaynakAdi: selectedBank,
     creationSource: "bank_double_entry",
+    bankAccounts: options.selectedCompany?.bankAccounts || [],
   };
   const bankName = String(selectedBank || "").trim().toUpperCase();
   const size = Math.max(25, Math.min(50, Number(chunkSize) || LUCA_MOVEMENT_CHUNK_SIZE));

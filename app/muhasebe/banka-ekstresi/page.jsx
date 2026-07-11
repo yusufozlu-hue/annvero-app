@@ -50,7 +50,13 @@ import {
   loadAccountMemoryV1Records,
   saveAccountMemoryFromEdit,
 } from "@/src/utils/accountMemoryV1";
-import { buildExportWarningConfirmMessage } from "@/src/utils/previewExportValidation";
+import {
+  buildExportWarningConfirmMessage,
+  analyzeMissingHesapRows,
+  buildMissingHesapSummaryText,
+  downloadMissingHesapExcelReport,
+  getRowAnalysisKey,
+} from "@/src/utils/previewExportValidation";
 import {
   buildBankStandardLucaLearningMemoryPayload,
   mapLearningMemoryRecordToItem,
@@ -273,6 +279,7 @@ export default function BankaParserPage() {
   const [applyingSuggestionRowId, setApplyingSuggestionRowId] = useState(null);
   const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
   const [exportValidation, setExportValidation] = useState(null);
+  const [missingHesapReport, setMissingHesapReport] = useState(null);
   const [standardLucaRows, setStandardLucaRows] = useState([]);
   const [totalLucaCount, setTotalLucaCount] = useState(0);
   const [lucaPage, setLucaPage] = useState(0);
@@ -615,6 +622,28 @@ export default function BankaParserPage() {
 
       const idx = lucaRef.current.findIndex((row) => row.id === editingRowId);
       if (idx >= 0) lucaRef.current[idx] = updatedRow;
+
+      const wasMissing =
+        !String(currentRow.hesapKodu || "").trim() ||
+        currentRow.riskDurumu === "HESAP_EKSIK";
+      const nowFilled = String(updatedRow.hesapKodu || "").trim();
+      if (wasMissing && nowFilled) {
+        const applyGroup = window.confirm(
+          `Hesap ${nowFilled} kaydedildi.\nAynı analysisKey grubundaki diğer eksik satırlara da uygulansın mı?` +
+            (draftRow.saveToMemory ? "\n(Bu firma için öğren seçiliyse hafızaya da yazılır.)" : "")
+        );
+        if (applyGroup) {
+          handleApplyHesapToAnalysisGroup(updatedRow, nowFilled, {
+            learn: Boolean(draftRow.saveToMemory),
+          });
+        } else {
+          setMissingHesapReport(analyzeMissingHesapRows(lucaRef.current));
+          syncLucaPage(lucaPage);
+        }
+      } else {
+        setMissingHesapReport(analyzeMissingHesapRows(lucaRef.current));
+      }
+
       setExportValidation(null);
       return updatedRow;
     } finally {
@@ -631,36 +660,49 @@ export default function BankaParserPage() {
     });
   };
 
-  const exportExcel = async (ignoreWarnings = false) => {
+  const exportExcel = async (ignoreWarnings = false, options = {}) => {
     if (isExporting) return;
 
+    const allowPartialMissing = Boolean(options.allowPartialMissing);
     const allRows = lucaRef.current;
     if (!lucaReady || !allRows.length) {
       showToast("Önce “Luca Satırlarını Hazırla” ile Luca satırlarını oluşturun.", "error");
       return;
     }
 
-    const readyRows = allRows.filter((row) => {
-      const hesap = String(row?.hesapKodu || "").trim();
-      const karsi = String(row?.karsiHesapKodu || "").trim();
-      const warning = String(row?.uyari || row?.warning || "");
-      if (!hesap) return false;
-      if (warning.includes("Hesap eşleşmesi bulunamadı")) return false;
-      if (row?.riskDurumu === "HESAP_EKSIK") return false;
-      return Boolean(hesap || karsi);
-    });
+    const missingReport = analyzeMissingHesapRows(allRows);
+    setMissingHesapReport(missingReport);
 
-    const unknownCount = allRows.length - readyRows.length;
-    if (unknownCount > 0 && !ignoreWarnings) {
-      const confirmed = window.confirm(
-        `${unknownCount} satır hesap eşleşmesi olmadığı için Excel’e alınmayacak.\n` +
-          `${readyRows.length} fişe hazır satır dışa aktarılsın mı?`
+    if (missingReport.missingCount > 0 && !allowPartialMissing) {
+      setExportValidation({
+        hasBlockingErrors: true,
+        globalErrors: [buildMissingHesapSummaryText(missingReport)],
+        blockingMessages: (missingReport.categories || []).map(
+          (item) => `${item.category}: ${item.count} satır`
+        ),
+        missingReport,
+        errorCategoryCounts: { eksikHesap: missingReport.missingCount },
+      });
+      setPreviewQuickFilter("missingAccount");
+      showToast(
+        `${missingReport.missingCount} eksik hesap satırı var. İnceleyin veya kısmi export seçin.`,
+        "error"
       );
-      if (!confirmed) return;
-      if (!readyRows.length) {
-        showToast("Fişe hazır satır yok. Önce hesap eşleşmelerini tamamlayın.", "error");
-        return;
-      }
+      return;
+    }
+
+    const readyRows = allowPartialMissing
+      ? allRows.filter((row) => {
+          const hesap = String(row?.hesapKodu || "").trim();
+          if (!hesap) return false;
+          if (row?.riskDurumu === "HESAP_EKSIK") return false;
+          return true;
+        })
+      : allRows;
+
+    if (allowPartialMissing && !readyRows.length) {
+      showToast("Fişe hazır satır yok. Önce hesap eşleşmelerini tamamlayın.", "error");
+      return;
     }
 
     const { runId, signal } = beginPipelineRun();
@@ -668,13 +710,16 @@ export default function BankaParserPage() {
     setActiveStep("excel");
     parserJob.begin({
       stage: "Excel",
-      detail: "Luca Excel hazırlanıyor",
+      detail: allowPartialMissing
+        ? "Kısmi Luca Excel hazırlanıyor"
+        : "Luca Excel hazırlanıyor",
     });
 
     try {
-      const rowsToExport = readyRows.length ? readyRows : allRows;
-      const bankPrefix = `${String(selectedBank || "banka").toLowerCase()}_luca`;
-      const result = await exportStandardLucaExcel(rowsToExport, {
+      const bankPrefix = allowPartialMissing
+        ? `${String(selectedBank || "banka").toLowerCase()}_luca_partial`
+        : `${String(selectedBank || "banka").toLowerCase()}_luca`;
+      const result = await exportStandardLucaExcel(readyRows, {
         filePrefix: bankPrefix,
         logLabel: "banka-export",
         onValidationFail: setExportValidation,
@@ -682,9 +727,7 @@ export default function BankaParserPage() {
         signal,
         onProgress: (progress) => {
           if (isRunActive(runId) && !signal.aborted) {
-            parserJob.onProgress(
-              progress?.detail || "Excel hazırlanıyor…"
-            );
+            parserJob.onProgress(progress?.detail || "Excel hazırlanıyor…");
           }
         },
       });
@@ -698,35 +741,29 @@ export default function BankaParserPage() {
           const confirmed = window.confirm(
             buildExportWarningConfirmMessage(result.validation)
           );
-
           if (confirmed) {
             setIsExporting(false);
-            await exportExcel(true);
+            await exportExcel(true, options);
           }
-
           return;
         }
 
         if (result.reason === "validation") {
+          setExportValidation(result.validation || null);
           const report = result.validation?.duplicateReport;
           if (report?.reportLine) {
-            const criticalLines = (report.criticalRows || [])
-              .slice(0, 8)
-              .map(
-                (row) =>
-                  `Satır ${row.rowIndex} · hareket ${row.sourceMovementId || "—"} · ${row.date} · ${row.amount} · ${row.hesapKodu} · ${row.reason}`
-              )
-              .join("\n");
             window.alert(
-              `${report.reportLine}\n\n${
-                criticalLines || "Kritik satır detayı yok."
-              }\n\nYalnızca gerçek kritik mükerrerler Excel’i engeller.`
+              `${report.reportLine}\n\nKritik: ${report.critical || 0} · Şüpheli: ${
+                report.suspicious || 0
+              } · Beklenen çift: ${report.expectedPairs || 0}`
             );
           }
           showToast(
-            result.validation?.hasCriticalDuplicates
-              ? "Excel oluşturulamadı. Kritik mükerrer kayıtları düzeltin."
-              : "Excel oluşturulamadı. Satır hatalarını düzeltin.",
+            result.validation?.missingReport?.missingCount
+              ? "Excel engellendi: eksik hesap satırları var."
+              : result.validation?.hasCriticalDuplicates
+                ? "Excel oluşturulamadı. Kritik mükerrer kayıtları düzeltin."
+                : "Excel oluşturulamadı. Satır hatalarını düzeltin.",
             "error"
           );
           parserJob.markError(
@@ -750,17 +787,21 @@ export default function BankaParserPage() {
         ...prev,
         excelMs: Date.now(),
         excelFiles: result.fileCount || 1,
+        excelPartial: allowPartialMissing,
+        excelExcluded: allowPartialMissing ? missingReport.missingCount : 0,
       }));
       parserJob.markSuccess(
-        result.fileCount > 1
-          ? `${result.fileCount} Excel dosyası oluşturuldu`
-          : "Luca Excel oluşturuldu"
+        allowPartialMissing
+          ? `Kısmi Excel: ${readyRows.length} satır (${missingReport.missingCount} hariç)`
+          : result.fileCount > 1
+            ? `${result.fileCount} Excel dosyası oluşturuldu`
+            : "Luca Excel oluşturuldu"
       );
       showToast(
-        result.fileCount > 1
-          ? `${result.fileCount} adet Luca Excel dosyası oluşturuldu.`
-          : unknownCount > 0
-            ? `Luca Excel oluşturuldu (${readyRows.length} hazır / ${unknownCount} atlandı).`
+        allowPartialMissing
+          ? `Kısmi Luca Excel oluşturuldu (${readyRows.length} satır). ${missingReport.missingCount} eksik satır hariç bırakıldı.`
+          : result.fileCount > 1
+            ? `${result.fileCount} adet Luca Excel dosyası oluşturuldu.`
             : "Luca Excel dosyası oluşturuldu.",
         "success"
       );
@@ -774,6 +815,83 @@ export default function BankaParserPage() {
     } finally {
       if (isRunActive(runId)) setIsExporting(false);
     }
+  };
+
+  const handleReviewMissingAccounts = () => {
+    const report = analyzeMissingHesapRows(lucaRef.current);
+    setMissingHesapReport(report);
+    setPreviewQuickFilter("missingAccount");
+    setActiveStep("excel");
+    showToast(
+      report.missingCount
+        ? `${report.missingCount} eksik hesap satırı filtrelendi.`
+        : "Eksik hesap satırı yok.",
+      report.missingCount ? "error" : "success"
+    );
+  };
+
+  const handleDownloadMissingReport = async () => {
+    const result = await downloadMissingHesapExcelReport(
+      lucaRef.current,
+      `${String(selectedBank || "banka").toLowerCase()}_eksik_hesap`
+    );
+    if (result?.ok) {
+      showToast(`${result.count} eksik satır raporu indirildi.`, "success");
+    }
+  };
+
+  const handlePartialExportConfirm = async () => {
+    const report = analyzeMissingHesapRows(lucaRef.current);
+    const ok = window.confirm(
+      `${buildMissingHesapSummaryText(report)}\n\n` +
+        `Açıkça onaylıyor musunuz?\n` +
+        `“Eksik satırları hariç tutarak devam et” → kısmi Excel (_partial).\n` +
+        `Hariç bırakılan satırlar ayrıca rapor olarak indirilebilir.`
+    );
+    if (!ok) return;
+    await exportExcel(false, { allowPartialMissing: true });
+  };
+
+  const handleApplyHesapToAnalysisGroup = (row, accountCode, { learn = false } = {}) => {
+    const code = String(accountCode || "").trim();
+    if (!code || !row) return;
+    const key = getRowAnalysisKey(row);
+    const all = lucaRef.current || [];
+    let updated = 0;
+    lucaRef.current = all.map((item) => {
+      const itemKey = getRowAnalysisKey(item);
+      const missing =
+        !String(item.hesapKodu || "").trim() || item.riskDurumu === "HESAP_EKSIK";
+      if (!missing) return item;
+      if (key && itemKey && key !== itemKey) return item;
+      updated += 1;
+      return {
+        ...item,
+        hesapKodu: code,
+        riskDurumu: "",
+        kontrolNotu: [
+          String(item.kontrolNotu || "")
+            .replace(/Hesap eşleşmesi bulunamadı/gi, "")
+            .replace(/\s+\|\s+/g, " | ")
+            .trim(),
+          "Manuel hesap uygulandı",
+        ]
+          .filter(Boolean)
+          .join(" | "),
+      };
+    });
+    setMissingHesapReport(analyzeMissingHesapRows(lucaRef.current));
+    syncLucaPage(lucaPage);
+    if (learn && selectedCompanyId) {
+      saveAccountMemoryFromEdit(
+        { ...row, hesapKodu: code },
+        { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
+      );
+    }
+    showToast(
+      `${updated} satıra ${code} uygulandı${learn ? " (öğrenildi)" : ""}.`,
+      "success"
+    );
   };
 
   const handleGoToLucaProducer = async (event) => {
@@ -1240,6 +1358,7 @@ export default function BankaParserPage() {
       lucaRef.current = lucaResult.standardLucaRows || [];
       setLucaReady(true);
       setTotalLucaCount(lucaRef.current.length);
+      setMissingHesapReport(analyzeMissingHesapRows(lucaRef.current));
       setPreviewSummary((prev) => ({
         ...(prev || computeMovementPreviewSummary(movementsRef.current)),
         lucaRows: lucaRef.current.length,
@@ -1778,6 +1897,33 @@ export default function BankaParserPage() {
             {isExporting ? "Excel hazırlanıyor…" : "Luca Excel Oluştur"}
           </button>
 
+          {lucaReady && (missingHesapReport?.missingCount || 0) > 0 ? (
+            <>
+              <button
+                type="button"
+                onClick={handleReviewMissingAccounts}
+                className="rounded-xl border border-rose-600/60 bg-rose-950 px-4 py-3 text-sm font-semibold text-rose-100 hover:bg-rose-900"
+              >
+                Eksik Hesapları İncele ({missingHesapReport.missingCount})
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadMissingReport}
+                className="rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-sm font-semibold text-slate-100 hover:bg-slate-800"
+              >
+                Eksik Raporu İndir
+              </button>
+              <button
+                type="button"
+                onClick={handlePartialExportConfirm}
+                disabled={isJobBusy || isExporting}
+                className="rounded-xl border border-amber-600/60 bg-amber-950 px-4 py-3 text-sm font-semibold text-amber-100 hover:bg-amber-900 disabled:opacity-50"
+              >
+                Eksik satırları hariç tutarak devam et
+              </button>
+            </>
+          ) : null}
+
           <button
             type="button"
             onClick={handleGoToLucaProducer}
@@ -1786,6 +1932,36 @@ export default function BankaParserPage() {
             Luca Fiş Üretici →
           </button>
         </div>
+
+        {missingHesapReport?.missingCount > 0 ? (
+          <div className="rounded-xl border border-rose-700/50 bg-rose-950/30 px-4 py-3 text-sm text-rose-100">
+            <p className="font-semibold">
+              Eksik hesap: {missingHesapReport.missingCount} /{" "}
+              {missingHesapReport.totalRows} (hazır {missingHesapReport.readyCount})
+            </p>
+            <ul className="mt-2 list-inside list-disc text-xs text-rose-100/90">
+              {(missingHesapReport.categories || []).map((item) => (
+                <li key={item.category}>
+                  {item.category}: {item.count}
+                  {item.samples?.[0]?.aciklama
+                    ? ` — örn. ${String(item.samples[0].aciklama).slice(0, 60)}`
+                    : ""}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-rose-200/80">
+              Tam Excel engellendi. İnceleyin veya açıkça kısmi export seçin. Kayıtlar
+              sessizce atılmaz.
+            </p>
+          </div>
+        ) : null}
+
+        {activeBankCount === 0 && selectedCompanyId ? (
+          <div className="rounded-xl border border-amber-700/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">
+            Firma banka hesabı (102) tanımlı değil. Vakıfbank için Luca alt hesabını
+            firma kartına ekleyin; aksi halde banka bacağı &quot;102&quot; kalabilir.
+          </div>
+        ) : null}
 
         {completedSteps.preview && !accountingAnalyzed ? (
           <p className="text-sm text-amber-200/90">

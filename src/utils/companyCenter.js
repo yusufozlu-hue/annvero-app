@@ -880,7 +880,8 @@ function compactAccount(value) {
 export function resolve102BankAccount(
   bankAccounts = [],
   accountCode,
-  lucaBankaHesabi = ""
+  lucaBankaHesabi = "",
+  selectedBankName = ""
 ) {
   const normalizedCode = compactAccount(accountCode);
 
@@ -888,12 +889,29 @@ export function resolve102BankAccount(
     return accountCode;
   }
 
+  const activeBanks = (bankAccounts || []).filter((bank) => bank.isActive !== false);
   const hint = lucaBankaHesabi || accountCode;
   const normalizedHint = compactAccount(hint);
+  const selected = compactAccount(selectedBankName);
 
-  const matched = bankAccounts.find((bank) => {
-    if (bank.isActive === false) return false;
+  // 1) Seçili banka adına göre eşle (Vakıfbank vb.)
+  if (selected) {
+    const bySelected = activeBanks.find((bank) => {
+      const name = compactAccount(bank.bankName || bank.accountName || "");
+      return (
+        name === selected ||
+        name.includes(selected) ||
+        selected.includes(name) ||
+        compactAccount(bank.lucaAccountCode) === selected
+      );
+    });
+    if (bySelected?.lucaAccountCode) {
+      return bySelected.lucaAccountCode;
+    }
+  }
 
+  // 2) Hint (luca kodu / ad)
+  const matched = activeBanks.find((bank) => {
     return (
       compactAccount(bank.lucaAccountCode) === normalizedHint ||
       compactAccount(bank.accountName) === normalizedHint ||
@@ -905,11 +923,16 @@ export function resolve102BankAccount(
     return matched.lucaAccountCode;
   }
 
-  const firstActiveBank = bankAccounts.find((bank) => bank.isActive !== false);
-
+  // 3) İlk aktif banka — yalnızca ham "102" için
+  const firstActiveBank = activeBanks[0];
   if (normalizedCode === "102" && firstActiveBank?.lucaAccountCode) {
     return firstActiveBank.lucaAccountCode;
   }
 
   return lucaBankaHesabi || accountCode;
+}
+
+/** Seçili bankaya göre 102 Luca kodu; yoksa ilk aktif; yoksa "102" */
+export function getCompanyBankLucaCode(bankAccounts = [], selectedBankName = "") {
+  return resolve102BankAccount(bankAccounts, "102", "", selectedBankName);
 }

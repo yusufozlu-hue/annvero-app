@@ -98,11 +98,13 @@ export function mapCoreDecisionToMovement(coreResult = {}, rawRow = {}, context 
   const direction = rawRow.yon === "CIKIS" || rawRow.direction === "CIKIS" ? "CIKIS" : "GIRIS";
   const date = String(rawRow.tarih || rawRow.date || "");
 
-  const { selectedCompany } = context;
+  const { selectedCompany, selectedBank } = context;
   const bankLucaBase = resolve102BankAccount(
     selectedCompany?.bankAccounts || [],
     "102",
-    selectedCompany?.bankAccounts?.find((b) => b.isActive !== false)?.lucaAccountCode || "102"
+    selectedCompany?.bankAccounts?.find((b) => b.isActive !== false)?.lucaAccountCode ||
+      "102",
+    selectedBank || ""
   );
 
   const counterAccountCode = resolveCounterAccountFromCore(coreResult, bankLucaBase);

@@ -220,7 +220,34 @@ function compareSuspiciousSameDayPair(currentRow, previousRow, previousIndex) {
 }
 
 function shouldSkipDuplicatePair(left, right) {
-  return isExpectedDoubleEntryPair(left, right) || isSameMovementDifferentLeg(left, right);
+  if (isExpectedDoubleEntryPair(left, right)) return true;
+  if (isSameMovementDifferentLeg(left, right)) return true;
+
+  // POS tahsilat vs komisyon / vergi-masraf dağılımı: aynı fiş farklı roller
+  if (sameFisNo(left, right) && getLineRole(left) !== getLineRole(right)) {
+    return true;
+  }
+
+  // Banka çift kayıt: farklı hareket + farklı hesap → benzer tutar gürültüsü sayma
+  const leftSource = String(left.creationSource || "");
+  const rightSource = String(right.creationSource || "");
+  if (
+    (leftSource.includes("bank") || rightSource.includes("bank")) &&
+    getSourceMovementId(left) &&
+    getSourceMovementId(right) &&
+    getSourceMovementId(left) !== getSourceMovementId(right)
+  ) {
+    const leftHesap = normalizeParserText(left.hesapKodu || "");
+    const rightHesap = normalizeParserText(right.hesapKodu || "");
+    const leftRole = getLineRole(left);
+    const rightRole = getLineRole(right);
+    // Yalnızca aynı hesap + aynı yön potansiyel gerçek mükerrer adayı
+    if (leftHesap !== rightHesap || leftRole !== rightRole) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function finalizeRowResult(rowResult) {

@@ -1,5 +1,6 @@
 import { extractSeriesPrefix, MEMORY_MATCH_LABEL } from "@/src/utils/previewRowEdit";
 import { formatParserDate } from "@/src/utils/bankMovementMapper";
+import { normalizeBankAnalysisKey } from "@/src/utils/textNormalize";
 import {
   appendControlNote,
   buildGroupedCariDescription,
@@ -16,7 +17,10 @@ import {
   logElektrawebAccountMatchReport,
   matchAccountCode,
 } from "@/src/utils/elektrawebAccountMatcher";
-import { normalizeAccountPlanForMatching } from "@/src/utils/companyCenter";
+import {
+  normalizeAccountPlanForMatching,
+  getCompanyBankLucaCode,
+} from "@/src/utils/companyCenter";
 import { formatDateTR, parseDateTR } from "@/src/utils/formatDateTR";
 import { parseMoneyTR } from "@/src/utils/parseMoneyTR";
 
@@ -304,6 +308,16 @@ export function finalizeStandardLucaRow(row) {
     ...(row.sourceRowIndex != null ? { sourceRowIndex: row.sourceRowIndex } : {}),
     ...(row.lineRole ? { lineRole: row.lineRole } : {}),
     ...(row.creationSource ? { creationSource: row.creationSource } : {}),
+    ...(row.analysisKey ? { analysisKey: row.analysisKey } : {}),
+    ...(Array.isArray(row.accountSuggestions) && row.accountSuggestions.length
+      ? { accountSuggestions: row.accountSuggestions }
+      : {}),
+    ...(Array.isArray(row.cariSuggestions) && row.cariSuggestions.length
+      ? { cariSuggestions: row.cariSuggestions }
+      : {}),
+    ...(row.missingHesapCategory
+      ? { missingHesapCategory: row.missingHesapCategory }
+      : {}),
   };
 }
 
@@ -585,6 +599,13 @@ function buildBankLucaLine({
       null,
     lineRole: role,
     creationSource: context.creationSource || "bank_double_entry",
+    analysisKey:
+      context.analysisKey ||
+      movement.analysisKey ||
+      "",
+    accountSuggestions: movement.accountSuggestions || [],
+    cariSuggestions: movement.cariSuggestions || [],
+    missingHesapCategory: movement.missingHesapCategory || "",
   });
 }
 
@@ -595,9 +616,25 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
   const lucaAciklama = movement.lucaDescription || movement.description || "";
   const belgeTuru = movement.documentType || "DK";
   const matchedRule = movement.matchedRule;
-  const bankaHesap = movement.accountCode;
+  const selectedBank = context.kaynakAdi || movement.bankName || "";
+  const resolvedBankAccount =
+    getCompanyBankLucaCode(context.bankAccounts || [], selectedBank) ||
+    movement.accountCode;
+  // Ham "102" yerine firma banka alt hesabını kullan (güvenli)
+  let bankaHesap = movement.accountCode || resolvedBankAccount;
+  if (
+    !bankaHesap ||
+    String(bankaHesap).trim() === "102" ||
+    String(bankaHesap).trim().toUpperCase() === "102"
+  ) {
+    bankaHesap = resolvedBankAccount || bankaHesap;
+  }
   const karsiHesap = movement.counterAccountCode;
   const sourceRowIndex = context.sourceRowIndex ?? null;
+  const analysisKey =
+    movement.analysisKey ||
+    normalizeBankAnalysisKey(movement.description || lucaAciklama, movement.direction);
+  const lineContext = { ...context, analysisKey };
   const rows = [];
 
   if (matchedRule?.ozelIslem === "BINEK_ARAC_GIDER_KISITLAMASI") {
@@ -608,7 +645,7 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
       buildBankLucaLine({
         movement,
         fisNo,
-        context,
+        context: lineContext,
         hesapKodu: bankaHesap,
         borc: "",
         alacak: tutar,
@@ -621,7 +658,7 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
       buildBankLucaLine({
         movement,
         fisNo,
-        context,
+        context: lineContext,
         hesapKodu: matchedRule.hesap,
         borc: giderTutar,
         alacak: "",
@@ -634,7 +671,7 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
       buildBankLucaLine({
         movement,
         fisNo,
-        context,
+        context: lineContext,
         hesapKodu: matchedRule.kkegHesap,
         borc: kkegTutar,
         alacak: "",
@@ -654,7 +691,7 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
     buildBankLucaLine({
       movement,
       fisNo,
-      context,
+      context: lineContext,
       hesapKodu: bankaHesap,
       borc: bankIsBorc ? tutar : "",
       alacak: bankIsBorc ? "" : tutar,
@@ -667,7 +704,7 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
     buildBankLucaLine({
       movement,
       fisNo,
-      context,
+      context: lineContext,
       hesapKodu: karsiHesap,
       borc: bankIsBorc ? "" : tutar,
       alacak: bankIsBorc ? tutar : "",
@@ -834,6 +871,10 @@ export function stripStandardLucaRow(row) {
     sourceRowIndex: row.sourceRowIndex,
     lineRole: row.lineRole,
     creationSource: row.creationSource,
+    analysisKey: row.analysisKey || "",
+    accountSuggestions: row.accountSuggestions || [],
+    cariSuggestions: row.cariSuggestions || [],
+    missingHesapCategory: row.missingHesapCategory || "",
   };
 }
 

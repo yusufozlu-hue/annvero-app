@@ -1,4 +1,4 @@
-import { resolve102BankAccount } from "@/src/utils/companyCenter";
+import { resolve102BankAccount, getCompanyBankLucaCode } from "@/src/utils/companyCenter";
 import {
   accountExistsInCompanyPlan,
   collectAccountSuggestions,
@@ -55,9 +55,8 @@ export function formatParserDate(dateText) {
   return text.split(" ")[0];
 }
 
-function getDefaultBankLucaCode(bankAccounts = []) {
-  const activeBank = bankAccounts.find((bank) => bank.isActive !== false);
-  return activeBank?.lucaAccountCode || "102";
+function getDefaultBankLucaCode(bankAccounts = [], selectedBank = "") {
+  return getCompanyBankLucaCode(bankAccounts, selectedBank);
 }
 
 function findBankRule(companyRules, description) {
@@ -400,7 +399,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   const bankLucaBase = resolve102BankAccount(
     selectedCompany?.bankAccounts || [],
     "102",
-    getDefaultBankLucaCode(selectedCompany?.bankAccounts)
+    getDefaultBankLucaCode(selectedCompany?.bankAccounts, selectedBank),
+    selectedBank
   );
 
   accountCode = bankLucaBase;
@@ -614,7 +614,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     accountCode = resolve102BankAccount(
       selectedCompany?.bankAccounts || [],
       accountCode,
-      getDefaultBankLucaCode(selectedCompany?.bankAccounts)
+      getDefaultBankLucaCode(selectedCompany?.bankAccounts, selectedBank),
+      selectedBank
     );
   }
 

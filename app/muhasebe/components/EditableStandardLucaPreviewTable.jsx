@@ -172,38 +172,49 @@ export default function EditableStandardLucaPreviewTable({
 
   return (
     <div className="space-y-4">
-      {duplicateSummary?.hasCritical || duplicateSummary?.highCount ? (
+      {duplicateSummary?.hasCritical ||
+      duplicateSummary?.suspiciousCount > 0 ||
+      duplicateSummary?.expectedDoubleEntryPairs > 0 ? (
         <div
           className={`rounded-xl border px-4 py-3 text-sm ${
             duplicateSummary?.hasCritical
               ? "border-red-700/60 bg-red-950/30 text-red-100"
-              : "border-orange-700/60 bg-orange-950/25 text-orange-100"
+              : "border-slate-700/60 bg-slate-950/40 text-slate-200"
           }`}
         >
           <p className="font-semibold">Mükerrer risk özeti</p>
           <p className="mt-1 text-xs opacity-90">
-            {duplicateSummary.criticalCount > 0
-              ? `${duplicateSummary.criticalCount} kritik, `
-              : ""}
-            {duplicateSummary.highCount > 0
-              ? `${duplicateSummary.highCount} yüksek, `
-              : ""}
-            {duplicateSummary.mediumCount > 0
-              ? `${duplicateSummary.mediumCount} orta, `
-              : ""}
-            {duplicateSummary.lowCount} düşük risk.
+            Kritik gerçek mükerrer: {duplicateSummary.criticalCount || 0}
+            {" · "}
+            Şüpheli benzer: {duplicateSummary.suspiciousCount || 0}
+            {" · "}
+            Beklenen borç/alacak çiftleri:{" "}
+            {duplicateSummary.expectedDoubleEntryPairs || 0}
             {duplicateSummary.hasCritical
-              ? " Kritik mükerrer kayıtlar Excel oluşturmayı engeller."
-              : duplicateSummary.highCount > 0
-                ? " Yüksek riskli satırlar export öncesi uyarı verir."
-                : ""}
+              ? " — Kritik mükerrerler Excel’i engeller."
+              : " — Benzer kayıtlar bilgilendirme amaçlıdır; çift taraflı fiş mükerrer sayılmaz."}
           </p>
         </div>
       ) : null}
 
       {showBlockingBanner ? (
         <div className="rounded-xl border border-red-700/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
-          <p className="font-semibold">Excel oluşturulamadı — lütfen hataları düzeltin:</p>
+          <p className="font-semibold">Excel oluşturulamadı — özet:</p>
+          {exportValidation.errorCategoryCounts ? (
+            <ul className="mt-2 list-inside list-disc text-xs">
+              <li>Eksik hesap: {exportValidation.errorCategoryCounts.eksikHesap || 0}</li>
+              <li>Dengesiz fiş: {exportValidation.errorCategoryCounts.dengesizFis || 0}</li>
+              <li>
+                Kritik mükerrer: {exportValidation.errorCategoryCounts.kritikMukerrer || 0}
+              </li>
+              <li>
+                Eksik tarih/tutar: {exportValidation.errorCategoryCounts.eksikTarihTutar || 0}
+              </li>
+              <li>
+                Geçersiz belge: {exportValidation.errorCategoryCounts.gecersizBelge || 0}
+              </li>
+            </ul>
+          ) : null}
           {exportValidation.globalErrors?.length ? (
             <ul className="mt-2 list-inside list-disc">
               {exportValidation.globalErrors.map((error) => (
@@ -211,8 +222,12 @@ export default function EditableStandardLucaPreviewTable({
               ))}
             </ul>
           ) : null}
-          <ul className="mt-2 list-inside list-disc">
-            {(exportValidation.blockingMessages || []).slice(0, 12).map((error) => (
+          <p className="mt-2 text-xs opacity-80">
+            Toplam engel: {exportValidation.blockingErrorCount || (exportValidation.blockingMessages || []).length}
+            {" · "}İlk örnekler:
+          </p>
+          <ul className="mt-1 list-inside list-disc text-xs">
+            {(exportValidation.blockingMessages || []).slice(0, 10).map((error) => (
               <li key={error}>{error}</li>
             ))}
           </ul>
