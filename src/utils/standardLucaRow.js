@@ -811,6 +811,7 @@ export function bankMovementsToStandardLucaRows(movements = [], context = {}) {
 
 export function stripStandardLucaRow(row) {
   return {
+    id: row.id,
     firmaId: row.firmaId,
     kaynakTipi: row.kaynakTipi,
     kaynakAdi: row.kaynakAdi,
@@ -828,6 +829,11 @@ export function stripStandardLucaRow(row) {
     riskDurumu: row.riskDurumu,
     kontrolNotu: row.kontrolNotu,
     hafizaEslesme: row.hafizaEslesme,
+    _movementId: row._movementId,
+    sourceMovementId: row.sourceMovementId || row._movementId,
+    sourceRowIndex: row.sourceRowIndex,
+    lineRole: row.lineRole,
+    creationSource: row.creationSource,
   };
 }
 
@@ -992,14 +998,36 @@ export function buildStandardLucaTransferPayload({
   kaynakTipi,
   kaynakAdi,
   rows,
+  runId,
+  movementCount,
+  bankId,
+  bankName,
+  source,
 }) {
+  const normalizedSource =
+    source ||
+    (String(kaynakTipi || "").toUpperCase() === "BANKA" ||
+    String(kaynakTipi || "").toUpperCase() === "BANK"
+      ? "bank"
+      : String(kaynakTipi || "").toUpperCase() === "ELEKTRAWEB"
+        ? "elektraweb"
+        : "");
+
   return {
     format: STANDARD_LUCA_ROW_FORMAT,
+    schemaVersion: 2,
+    datasetId: runId || "",
+    runId: runId || "",
+    source: normalizedSource,
     firmaId,
     companyId: firmaId,
     companyName,
     kaynakTipi,
     kaynakAdi,
+    bankId: bankId || "",
+    bankName: bankName || kaynakAdi || "",
+    movementCount: Number(movementCount) || 0,
+    lucaRowCount: Array.isArray(rows) ? rows.length : 0,
     createdAt: new Date().toISOString(),
     rows: sortStandardLucaRows(rows.map(stripStandardLucaRow)),
   };

@@ -11,7 +11,7 @@ import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
   normalizeCompanyRecord,
-  savePendingLucaRows,
+  saveLucaTransferDataset,
   loadAccountPlansFromStorage,
   getCompanyAccountPlansWithDiagnostics,
   logElektrawebAccountPlanDiagnostics,
@@ -306,19 +306,35 @@ export default function ElektrawebPage() {
       return;
     }
 
-    savePendingLucaRows(
-      buildStandardLucaTransferPayload({
-        firmaId: selectedCompanyId,
-        companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
-        kaynakTipi: "ELEKTRAWEB",
-        kaynakAdi: "ELEKTRAWEB",
-        rows: standardLucaRows,
-      })
-    );
+    if (!selectedCompanyId) {
+      alert("Luca aktarımı için önce firma seçmelisin.");
+      return;
+    }
+
+    const runId = `elektraweb-${String(selectedCompanyId).slice(0, 8)}-${Date.now()}`;
+    const payload = buildStandardLucaTransferPayload({
+      firmaId: selectedCompanyId,
+      companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
+      kaynakTipi: "ELEKTRAWEB",
+      kaynakAdi: "ELEKTRAWEB",
+      source: "elektraweb",
+      runId,
+      rows: standardLucaRows,
+    });
+
+    const saved = saveLucaTransferDataset(payload);
+    if (!saved.ok) {
+      alert("Elektraweb aktarımı kaydedilemedi. Depolama dolu olabilir.");
+      return;
+    }
 
     logStandardLucaReport("elektraweb-transfer", standardLucaRows.map(stripStandardLucaRow));
 
-    router.push("/muhasebe/luca-donusturucu?source=elektraweb");
+    router.push(
+      `/muhasebe/luca-donusturucu?source=elektraweb&companyId=${encodeURIComponent(
+        selectedCompanyId
+      )}&runId=${encodeURIComponent(runId)}`
+    );
   };
 
   const yuksekRiskli = useMemo(

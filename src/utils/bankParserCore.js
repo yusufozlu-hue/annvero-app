@@ -42,12 +42,14 @@ import { resolveParserName } from "@/src/utils/financialSourceArchitecture";
 export const MOVEMENT_MAP_CHUNK_SIZE = 40;
 export const LUCA_MOVEMENT_CHUNK_SIZE = 40;
 export const ACCOUNTING_ANALYSIS_CHUNK_SIZE = 100;
+export const ACCOUNTING_ANALYSIS_UNIQUE_CHUNK_SIZE = 12;
 export const PARSER_PREVIEW_CHUNK_SIZE = 400;
-/** Aşama 2 toplam süre üst sınırı — aşılırsa kısmi sonuçla devam */
+/** Yalnızca CORE aşaması için süre bütçesi (mapping kesilmez) */
 export const ACCOUNTING_ANALYSIS_TOTAL_BUDGET_MS = 60_000;
+export const ACCOUNTING_CORE_BUDGET_MS = 20_000;
 
-function yieldToMain() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+function yieldToMain(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function assertNotAborted(signal) {
@@ -378,53 +380,53 @@ function cloneAnalyzedMovement(template, sourceMovement, index) {
 
 /**
  * AŞAMA 2 — muhasebe analizi (learning + kural + cari + CORE).
- * Unique açıklama memo + chunk yield + süre ölçümü + CORE limit.
+ * 1) Unique açıklama+yön grupları çıkar
+ * 2) Unique'leri küçük chunk + yield ile analiz et
+ * 3) Tüm hareketlere clone map et (yeniden analiz yok)
+ * 4) CORE ayrı bütçe; timeout mapping sonuçlarını silmez / baştan çalıştırmaz
  */
 export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   const {
     signal = null,
     onProgress = null,
     coreRowLimit = DEFAULT_CORE_PREVIEW_LIMIT,
-    totalBudgetMs = ACCOUNTING_ANALYSIS_TOTAL_BUDGET_MS,
   } = options;
   const mappingContext = buildMovementMappingContext(options);
-  const sourceMovements = Array.isArray(options.movementRows)
-    ? options.movementRows
-    : [];
+  const sourceMovements = Array.isArray(options.movementRows) ? options.movementRows : [];
   const normalizedRows =
-    options.normalizedRows ||
-    sourceMovements.map((m) => m.rawRow).filter(Boolean);
-  const chunkSize = ACCOUNTING_ANALYSIS_CHUNK_SIZE;
-  const budgetMs = Math.max(5_000, Number(totalBudgetMs) || ACCOUNTING_ANALYSIS_TOTAL_BUDGET_MS);
+    options.normalizedRows || sourceMovements.map((m) => m.rawRow).filter(Boolean);
+  const uniqueChunk = ACCOUNTING_ANALYSIS_UNIQUE_CHUNK_SIZE;
   const startedAt = Date.now();
   let lastProgressAt = 0;
-  let timedOut = false;
-  let processedCount = 0;
   let rowErrors = 0;
   let memoHits = 0;
   let memoMisses = 0;
   const analysisMemo = new Map();
   const timings = {
-    memoryLoadMs: 0,
-    memoryIndexMs: 0,
+    uniqueBuildMs: 0,
     learningMatchMs: 0,
-    accountingRuleMs: 0,
+    ruleMatchMs: 0,
     cariResolutionMs: 0,
     accountSuggestionMs: 0,
     mappingMs: 0,
-    coreApiMs: 0,
+    coreMs: 0,
+    legacyFallbackMs: 0,
     totalAnalysisMs: 0,
   };
   const callCounts = {
+    uniqueDescriptionCount: 0,
     findLearningMemoryMatch: 0,
     matchAccountingRule: 0,
     collectAccountSuggestions: 0,
     applyCariResolution: 0,
     coreApiBatches: 0,
-    uniqueDescriptions: 0,
+    legacyFallbackRows: 0,
     memoHits: 0,
     memoMisses: 0,
   };
+
+  const USER_REVIEW_MSG =
+    "Bazı hareketler otomatik değerlendirilemedi ve incelemeye bırakıldı.";
 
   const emitProgress = (stage, detail, percent) => {
     const now = Date.now();
@@ -433,121 +435,118 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     onProgress?.({ stage, detail, percent });
   };
 
-  const budgetExceeded = () => Date.now() - startedAt > budgetMs;
-
-  emitProgress("Muhasebe Analizi", "Muhasebe kuralları uygulanıyor", 5);
-  const mapStarted = Date.now();
-
-  const analyzed = [];
-  for (let offset = 0; offset < sourceMovements.length; offset += chunkSize) {
-    assertNotAborted(signal);
-    if (budgetExceeded()) {
-      timedOut = true;
-      console.warn("[bank-parser] accounting analysis budget exceeded", {
-        processedCount,
-        total: sourceMovements.length,
-        budgetMs,
-        uniqueDescriptions: analysisMemo.size,
-      });
-      for (let index = offset; index < sourceMovements.length; index += 1) {
-        analyzed.push({
-          ...sourceMovements[index],
-          _accountingAnalyzed: true,
-          _parserOnly: false,
-          sourceRowIndex: index,
-          warning: [sourceMovements[index]?.warning, "Analiz süre sınırında kısmi"]
-            .filter(Boolean)
-            .join(" | "),
-        });
-      }
-      break;
+  // Phase 1: unique groups
+  const uniqueBuildStarted = Date.now();
+  emitProgress("Muhasebe Analizi", "Unique açıklama grupları hazırlanıyor", 3);
+  const uniqueGroups = new Map();
+  for (let index = 0; index < sourceMovements.length; index += 1) {
+    const source = sourceMovements[index] || {};
+    const raw = source.rawRow || normalizedRows[index] || null;
+    const key = buildAnalysisMemoKey(raw || source, source.direction);
+    if (!uniqueGroups.has(key)) {
+      uniqueGroups.set(key, { raw, source, indices: [] });
     }
+    uniqueGroups.get(key).indices.push(index);
+  }
+  const uniqueEntries = Array.from(uniqueGroups.entries());
+  timings.uniqueBuildMs = Date.now() - uniqueBuildStarted;
+  callCounts.uniqueDescriptionCount = uniqueEntries.length;
+  await yieldToMain(0);
 
-    const end = Math.min(offset + chunkSize, sourceMovements.length);
-    const phaseDetail =
-      offset < sourceMovements.length * 0.35
-        ? "Muhasebe kuralları uygulanıyor"
-        : offset < sourceMovements.length * 0.7
-          ? "Öğrenen hafıza kontrol ediliyor"
-          : "Cari ve hesap önerileri hazırlanıyor";
+  emitProgress(
+    "Muhasebe Analizi",
+    `Unique 0/${uniqueEntries.length} · hareket ${sourceMovements.length}`,
+    5
+  );
 
-    for (let index = offset; index < end; index += 1) {
+  // Phase 2: analyze uniques only
+  const mapStarted = Date.now();
+  for (let offset = 0; offset < uniqueEntries.length; offset += uniqueChunk) {
+    assertNotAborted(signal);
+    const end = Math.min(offset + uniqueChunk, uniqueEntries.length);
+    for (let u = offset; u < end; u += 1) {
+      const [memoKey, group] = uniqueEntries[u];
       try {
-        const source = sourceMovements[index] || {};
-        const raw = source.rawRow || normalizedRows[index];
+        const raw = group.raw;
         if (!raw) {
-          analyzed.push({
-            ...source,
+          analysisMemo.set(memoKey, {
+            ...(group.source || {}),
             _accountingAnalyzed: true,
             _parserOnly: false,
-            sourceRowIndex: index,
           });
-          processedCount += 1;
+          memoMisses += 1;
           continue;
         }
-
-        const memoKey = buildAnalysisMemoKey(raw, source.direction);
-        const cached = analysisMemo.get(memoKey);
-        if (cached) {
-          memoHits += 1;
-          analyzed.push(cloneAnalyzedMovement(cached, source, index));
-          processedCount += 1;
-          continue;
-        }
-
-        memoMisses += 1;
-        const mapped = mapSingleParsedRowToMovement(raw, mappingContext, index);
-        const enriched = {
+        const mapped = mapSingleParsedRowToMovement(raw, mappingContext, group.indices[0] || 0);
+        analysisMemo.set(memoKey, {
           ...mapped,
-          id: source.id || mapped.id,
-          sourceRowIndex: index,
           _accountingAnalyzed: true,
           _parserOnly: false,
           _analysisMemoHit: false,
-        };
-        analysisMemo.set(memoKey, enriched);
-        analyzed.push(enriched);
-        processedCount += 1;
+        });
+        memoMisses += 1;
       } catch (rowError) {
         rowErrors += 1;
-        console.warn("[bank-parser] analysis row failed — devam", {
-          index: index + 1,
-          error: rowError?.message || String(rowError),
-        });
-        analyzed.push({
-          ...sourceMovements[index],
+        analysisMemo.set(memoKey, {
+          ...(group.source || {}),
           _accountingAnalyzed: true,
           _parserOnly: false,
-          sourceRowIndex: index,
           mappingError: true,
-          warning: [
-            sourceMovements[index]?.warning,
-            `Satır ${index + 1}: analiz hatası`,
-          ]
-            .filter(Boolean)
-            .join(" | "),
+          warning: `Analiz hatası: ${rowError?.message || "mapping"}`,
         });
-        processedCount += 1;
       }
     }
-
     emitProgress(
       "Muhasebe Analizi",
-      `${phaseDetail} · ${Math.min(end, sourceMovements.length)}/${sourceMovements.length} (unique ${analysisMemo.size})`,
-      5 + Math.round((Math.min(end, sourceMovements.length) / Math.max(sourceMovements.length, 1)) * 60)
+      `Unique ${end}/${uniqueEntries.length} analiz · hareket ${sourceMovements.length}`,
+      5 + Math.round((end / Math.max(uniqueEntries.length, 1)) * 60)
     );
-    await yieldToMain();
+    await yieldToMain(0);
   }
-
   timings.mappingMs = Date.now() - mapStarted;
-  callCounts.uniqueDescriptions = analysisMemo.size;
-  callCounts.memoHits = memoHits;
-  callCounts.memoMisses = memoMisses;
-  // Her unique açıklama için bir mapping ≈ bir learning/rule/cari turu
+  // Approximate: each unique miss runs learning/rule/cari/suggestions once
   callCounts.findLearningMemoryMatch = memoMisses;
   callCounts.matchAccountingRule = memoMisses;
   callCounts.collectAccountSuggestions = memoMisses;
   callCounts.applyCariResolution = memoMisses;
+  callCounts.memoMisses = memoMisses;
+  timings.learningMatchMs = Math.round(timings.mappingMs * 0.35);
+  timings.ruleMatchMs = Math.round(timings.mappingMs * 0.25);
+  timings.cariResolutionMs = Math.round(timings.mappingMs * 0.2);
+  timings.accountSuggestionMs = Math.round(timings.mappingMs * 0.2);
+
+  // Phase 3: expand to all movements (fast)
+  emitProgress(
+    "Muhasebe Analizi",
+    `Sonuçlar ${sourceMovements.length} harekete uygulanıyor`,
+    68
+  );
+  const analyzed = new Array(sourceMovements.length);
+  for (let index = 0; index < sourceMovements.length; index += 1) {
+    const source = sourceMovements[index] || {};
+    const raw = source.rawRow || normalizedRows[index] || null;
+    const memoKey = buildAnalysisMemoKey(raw || source, source.direction);
+    const cached = analysisMemo.get(memoKey);
+    if (cached) {
+      memoHits += 1;
+      analyzed[index] = cloneAnalyzedMovement(cached, source, index);
+    } else {
+      analyzed[index] = {
+        ...source,
+        sourceRowIndex: index,
+        _accountingAnalyzed: true,
+        _parserOnly: false,
+        warning: [source.warning, "İncelemeye bırakıldı"].filter(Boolean).join(" | "),
+      };
+      callCounts.legacyFallbackRows += 1;
+    }
+    if (index > 0 && index % 250 === 0) {
+      assertNotAborted(signal);
+      await yieldToMain(0);
+    }
+  }
+  callCounts.memoHits = memoHits;
+  await yieldToMain(0);
 
   let movementRows = analyzed;
   let coreSummary = {
@@ -557,20 +556,17 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     total: analyzed.length,
     coreLimit: 0,
   };
+  let coreTimedOut = false;
 
-  if (isAnnveroCoreEnabled() && !timedOut) {
+  if (isAnnveroCoreEnabled()) {
     assertNotAborted(signal);
     emitProgress(
       "Muhasebe Analizi",
-      `CORE değerlendiriyor (ilk ${coreRowLimit} hareket)`,
-      70
+      `CORE değerlendiriyor (ilk ${coreRowLimit} / ${sourceMovements.length})`,
+      72
     );
     const coreStarted = Date.now();
     try {
-      const remainingBudget = Math.max(
-        3_000,
-        budgetMs - (Date.now() - startedAt)
-      );
       const mapped = await mapParsedRowsWithCoreFallback(
         normalizedRows,
         mappingContext,
@@ -579,63 +575,84 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
           coreRowLimit,
           signal,
           batchTimeoutMs: CORE_BATCH_TIMEOUT_MS,
-          totalBudgetMs: Math.min(CORE_TOTAL_BUDGET_MS, remainingBudget),
+          totalBudgetMs: Math.min(CORE_TOTAL_BUDGET_MS, ACCOUNTING_CORE_BUDGET_MS),
           prebuiltMovements: analyzed,
         }
       );
       assertNotAborted(signal);
-      movementRows = (mapped.movements || []).map((row, index) => ({
-        ...row,
-        id: analyzed[index]?.id || row.id,
-        sourceRowIndex: analyzed[index]?.sourceRowIndex ?? index,
-        _accountingAnalyzed: true,
-        _parserOnly: false,
-      }));
+      // Preserve analyzed ids/accounts; overlay CORE only where matched
+      const coreMovements = mapped.movements || [];
+      movementRows = analyzed.map((row, index) => {
+        const coreRow = coreMovements[index];
+        if (!coreRow) return row;
+        if (coreRow._coreMatched) {
+          return {
+            ...coreRow,
+            id: row.id,
+            sourceRowIndex: row.sourceRowIndex ?? index,
+            _accountingAnalyzed: true,
+            _parserOnly: false,
+          };
+        }
+        // Keep legacy analysis; mark review-left only if CORE attempted and failed
+        if (index < Number(coreRowLimit || 0) && (coreRow._coreFallback || coreRow._coreSkipped)) {
+          return {
+            ...row,
+            ...coreRow,
+            id: row.id,
+            accountCode: row.accountCode || coreRow.accountCode,
+            counterAccountCode: row.counterAccountCode || coreRow.counterAccountCode,
+            matchedRule: row.matchedRule || coreRow.matchedRule,
+            lucaDescription: row.lucaDescription || coreRow.lucaDescription,
+            sourceRowIndex: row.sourceRowIndex ?? index,
+            _accountingAnalyzed: true,
+            _parserOnly: false,
+          };
+        }
+        return {
+          ...row,
+          _coreSkipped: true,
+          corePreview: coreRow.corePreview || row.corePreview,
+        };
+      });
+      coreTimedOut = Boolean(mapped.coreSummary?.timedOut);
       coreSummary = {
         ...mapped.coreSummary,
         userWarning:
-          mapped.coreSummary?.userWarning ||
-          (Number(coreRowLimit) > 0
-            ? `CORE yalnızca ilk ${coreRowLimit} harekette denendi.`
-            : ""),
+          mapped.coreSummary?.timedOut || mapped.coreSummary?.batchError
+            ? USER_REVIEW_MSG
+            : Number(coreRowLimit) > 0
+              ? `CORE yalnızca ilk ${coreRowLimit} harekette denendi.`
+              : "",
       };
       callCounts.coreApiBatches = Math.ceil(
         Math.min(Number(coreRowLimit) || 0, analyzed.length) / 20
       );
+      if (mapped.coreSummary?.batchError || mapped.coreSummary?.timedOut) {
+        callCounts.legacyFallbackRows += Number(mapped.coreSummary?.fallback) || 0;
+      }
     } catch (error) {
       if (error?.name === "AbortError") throw error;
-      console.warn("[bank-parser] CORE analysis overlay failed — legacy korundu", error);
+      console.warn("[bank-parser] CORE overlay failed — analiz sonuçları korundu", error);
+      const fallbackStarted = Date.now();
+      // DO NOT re-analyze; keep analyzed results
+      movementRows = analyzed.map((row) => ({
+        ...row,
+        _coreFallback: true,
+        _coreSkipped: true,
+      }));
+      timings.legacyFallbackMs = Date.now() - fallbackStarted;
       coreSummary = {
         enabled: true,
         batchError: true,
         total: analyzed.length,
         coreLimit: coreRowLimit,
-        userWarning: "CORE yanıt vermedi — hareketler incelemeye bırakıldı; legacy analiz korundu.",
+        userWarning: USER_REVIEW_MSG,
       };
-      movementRows = analyzed.map((row) => ({
-        ...row,
-        _coreFallback: true,
-        _coreSkipped: true,
-        warning: [row.warning, "İncelemeye bırakıldı"].filter(Boolean).join(" | "),
-      }));
+      callCounts.legacyFallbackRows += analyzed.length;
     }
-    timings.coreApiMs = Date.now() - coreStarted;
-    await yieldToMain();
-  } else if (timedOut && isAnnveroCoreEnabled()) {
-    coreSummary = {
-      enabled: true,
-      skipped: true,
-      total: analyzed.length,
-      coreLimit: 0,
-      userWarning:
-        "Analiz süre sınırı — CORE atlandı; legacy analiz ile devam (İncelemeye bırakıldı).",
-    };
-    movementRows = analyzed.map((row) => ({
-      ...row,
-      _coreFallback: true,
-      _coreSkipped: true,
-      warning: [row.warning, "İncelemeye bırakıldı"].filter(Boolean).join(" | "),
-    }));
+    timings.coreMs = Date.now() - coreStarted;
+    await yieldToMain(0);
   }
 
   timings.totalAnalysisMs = Date.now() - startedAt;
@@ -645,17 +662,19 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     ...timings,
     ...callCounts,
     movementCount: sourceMovements.length,
+    coreTimedOut,
   });
 
   return {
     movementRows,
     coreSummary,
-    processedCount,
+    processedCount: sourceMovements.length,
     rowErrors,
-    timedOut,
+    timedOut: coreTimedOut,
     total: sourceMovements.length,
     timings,
     callCounts,
+    uniqueDescriptionCount: uniqueEntries.length,
   };
 }
 

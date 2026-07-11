@@ -5,6 +5,144 @@ export const ACCOUNT_PLAN_STORAGE_KEY = "annvero_account_plans_v1";
 export const LEGACY_ACCOUNT_PLAN_STORAGE_KEY = "annvero_hesap_planlari_v1";
 export const RULE_ENGINE_STORAGE_KEY = "annvero_rule_engine_v1";
 export const PENDING_LUCA_ROWS_STORAGE_KEY = "annvero_pending_luca_rows_v1";
+export const LUCA_TRANSFER_SCHEMA_VERSION = 2;
+
+function normalizeLucaTransferSource(source) {
+  const value = String(source || "")
+    .trim()
+    .toLowerCase();
+  if (value === "bank" || value === "banka") return "bank";
+  if (value === "elektraweb" || value === "elektra") return "elektraweb";
+  return "";
+}
+
+export function buildLucaTransferStorageKey(source, companyId, runId) {
+  const src = normalizeLucaTransferSource(source);
+  const company = String(companyId || "").trim() || "unknown";
+  const run = String(runId || "").trim() || "latest";
+  return `annvero:luca:${src}:${company}:${run}`;
+}
+
+export function buildLucaTransferPointerKey(source, companyId) {
+  const src = normalizeLucaTransferSource(source);
+  const company = String(companyId || "").trim() || "unknown";
+  return `annvero:luca:${src}:latest:${company}`;
+}
+
+/**
+ * Kaynak-izolasyonlu Luca aktarım kaydı.
+ * Banka ve Elektraweb aynı anahtarı paylaşmaz.
+ */
+export function saveLucaTransferDataset(payload = {}) {
+  if (typeof window === "undefined") {
+    return { ok: false, error: "window_unavailable" };
+  }
+
+  const source = normalizeLucaTransferSource(payload.source || payload.kaynakTipi);
+  const companyId = String(payload.companyId || payload.firmaId || "").trim();
+  const runId =
+    String(payload.runId || payload.datasetId || "").trim() ||
+    `${source}-${Date.now()}`;
+
+  if (!source || !companyId) {
+    return { ok: false, error: "missing_source_or_company" };
+  }
+
+  const dataset = {
+    schemaVersion: LUCA_TRANSFER_SCHEMA_VERSION,
+    datasetId: runId,
+    runId,
+    source,
+    companyId,
+    firmaId: companyId,
+    companyName: payload.companyName || "",
+    bankId: payload.bankId || "",
+    bankName: payload.bankName || payload.kaynakAdi || "",
+    kaynakTipi: source === "bank" ? "BANKA" : "ELEKTRAWEB",
+    kaynakAdi: payload.kaynakAdi || payload.bankName || (source === "bank" ? "BANKA" : "ELEKTRAWEB"),
+    createdAt: payload.createdAt || new Date().toISOString(),
+    movementCount: Number(payload.movementCount) || 0,
+    lucaRowCount: Array.isArray(payload.rows) ? payload.rows.length : 0,
+    format: payload.format || "standard-luca-row-v1",
+    rows: Array.isArray(payload.rows) ? payload.rows : [],
+  };
+
+  const key = buildLucaTransferStorageKey(source, companyId, runId);
+  const pointerKey = buildLucaTransferPointerKey(source, companyId);
+
+  try {
+    localStorage.setItem(key, JSON.stringify(dataset));
+    localStorage.setItem(pointerKey, runId);
+    // Eski generic anahtarı bu kaynaktan gelen veri ile ezme — karışmayı önlemek için
+    // yalnızca aynı source pointer'ını güncelliyoruz.
+    return { ok: true, key, runId, source, companyId, rowCount: dataset.lucaRowCount };
+  } catch (error) {
+    console.error("[luca-transfer] save failed", error);
+    return {
+      ok: false,
+      error: error?.name || "quota_or_write_error",
+      message: error?.message || String(error),
+    };
+  }
+}
+
+export function loadLucaTransferDataset({
+  source,
+  companyId,
+  runId = "",
+} = {}) {
+  if (typeof window === "undefined") return null;
+
+  const src = normalizeLucaTransferSource(source);
+  const company = String(companyId || "").trim();
+  if (!src || !company) return null;
+
+  let resolvedRunId = String(runId || "").trim();
+  if (!resolvedRunId) {
+    resolvedRunId =
+      localStorage.getItem(buildLucaTransferPointerKey(src, company)) || "";
+  }
+  if (!resolvedRunId) return null;
+
+  const key = buildLucaTransferStorageKey(src, company, resolvedRunId);
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.rows) || !parsed.rows.length) return null;
+    if (normalizeLucaTransferSource(parsed.source || parsed.kaynakTipi) !== src) {
+      return null;
+    }
+    if (String(parsed.companyId || parsed.firmaId || "") !== company) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** @deprecated Ortak anahtar — yalnızca geriye dönük okuma; yeni yazımlar saveLucaTransferDataset kullanır */
+export function savePendingLucaRows(payload) {
+  if (typeof window === "undefined") return;
+
+  localStorage.setItem(PENDING_LUCA_ROWS_STORAGE_KEY, JSON.stringify(payload));
+}
+
+export function loadPendingLucaRows() {
+  if (typeof window === "undefined") return null;
+
+  const saved = localStorage.getItem(PENDING_LUCA_ROWS_STORAGE_KEY);
+
+  if (!saved) return null;
+
+  try {
+    return JSON.parse(saved);
+  } catch {
+    return null;
+  }
+}
 
 export const RULE_TAB_TO_STORAGE = {
   banka: "bankRules",
@@ -510,26 +648,6 @@ export function formatDateTime(value) {
   const minutes = String(date.getMinutes()).padStart(2, "0");
 
   return `${day}.${month}.${year} ${hours}:${minutes}`;
-}
-
-export function savePendingLucaRows(payload) {
-  if (typeof window === "undefined") return;
-
-  localStorage.setItem(PENDING_LUCA_ROWS_STORAGE_KEY, JSON.stringify(payload));
-}
-
-export function loadPendingLucaRows() {
-  if (typeof window === "undefined") return null;
-
-  const saved = localStorage.getItem(PENDING_LUCA_ROWS_STORAGE_KEY);
-
-  if (!saved) return null;
-
-  try {
-    return JSON.parse(saved);
-  } catch {
-    return null;
-  }
 }
 
 function compactAccount(value) {

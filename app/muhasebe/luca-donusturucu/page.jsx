@@ -15,7 +15,7 @@ import {
   getAccountPlanUploadedAt,
   getCompanyRulesUpdatedAt,
   loadAccountPlansFromStorage,
-  loadPendingLucaRows,
+  loadLucaTransferDataset,
   loadRuleEngineFromStorage,
   normalizeAccountPlanForMatching,
   normalizeCompanyRecord,
@@ -114,6 +114,14 @@ function formatRowCountLabel(count, sourceType) {
 }
 
 function resolvePendingSourceType(pending) {
+  const sourceHint = String(pending?.source || "").trim().toLowerCase();
+  if (sourceHint === "bank" || sourceHint === "banka") {
+    return SOURCE_TYPES.BANKA;
+  }
+  if (sourceHint === "elektraweb" || sourceHint === "elektra") {
+    return SOURCE_TYPES.ELEKTRAWEB;
+  }
+
   if (
     pending.kaynakTipi === KAYNAK_TIPI.ELEKTRAWEB ||
     pending.sourceModule === "elektraweb"
@@ -172,11 +180,108 @@ export default function LucaDonusturucuPage() {
 
   useEffect(() => {
     const urlSource = resolveUrlSourceType(searchParams.get("source"));
+    const urlCompanyId = String(searchParams.get("companyId") || "").trim();
+    const urlRunId = String(searchParams.get("runId") || "").trim();
+
     if (urlSource) {
       setSourceType(urlSource);
       setSourceLocked(true);
     }
-  }, [searchParams]);
+
+    // source yoksa eski generic cache'i otomatik açma
+    if (!urlSource) {
+      setHasTransferredRows(false);
+      return;
+    }
+
+    const companyId = urlCompanyId || selectedCompanyId;
+    if (!companyId) {
+      setPreviewError(
+        urlSource === SOURCE_TYPES.BANKA
+          ? "Banka Parser aktarım verisi için firma seçili olmalı."
+          : "Aktarım verisi için firma seçili olmalı."
+      );
+      return;
+    }
+
+    const pending = loadLucaTransferDataset({
+      source: urlSource === SOURCE_TYPES.BANKA ? "bank" : "elektraweb",
+      companyId,
+      runId: urlRunId,
+    });
+
+    if (!pending?.rows?.length) {
+      setHasTransferredRows(false);
+      setStandardLucaRows([]);
+      setFisler([]);
+      setExportValidation(null);
+      setPreviewError(
+        urlSource === SOURCE_TYPES.BANKA
+          ? "Banka Parser aktarım verisi bulunamadı. Banka Parser’dan yeniden gönderin."
+          : "Elektraweb aktarım verisi bulunamadı. Kaynak ekrandan yeniden gönderin."
+      );
+      return;
+    }
+
+    if (pending.companyId && pending.companyId !== companyId) {
+      setPreviewError("Aktarım verisi aktif firma ile eşleşmiyor.");
+      setHasTransferredRows(false);
+      return;
+    }
+
+    setPreviewError("");
+    setExportValidation(null);
+    if (pending.companyId) {
+      setSelectedCompanyId(pending.companyId);
+    }
+
+    const pendingSourceType = resolvePendingSourceType(pending);
+    if (pendingSourceType !== urlSource) {
+      setPreviewError(
+        `Aktarım kaynağı uyuşmuyor (beklenen: ${getSourceTypeLabel(urlSource)}).`
+      );
+      setHasTransferredRows(false);
+      return;
+    }
+
+    setSourceType(pendingSourceType);
+    setSourceLocked(true);
+    setHasTransferredRows(true);
+
+    const rows = ensureStandardLucaRowIds(
+      sortStandardLucaRows(
+        pending.rows.map((row) =>
+          finalizeStandardLucaRow({
+            ...row,
+            firmaId: row.firmaId || pending.firmaId || pending.companyId || "",
+            kaynakTipi:
+              row.kaynakTipi ||
+              pending.kaynakTipi ||
+              (pendingSourceType === SOURCE_TYPES.ELEKTRAWEB
+                ? KAYNAK_TIPI.ELEKTRAWEB
+                : KAYNAK_TIPI.BANKA),
+            kaynakAdi:
+              row.kaynakAdi ||
+              pending.kaynakAdi ||
+              pending.bankName ||
+              pending.selectedBank ||
+              getSourceTypeLabel(pendingSourceType),
+          })
+        )
+      )
+    );
+    setStandardLucaRows(applyPreviewAccountMemory(rows));
+    setRawRows([]);
+    setFisler(groupStandardLucaRowsToFisler(rows));
+    logStandardLucaReport("luca-donusturucu-pending", rows);
+    setHareketFileName(
+      pending.companyName
+        ? `${pending.companyName} — ${formatRowCountLabel(rows.length, pendingSourceType)}${
+            pending.bankName ? ` · ${pending.bankName}` : ""
+          }`
+        : formatRowCountLabel(rows.length, pendingSourceType)
+    );
+  }, [searchParams, selectedCompanyId, setSelectedCompanyId]);
 
   const selectedCompany = useMemo(
     () => normalizeCompanyRecord(selectedCompanyRaw),
@@ -218,51 +323,6 @@ export default function LucaDonusturucuPage() {
       window.removeEventListener("focus", refreshLocalCompanyData);
     };
   }, []);
-
-  useEffect(() => {
-    const pending = loadPendingLucaRows();
-    if (!pending?.rows?.length || !isStandardLucaPayload(pending)) return;
-
-    if (pending.companyId) {
-      setSelectedCompanyId(pending.companyId);
-    }
-
-    const pendingSourceType = resolvePendingSourceType(pending);
-    setSourceType(pendingSourceType);
-    setSourceLocked(true);
-    setHasTransferredRows(true);
-
-    const rows = ensureStandardLucaRowIds(
-      sortStandardLucaRows(
-        pending.rows.map((row) =>
-          finalizeStandardLucaRow({
-            ...row,
-            firmaId: row.firmaId || pending.firmaId || pending.companyId || "",
-            kaynakTipi:
-              row.kaynakTipi ||
-              pending.kaynakTipi ||
-              (pendingSourceType === SOURCE_TYPES.ELEKTRAWEB
-                ? KAYNAK_TIPI.ELEKTRAWEB
-                : KAYNAK_TIPI.BANKA),
-            kaynakAdi:
-              row.kaynakAdi ||
-              pending.kaynakAdi ||
-              pending.selectedBank ||
-              getSourceTypeLabel(pendingSourceType),
-          })
-        )
-      )
-    );
-    setStandardLucaRows(applyPreviewAccountMemory(rows));
-    setRawRows([]);
-    setFisler(groupStandardLucaRowsToFisler(rows));
-    logStandardLucaReport("luca-donusturucu-pending", rows);
-    setHareketFileName(
-      pending.companyName
-        ? `${pending.companyName} — ${formatRowCountLabel(rows.length, pendingSourceType)}`
-        : formatRowCountLabel(rows.length, pendingSourceType)
-    );
-  }, [setSelectedCompanyId]);
 
   const changeSourceType = (nextType) => {
     if (sourceLocked || nextType === sourceType) return;
@@ -1176,7 +1236,7 @@ export default function LucaDonusturucuPage() {
           )}
         </div>
 
-        {(showSourcePicker || showFileUpload) && (
+        {(showSourcePicker || showFileUpload || hasTransferredRows) && (
         <div className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
           {showSourcePicker ? (
             <>
@@ -1224,7 +1284,11 @@ export default function LucaDonusturucuPage() {
             </>
           ) : (
             <p className="mb-4 text-sm text-gray-400">
-              Kaynak: <span className="font-medium text-white">{getSourceTypeLabel(sourceType)}</span>
+              Kaynak:{" "}
+              <span className="font-medium text-white">
+                {getSourceTypeLabel(sourceType)}
+              </span>
+              {sourceType === SOURCE_TYPES.BANKA ? " (kilitli aktarım)" : ""}
             </p>
           )}
 

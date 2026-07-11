@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import EditableStandardLucaPreviewTable from "../components/EditableStandardLucaPreviewTable";
 import PreviewErrorBoundary from "../components/PreviewErrorBoundary";
@@ -34,7 +35,7 @@ import {
   loadAccountPlansFromStorage,
   loadRuleEngineFromStorage,
   normalizeCompanyRecord,
-  savePendingLucaRows,
+  saveLucaTransferDataset,
 } from "@/src/utils/companyCenter";
 import { loadAccountingRulesFromStorage } from "@/src/utils/accountingRuleEngine";
 import {
@@ -238,6 +239,7 @@ function computeMovementPreviewSummary(movements = []) {
 }
 
 export default function BankaParserPage() {
+  const router = useRouter();
   const fileInputRef = useRef(null);
   const pipelineRunIdRef = useRef(0);
   const abortRef = useRef(null);
@@ -726,29 +728,48 @@ export default function BankaParserPage() {
   };
 
   const handleGoToLucaProducer = (event) => {
+    event.preventDefault();
+
     if (!movementsRef.current.length || !lucaRef.current.length || !lucaReady) {
-      event.preventDefault();
       alert("Önce ön izleme oluşturup Luca satırlarını hazırlayın.");
       return;
     }
 
     if (!selectedCompanyId) {
-      event.preventDefault();
       alert("Luca Fiş Üretici'ye geçmek için önce firma seçmelisin.");
       return;
     }
 
-    savePendingLucaRows(
-      buildStandardLucaTransferPayload({
-        firmaId: selectedCompanyId,
-        companyName: getCompanyDisplayName(selectedCompany),
-        kaynakTipi: KAYNAK_TIPI.BANKA,
-        kaynakAdi: selectedBank,
-        rows: lucaRef.current,
-      })
-    );
+    const runId = `bank-${selectedCompanyId.slice(0, 8)}-${Date.now()}`;
+    const payload = buildStandardLucaTransferPayload({
+      firmaId: selectedCompanyId,
+      companyName: getCompanyDisplayName(selectedCompany),
+      kaynakTipi: KAYNAK_TIPI.BANKA,
+      kaynakAdi: selectedBank,
+      source: "bank",
+      bankId: selectedBank,
+      bankName: selectedBank,
+      runId,
+      movementCount: movementsRef.current.length,
+      rows: lucaRef.current,
+    });
 
+    const saved = saveLucaTransferDataset(payload);
+    if (!saved.ok) {
+      alert(
+        "Banka Parser aktarımı kaydedilemedi (depolama dolu veya yazma hatası). Excel’i buradan indirip Luca’ya yükleyebilirsiniz."
+      );
+      return;
+    }
+
+    // Eski generic cache’e banka verisi yazma — Elektraweb ile karışmasın
+    setExportValidation(null);
     logStandardLucaReport("banka-transfer", lucaRef.current);
+    router.push(
+      `/muhasebe/luca-donusturucu?source=bank&companyId=${encodeURIComponent(
+        selectedCompanyId
+      )}&runId=${encodeURIComponent(runId)}`
+    );
   };
 
   const markAppliedDeclarationsPaid = (declarationSummary) => {
@@ -1054,7 +1075,8 @@ export default function BankaParserPage() {
       setCoreRowsProcessed(
         result.coreSummary?.coreLimit ?? DEFAULT_CORE_PREVIEW_LIMIT
       );
-      syncMovementPage(movementPage);
+      syncMovementPage(0);
+      setExportValidation(null);
       lucaRef.current = [];
       setLucaReady(false);
       setStandardLucaRows([]);
@@ -1074,22 +1096,27 @@ export default function BankaParserPage() {
         analysisTimedOut: Boolean(result.timedOut),
         analysisTimings: result.timings || null,
         analysisCallCounts: result.callCounts || null,
+        uniqueDescriptionCount:
+          result.uniqueDescriptionCount ??
+          result.callCounts?.uniqueDescriptionCount ??
+          null,
       }));
       parserJob.markSuccess(
-        `Muhasebe analizi tamamlandı (${movementsRef.current.length})`
+        `Muhasebe analizi tamamlandı (${movementsRef.current.length} hareket · ${
+          result.uniqueDescriptionCount ||
+          result.callCounts?.uniqueDescriptionCount ||
+          "?"
+        } unique)`
       );
       if (result.coreSummary?.userWarning) {
         showToast(result.coreSummary.userWarning, "error");
-      } else if (result.timedOut) {
-        showToast(
-          `Analiz süre sınırında tamamlandı (${result.processedCount || 0} satır). Luca hazırlanabilir.`,
-          "error"
-        );
       } else {
-        const unique = result.callCounts?.uniqueDescriptions;
+        const unique =
+          result.uniqueDescriptionCount ||
+          result.callCounts?.uniqueDescriptionCount;
         showToast(
           unique
-            ? `Muhasebe analizi tamamlandı (${unique} unique açıklama). Sonraki: Luca Satırlarını Hazırla.`
+            ? `Muhasebe analizi tamamlandı (${unique} unique açıklama / ${movementsRef.current.length} hareket).`
             : "Muhasebe analizi tamamlandı. Sonraki: Luca Satırlarını Hazırla.",
           "success"
         );
@@ -1132,6 +1159,7 @@ export default function BankaParserPage() {
     setIsPreparingLuca(true);
     setActiveStep("luca");
     setLucaReady(false);
+    setExportValidation(null);
     parserJob.begin({
       stage: BANK_PARSE_STAGES.LUCA,
       detail: `Luca satırları hazırlanıyor (chunk ${LUCA_MOVEMENT_CHUNK_SIZE})`,
@@ -1706,13 +1734,13 @@ export default function BankaParserPage() {
             Luca Excel Oluştur
           </button>
 
-          <Link
-            href="/muhasebe/luca-donusturucu?source=bank"
+          <button
+            type="button"
             onClick={handleGoToLucaProducer}
             className={annveroBtnSecondary}
           >
             Luca Fiş Üretici →
-          </Link>
+          </button>
         </div>
 
         {completedSteps.preview && !accountingAnalyzed ? (
@@ -1809,8 +1837,12 @@ export default function BankaParserPage() {
                 {coreIntegrationSummary.coreRecognized === 0
                   ? " · Bu turda CORE eşleşmesi yok (0 tanıdı) — legacy/kural/hafıza sonuçları geçerlidir."
                   : ""}
-                {lastTimings?.analysisCallCounts?.uniqueDescriptions
-                  ? ` · Unique açıklama: ${lastTimings.analysisCallCounts.uniqueDescriptions}`
+                {lastTimings?.analysisCallCounts?.uniqueDescriptionCount ||
+                lastTimings?.uniqueDescriptionCount
+                  ? ` · Unique açıklama: ${
+                      lastTimings.uniqueDescriptionCount ||
+                      lastTimings.analysisCallCounts.uniqueDescriptionCount
+                    }`
                   : ""}
                 {lastTimings?.lucaStats
                   ? ` · Luca: ${lastTimings.lucaStats.lucaRows} satır (${lastTimings.lucaStats.movementsWith2Rows}×2 çift taraflı)`
