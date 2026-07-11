@@ -103,6 +103,74 @@ function getCariAccountsFromPlan(companyPlans = []) {
     .sort((a, b) => a.priority - b.priority);
 }
 
+/**
+ * Cari indeksi — işlem başında bir kez.
+ * exact unvan / vergi no / IBAN / token adayları.
+ */
+export function buildCariMatchIndex(companyPlans = []) {
+  const accounts = getCariAccountsFromPlan(companyPlans);
+  const byNormalizedName = new Map();
+  const byNormalizedCore = new Map();
+  const byVergiNo = new Map();
+  const byIban = new Map();
+  const byToken = new Map();
+  const byAlias = new Map();
+
+  for (const item of accounts) {
+    const full = normalizeCariName(item.name);
+    const core = normalizeCariNameCore(item.name);
+    if (full) byNormalizedName.set(full, item);
+    if (core) byNormalizedCore.set(core, item);
+
+    const vergi =
+      item.account?.vergiNo ||
+      item.account?.taxNo ||
+      item.account?.vkn ||
+      item.account?.tckn ||
+      "";
+    const vergiKey = String(vergi).replace(/\D/g, "");
+    if (vergiKey.length >= 10) byVergiNo.set(vergiKey, item);
+
+    const ibanRaw =
+      item.account?.iban || item.account?.IBAN || item.account?.ibanNo || "";
+    const ibanKey = normalizeParserText(ibanRaw).replace(/\s+/g, "");
+    if (ibanKey.length >= 15) byIban.set(ibanKey, item);
+
+    for (const token of core.split(" ").filter((t) => t.length >= 3)) {
+      if (!byToken.has(token)) byToken.set(token, []);
+      byToken.get(token).push(item);
+    }
+
+    const aliases = item.account?.aliases || item.account?.bankAliases || [];
+    for (const alias of aliases) {
+      const aliasKey = normalizeCariNameCore(alias);
+      if (aliasKey) byAlias.set(aliasKey, item);
+    }
+  }
+
+  return {
+    accounts,
+    byNormalizedName,
+    byNormalizedCore,
+    byVergiNo,
+    byIban,
+    byToken,
+    byAlias,
+    cariCount: accounts.length,
+  };
+}
+
+function extractVergiNoFromText(text) {
+  const digits = String(text || "").match(/\b\d{10,11}\b/g) || [];
+  return digits;
+}
+
+function extractIbanFromText(text) {
+  const normalized = normalizeParserText(text).replace(/\s+/g, "");
+  const match = normalized.match(/TR\d{24}/);
+  return match ? match[0] : "";
+}
+
 function extractNameFromStructuredText(text) {
   const raw = String(text || "").trim();
   if (!raw) return "";
@@ -297,8 +365,13 @@ export function formatCariSuggestion(account) {
   return name ? `${code} ${name}` : code;
 }
 
-export function collectCariSuggestions(companyPlans, candidates, limit = 3) {
-  const cariAccounts = getCariAccountsFromPlan(companyPlans);
+export function collectCariSuggestions(
+  companyPlans,
+  candidates,
+  limit = 3,
+  cariIndex = null
+) {
+  const cariAccounts = cariIndex?.accounts || getCariAccountsFromPlan(companyPlans);
   const ranked = rankCariAccounts(cariAccounts, candidates);
   const seen = new Set();
   const suggestions = [];
@@ -332,6 +405,10 @@ export function buildCariNotFoundWarning(suggestions = []) {
 
 export function resolveCariAccountMatch(companyPlans, sources = {}) {
   const candidates = buildCariSearchCandidates(sources);
+  const stats = sources.stats || null;
+  const index =
+    sources.cariIndex ||
+    (companyPlans?.length ? buildCariMatchIndex(companyPlans) : null);
 
   if (!candidates.length || !companyPlans?.length) {
     return {
@@ -342,8 +419,93 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     };
   }
 
-  const cariAccounts = getCariAccountsFromPlan(companyPlans);
-  const ranked = rankCariAccounts(cariAccounts, candidates);
+  const haystack = [
+    sources.description,
+    sources.lucaDescription,
+    sources.ruleAciklama,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  // Exact: vergi no
+  for (const vergi of extractVergiNoFromText(haystack)) {
+    const hit = index?.byVergiNo?.get(vergi);
+    if (hit) {
+      if (stats) stats.cariExactHit = (stats.cariExactHit || 0) + 1;
+      return {
+        code: hit.code,
+        matchedName: hit.name,
+        note: "Cari hesap eşleşti",
+        suggestions: [],
+      };
+    }
+  }
+
+  // Exact: IBAN
+  const iban = extractIbanFromText(haystack);
+  if (iban && index?.byIban?.get(iban)) {
+    const hit = index.byIban.get(iban);
+    if (stats) stats.cariExactHit = (stats.cariExactHit || 0) + 1;
+    return {
+      code: hit.code,
+      matchedName: hit.name,
+      note: "Cari hesap eşleşti",
+      suggestions: [],
+    };
+  }
+
+  // Exact: unvan / core / alias
+  for (const candidate of candidates) {
+    const full = normalizeCariName(candidate);
+    const core = normalizeCariNameCore(candidate);
+    const hit =
+      index?.byNormalizedName?.get(full) ||
+      index?.byNormalizedCore?.get(core) ||
+      index?.byAlias?.get(core) ||
+      null;
+    if (hit) {
+      if (stats) stats.cariExactHit = (stats.cariExactHit || 0) + 1;
+      return {
+        code: hit.code,
+        matchedName: hit.name,
+        note: "Cari hesap eşleşti",
+        suggestions: [],
+      };
+    }
+  }
+
+  // Token adayları — full linear tarama yok
+  const tokenCandidates = new Set();
+  if (index?.byToken) {
+    for (const candidate of candidates) {
+      const tokens = normalizeCariNameCore(candidate)
+        .split(" ")
+        .filter((t) => t.length >= 3);
+      for (const token of tokens) {
+        for (const item of index.byToken.get(token) || []) {
+          tokenCandidates.add(item);
+        }
+      }
+    }
+  }
+
+  if (tokenCandidates.size === 0) {
+    return {
+      code: "",
+      matchedName: "",
+      note: "",
+      suggestions: [],
+    };
+  }
+
+  const pool = [...tokenCandidates];
+  if (stats) {
+    stats.cariTokenScan = (stats.cariTokenScan || 0) + 1;
+    stats.cariFuzzyCandidateCount =
+      (stats.cariFuzzyCandidateCount || 0) + pool.length;
+  }
+
+  const ranked = rankCariAccounts(pool, candidates);
   const best = ranked[0];
 
   if (best && best.score >= 350) {
@@ -359,7 +521,9 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     code: "",
     matchedName: "",
     note: "",
-    suggestions: collectCariSuggestions(companyPlans, candidates),
+    suggestions: collectCariSuggestions(companyPlans, candidates, 3, {
+      accounts: pool,
+    }),
   };
 }
 

@@ -1147,20 +1147,24 @@ export default function BankaParserPage() {
           result.uniqueDescriptionCount ??
           result.callCounts?.uniqueDescriptionCount ??
           null,
+        uniqueReport: result.uniqueReport || null,
       }));
       parserJob.markSuccess(
         `Muhasebe analizi tamamlandı (${movementsRef.current.length} hareket · ${
           result.uniqueDescriptionCount ||
           result.callCounts?.uniqueDescriptionCount ||
           "?"
-        } unique)`
+        } grup)`
       );
       const unique =
         result.uniqueDescriptionCount ||
         result.callCounts?.uniqueDescriptionCount;
+      const legacyUnique = result.uniqueReport?.legacyUniqueCount;
       showToast(
         unique
-          ? `Yerel muhasebe analizi tamamlandı (${unique} unique açıklama / ${movementsRef.current.length} hareket).`
+          ? `Yerel analiz tamam (${unique} grup${
+              legacyUnique ? ` / eski ${legacyUnique} unique` : ""
+            } · ${movementsRef.current.length} hareket).`
           : "Yerel muhasebe analizi tamamlandı. Sonraki: Luca Satırlarını Hazırla.",
         "success"
       );
@@ -1885,10 +1889,19 @@ export default function BankaParserPage() {
                   : ""}
                 {lastTimings?.analysisCallCounts?.uniqueDescriptionCount ||
                 lastTimings?.uniqueDescriptionCount
-                  ? ` · Unique açıklama: ${
+                  ? ` · Analiz grubu: ${
                       lastTimings.uniqueDescriptionCount ||
                       lastTimings.analysisCallCounts.uniqueDescriptionCount
+                    }${
+                      lastTimings.uniqueReport?.legacyUniqueCount
+                        ? ` (eski unique ${lastTimings.uniqueReport.legacyUniqueCount})`
+                        : ""
                     }`
+                  : ""}
+                {lastTimings?.analysisTimings?.totalAnalysisMs
+                  ? ` · ${Math.round(
+                      lastTimings.analysisTimings.totalAnalysisMs / 1000
+                    )}s`
                   : ""}
                 {lastTimings?.lucaStats
                   ? ` · Luca: ${lastTimings.lucaStats.lucaRows} satır (${lastTimings.lucaStats.movementsWith2Rows}×2 çift taraflı)`

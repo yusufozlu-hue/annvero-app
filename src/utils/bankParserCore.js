@@ -8,6 +8,7 @@ import {
   mapSingleParsedRowToMovement,
   buildParserOnlyMovement,
   normalizeParserText,
+  buildLearningMemoryIndex,
 } from "@/src/utils/bankMovementMapper";
 import { enrichTebParsedRows } from "@/src/utils/tebHavaleGrouping";
 import {
@@ -37,13 +38,21 @@ import {
   parseRowsForBank as parseRowsForBankWorkerSafe,
 } from "@/src/utils/bankParserWorkerCore";
 import { resolveParserName } from "@/src/utils/financialSourceArchitecture";
-import { buildAccountPlanCodeSet } from "@/src/utils/accountPlanSuggestions";
+import {
+  buildAccountPlanCodeSet,
+  buildAccountPlanIndex,
+} from "@/src/utils/accountPlanSuggestions";
+import {
+  normalizeBankAnalysisKey,
+  buildLegacyAnalysisMemoKey,
+} from "@/src/utils/textNormalize";
+import { buildCariMatchIndex } from "@/src/utils/cariAccountMatcher";
 
 /** Önizleme / Luca / muhasebe analiz chunk boyutları */
 export const MOVEMENT_MAP_CHUNK_SIZE = 40;
 export const LUCA_MOVEMENT_CHUNK_SIZE = 40;
 export const ACCOUNTING_ANALYSIS_CHUNK_SIZE = 100;
-export const ACCOUNTING_ANALYSIS_UNIQUE_CHUNK_SIZE = 12;
+export const ACCOUNTING_ANALYSIS_UNIQUE_CHUNK_SIZE = 40;
 export const PARSER_PREVIEW_CHUNK_SIZE = 400;
 /** Yalnızca CORE aşaması için süre bütçesi (mapping kesilmez) */
 export const ACCOUNTING_ANALYSIS_TOTAL_BUDGET_MS = 60_000;
@@ -119,6 +128,16 @@ export function buildBankParserResult({
 function buildMovementMappingContext(options = {}) {
   const companyPlans = options.companyPlans || [];
   const learningMemory = options.learningMemory || [];
+  const selectedCompanyId = options.selectedCompanyId || "";
+  const planIndex =
+    options.planIndex || buildAccountPlanIndex(companyPlans);
+  const cariIndex =
+    options.cariIndex || buildCariMatchIndex(companyPlans);
+  const learningMemoryIndex =
+    options.learningMemoryIndex ||
+    buildLearningMemoryIndex(learningMemory, selectedCompanyId);
+  const activeLearningMemory =
+    options.activeLearningMemory || learningMemoryIndex.active || [];
 
   return {
     selectedCompany: options.selectedCompany,
@@ -126,16 +145,19 @@ function buildMovementMappingContext(options = {}) {
     companyRules: options.companyRules,
     selectedBank: options.selectedBank,
     learningMemory,
-    activeLearningMemory:
-      options.activeLearningMemory ||
-      learningMemory.filter((record) => record?.is_active !== false),
+    activeLearningMemory,
+    learningMemoryIndex,
     accountingRules: options.accountingRules || [],
-    selectedCompanyId: options.selectedCompanyId,
+    selectedCompanyId,
     sourceFileName: options.sourceFileName,
     sourceType: options.sourceType || "bank",
     currency: options.currency || "TRY",
     legacyRules: bankaKurallari,
-    planCodeSet: options.planCodeSet || buildAccountPlanCodeSet(companyPlans),
+    planIndex,
+    planCodeSet: options.planCodeSet || planIndex.codeSet || buildAccountPlanCodeSet(companyPlans),
+    cariIndex,
+    analysisStats: options.analysisStats || null,
+    analysisTimings: options.analysisTimings || null,
   };
 }
 
@@ -349,16 +371,47 @@ export async function buildMovementPreviewFromNormalizedRowsAsync(options = {}) 
 }
 
 function buildAnalysisMemoKey(raw = {}, fallbackDirection = "") {
-  const description = normalizeParserText(
-    String(raw?.aciklama || raw?.description || "")
-  );
+  const description = String(raw?.aciklama || raw?.description || "");
   const direction =
     raw?.yon === "CIKIS" ||
     raw?.direction === "CIKIS" ||
     fallbackDirection === "CIKIS"
       ? "CIKIS"
       : "GIRIS";
-  return `${description}|${direction}`;
+  return normalizeBankAnalysisKey(description, direction);
+}
+
+function buildLegacyMemoKeyFromRaw(raw = {}, fallbackDirection = "") {
+  const description = String(raw?.aciklama || raw?.description || "");
+  const direction =
+    raw?.yon === "CIKIS" ||
+    raw?.direction === "CIKIS" ||
+    fallbackDirection === "CIKIS"
+      ? "CIKIS"
+      : "GIRIS";
+  return buildLegacyAnalysisMemoKey(description, direction);
+}
+
+const MERGE_RISK_TOKEN_PAIRS = [
+  ["KOMISYON", "SATIS"],
+  ["KOMISYON", "SATIŞ"],
+  ["GLN", "GOND"],
+  ["GELEN", "GONDER"],
+  ["TAHSIL", "ODEME"],
+  ["POS SATIS", "POS KOMISYON"],
+];
+
+function detectMergeRiskLabels(descriptions = []) {
+  const joined = normalizeParserText(descriptions.join(" | "));
+  const risks = [];
+  for (const [left, right] of MERGE_RISK_TOKEN_PAIRS) {
+    const leftKey = normalizeParserText(left);
+    const rightKey = normalizeParserText(right);
+    if (joined.includes(leftKey) && joined.includes(rightKey)) {
+      risks.push(`${left}/${right}`);
+    }
+  }
+  return risks;
 }
 
 function cloneAnalyzedMovement(template, sourceMovement, index) {
@@ -387,18 +440,16 @@ function cloneAnalyzedMovement(template, sourceMovement, index) {
 }
 
 /**
- * AŞAMA 2 — muhasebe analizi (learning + kural + cari + CORE).
- * 1) Unique açıklama+yön grupları çıkar
- * 2) Unique'leri küçük chunk + yield ile analiz et
- * 3) Tüm hareketlere clone map et (yeniden analiz yok)
- * 4) CORE ayrı bütçe; timeout mapping sonuçlarını silmez / baştan çalıştırmaz
+ * AŞAMA 2 — muhasebe analizi (learning + kural + cari; CORE yok).
+ * 1) normalizeBankAnalysisKey ile unique gruplar
+ * 2) Unique'leri chunk + yield ile analiz et (indeksli matching)
+ * 3) Tüm hareketlere clone map et
  */
 export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   const {
     signal = null,
     onProgress = null,
   } = options;
-  const mappingContext = buildMovementMappingContext(options);
   const sourceMovements = Array.isArray(options.movementRows) ? options.movementRows : [];
   const normalizedRows =
     options.normalizedRows || sourceMovements.map((m) => m.rawRow).filter(Boolean);
@@ -415,13 +466,36 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     ruleMatchMs: 0,
     cariResolutionMs: 0,
     accountSuggestionMs: 0,
+    resultCloneMapMs: 0,
+    summaryBuildMs: 0,
     mappingMs: 0,
     coreMs: 0,
-    legacyFallbackMs: 0,
     totalAnalysisMs: 0,
   };
+  const analysisStats = {
+    learningExactHit: 0,
+    learningFuzzyHit: 0,
+    learningFullScan: 0,
+    learningFuzzyCandidateCount: 0,
+    cariExactHit: 0,
+    cariTokenScan: 0,
+    cariFuzzyCandidateCount: 0,
+    accountExactHit: 0,
+    accountCandidateScan: 0,
+    accountFuzzyCandidateCount: 0,
+    ruleMatch: 0,
+  };
+
+  const mappingContext = buildMovementMappingContext({
+    ...options,
+    analysisStats,
+    analysisTimings: timings,
+  });
+
   const callCounts = {
     uniqueDescriptionCount: 0,
+    legacyUniqueDescriptionCount: 0,
+    groupedMovementCount: 0,
     findLearningMemoryMatch: 0,
     matchAccountingRule: 0,
     collectAccountSuggestions: 0,
@@ -430,36 +504,68 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     legacyFallbackRows: 0,
     memoHits: 0,
     memoMisses: 0,
+    progressUpdates: 0,
+    ...analysisStats,
   };
 
   const emitProgress = (stage, detail, percent) => {
     const now = Date.now();
-    if (now - lastProgressAt < 340 && percent < 100) return;
+    // En fazla ~2.5 güncelleme / sn
+    if (now - lastProgressAt < 400 && percent < 100) return;
     lastProgressAt = now;
+    callCounts.progressUpdates += 1;
     onProgress?.({ stage, detail, percent });
   };
 
-  // Phase 1: unique groups
+  // Phase 1: unique groups (yeni + eski karşılaştırma)
   const uniqueBuildStarted = Date.now();
-  emitProgress("Muhasebe Analizi", "Unique açıklama grupları hazırlanıyor", 3);
+  emitProgress("Muhasebe Analizi", "Analiz grupları hazırlanıyor", 3);
   const uniqueGroups = new Map();
+  const legacyUniqueKeys = new Set();
   for (let index = 0; index < sourceMovements.length; index += 1) {
     const source = sourceMovements[index] || {};
     const raw = source.rawRow || normalizedRows[index] || null;
     const key = buildAnalysisMemoKey(raw || source, source.direction);
+    legacyUniqueKeys.add(buildLegacyMemoKeyFromRaw(raw || source, source.direction));
     if (!uniqueGroups.has(key)) {
-      uniqueGroups.set(key, { raw, source, indices: [] });
+      uniqueGroups.set(key, {
+        raw,
+        source,
+        indices: [],
+        sampleDescriptions: [],
+      });
     }
-    uniqueGroups.get(key).indices.push(index);
+    const group = uniqueGroups.get(key);
+    group.indices.push(index);
+    if (group.sampleDescriptions.length < 3) {
+      group.sampleDescriptions.push(
+        String(raw?.aciklama || raw?.description || source.description || "").trim()
+      );
+    }
   }
   const uniqueEntries = Array.from(uniqueGroups.entries());
   timings.uniqueBuildMs = Date.now() - uniqueBuildStarted;
   callCounts.uniqueDescriptionCount = uniqueEntries.length;
+  callCounts.legacyUniqueDescriptionCount = legacyUniqueKeys.size;
+  callCounts.groupedMovementCount = sourceMovements.length - uniqueEntries.length;
+
+  const topGroups = uniqueEntries
+    .map(([key, group]) => ({
+      key,
+      size: group.indices.length,
+      samples: group.sampleDescriptions,
+      mergeRisks: detectMergeRiskLabels(group.sampleDescriptions),
+    }))
+    .filter((item) => item.size > 1)
+    .sort((a, b) => b.size - a.size);
+
+  const mergeRiskGroups = topGroups.filter((item) => item.mergeRisks.length > 0);
+
   await yieldToMain(0);
 
   emitProgress(
     "Muhasebe Analizi",
-    `Unique 0/${uniqueEntries.length} · hareket ${sourceMovements.length}`,
+    `Analiz edilen grup 0 / ${uniqueEntries.length} · hareket ${sourceMovements.length}`,
     5
   );
 
@@ -481,7 +587,11 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
           memoMisses += 1;
           continue;
         }
-        const mapped = mapSingleParsedRowToMovement(raw, mappingContext, group.indices[0] || 0);
+        const mapped = mapSingleParsedRowToMovement(
+          raw,
+          mappingContext,
+          group.indices[0] || 0
+        );
         analysisMemo.set(memoKey, {
           ...mapped,
           _accountingAnalyzed: true,
@@ -502,29 +612,27 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     }
     emitProgress(
       "Muhasebe Analizi",
-      `Unique ${end}/${uniqueEntries.length} analiz · hareket ${sourceMovements.length}`,
+      `Analiz edilen grup ${end} / ${uniqueEntries.length} · hareket ${sourceMovements.length}`,
       5 + Math.round((end / Math.max(uniqueEntries.length, 1)) * 60)
     );
     await yieldToMain(0);
   }
   timings.mappingMs = Date.now() - mapStarted;
-  // Approximate: each unique miss runs learning/rule/cari/suggestions once
-  callCounts.findLearningMemoryMatch = memoMisses;
-  callCounts.matchAccountingRule = memoMisses;
-  callCounts.collectAccountSuggestions = memoMisses;
-  callCounts.applyCariResolution = memoMisses;
   callCounts.memoMisses = memoMisses;
-  timings.learningMatchMs = Math.round(timings.mappingMs * 0.35);
-  timings.ruleMatchMs = Math.round(timings.mappingMs * 0.25);
-  timings.cariResolutionMs = Math.round(timings.mappingMs * 0.2);
-  timings.accountSuggestionMs = Math.round(timings.mappingMs * 0.2);
+  callCounts.findLearningMemoryMatch = memoMisses;
+  callCounts.matchAccountingRule = analysisStats.ruleMatch;
+  callCounts.collectAccountSuggestions = analysisStats.accountCandidateScan;
+  callCounts.applyCariResolution =
+    analysisStats.cariExactHit + analysisStats.cariTokenScan;
+  Object.assign(callCounts, analysisStats);
 
-  // Phase 3: expand to all movements (fast)
+  // Phase 3: expand to all movements
   emitProgress(
     "Muhasebe Analizi",
     `Sonuçlar ${sourceMovements.length} harekete uygulanıyor`,
     68
   );
+  const cloneStarted = Date.now();
   const analyzed = new Array(sourceMovements.length);
   for (let index = 0; index < sourceMovements.length; index += 1) {
     const source = sourceMovements[index] || {};
@@ -549,11 +657,29 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
       await yieldToMain(0);
     }
   }
+  timings.resultCloneMapMs = Date.now() - cloneStarted;
   callCounts.memoHits = memoHits;
   await yieldToMain(0);
 
-  let movementRows = analyzed;
-  let coreSummary = {
+  const summaryStarted = Date.now();
+  const uniqueReport = {
+    movementCount: sourceMovements.length,
+    legacyUniqueCount: callCounts.legacyUniqueDescriptionCount,
+    newUniqueCount: uniqueEntries.length,
+    groupedMovementCount: callCounts.groupedMovementCount,
+    topGroups: topGroups.slice(0, 20),
+    mergeRiskGroups: mergeRiskGroups.slice(0, 20),
+    indexSizes: {
+      learningMemory: mappingContext.learningMemoryIndex?.size || 0,
+      learningTokens: mappingContext.learningMemoryIndex?.tokenKeys || 0,
+      cari: mappingContext.cariIndex?.cariCount || 0,
+      accountPlan: mappingContext.planIndex?.activeCount || 0,
+      accountPlanTokens: mappingContext.planIndex?.byToken?.size || 0,
+    },
+  };
+  timings.summaryBuildMs = Date.now() - summaryStarted;
+
+  const coreSummary = {
     enabled: false,
     core: 0,
     fallback: 0,
@@ -562,20 +688,31 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     skipped: true,
   };
 
-  // CORE bu aşamada çalışmaz — opsiyonel “CORE ile Geliştir” / remapMovementsWithCoreAsync
   timings.coreMs = 0;
   timings.totalAnalysisMs = Date.now() - startedAt;
   emitProgress("Muhasebe Analizi", "Tamamlandı", 100);
+
+  const slowest = Object.entries({
+    learningMatchMs: timings.learningMatchMs,
+    ruleMatchMs: timings.ruleMatchMs,
+    cariResolutionMs: timings.cariResolutionMs,
+    accountSuggestionMs: timings.accountSuggestionMs,
+    uniqueBuildMs: timings.uniqueBuildMs,
+    resultCloneMapMs: timings.resultCloneMapMs,
+  }).sort((a, b) => b[1] - a[1])[0];
 
   console.info("[bank-parser] analysis timings", {
     ...timings,
     ...callCounts,
     movementCount: sourceMovements.length,
+    uniqueReport,
+    slowestFn: slowest?.[0],
+    slowestMs: slowest?.[1],
     coreSkippedInAnalysis: true,
   });
 
   return {
-    movementRows,
+    movementRows: analyzed,
     coreSummary,
     processedCount: sourceMovements.length,
     rowErrors,
@@ -584,6 +721,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     timings,
     callCounts,
     uniqueDescriptionCount: uniqueEntries.length,
+    uniqueReport,
   };
 }
 

@@ -1,7 +1,6 @@
 import { resolve102BankAccount } from "@/src/utils/companyCenter";
 import {
   accountExistsInCompanyPlan,
-  buildAccountPlanNotFoundWarning,
   collectAccountSuggestions,
 } from "@/src/utils/accountPlanSuggestions";
 import { enhanceHgsOgsLucaDescription } from "@/src/utils/plateParser";
@@ -95,51 +94,139 @@ function findLegacyRule(legacyRules, description) {
   );
 }
 
-function findLearningMemoryMatch(learningMemory, description, context = {}) {
-  const text = normalizeParserText(description);
+export function buildLearningMemoryIndex(learningMemory = [], companyId = "") {
+  const active = (learningMemory || []).filter(
+    (record) => record?.is_active !== false
+  );
+  const byExactKeyword = new Map();
+  const byToken = new Map();
+  const byCompanyKeyword = new Map();
+  const company = String(companyId || "").trim();
+
+  for (const record of active) {
+    const keyword = normalizeParserText(record.keyword);
+    if (!keyword) continue;
+
+    const existing = byExactKeyword.get(keyword);
+    if (!existing || keyword.length >= normalizeParserText(existing.keyword || "").length) {
+      byExactKeyword.set(keyword, record);
+    }
+
+    if (company) {
+      byCompanyKeyword.set(`${company}|${keyword}`, record);
+    }
+
+    for (const token of keyword.split(" ").filter((t) => t.length >= 3)) {
+      if (!byToken.has(token)) byToken.set(token, []);
+      byToken.get(token).push(record);
+    }
+  }
+
+  return {
+    active,
+    byExactKeyword,
+    byToken,
+    byCompanyKeyword,
+    size: active.length,
+    tokenKeys: byToken.size,
+  };
+}
+
+function scoreLearningRecord(record, text, context = {}) {
+  const keyword = normalizeParserText(record.keyword);
+  if (!keyword || !text.includes(keyword)) return 0;
+
+  let score = keyword.length;
   const bankName = normalizeParserText(context.bankName || "");
   const seriesPrefix = normalizeParserText(context.seriesPrefix || "");
   const counterpartyName = normalizeParserText(context.counterpartyName || "");
   const sourceModule = normalizeParserText(context.sourceModule || "");
 
-  // Önceden filtrelenmiş aktif liste varsa tekrar filter yok
+  const recordBank = normalizeParserText(
+    record.account_name || record.transaction_type || ""
+  );
+  const recordSeries = normalizeParserText(record.counter_account_name || "");
+  const recordSource = normalizeParserText(record.source_module || "");
+
+  if (bankName && recordBank && recordBank === bankName) score += 20;
+  if (seriesPrefix && recordSeries && text.includes(recordSeries)) score += 15;
+  if (
+    counterpartyName &&
+    recordSeries &&
+    text.includes(normalizeParserText(recordSeries))
+  ) {
+    score += 10;
+  }
+  if (sourceModule && recordSource && recordSource === sourceModule) score += 5;
+
+  return score;
+}
+
+function findLearningMemoryMatch(learningMemory, description, context = {}) {
+  const text = normalizeParserText(description);
+  const stats = context.analysisStats || null;
+  const index = context.learningMemoryIndex || null;
+  const companyId = String(context.companyId || "").trim();
+
+  if (!text) return null;
+
+  // Exact keyword == full description
+  if (index?.byExactKeyword?.has(text)) {
+    if (stats) stats.learningExactHit = (stats.learningExactHit || 0) + 1;
+    return index.byExactKeyword.get(text);
+  }
+  if (companyId && index?.byCompanyKeyword?.has(`${companyId}|${text}`)) {
+    if (stats) stats.learningExactHit = (stats.learningExactHit || 0) + 1;
+    return index.byCompanyKeyword.get(`${companyId}|${text}`);
+  }
+
+  // Token adayları
+  if (index?.byToken) {
+    const tokens = text.split(" ").filter((t) => t.length >= 3);
+    const candidates = new Set();
+    for (const token of tokens) {
+      for (const record of index.byToken.get(token) || []) {
+        candidates.add(record);
+      }
+    }
+
+    if (candidates.size === 0) {
+      return null;
+    }
+
+    if (stats) {
+      stats.learningFuzzyHit = (stats.learningFuzzyHit || 0) + 1;
+      stats.learningFuzzyCandidateCount =
+        (stats.learningFuzzyCandidateCount || 0) + candidates.size;
+    }
+
+    let best = null;
+    let bestScore = 0;
+    for (const record of candidates) {
+      const score = scoreLearningRecord(record, text, context);
+      if (score > bestScore) {
+        best = record;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  // İndeks yoksa eski full scan (geriye dönük)
+  if (stats) stats.learningFullScan = (stats.learningFullScan || 0) + 1;
   const records = Array.isArray(context.activeLearningMemory)
     ? context.activeLearningMemory
     : (learningMemory || []).filter((record) => record?.is_active !== false);
 
   let best = null;
   let bestScore = 0;
-
   for (const record of records) {
-    const keyword = normalizeParserText(record.keyword);
-
-    if (!keyword || !text.includes(keyword)) continue;
-
-    let score = keyword.length;
-
-    const recordBank = normalizeParserText(
-      record.account_name || record.transaction_type || ""
-    );
-    const recordSeries = normalizeParserText(record.counter_account_name || "");
-    const recordSource = normalizeParserText(record.source_module || "");
-
-    if (bankName && recordBank && recordBank === bankName) score += 20;
-    if (seriesPrefix && recordSeries && text.includes(recordSeries)) score += 15;
-    if (
-      counterpartyName &&
-      recordSeries &&
-      text.includes(normalizeParserText(recordSeries))
-    ) {
-      score += 10;
-    }
-    if (sourceModule && recordSource && recordSource === sourceModule) score += 5;
-
-    if (!best || score > bestScore) {
+    const score = scoreLearningRecord(record, text, context);
+    if (score > bestScore) {
       best = record;
       bestScore = score;
     }
   }
-
   return best;
 }
 
@@ -226,7 +313,9 @@ function applyCariResolution(
   ruleAciklama,
   counterAccountCode,
   warnings,
-  planCodeSet = null
+  planCodeSet = null,
+  cariIndex = null,
+  analysisStats = null
 ) {
   const needsResolve =
     !counterAccountCode ||
@@ -241,6 +330,8 @@ function applyCariResolution(
     description,
     lucaDescription,
     ruleAciklama,
+    cariIndex,
+    stats: analysisStats,
   });
 
   removeWarningsMatching(
@@ -276,10 +367,20 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     legacyRules = [],
     learningMemory = [],
     activeLearningMemory,
+    learningMemoryIndex = null,
     accountingRules = [],
     selectedCompanyId = "",
     planCodeSet = null,
+    planIndex = null,
+    cariIndex = null,
+    analysisStats = null,
+    analysisTimings = null,
   } = context;
+
+  const addTiming = (key, started) => {
+    if (!analysisTimings) return;
+    analysisTimings[key] = (analysisTimings[key] || 0) + (Date.now() - started);
+  };
 
   const description = String(rawRow.aciklama || rawRow.description || "").trim();
   const amount = Math.abs(Number(rawRow.tutar ?? rawRow.amount ?? 0));
@@ -344,6 +445,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       appendWarning(warnings, "Hesap eşleşmesi bulunamadı");
     }
   } else {
+    const learningStarted = Date.now();
     const memoryMatch = findLearningMemoryMatch(learningMemory, description, {
       bankName: rawRow.banka || rawRow.bankName || selectedBank,
       seriesPrefix: extractSeriesPrefix(
@@ -352,7 +454,11 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       ),
       sourceModule: "banka",
       activeLearningMemory,
+      learningMemoryIndex,
+      companyId: selectedCompanyId || selectedCompany?.id || "",
+      analysisStats,
     });
+    addTiming("learningMatchMs", learningStarted);
 
     if (memoryMatch) {
       matchedRule = {
@@ -386,11 +492,15 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 
       appendWarning(warnings, MEMORY_MATCH_LABEL);
     } else {
+      const ruleStarted = Date.now();
       const accountingRule = matchAccountingRule(description, {
         companyId: selectedCompany?.id || selectedCompanyId,
         kaynakTipi: "Banka",
         rules: accountingRules,
       });
+      if (analysisStats) {
+        analysisStats.ruleMatch = (analysisStats.ruleMatch || 0) + 1;
+      }
 
       if (accountingRule) {
         matchedRule = {
@@ -465,8 +575,10 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
           });
         }
       }
+      addTiming("ruleMatchMs", ruleStarted);
     }
 
+    const cariStarted = Date.now();
     const cariResolution = applyCariResolution(
       companyPlans,
       description,
@@ -474,8 +586,11 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       ruleAciklama,
       counterAccountCode,
       warnings,
-      planCodeSet
+      planCodeSet || planIndex?.codeSet,
+      cariIndex,
+      analysisStats
     );
+    addTiming("cariResolutionMs", cariStarted);
 
     counterAccountCode = cariResolution.counterAccountCode;
     cariSuggestions = cariResolution.cariSuggestions;
@@ -505,15 +620,16 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 
   const missingPlanAccounts = [];
   const accountPlanMissing = {};
+  const effectiveCodeSet = planCodeSet || planIndex?.codeSet || null;
 
-  if (accountCode && !accountExistsInPlan(companyPlans, accountCode, planCodeSet)) {
+  if (accountCode && !accountExistsInPlan(companyPlans, accountCode, effectiveCodeSet)) {
     missingPlanAccounts.push(accountCode);
     accountPlanMissing.accountCode = accountCode;
   }
 
   if (
     counterAccountCode &&
-    !accountExistsInPlan(companyPlans, counterAccountCode, planCodeSet) &&
+    !accountExistsInPlan(companyPlans, counterAccountCode, effectiveCodeSet) &&
     !missingPlanAccounts.includes(counterAccountCode)
   ) {
     missingPlanAccounts.push(counterAccountCode);
@@ -523,24 +639,26 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   let accountSuggestions = [];
 
   if (missingPlanAccounts.length > 0) {
+    const suggestionStarted = Date.now();
     const contextText = [description, lucaDescription].join(" ");
     accountSuggestions = collectAccountSuggestions(
       companyPlans,
       missingPlanAccounts,
       contextText,
       3,
-      planCodeSet
+      effectiveCodeSet,
+      planIndex,
+      analysisStats
     );
     appendWarning(
       warnings,
-      buildAccountPlanNotFoundWarning(
-        companyPlans,
-        missingPlanAccounts,
-        contextText,
-        3,
-        planCodeSet
-      )
+      accountSuggestions.length === 0
+        ? "Hesap planında bulunamadı"
+        : `Hesap planında bulunamadı. Öneriler: ${accountSuggestions
+            .map((item) => item.label)
+            .join(", ")}`
     );
+    addTiming("accountSuggestionMs", suggestionStarted);
   }
 
   const hgsOgsEnhancement = enhanceHgsOgsLucaDescription(description, lucaDescription);
