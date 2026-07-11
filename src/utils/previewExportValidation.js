@@ -9,6 +9,7 @@ import {
 } from "@/src/utils/duplicateRiskAnalysis";
 import { normalizeBankAnalysisKey, normalizeParserText } from "@/src/utils/textNormalize";
 import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
+import { groupUnresolvedCariRows } from "@/src/utils/cariAccountMatcher";
 
 export const MISSING_HESAP_CATEGORY = {
   CARI_BULUNAMADI: "Cari bulunamadı",
@@ -260,6 +261,9 @@ export function analyzeMissingHesapRows(rows = []) {
         row.accountSuggestions?.[0]?.label ||
         "",
       cariOneri: row.cariSuggestions?.[0]?.label || row.cariSuggestions?.[0]?.code || "",
+      cariConfidence: row.cariSuggestions?.[0]?.confidence ?? row.cariMatchConfidence ?? "",
+      cariMatchReason:
+        row.cariSuggestions?.[0]?.matchReason || row.cariMatchReason || "",
       reason: row.kontrolNotu || row.uyari || category,
       analysisKey: row.analysisKey || "",
       subtype:
@@ -297,6 +301,7 @@ export function analyzeMissingHesapRows(rows = []) {
     personelSubtypeCounts,
     vergiSubtypeCounts,
     otherGroups: groupOtherMissingRows(missing, 20),
+    cariGroups: groupUnresolvedCariRows(missing, {}),
   };
 }
 

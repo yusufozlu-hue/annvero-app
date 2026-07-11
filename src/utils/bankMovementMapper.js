@@ -341,13 +341,26 @@ function applyCariResolution(
       message.startsWith("Cari hesap bulunamadı.")
   );
 
-  if (result.code) {
-    appendWarning(warnings, "Cari hesap eşleşti");
-    return { counterAccountCode: result.code, cariSuggestions: [] };
+  if (result.code && result.autoApplied !== false) {
+    appendWarning(
+      warnings,
+      `Cari hesap eşleşti (${result.confidence}% · ${result.matchReason || "exact"})`
+    );
+    return {
+      counterAccountCode: result.code,
+      cariSuggestions: [],
+      cariMatchConfidence: result.confidence,
+      cariMatchReason: result.matchReason,
+    };
   }
 
   appendWarning(warnings, buildCariNotFoundWarning(result.suggestions));
-  return { counterAccountCode: "", cariSuggestions: result.suggestions };
+  return {
+    counterAccountCode: "",
+    cariSuggestions: result.suggestions,
+    cariMatchConfidence: result.confidence || 0,
+    cariMatchReason: result.matchReason || "",
+  };
 }
 
 function formatRuleDescription(rule, description) {
@@ -396,6 +409,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   let documentType = "DK";
   let ruleAciklama = "";
   let cariSuggestions = [];
+  let cariMatchConfidence = 0;
+  let cariMatchReason = "";
   let accountSuggestions = [];
 
   const bankLucaBase = resolve102BankAccount(
@@ -649,6 +664,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 
     counterAccountCode = cariResolution.counterAccountCode;
     cariSuggestions = cariResolution.cariSuggestions;
+    cariMatchConfidence = cariResolution.cariMatchConfidence || 0;
+    cariMatchReason = cariResolution.cariMatchReason || "";
 
     // Hesap çözüldüyse “Kural bulunamadı” uyarı gürültüsünü temizle
     if (counterAccountCode) {
@@ -760,6 +777,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     normalizedPlate: hgsOgsEnhancement.normalizedPlate,
     displayPlate: hgsOgsEnhancement.displayPlate,
     cariSuggestions,
+    cariMatchConfidence,
+    cariMatchReason,
   };
 }
 

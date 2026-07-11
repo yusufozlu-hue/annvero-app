@@ -1,5 +1,5 @@
 import { CARI_SHORT_CODE_MAPPINGS } from "@/src/config/cariShortCodeMappings";
-import { normalizeParserText } from "@/src/utils/textNormalize";
+import { normalizeBankAnalysisKey, normalizeParserText } from "@/src/utils/textNormalize";
 
 const COMPANY_SUFFIX_TOKENS = new Set([
   "AS",
@@ -21,6 +21,51 @@ const COMPANY_SUFFIX_TOKENS = new Set([
   "O",
 ]);
 
+/** Tek başına karar vermeyen genel kelimeler */
+export const CARI_GENERIC_TOKENS = new Set([
+  "TURIZM",
+  "TURIZMI",
+  "INSAAT",
+  "OTEL",
+  "OTELI",
+  "RESORT",
+  "HOTEL",
+  "KONAKLAMA",
+  "REZERVASYON",
+  "MUSTERI",
+  "GECELIK",
+  "ODA",
+  "GIDA",
+  "TEKSTIL",
+  "YAPI",
+  "PROJE",
+  "DANISMANLIK",
+  "HIZMET",
+  "HIZMETLERI",
+  "LOJISTIK",
+  "NAKLIYE",
+  "SANAYI",
+  "PAZARLAMA",
+  "ITHALAT",
+  "IHRACAT",
+  "ELEKTRONIK",
+  "BILISIM",
+  "YAZILIM",
+  "ORGANIZASYON",
+  "ORGANIZASYONU",
+  "SEYAHAT",
+  "ACENTASI",
+  "ACENTA",
+  "HOLDING",
+  "GRUP",
+  "GROUP",
+  "COMPANY",
+  "CO",
+]);
+
+const HAVALE_PREFIX_RE =
+  /^(GLN\.?\s*HVL|GOND\.?\s*HVL|GÖND\.?\s*HVL|GELEN\s+HAVALE|GIDEN\s+HAVALE|GELEN\s+EFT|GONDERILEN\s+(HAVALE|EFT))\s*\/?\s*/i;
+
 const CARI_GROUP_PRIORITY = [
   { prefix: "320", priority: 1 },
   { prefix: "120", priority: 2 },
@@ -29,6 +74,19 @@ const CARI_GROUP_PRIORITY = [
 ];
 
 const OTHER_CARI_PREFIXES = ["331", "337", "338", "339"];
+
+/** Kullanıcı ölçeği: 80+ otomatik, altı inceleme */
+export const CARI_AUTO_APPLY_MIN_CONFIDENCE = 80;
+
+export const CARI_MATCH_REASON = {
+  VERGI_NO: "exact vergi no",
+  IBAN: "exact IBAN",
+  UNVAN: "exact unvan",
+  ALIAS: "alias exact",
+  TOKEN_STRONG: "güçlü token",
+  TOKEN_WEAK: "düşük güven token",
+  NONE: "eşleşmedi",
+};
 
 function compactAccount(value) {
   return normalizeParserText(value).replace(/\s+/g, "");
@@ -103,9 +161,26 @@ function getCariAccountsFromPlan(companyPlans = []) {
     .sort((a, b) => a.priority - b.priority);
 }
 
+function isGenericToken(token = "") {
+  return CARI_GENERIC_TOKENS.has(String(token || "").trim());
+}
+
+function isUsableMatchToken(token = "") {
+  const value = String(token || "").trim();
+  if (value.length < 3) return false;
+  if (isGenericToken(value)) return false;
+  if (/^\d+$/.test(value)) return false;
+  return true;
+}
+
+function distinctiveTokens(nameCore = "") {
+  return normalizeCariNameCore(nameCore)
+    .split(" ")
+    .filter(isUsableMatchToken);
+}
+
 /**
  * Cari indeksi — işlem başında bir kez.
- * exact unvan / vergi no / IBAN / token adayları.
  */
 export function buildCariMatchIndex(companyPlans = []) {
   const accounts = getCariAccountsFromPlan(companyPlans);
@@ -136,15 +211,20 @@ export function buildCariMatchIndex(companyPlans = []) {
     const ibanKey = normalizeParserText(ibanRaw).replace(/\s+/g, "");
     if (ibanKey.length >= 15) byIban.set(ibanKey, item);
 
-    for (const token of core.split(" ").filter((t) => t.length >= 3)) {
+    for (const token of distinctiveTokens(core)) {
       if (!byToken.has(token)) byToken.set(token, []);
       byToken.get(token).push(item);
     }
 
-    const aliases = item.account?.aliases || item.account?.bankAliases || [];
+    const aliases = [
+      ...(item.account?.aliases || []),
+      ...(item.account?.bankAliases || []),
+    ];
     for (const alias of aliases) {
       const aliasKey = normalizeCariNameCore(alias);
       if (aliasKey) byAlias.set(aliasKey, item);
+      const aliasFull = normalizeCariName(alias);
+      if (aliasFull) byAlias.set(aliasFull, item);
     }
   }
 
@@ -161,8 +241,7 @@ export function buildCariMatchIndex(companyPlans = []) {
 }
 
 function extractVergiNoFromText(text) {
-  const digits = String(text || "").match(/\b\d{10,11}\b/g) || [];
-  return digits;
+  return String(text || "").match(/\b\d{10,11}\b/g) || [];
 }
 
 function extractIbanFromText(text) {
@@ -171,62 +250,100 @@ function extractIbanFromText(text) {
   return match ? match[0] : "";
 }
 
+function stripHavalePrefix(raw = "") {
+  return String(raw || "")
+    .replace(HAVALE_PREFIX_RE, "")
+    .replace(/^INT[-\s]*/i, "")
+    .replace(/^MOBIL[-\s]*/i, "")
+    .replace(/^CEP\s*SUBE[-\s]*/i, "")
+    .trim();
+}
+
 function extractNameFromStructuredText(text) {
   const raw = String(text || "").trim();
   if (!raw) return "";
 
   if (raw.includes("/")) {
-    return raw.split("/").pop().trim();
+    return stripHavalePrefix(raw.split("/").pop().trim());
   }
 
   if (raw.includes("-")) {
     const parts = raw.split("-");
     const tail = parts[parts.length - 1].trim();
-    if (tail.length >= 3) return tail;
+    if (tail.length >= 3) return stripHavalePrefix(tail);
   }
 
-  return raw;
+  return stripHavalePrefix(raw);
 }
 
 function isLikelyReferenceToken(token) {
   const value = String(token || "");
   if (!value) return true;
-  if (/^\d+$/.test(value) && value.length >= 6) return true;
+  if (/^\d+$/.test(value) && value.length >= 4) return true;
   return false;
 }
 
+/**
+ * Açıklamadan cari aday unvanları üretir.
+ * GLN. HVL / … ve konaklama gürültüsünü ayıklar.
+ */
 function extractCariNamesFromDescription(description) {
   const raw = String(description || "");
   const names = [];
 
   const pushPart = (part) => {
-    const cleaned = normalizeCariName(part);
-    if (cleaned && cleaned.length >= 3) names.push(cleaned);
+    const cleaned = normalizeCariName(stripHavalePrefix(part));
+    if (!cleaned || cleaned.length < 3) return;
+    names.push(cleaned);
+
+    const core = normalizeCariNameCore(cleaned);
+    const tokens = core.split(" ").filter(Boolean);
+    const distinctive = tokens.filter(isUsableMatchToken);
+
+    if (distinctive.length >= 2) {
+      names.push(distinctive.slice(0, 2).join(" "));
+      // Kaydıran ikililer (MUT MARE vb.)
+      for (let i = 0; i < distinctive.length - 1; i += 1) {
+        names.push(`${distinctive[i]} ${distinctive[i + 1]}`);
+      }
+    }
+    if (distinctive.length >= 3) {
+      names.push(distinctive.slice(0, 3).join(" "));
+      for (let i = 0; i < distinctive.length - 2; i += 1) {
+        names.push(distinctive.slice(i, i + 3).join(" "));
+      }
+      names.push(distinctive.join(" "));
+    }
+
+    // Genel kelimeleri düşürülmüş çekirdek
+    if (distinctive.length && distinctive.length < tokens.length) {
+      names.push(distinctive.join(" "));
+    }
   };
 
   pushPart(extractNameFromStructuredText(raw));
-
-  if (raw.includes("-")) {
-    pushPart(raw.split("-").pop());
-  }
 
   if (raw.includes("/")) {
     pushPart(raw.split("/").pop());
   }
 
-  const words = normalizeParserText(raw).split(" ").filter(Boolean);
+  if (raw.includes("-")) {
+    pushPart(raw.split("-").pop());
+  }
+
+  const words = normalizeParserText(stripHavalePrefix(raw))
+    .split(" ")
+    .filter(Boolean);
   const meaningfulWords = words.filter((word) => !isLikelyReferenceToken(word));
 
   if (meaningfulWords.length >= 2) {
+    pushPart(meaningfulWords.slice(0, 2).join(" "));
     pushPart(meaningfulWords.slice(-2).join(" "));
   }
-
   if (meaningfulWords.length >= 3) {
-    pushPart(meaningfulWords.slice(-3).join(" "));
+    pushPart(meaningfulWords.slice(0, 3).join(" "));
   }
-
-  pushPart(meaningfulWords.join(" "));
-  pushPart(raw);
+  pushPart(meaningfulWords.filter(isUsableMatchToken).join(" "));
 
   return [...new Set(names.map(normalizeCariName).filter(Boolean))];
 }
@@ -266,15 +383,12 @@ export function buildCariSearchCandidates(sources = {}) {
   for (const name of extractCariNamesFromDescription(description)) {
     candidates.add(name);
   }
-
   for (const name of extractCariNamesFromDescription(lucaDescription)) {
     candidates.add(name);
   }
-
   for (const name of extractCariNamesFromDescription(ruleAciklama)) {
     candidates.add(name);
   }
-
   for (const name of resolveShortCodeCandidates(description)) {
     candidates.add(name);
   }
@@ -282,77 +396,127 @@ export function buildCariSearchCandidates(sources = {}) {
   return [...candidates].filter(Boolean);
 }
 
-function scoreCariMatch(accountName, candidateName) {
+/**
+ * 0–100 güven skoru (kullanıcı ölçeği).
+ */
+function scoreCariMatchConfidence(accountName, candidateName) {
   const accountFull = normalizeCariName(accountName);
   const accountCore = normalizeCariNameCore(accountName);
   const candidateFull = normalizeCariName(candidateName);
   const candidateCore = normalizeCariNameCore(candidateName);
 
-  if (!accountCore || !candidateCore) return 0;
-
-  if (accountCore === candidateCore) return 1000;
-  if (accountFull === candidateFull) return 950;
-
-  if (
-    accountCore.includes(candidateCore) ||
-    candidateCore.includes(accountCore)
-  ) {
-    return 850 + Math.min(accountCore.length, candidateCore.length);
+  if (!accountCore || !candidateCore) {
+    return { confidence: 0, reason: CARI_MATCH_REASON.NONE };
   }
 
-  const accountWords = accountCore.split(" ").filter((word) => word.length >= 3);
-  const candidateWords = candidateCore
-    .split(" ")
-    .filter((word) => word.length >= 3);
+  // Çok kısa tek parça aday — otomatik yok
+  const candidateTokens = candidateCore.split(" ").filter(Boolean);
+  const candidateDistinct = distinctiveTokens(candidateCore);
+  if (candidateCore.replace(/\s+/g, "").length < 5 && candidateTokens.length < 2) {
+    return { confidence: 0, reason: CARI_MATCH_REASON.NONE };
+  }
 
-  if (candidateWords.length === 0) return 0;
+  if (accountCore === candidateCore || accountFull === candidateFull) {
+    return { confidence: 95, reason: CARI_MATCH_REASON.UNVAN };
+  }
 
-  const overlap = candidateWords.filter((word) =>
-    accountWords.some(
+  // Tek genel kelime asla
+  if (
+    candidateTokens.length === 1 &&
+    (isGenericToken(candidateTokens[0]) || candidateTokens[0].length < 4)
+  ) {
+    return { confidence: 0, reason: CARI_MATCH_REASON.NONE };
+  }
+
+  const accountWords = distinctiveTokens(accountCore);
+  const accountAll = accountCore.split(" ").filter((t) => t.length >= 3);
+
+  // Alt küme / kapsama — unvan parçasının planda geçmesi (örn. ABC INSAAT ⊂ ABC INSAAT SAN…)
+  if (
+    candidateCore.length >= 6 &&
+    candidateTokens.length >= 2 &&
+    (accountCore.includes(candidateCore) || candidateCore.includes(accountCore))
+  ) {
+    const conf = Math.min(
+      92,
+      84 + Math.min(candidateTokens.length, accountAll.length) * 2
+    );
+    return { confidence: conf, reason: CARI_MATCH_REASON.TOKEN_STRONG };
+  }
+
+  if (!accountWords.length && !accountAll.length) {
+    return { confidence: 0, reason: CARI_MATCH_REASON.NONE };
+  }
+
+  if (
+    candidateDistinct.length >= 2 &&
+    (accountCore.includes(candidateCore) || candidateCore.includes(accountCore))
+  ) {
+    const conf = Math.min(
+      92,
+      82 + Math.min(candidateDistinct.length, accountWords.length || 1) * 3
+    );
+    return { confidence: conf, reason: CARI_MATCH_REASON.TOKEN_STRONG };
+  }
+
+  const overlap = candidateDistinct.filter((word) =>
+    (accountWords.length ? accountWords : accountAll).some(
       (accountWord) =>
-        accountWord.includes(word) ||
-        word.includes(accountWord) ||
-        accountWord === word
+        accountWord === word ||
+        (word.length >= 5 && accountWord.includes(word)) ||
+        (accountWord.length >= 5 && word.includes(accountWord))
     )
   );
 
   if (overlap.length >= 2) {
-    return 600 + overlap.length * 40;
+    const conf = Math.min(89, 80 + overlap.length * 3);
+    return { confidence: conf, reason: CARI_MATCH_REASON.TOKEN_STRONG };
   }
 
-  if (overlap.length === 1 && candidateWords.length === 1) {
-    return 450;
-  }
-
+  // Tek ayırt edici token: yalnızca öneri (otomatik değil)
   if (overlap.length === 1) {
-    return 350 + overlap[0].length;
+    const token = overlap[0];
+    if (token.length < 5) {
+      return { confidence: 0, reason: CARI_MATCH_REASON.NONE };
+    }
+    if (candidateDistinct.length === 1 && accountWords.length > 3) {
+      return { confidence: 45, reason: CARI_MATCH_REASON.TOKEN_WEAK };
+    }
+    return {
+      confidence: Math.min(72, 55 + token.length),
+      reason: CARI_MATCH_REASON.TOKEN_WEAK,
+    };
   }
 
-  return 0;
+  return { confidence: 0, reason: CARI_MATCH_REASON.NONE };
 }
 
 function rankCariAccounts(cariAccounts, candidates) {
   const ranked = [];
 
   for (const item of cariAccounts) {
-    let bestScore = 0;
+    let bestConfidence = 0;
     let bestCandidate = "";
+    let bestReason = CARI_MATCH_REASON.NONE;
 
     for (const candidate of candidates) {
-      const score = scoreCariMatch(item.name, candidate);
-      if (score > bestScore) {
-        bestScore = score;
+      const { confidence, reason } = scoreCariMatchConfidence(item.name, candidate);
+      if (confidence > bestConfidence) {
+        bestConfidence = confidence;
         bestCandidate = candidate;
+        bestReason = reason;
       }
     }
 
-    if (bestScore <= 0) continue;
+    if (bestConfidence <= 0) continue;
 
     ranked.push({
       ...item,
-      score: bestScore,
+      confidence: bestConfidence,
+      score: bestConfidence,
       matchedCandidate: bestCandidate,
-      rank: bestScore * 100 - item.priority,
+      matchReason: bestReason,
+      rank: bestConfidence * 100 - item.priority,
     });
   }
 
@@ -363,6 +527,17 @@ export function formatCariSuggestion(account) {
   const code = getAccountCode(account);
   const name = getAccountName(account);
   return name ? `${code} ${name}` : code;
+}
+
+function toSuggestionPayload(item) {
+  return {
+    code: item.code,
+    name: item.name,
+    label: formatCariSuggestion(item.account || { accountCode: item.code, accountName: item.name }),
+    confidence: item.confidence ?? item.score ?? 0,
+    matchReason: item.matchReason || CARI_MATCH_REASON.TOKEN_WEAK,
+    matchedCandidate: item.matchedCandidate || "",
+  };
 }
 
 export function collectCariSuggestions(
@@ -379,14 +554,8 @@ export function collectCariSuggestions(
   for (const item of ranked) {
     const key = compactAccount(item.code);
     if (!key || seen.has(key)) continue;
-
     seen.add(key);
-    suggestions.push({
-      code: item.code,
-      name: item.name,
-      label: formatCariSuggestion(item.account),
-    });
-
+    suggestions.push(toSuggestionPayload(item));
     if (suggestions.length >= limit) break;
   }
 
@@ -399,8 +568,27 @@ export function buildCariNotFoundWarning(suggestions = []) {
   }
 
   return `Cari hesap bulunamadı. Öneriler: ${suggestions
-    .map((item) => item.label)
+    .map((item) => {
+      const conf =
+        item.confidence != null ? ` (${item.confidence}% ${item.matchReason || ""})` : "";
+      return `${item.label}${conf}`.trim();
+    })
     .join(", ")}`;
+}
+
+function emptyMatchResult(suggestions = []) {
+  return {
+    code: "",
+    matchedName: "",
+    note: "",
+    confidence: 0,
+    matchReason: CARI_MATCH_REASON.NONE,
+    autoApplied: false,
+    suggestions,
+    extractedParty: "",
+    hasVergiNo: false,
+    hasIban: false,
+  };
 }
 
 export function resolveCariAccountMatch(companyPlans, sources = {}) {
@@ -410,15 +598,6 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     sources.cariIndex ||
     (companyPlans?.length ? buildCariMatchIndex(companyPlans) : null);
 
-  if (!candidates.length || !companyPlans?.length) {
-    return {
-      code: "",
-      matchedName: "",
-      note: "",
-      suggestions: [],
-    };
-  }
-
   const haystack = [
     sources.description,
     sources.lucaDescription,
@@ -427,8 +606,19 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     .filter(Boolean)
     .join(" ");
 
-  // Exact: vergi no
-  for (const vergi of extractVergiNoFromText(haystack)) {
+  const vergiList = extractVergiNoFromText(haystack);
+  const iban = extractIbanFromText(haystack);
+  const extractedParty =
+    extractNameFromStructuredText(sources.lucaDescription || sources.description || "") ||
+    candidates[0] ||
+    "";
+
+  if (!companyPlans?.length) {
+    return emptyMatchResult();
+  }
+
+  // 1) Vergi no exact — 100
+  for (const vergi of vergiList) {
     const hit = index?.byVergiNo?.get(vergi);
     if (hit) {
       if (stats) stats.cariExactHit = (stats.cariExactHit || 0) + 1;
@@ -436,13 +626,18 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
         code: hit.code,
         matchedName: hit.name,
         note: "Cari hesap eşleşti",
+        confidence: 100,
+        matchReason: CARI_MATCH_REASON.VERGI_NO,
+        autoApplied: true,
         suggestions: [],
+        extractedParty,
+        hasVergiNo: true,
+        hasIban: Boolean(iban),
       };
     }
   }
 
-  // Exact: IBAN
-  const iban = extractIbanFromText(haystack);
+  // 2) IBAN exact — 100
   if (iban && index?.byIban?.get(iban)) {
     const hit = index.byIban.get(iban);
     if (stats) stats.cariExactHit = (stats.cariExactHit || 0) + 1;
@@ -450,38 +645,110 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
       code: hit.code,
       matchedName: hit.name,
       note: "Cari hesap eşleşti",
+      confidence: 100,
+      matchReason: CARI_MATCH_REASON.IBAN,
+      autoApplied: true,
       suggestions: [],
+      extractedParty,
+      hasVergiNo: vergiList.length > 0,
+      hasIban: true,
     };
   }
 
-  // Exact: unvan / core / alias
-  for (const candidate of candidates) {
+  if (!candidates.length) {
+    return {
+      ...emptyMatchResult(),
+      extractedParty,
+      hasVergiNo: vergiList.length > 0,
+      hasIban: Boolean(iban),
+    };
+  }
+
+  // 3–4) Tam unvan / alias exact — 95 / 90
+  // Adayları uzun → kısa sırala; kısa kişi adının otel satırını ezmesini azaltır
+  const sortedCandidates = [...candidates].sort(
+    (a, b) =>
+      normalizeCariNameCore(b).replace(/\s+/g, "").length -
+      normalizeCariNameCore(a).replace(/\s+/g, "").length
+  );
+
+  const haystackNorm = normalizeParserText(haystack);
+  const hotelContext =
+    /\b(KONAKLAMA|RESORT|OTEL|REZERVASYON|GECELIK|MUSTERI)\b/.test(haystackNorm);
+
+  const exactHits = [];
+  for (const candidate of sortedCandidates) {
     const full = normalizeCariName(candidate);
     const core = normalizeCariNameCore(candidate);
-    const hit =
-      index?.byNormalizedName?.get(full) ||
-      index?.byNormalizedCore?.get(core) ||
-      index?.byAlias?.get(core) ||
-      null;
-    if (hit) {
-      if (stats) stats.cariExactHit = (stats.cariExactHit || 0) + 1;
-      return {
-        code: hit.code,
-        matchedName: hit.name,
-        note: "Cari hesap eşleşti",
-        suggestions: [],
-      };
+    if (core.replace(/\s+/g, "").length < 5 && distinctiveTokens(core).length < 2) {
+      continue;
+    }
+
+    const byName =
+      index?.byNormalizedName?.get(full) || index?.byNormalizedCore?.get(core) || null;
+    if (byName) {
+      exactHits.push({
+        hit: byName,
+        candidate,
+        confidence: 95,
+        matchReason: CARI_MATCH_REASON.UNVAN,
+        span: core.replace(/\s+/g, "").length,
+      });
+      continue;
+    }
+
+    const byAlias = index?.byAlias?.get(core) || index?.byAlias?.get(full) || null;
+    if (byAlias) {
+      exactHits.push({
+        hit: byAlias,
+        candidate,
+        confidence: 90,
+        matchReason: CARI_MATCH_REASON.ALIAS,
+        span: core.replace(/\s+/g, "").length,
+      });
     }
   }
 
-  // Token adayları — full linear tarama yok
+  if (exactHits.length) {
+    exactHits.sort((a, b) => {
+      // Otel/konaklama: işletme unvanı / alias (daha uzun span) öncelikli
+      if (hotelContext) {
+        const aBiz = /\b(OTEL|RESORT|TURIZM|KONAKLAMA)\b/.test(
+          normalizeParserText(a.hit.name)
+        )
+          ? 1
+          : 0;
+        const bBiz = /\b(OTEL|RESORT|TURIZM|KONAKLAMA)\b/.test(
+          normalizeParserText(b.hit.name)
+        )
+          ? 1
+          : 0;
+        if (bBiz !== aBiz) return bBiz - aBiz;
+      }
+      if (b.span !== a.span) return b.span - a.span;
+      return b.confidence - a.confidence;
+    });
+    const bestExact = exactHits[0];
+    if (stats) stats.cariExactHit = (stats.cariExactHit || 0) + 1;
+    return {
+      code: bestExact.hit.code,
+      matchedName: bestExact.hit.name,
+      note: "Cari hesap eşleşti",
+      confidence: bestExact.confidence,
+      matchReason: bestExact.matchReason,
+      autoApplied: true,
+      suggestions: [],
+      extractedParty,
+      hasVergiNo: vergiList.length > 0,
+      hasIban: Boolean(iban),
+    };
+  }
+
+  // 5) Token aday eşleşmesi
   const tokenCandidates = new Set();
   if (index?.byToken) {
-    for (const candidate of candidates) {
-      const tokens = normalizeCariNameCore(candidate)
-        .split(" ")
-        .filter((t) => t.length >= 3);
-      for (const token of tokens) {
+    for (const candidate of sortedCandidates) {
+      for (const token of distinctiveTokens(candidate)) {
         for (const item of index.byToken.get(token) || []) {
           tokenCandidates.add(item);
         }
@@ -489,31 +756,32 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     }
   }
 
-  if (tokenCandidates.size === 0) {
-    return {
-      code: "",
-      matchedName: "",
-      note: "",
-      suggestions: [],
-    };
-  }
+  const pool =
+    tokenCandidates.size > 0 ? [...tokenCandidates] : index?.accounts || [];
 
-  const pool = [...tokenCandidates];
-  if (stats) {
+  if (stats && tokenCandidates.size > 0) {
     stats.cariTokenScan = (stats.cariTokenScan || 0) + 1;
     stats.cariFuzzyCandidateCount =
       (stats.cariFuzzyCandidateCount || 0) + pool.length;
   }
 
-  const ranked = rankCariAccounts(pool, candidates);
+  const ranked = rankCariAccounts(pool, sortedCandidates);
   const best = ranked[0];
+  const suggestions = ranked.slice(0, 3).map(toSuggestionPayload);
 
-  if (best && best.score >= 350) {
+  if (best && best.confidence >= CARI_AUTO_APPLY_MIN_CONFIDENCE) {
+    if (stats) stats.cariTokenScan = (stats.cariTokenScan || 0) + 1;
     return {
       code: best.code,
       matchedName: best.name,
       note: "Cari hesap eşleşti",
+      confidence: best.confidence,
+      matchReason: best.matchReason || CARI_MATCH_REASON.TOKEN_STRONG,
+      autoApplied: true,
       suggestions: [],
+      extractedParty,
+      hasVergiNo: vergiList.length > 0,
+      hasIban: Boolean(iban),
     };
   }
 
@@ -521,9 +789,13 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     code: "",
     matchedName: "",
     note: "",
-    suggestions: collectCariSuggestions(companyPlans, candidates, 3, {
-      accounts: pool,
-    }),
+    confidence: best?.confidence || 0,
+    matchReason: best?.matchReason || CARI_MATCH_REASON.NONE,
+    autoApplied: false,
+    suggestions,
+    extractedParty,
+    hasVergiNo: vergiList.length > 0,
+    hasIban: Boolean(iban),
   };
 }
 
@@ -535,4 +807,115 @@ export function findCariAccountInPlan(companyPlans, description, options = {}) {
   });
 
   return result.code;
+}
+
+/**
+ * “Cari bulunamadı” satırlarını analysisKey ile gruplar.
+ */
+export function groupUnresolvedCariRows(rows = [], context = {}) {
+  const unresolved = (rows || []).filter((row) => {
+    const missing =
+      !String(row.hesapKodu || "").trim() || row.riskDurumu === "HESAP_EKSIK";
+    if (!missing) return false;
+    const note = String(row.kontrolNotu || row.uyari || row.warning || "");
+    const cat = String(row.missingHesapCategory || "");
+    return (
+      cat === "Cari bulunamadı" ||
+      note.toLocaleLowerCase("tr").includes("cari hesap bulunamadı")
+    );
+  });
+
+  const groups = new Map();
+  for (const row of unresolved) {
+    const desc = row.detayAciklama || row.fisAciklama || row.description || "";
+    const direction =
+      Number(row.borc || 0) > 0
+        ? "GIRIS"
+        : Number(row.alacak || 0) > 0
+          ? "CIKIS"
+          : "";
+    const key =
+      row.analysisKey || normalizeBankAnalysisKey(desc, direction) || "unknown";
+    if (!groups.has(key)) {
+      groups.set(key, {
+        analysisKey: key,
+        count: 0,
+        directions: new Set(),
+        samples: [],
+        rowIds: [],
+        suggestion: row.cariSuggestions?.[0] || null,
+      });
+    }
+    const group = groups.get(key);
+    group.count += 1;
+    if (direction) group.directions.add(direction);
+    group.rowIds.push(row.id);
+    if (group.samples.length < 8) {
+      group.samples.push(String(desc).slice(0, 160));
+    }
+    if (!group.suggestion && row.cariSuggestions?.[0]) {
+      group.suggestion = row.cariSuggestions[0];
+    }
+  }
+
+  const companyPlans = context.companyPlans || [];
+  const cariIndex =
+    context.cariIndex ||
+    (companyPlans.length ? buildCariMatchIndex(companyPlans) : null);
+
+  const ranked = [...groups.values()]
+    .map((group) => {
+      const sample = group.samples[0] || "";
+      const direction = [...group.directions][0] || "";
+      const live = resolveCariAccountMatch(companyPlans, {
+        description: sample,
+        lucaDescription: sample,
+        cariIndex,
+      });
+      const top = live.suggestions?.[0] || group.suggestion || null;
+      const why =
+        live.autoApplied
+          ? "Analiz sonrası otomatik çözülebilir"
+          : top
+            ? `Aday var (${top.confidence}% · ${top.matchReason}) — onay bekliyor`
+            : live.hasVergiNo || live.hasIban
+              ? "Vergi/IBAN metinde var ama planda yok"
+              : live.extractedParty
+                ? `Unvan adayı: ${live.extractedParty} — planda exact/güçlü token yok`
+                : "Cari adayı çıkarılamadı";
+
+      return {
+        analysisKey: group.analysisKey,
+        count: group.count,
+        directions: [...group.directions],
+        samples: group.samples,
+        rowIds: group.rowIds,
+        extractedParty: live.extractedParty || "",
+        hasVergiNo: live.hasVergiNo,
+        hasIban: live.hasIban,
+        suggestedAccount: top?.code || live.code || "",
+        suggestedName: top?.name || live.matchedName || "",
+        confidence: top?.confidence ?? live.confidence ?? 0,
+        matchReason: top?.matchReason || live.matchReason || CARI_MATCH_REASON.NONE,
+        whyUnmatched: why,
+        canAutoApply:
+          Boolean(top?.code) &&
+          Number(top?.confidence || 0) >= CARI_AUTO_APPLY_MIN_CONFIDENCE,
+      };
+    })
+    .sort((a, b) => b.count - a.count);
+
+  const top20 = ranked.slice(0, 20);
+  const top20Coverage = top20.reduce((sum, g) => sum + g.count, 0);
+
+  return {
+    totalUnresolved: unresolved.length,
+    groupCount: ranked.length,
+    top20,
+    top20Coverage,
+    top20CoveragePct: unresolved.length
+      ? Math.round((top20Coverage / unresolved.length) * 100)
+      : 0,
+    allGroups: ranked,
+  };
 }

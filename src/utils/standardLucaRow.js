@@ -315,6 +315,10 @@ export function finalizeStandardLucaRow(row) {
     ...(Array.isArray(row.cariSuggestions) && row.cariSuggestions.length
       ? { cariSuggestions: row.cariSuggestions }
       : {}),
+    ...(row.cariMatchConfidence
+      ? { cariMatchConfidence: Number(row.cariMatchConfidence) }
+      : {}),
+    ...(row.cariMatchReason ? { cariMatchReason: row.cariMatchReason } : {}),
     ...(row.missingHesapCategory
       ? { missingHesapCategory: row.missingHesapCategory }
       : {}),
@@ -605,6 +609,8 @@ function buildBankLucaLine({
       "",
     accountSuggestions: movement.accountSuggestions || [],
     cariSuggestions: movement.cariSuggestions || [],
+    cariMatchConfidence: movement.cariMatchConfidence || 0,
+    cariMatchReason: movement.cariMatchReason || "",
     missingHesapCategory: movement.missingHesapCategory || "",
   });
 }
