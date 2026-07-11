@@ -93,11 +93,11 @@ export function hasCariHavaleSignal(row = {}) {
 export function isMissingHesapRow(row = {}) {
   const hesap = String(row.hesapKodu || "").trim();
   if (!hesap) return true;
-  if (isBareBank102Account(hesap)) return true;
   if (row.riskDurumu === "HESAP_EKSIK") return true;
 
-  // Düzgün banka GL satırı, karşı hesap uyarısını taşısa bile eksik sayılmaz
-  if (isLikelyBankGlAccount(hesap) && !isBareBank102Account(hesap)) {
+  // Banka GL bacağı (102 / 102.xx dahil) karşı hesap sorununu temsil etmez.
+  // Ham "102" firma uyarısıdır; satırı eksik hesaba düşürmez.
+  if (isLikelyBankGlAccount(hesap)) {
     return false;
   }
 
@@ -114,8 +114,9 @@ export function classifyMissingHesapCategory(row = {}) {
     return existing;
   }
 
-  // 1) Ham banka 102
-  if (isBareBank102Account(hesap) || /BANKA KARSI HESABI BULUNAMADI/.test(note)) {
+  // Açık banka karşı hesabı uyarısı — yalnızca bu satır gerçekten eksikse
+  // (banka GL bacakları isMissingHesapRow'da zaten elenir)
+  if (/BANKA KARSI HESABI BULUNAMADI/.test(note) && !isLikelyBankGlAccount(hesap)) {
     return MISSING_HESAP_CATEGORY.BANKA_KARSISI;
   }
 
@@ -160,7 +161,7 @@ export function classifyMissingHesapCategory(row = {}) {
   }
 
   if (!hesap) {
-    // Boş karşı hesap + havale açıklaması → cari; aksi banka etiketi yanıltıcı
+    // Boş karşı hesap + havale açıklaması → cari; aksi diğer
     if (HAVALE_DESC_RE.test(rowDescription(row)) || CARI_CONTEXT_RE.test(desc)) {
       return MISSING_HESAP_CATEGORY.CARI_BULUNAMADI;
     }

@@ -572,19 +572,6 @@ function buildBankLucaLine({
     lineRole ||
     (Number(borc) > 0 ? "borc" : Number(alacak) > 0 ? "alacak" : "empty");
 
-  const code = String(hesapKodu || "").trim();
-  const isBare102 = code === "102";
-  let kontrolNotu = movement.warning || "";
-  let riskDurumu = "";
-  if (isBare102) {
-    riskDurumu = "HESAP_EKSIK";
-    kontrolNotu = [kontrolNotu, "Banka karşı hesabı bulunamadı"]
-      .filter(Boolean)
-      .join(" | ");
-  } else if (!code) {
-    riskDurumu = "HESAP_EKSIK";
-  }
-
   return finalizeStandardLucaRow({
     id: `${movement.id}-${hesapKodu}-${borc}-${alacak}`,
     firmaId: context.firmaId || "",
@@ -601,8 +588,7 @@ function buildBankLucaLine({
     detayAciklama,
     borc,
     alacak,
-    riskDurumu,
-    kontrolNotu,
+    kontrolNotu: movement.warning || "",
     hafizaEslesme: String(movement.warning || "").includes(MEMORY_MATCH_LABEL),
     _movementId: movement.id,
     sourceMovementId: movement.id,
