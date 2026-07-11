@@ -872,9 +872,42 @@ export function formatDateTime(value) {
 
 function compactAccount(value) {
   return String(value || "")
-    .toUpperCase()
+    .toLocaleUpperCase("tr")
     .replaceAll("İ", "I")
-    .replace(/\s+/g, "");
+    .replaceAll("İ", "I")
+    .replace(/[^A-Z0-9.]/g, "");
+}
+
+const BANK_NAME_ALIASES = {
+  VAKIFBANK: ["VAKIFBANK", "VAKIF", "VAKIFLAR", "TURKIYEVAKIFLARBANKASI"],
+  TEB: ["TEB", "TURKIYEEKONOMIBANKASI"],
+  GARANTI: ["GARANTI", "GARANTIBBANKASI", "GARANTIBBVA"],
+  ZIRAAT: ["ZIRAAT", "ZIRAATBANKASI", "TCZIRAAT"],
+  KUVEYT: ["KUVEYT", "KUVEYTTURK", "KUVEYTTURKKATILIM"],
+};
+
+function bankNameTokens(value = "") {
+  const compact = compactAccount(value);
+  if (!compact) return [];
+  const tokens = new Set([compact]);
+  for (const [id, aliases] of Object.entries(BANK_NAME_ALIASES)) {
+    if (
+      aliases.some(
+        (alias) => compact.includes(alias) || alias.includes(compact)
+      )
+    ) {
+      tokens.add(id);
+      aliases.forEach((alias) => tokens.add(alias));
+    }
+  }
+  return [...tokens];
+}
+
+function bankNamesMatch(a = "", b = "") {
+  const left = bankNameTokens(a);
+  const right = bankNameTokens(b);
+  if (!left.length || !right.length) return false;
+  return left.some((token) => right.includes(token));
 }
 
 export function resolve102BankAccount(
@@ -892,19 +925,13 @@ export function resolve102BankAccount(
   const activeBanks = (bankAccounts || []).filter((bank) => bank.isActive !== false);
   const hint = lucaBankaHesabi || accountCode;
   const normalizedHint = compactAccount(hint);
-  const selected = compactAccount(selectedBankName);
+  const selected = String(selectedBankName || "").trim();
 
-  // 1) Seçili banka adına göre eşle (Vakıfbank vb.)
+  // 1) Seçili banka adına göre eşle (VAKIFBANK ↔ Vakıfbank / Vakıflar Bankası)
   if (selected) {
-    const bySelected = activeBanks.find((bank) => {
-      const name = compactAccount(bank.bankName || bank.accountName || "");
-      return (
-        name === selected ||
-        name.includes(selected) ||
-        selected.includes(name) ||
-        compactAccount(bank.lucaAccountCode) === selected
-      );
-    });
+    const bySelected = activeBanks.find((bank) =>
+      bankNamesMatch(bank.bankName || bank.accountName || "", selected)
+    );
     if (bySelected?.lucaAccountCode) {
       return bySelected.lucaAccountCode;
     }
@@ -914,8 +941,8 @@ export function resolve102BankAccount(
   const matched = activeBanks.find((bank) => {
     return (
       compactAccount(bank.lucaAccountCode) === normalizedHint ||
-      compactAccount(bank.accountName) === normalizedHint ||
-      compactAccount(bank.bankName) === normalizedHint
+      bankNamesMatch(bank.accountName || "", hint) ||
+      bankNamesMatch(bank.bankName || "", hint)
     );
   });
 
@@ -923,16 +950,29 @@ export function resolve102BankAccount(
     return matched.lucaAccountCode;
   }
 
-  // 3) İlk aktif banka — yalnızca ham "102" için
-  const firstActiveBank = activeBanks[0];
-  if (normalizedCode === "102" && firstActiveBank?.lucaAccountCode) {
-    return firstActiveBank.lucaAccountCode;
+  // 3) Tek tanımlı Luca kodlu banka — yalnızca ham "102" için
+  const withLuca = activeBanks.filter((bank) =>
+    String(bank.lucaAccountCode || "").trim()
+  );
+  if (normalizedCode === "102" && withLuca.length === 1) {
+    return withLuca[0].lucaAccountCode;
   }
 
   return lucaBankaHesabi || accountCode;
 }
 
-/** Seçili bankaya göre 102 Luca kodu; yoksa ilk aktif; yoksa "102" */
+/** Seçili bankaya göre 102 Luca kodu; yoksa eşleşen/tek aktif; yoksa "102" */
 export function getCompanyBankLucaCode(bankAccounts = [], selectedBankName = "") {
   return resolve102BankAccount(bankAccounts, "102", "", selectedBankName);
+}
+
+/** Firma kartında seçili banka kaydı */
+export function findCompanyBankAccount(bankAccounts = [], selectedBankName = "") {
+  const activeBanks = (bankAccounts || []).filter((bank) => bank.isActive !== false);
+  if (!selectedBankName) return activeBanks[0] || null;
+  return (
+    activeBanks.find((bank) =>
+      bankNamesMatch(bank.bankName || bank.accountName || "", selectedBankName)
+    ) || null
+  );
 }

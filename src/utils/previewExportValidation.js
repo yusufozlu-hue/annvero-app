@@ -7,7 +7,8 @@ import {
   analyzeDuplicateRiskForRows,
   MUKERRER_RISK_SEVIYE,
 } from "@/src/utils/duplicateRiskAnalysis";
-import { normalizeBankAnalysisKey } from "@/src/utils/textNormalize";
+import { normalizeBankAnalysisKey, normalizeParserText } from "@/src/utils/textNormalize";
+import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
 
 export const MISSING_HESAP_CATEGORY = {
   CARI_BULUNAMADI: "Cari bulunamadı",
@@ -21,57 +22,210 @@ export const MISSING_HESAP_CATEGORY = {
   DIGER: "Diğer",
 };
 
-function isMissingHesapRow(row = {}) {
+/** Ham 102 — firma alt hesabı yok */
+export function isBareBank102Account(code = "") {
+  const compact = String(code || "")
+    .trim()
+    .replace(/\s+/g, "");
+  return compact === "102";
+}
+
+const PERSONEL_SIGNAL_RE =
+  /\b(MAAS|MAAŞ|BORDRO|PERSONEL|PERSONELE|UCRET ODEME|ÜCRET ODEME|MAAS ODEME|MAAŞ ÖDEME|PERSONEL AVANS|MAAS AVANS|MAAŞ AVANS)\b/i;
+
+const CARI_CONTEXT_RE =
+  /\b(KONAKLAMA|REZERVASYON|OTEL|RESORT|MUSTERI|MÜŞTERİ|CARI|FATURA|GECELIK|GECELİK|ODA|CHECK[\s-]?IN|CHECK[\s-]?OUT|TURIZM|SEYAHAT)\b/i;
+
+const HAVALE_DESC_RE = /\b(GLN\.?\s*HVL|GOND\.?\s*HVL|GÖND\.?\s*HVL|GELEN HAVALE|GIDEN HAVALE|GELEN EFT|GONDERILEN)\b/i;
+
+function rowDescription(row = {}) {
+  return `${row.detayAciklama || ""} ${row.fisAciklama || ""} ${row.aciklama || ""}`;
+}
+
+function rowNote(row = {}) {
+  return `${row.kontrolNotu || ""} ${row.uyari || ""} ${row.warning || ""} ${row.missingReason || ""}`;
+}
+
+/**
+ * Gerçek personel işlemi sinyali.
+ * Kişi adı tek başına yeterli değil; konaklama/cari bağlamı personeli ezer.
+ */
+export function hasStrictPersonelSignal(row = {}) {
+  const desc = normalizeParserText(rowDescription(row));
+  const note = normalizeParserText(rowNote(row));
+  const haystack = `${desc} ${note}`;
+
+  if (CARI_CONTEXT_RE.test(haystack) || CARI_CONTEXT_RE.test(desc)) {
+    return false;
+  }
+
+  // Uyarıdaki "cari/personel" veya "cari eşleşmesi" personel sayılmaz
+  if (
+    /CARI\s*\/\s*PERSONEL|CARI ESLESMESI|CARI HESAP BULUNAMADI/.test(note) &&
+    !PERSONEL_SIGNAL_RE.test(desc)
+  ) {
+    return false;
+  }
+
+  if (PERSONEL_SIGNAL_RE.test(desc)) return true;
+
+  // Notta açık personel bulma uyarısı (geçmiş motor)
+  if (
+    /\bPERSONEL BULUNAMADI\b/.test(note) ||
+    /\bPERSONEL HESABI\b/.test(note)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function hasCariHavaleSignal(row = {}) {
+  const desc = rowDescription(row);
+  const note = normalizeParserText(rowNote(row));
+  if (hasStrictPersonelSignal(row)) return false;
+  if (/CARI HESAP BULUNAMADI|CARI ESLESMESI GEREKLI/.test(note)) return true;
+  if (HAVALE_DESC_RE.test(desc)) return true;
+  if (CARI_CONTEXT_RE.test(normalizeParserText(desc))) return true;
+  return false;
+}
+
+export function isMissingHesapRow(row = {}) {
   const hesap = String(row.hesapKodu || "").trim();
   if (!hesap) return true;
+  if (isBareBank102Account(hesap)) return true;
   if (row.riskDurumu === "HESAP_EKSIK") return true;
-  const note = String(row.kontrolNotu || row.uyari || row.warning || "");
+
+  // Düzgün banka GL satırı, karşı hesap uyarısını taşısa bile eksik sayılmaz
+  if (isLikelyBankGlAccount(hesap) && !isBareBank102Account(hesap)) {
+    return false;
+  }
+
+  const note = rowNote(row);
   return note.includes("Hesap eşleşmesi bulunamadı");
 }
 
 export function classifyMissingHesapCategory(row = {}) {
-  const note = String(
-    row.kontrolNotu || row.uyari || row.warning || row.missingReason || ""
-  ).toLocaleUpperCase("tr");
-  const desc = String(row.detayAciklama || row.fisAciklama || "").toLocaleUpperCase(
-    "tr"
-  );
+  const note = normalizeParserText(rowNote(row));
+  const desc = normalizeParserText(rowDescription(row));
+  const hesap = String(row.hesapKodu || "").trim();
   const existing = String(row.missingHesapCategory || "").trim();
   if (existing && Object.values(MISSING_HESAP_CATEGORY).includes(existing)) {
     return existing;
   }
 
-  if (note.includes("CARI HESAP BULUNAMADI") || note.includes("CARİ HESAP BULUNAMADI")) {
-    return MISSING_HESAP_CATEGORY.CARI_BULUNAMADI;
+  // 1) Ham banka 102
+  if (isBareBank102Account(hesap) || /BANKA KARSI HESABI BULUNAMADI/.test(note)) {
+    return MISSING_HESAP_CATEGORY.BANKA_KARSISI;
   }
-  if (note.includes("HESAP PLANINDA BULUNAMADI")) {
+
+  // 2) Cari (havale / konaklama / açık cari uyarısı) — personelden ÖNCE
+  if (
+    /CARI HESAP BULUNAMADI/.test(note) ||
+    hasCariHavaleSignal(row)
+  ) {
+    if (!hasStrictPersonelSignal(row)) {
+      return MISSING_HESAP_CATEGORY.CARI_BULUNAMADI;
+    }
+  }
+
+  if (/HESAP PLANINDA BULUNAMADI|HESAP PLANINDA KARSILIGI YOK/.test(note)) {
     return MISSING_HESAP_CATEGORY.PLAN_ONERI_YOK;
   }
-  if (note.includes("PERSONEL") || desc.includes("MAAS") || desc.includes("ÜCRET") || desc.includes("UCRET")) {
+
+  // 3) Gerçek personel sinyalleri
+  if (hasStrictPersonelSignal(row)) {
     return MISSING_HESAP_CATEGORY.PERSONEL_BULUNAMADI;
   }
+
+  // 4) Vergi / SGK
   if (
-    note.includes("VERGI") ||
-    note.includes("SGK") ||
-    desc.includes("MUHTASAR") ||
-    desc.includes("KDV") ||
-    desc.includes("SGK")
+    /\b(VERGI|SGK|MUHSGK|MUHTASAR|KDV2|\bKDV\b|GIB|IVD|DAMGA|STOPAJ)\b/.test(
+      `${desc} ${note}`
+    )
   ) {
     return MISSING_HESAP_CATEGORY.VERGI_SGK;
   }
-  if (desc.includes("POS") && (desc.includes("KOMISYON") || desc.includes("KOM."))) {
+
+  if (/\bPOS\b/.test(desc) && /\b(KOMISYON|KOM\.)\b/.test(desc)) {
     return MISSING_HESAP_CATEGORY.POS_KOMISYON;
   }
-  if (note.includes("KURAL BULUNAMADI")) {
+
+  if (/KURAL BULUNAMADI/.test(note)) {
     return MISSING_HESAP_CATEGORY.KURAL_BULUNAMADI;
   }
-  if (note.includes("HAFIZA") && note.includes("BULUNAMADI")) {
+
+  if (/HAFIZA/.test(note) && /BULUNAMADI/.test(note)) {
     return MISSING_HESAP_CATEGORY.HAFIZA_BULUNAMADI;
   }
-  if (!String(row.hesapKodu || "").trim()) {
-    return MISSING_HESAP_CATEGORY.BANKA_KARSISI;
+
+  if (!hesap) {
+    // Boş karşı hesap + havale açıklaması → cari; aksi banka etiketi yanıltıcı
+    if (HAVALE_DESC_RE.test(rowDescription(row)) || CARI_CONTEXT_RE.test(desc)) {
+      return MISSING_HESAP_CATEGORY.CARI_BULUNAMADI;
+    }
+    return MISSING_HESAP_CATEGORY.DIGER;
   }
+
   return MISSING_HESAP_CATEGORY.DIGER;
+}
+
+export function classifyPersonelMissingSubtype(row = {}) {
+  const desc = normalizeParserText(rowDescription(row));
+  if (!hasStrictPersonelSignal(row)) {
+    if (CARI_CONTEXT_RE.test(desc)) return "Personel adına cari/konaklama (yanlış)";
+    if (/GLN|GELEN/.test(desc)) return "Gelen havale olup personel sanılan (yanlış)";
+    if (/GOND|GÖND|GIDEN/.test(desc)) return "Giden havale olup personel sanılan (yanlış)";
+    return "Diğer yanlış sınıflandırma";
+  }
+  if (/\b(MAAS AVANS|MAAŞ AVANS|PERSONEL AVANS|AVANS)\b/.test(desc) && /\b(MAAS|PERSONEL|BORDRO)\b/.test(desc)) {
+    return "Gerçek maaş avansı";
+  }
+  if (/\b(MAAS|BORDRO|UCRET ODEME|PERSONEL UCRET)\b/.test(desc)) {
+    return "Gerçek maaş ödemesi";
+  }
+  if (/\b(MASRAF IADE|PERSONEL MASRAF|HARCIRAH)\b/.test(desc)) {
+    return "Personel masraf iadesi";
+  }
+  return "Gerçek personel (diğer)";
+}
+
+export function classifyVergiSgkSubtype(row = {}) {
+  const text = normalizeParserText(rowDescription(row) + " " + rowNote(row));
+  if (/\bMUHSGK\b/.test(text)) return "MUHSGK";
+  if (/\bSGK\b/.test(text)) return "SGK";
+  if (/\bKDV2\b/.test(text)) return "KDV2";
+  if (/\bKDV\b/.test(text)) return "KDV";
+  if (/\bMTV\b/.test(text)) return "MTV";
+  if (/\b(VERGI CEZA|CEZA)\b/.test(text) && /\bVERGI\b/.test(text)) return "vergi cezası";
+  if (/\b(GECIKME ZAMMI|GECIKME)\b/.test(text)) return "gecikme zammı";
+  return "diğer";
+}
+
+export function groupOtherMissingRows(rows = [], limit = 20) {
+  const other = (rows || []).filter(
+    (row) => classifyMissingHesapCategory(row) === MISSING_HESAP_CATEGORY.DIGER
+  );
+  const groups = new Map();
+  for (const row of other) {
+    const key = getRowAnalysisKey(row) || "unknown";
+    if (!groups.has(key)) {
+      groups.set(key, {
+        analysisKey: key,
+        count: 0,
+        samples: [],
+        suggestedType: "İnceleme",
+      });
+    }
+    const group = groups.get(key);
+    group.count += 1;
+    if (group.samples.length < 5) {
+      group.samples.push(String(rowDescription(row)).slice(0, 140));
+    }
+  }
+  return [...groups.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
 }
 
 /**
@@ -107,10 +261,31 @@ export function analyzeMissingHesapRows(rows = []) {
       cariOneri: row.cariSuggestions?.[0]?.label || row.cariSuggestions?.[0]?.code || "",
       reason: row.kontrolNotu || row.uyari || category,
       analysisKey: row.analysisKey || "",
+      subtype:
+        category === MISSING_HESAP_CATEGORY.PERSONEL_BULUNAMADI
+          ? classifyPersonelMissingSubtype(row)
+          : category === MISSING_HESAP_CATEGORY.VERGI_SGK
+            ? classifyVergiSgkSubtype(row)
+            : "",
     })),
   }));
 
   categories.sort((a, b) => b.count - a.count);
+
+  const personelRows =
+    byCategory.get(MISSING_HESAP_CATEGORY.PERSONEL_BULUNAMADI) || [];
+  const personelSubtypeCounts = {};
+  for (const row of personelRows) {
+    const subtype = classifyPersonelMissingSubtype(row);
+    personelSubtypeCounts[subtype] = (personelSubtypeCounts[subtype] || 0) + 1;
+  }
+
+  const vergiRows = byCategory.get(MISSING_HESAP_CATEGORY.VERGI_SGK) || [];
+  const vergiSubtypeCounts = {};
+  for (const row of vergiRows) {
+    const subtype = classifyVergiSgkSubtype(row);
+    vergiSubtypeCounts[subtype] = (vergiSubtypeCounts[subtype] || 0) + 1;
+  }
 
   return {
     totalRows: rows.length,
@@ -118,6 +293,9 @@ export function analyzeMissingHesapRows(rows = []) {
     readyCount: rows.length - missing.length,
     categories,
     missingRows: missing,
+    personelSubtypeCounts,
+    vergiSubtypeCounts,
+    otherGroups: groupOtherMissingRows(missing, 20),
   };
 }
 

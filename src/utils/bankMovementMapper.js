@@ -595,10 +595,10 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
               appendWarning(warnings, "Hesap planında karşılığı yok");
               appendWarning(warnings, `Sistem ailesi: ${systemMatch.family}`);
             } else if (systemMatch.needsEntity) {
-              appendWarning(warnings, "Kural bulunamadı");
+              appendWarning(warnings, "Cari hesap bulunamadı");
               appendWarning(
                 warnings,
-                `Sistem ailesi: ${systemMatch.family} (cari/personel gerekli)`
+                `Sistem ailesi: ${systemMatch.family} (cari eşleşmesi gerekli)`
               );
               lucaDescription =
                 systemMatch.lucaDescription ||

@@ -947,7 +947,7 @@ export function groupUnresolvedRuleRows(rows = [], context = {}) {
         safeAutoApplicable: Boolean(match?.autoApplied),
         whyUnmatched:
           match?.needsEntity
-            ? "Cari/personel exact eşleşmesi gerekli"
+            ? "Cari eşleşmesi gerekli"
             : match?.planMissing
               ? "İşlem ailesi tanındı; hesap planında karşılık yok"
               : match?.autoApplied

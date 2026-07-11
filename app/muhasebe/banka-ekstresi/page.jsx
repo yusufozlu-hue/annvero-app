@@ -27,9 +27,11 @@ import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
   countCompanyRules,
   countPendingLucaRowsForCompany,
+  findCompanyBankAccount,
   formatDateTime,
   getAccountPlanForCompany,
   getAccountPlanUploadedAt,
+  getCompanyBankLucaCode,
   getCompanyRules,
   getCompanyRulesUpdatedAt,
   loadAccountPlansFromStorage,
@@ -415,6 +417,22 @@ export default function BankaParserPage() {
       ).length,
     [selectedCompany]
   );
+
+  const matchedCompanyBank = useMemo(
+    () =>
+      findCompanyBankAccount(selectedCompany?.bankAccounts || [], selectedBank),
+    [selectedCompany, selectedBank]
+  );
+
+  const selectedBankLucaCode = useMemo(
+    () =>
+      getCompanyBankLucaCode(selectedCompany?.bankAccounts || [], selectedBank),
+    [selectedCompany, selectedBank]
+  );
+
+  const selectedBankLucaReady =
+    Boolean(String(matchedCompanyBank?.lucaAccountCode || "").trim()) &&
+    String(selectedBankLucaCode || "").trim() !== "102";
 
   const activeCreditCardCount = useMemo(
     () =>
@@ -2020,6 +2038,24 @@ export default function BankaParserPage() {
                 </li>
               ))}
             </ul>
+            {missingHesapReport.personelSubtypeCounts &&
+            Object.keys(missingHesapReport.personelSubtypeCounts).length > 0 ? (
+              <p className="mt-2 text-xs text-rose-200/70">
+                Personel alt dağılım:{" "}
+                {Object.entries(missingHesapReport.personelSubtypeCounts)
+                  .map(([k, v]) => `${k}: ${v}`)
+                  .join(" · ")}
+              </p>
+            ) : null}
+            {missingHesapReport.vergiSubtypeCounts &&
+            Object.keys(missingHesapReport.vergiSubtypeCounts).length > 0 ? (
+              <p className="mt-1 text-xs text-rose-200/70">
+                Vergi/SGK alt tür:{" "}
+                {Object.entries(missingHesapReport.vergiSubtypeCounts)
+                  .map(([k, v]) => `${k}: ${v}`)
+                  .join(" · ")}
+              </p>
+            ) : null}
             <p className="mt-2 text-xs text-rose-200/80">
               Tam Excel engellendi. İnceleyin veya açıkça kısmi export seçin. Kayıtlar
               sessizce atılmaz.
@@ -2125,6 +2161,32 @@ export default function BankaParserPage() {
                 </div>
               ))}
             </div>
+          </div>
+        ) : null}
+
+        {selectedCompanyId && !selectedBankLucaReady ? (
+          <div className="rounded-xl border border-amber-700/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">
+            <p className="font-semibold">
+              {selectedBank} için Luca 102 alt hesabı tanımlı değil
+            </p>
+            <p className="mt-1 text-xs text-amber-100/80">
+              Firma kartına banka adı, IBAN, hesap no ve Luca 102 alt hesabını
+              (örn. 102.01.004) ekleyin. Aksi halde banka bacağı ham &quot;102&quot;
+              kalır.
+            </p>
+            <Link
+              href="/muhasebe/firma-yonetimi"
+              className="mt-2 inline-block text-xs font-semibold underline decoration-amber-400/60 hover:text-white"
+            >
+              Firma kartında banka hesabı tanımla →
+            </Link>
+            {matchedCompanyBank ? (
+              <p className="mt-1 text-xs text-amber-200/70">
+                Eşleşen kayıt: {matchedCompanyBank.bankName || "—"} / IBAN{" "}
+                {matchedCompanyBank.iban || "—"} / Luca kodu{" "}
+                {matchedCompanyBank.lucaAccountCode || "boş"}
+              </p>
+            ) : null}
           </div>
         ) : null}
 
