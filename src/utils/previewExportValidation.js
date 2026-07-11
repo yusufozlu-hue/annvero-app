@@ -10,6 +10,15 @@ import {
 import { normalizeBankAnalysisKey, normalizeParserText } from "@/src/utils/textNormalize";
 import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
 import { groupUnresolvedCariRows } from "@/src/utils/cariAccountMatcher";
+import {
+  resolveBankTransactionType,
+  isCariRequiredForType,
+  isCariForbiddenForType,
+  isPersonelRequiredForType,
+  isVergiSgkType,
+  missingCategoryForTransactionType,
+  BANK_TRANSACTION_TYPE,
+} from "@/src/utils/bankTransactionType";
 
 export const MISSING_HESAP_CATEGORY = {
   CARI_BULUNAMADI: "Cari bulunamadı",
@@ -81,13 +90,40 @@ export function hasStrictPersonelSignal(row = {}) {
   return false;
 }
 
+export function resolveRowTransactionType(row = {}) {
+  if (row.transactionType) return String(row.transactionType);
+  const desc = rowDescription(row);
+  const direction =
+    Number(row.borc || 0) > 0
+      ? "GIRIS"
+      : Number(row.alacak || 0) > 0
+        ? "CIKIS"
+        : row.yon || row.direction || "";
+  return resolveBankTransactionType(desc, direction, {
+    lucaDescription: desc,
+  }).transactionType;
+}
+
 export function hasCariHavaleSignal(row = {}) {
   const desc = rowDescription(row);
   const note = normalizeParserText(rowNote(row));
+  const type = resolveRowTransactionType(row);
+  if (isCariForbiddenForType(type)) return false;
+  if (row.cariRequired === false) return false;
   if (hasStrictPersonelSignal(row)) return false;
-  if (/CARI HESAP BULUNAMADI|CARI ESLESMESI GEREKLI/.test(note)) return true;
-  if (HAVALE_DESC_RE.test(desc)) return true;
-  if (CARI_CONTEXT_RE.test(normalizeParserText(desc))) return true;
+  if (isCariRequiredForType(type)) return true;
+  if (/CARI HESAP BULUNAMADI|CARI ESLESMESI GEREKLI/.test(note)) {
+    return (
+      isCariRequiredForType(type) || type === BANK_TRANSACTION_TYPE.BILINMEYEN
+    );
+  }
+  if (HAVALE_DESC_RE.test(desc) && !isCariForbiddenForType(type)) return true;
+  if (
+    CARI_CONTEXT_RE.test(normalizeParserText(desc)) &&
+    !isCariForbiddenForType(type)
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -108,51 +144,70 @@ export function isMissingHesapRow(row = {}) {
 
 export function classifyMissingHesapCategory(row = {}) {
   const note = normalizeParserText(rowNote(row));
-  const desc = normalizeParserText(rowDescription(row));
   const hesap = String(row.hesapKodu || "").trim();
+  const transactionType = resolveRowTransactionType(row);
   const existing = String(row.missingHesapCategory || "").trim();
+
   if (existing && Object.values(MISSING_HESAP_CATEGORY).includes(existing)) {
+    if (
+      existing === MISSING_HESAP_CATEGORY.CARI_BULUNAMADI &&
+      isCariForbiddenForType(transactionType)
+    ) {
+      return missingCategoryForTransactionType(transactionType);
+    }
     return existing;
   }
 
-  // Açık banka karşı hesabı uyarısı — yalnızca bu satır gerçekten eksikse
-  // (banka GL bacakları isMissingHesapRow'da zaten elenir)
+  // 1) Banka bacağı
   if (/BANKA KARSI HESABI BULUNAMADI/.test(note) && !isLikelyBankGlAccount(hesap)) {
     return MISSING_HESAP_CATEGORY.BANKA_KARSISI;
   }
 
-  // 2) Cari (havale / konaklama / açık cari uyarısı) — personelden ÖNCE
+  // 2) Vergi / SGK
+  if (isVergiSgkType(transactionType) || /VERGI.?SGK TURU COZULEMEDI/.test(note)) {
+    return MISSING_HESAP_CATEGORY.VERGI_SGK;
+  }
+
+  // 3) Personel
   if (
-    /CARI HESAP BULUNAMADI/.test(note) ||
-    hasCariHavaleSignal(row)
+    isPersonelRequiredForType(transactionType) ||
+    hasStrictPersonelSignal(row) ||
+    /PERSONEL BULUNAMADI/.test(note)
   ) {
-    if (!hasStrictPersonelSignal(row)) {
+    return MISSING_HESAP_CATEGORY.PERSONEL_BULUNAMADI;
+  }
+
+  // 4) Cari — yalnızca transactionType gerektiriyorsa
+  if (
+    (row.cariRequired === true || isCariRequiredForType(transactionType)) &&
+    !isCariForbiddenForType(transactionType)
+  ) {
+    if (/CARI HESAP BULUNAMADI/.test(note) || hasCariHavaleSignal(row) || !hesap) {
       return MISSING_HESAP_CATEGORY.CARI_BULUNAMADI;
     }
   }
 
+  // Cari gerektirmeyen türde boş hesap / eski cari uyarısı → tür kategorisi
+  if (
+    isCariForbiddenForType(transactionType) &&
+    (/CARI HESAP BULUNAMADI/.test(note) || !hesap)
+  ) {
+    return missingCategoryForTransactionType(transactionType);
+  }
+
+  // 5) Hesap planı
   if (/HESAP PLANINDA BULUNAMADI|HESAP PLANINDA KARSILIGI YOK/.test(note)) {
     return MISSING_HESAP_CATEGORY.PLAN_ONERI_YOK;
   }
 
-  // 3) Gerçek personel sinyalleri
-  if (hasStrictPersonelSignal(row)) {
-    return MISSING_HESAP_CATEGORY.PERSONEL_BULUNAMADI;
-  }
-
-  // 4) Vergi / SGK
   if (
-    /\b(VERGI|SGK|MUHSGK|MUHTASAR|KDV2|\bKDV\b|GIB|IVD|DAMGA|STOPAJ)\b/.test(
-      `${desc} ${note}`
-    )
+    transactionType === BANK_TRANSACTION_TYPE.POS_TAHSILAT ||
+    transactionType === BANK_TRANSACTION_TYPE.POS_KOMISYON
   ) {
-    return MISSING_HESAP_CATEGORY.VERGI_SGK;
-  }
-
-  if (/\bPOS\b/.test(desc) && /\b(KOMISYON|KOM\.)\b/.test(desc)) {
     return MISSING_HESAP_CATEGORY.POS_KOMISYON;
   }
 
+  // 6) Kural
   if (/KURAL BULUNAMADI/.test(note)) {
     return MISSING_HESAP_CATEGORY.KURAL_BULUNAMADI;
   }
@@ -161,12 +216,12 @@ export function classifyMissingHesapCategory(row = {}) {
     return MISSING_HESAP_CATEGORY.HAFIZA_BULUNAMADI;
   }
 
+  // 7) Diğer
   if (!hesap) {
-    // Boş karşı hesap + havale açıklaması → cari; aksi diğer
-    if (HAVALE_DESC_RE.test(rowDescription(row)) || CARI_CONTEXT_RE.test(desc)) {
+    if (isCariRequiredForType(transactionType)) {
       return MISSING_HESAP_CATEGORY.CARI_BULUNAMADI;
     }
-    return MISSING_HESAP_CATEGORY.DIGER;
+    return missingCategoryForTransactionType(transactionType);
   }
 
   return MISSING_HESAP_CATEGORY.DIGER;
@@ -256,6 +311,8 @@ export function analyzeMissingHesapRows(rows = []) {
       tutar: Number(row.borc || 0) || Number(row.alacak || 0) || 0,
       yon: Number(row.borc || 0) > 0 ? "BORC" : "ALACAK",
       aciklama: row.detayAciklama || row.fisAciklama || "",
+      transactionType: resolveRowTransactionType(row),
+      cariRequired: row.cariRequired,
       suggestedHesap:
         row.accountSuggestions?.[0]?.code ||
         row.accountSuggestions?.[0]?.label ||
@@ -302,6 +359,22 @@ export function analyzeMissingHesapRows(rows = []) {
     vergiSubtypeCounts,
     otherGroups: groupOtherMissingRows(missing, 20),
     cariGroups: groupUnresolvedCariRows(missing, {}),
+    transactionTypeDistribution: (() => {
+      const counts = {};
+      for (const row of missing) {
+        const type = resolveRowTransactionType(row);
+        counts[type] = (counts[type] || 0) + 1;
+      }
+      return Object.entries(counts)
+        .map(([transactionType, count]) => ({ transactionType, count }))
+        .sort((a, b) => b.count - a.count);
+    })(),
+    falseCariCategoryCount: missing.filter((row) => {
+      const cat = classifyMissingHesapCategory(row);
+      if (cat !== MISSING_HESAP_CATEGORY.CARI_BULUNAMADI) return false;
+      const type = resolveRowTransactionType(row);
+      return isCariForbiddenForType(type);
+    }).length,
   };
 }
 

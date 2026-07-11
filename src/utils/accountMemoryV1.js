@@ -101,25 +101,76 @@ function buildRecordId() {
   return `am-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function extractIbanLoose(text = "") {
+  const match = String(text || "")
+    .toUpperCase()
+    .replace(/\s+/g, "")
+    .match(/TR\d{24}/);
+  return match ? match[0] : "";
+}
+
+/**
+ * Toplu uygula + firma için öğren — cari karar hafızası.
+ * companyId, analysisKey, direction, cariId, accountCode, belgeTuru,
+ * açıklama şablonu, transactionType saklanır.
+ */
 export function saveAccountMemoryFromEdit(row = {}, context = {}) {
   const companyId = resolveCompanyId(row, context);
   const normalizedDescription = normalizeAccountMemoryDescription(row);
-  const accountCode = String(row.hesapKodu || "").trim();
-  const accountName = String(row.hesapAdi || "").trim();
+  const accountCode = String(row.hesapKodu || row.accountCode || "").trim();
+  const accountName = String(row.hesapAdi || row.accountName || "").trim();
 
-  if (!companyId || !normalizedDescription || !accountCode) {
+  if (!companyId || (!normalizedDescription && !row.analysisKey) || !accountCode) {
     return null;
   }
 
   const bankName = resolveBankName(row, context);
+  const analysisKey = String(row.analysisKey || context.analysisKey || "").trim();
+  const direction = String(
+    row.direction ||
+      row.yon ||
+      (Number(row.borc || 0) > 0 ? "GIRIS" : Number(row.alacak || 0) > 0 ? "CIKIS" : "") ||
+      context.direction ||
+      ""
+  ).trim();
+  const transactionType = String(
+    row.transactionType || context.transactionType || ""
+  ).trim();
+  const belgeTuru = String(row.belgeTuru || context.belgeTuru || "")
+    .trim()
+    .toUpperCase();
+  const descriptionTemplate = String(
+    row.descriptionTemplate ||
+      row.fisAciklama ||
+      row.detayAciklama ||
+      normalizedDescription ||
+      ""
+  ).trim();
+  const iban =
+    String(row.iban || context.iban || "").trim() ||
+    extractIbanLoose(normalizedDescription) ||
+    extractIbanLoose(descriptionTemplate);
+  const cariId = String(row.cariId || accountCode).trim();
+
   const records = readAllRecords();
-  const existingIndex = records.findIndex(
-    (record) =>
-      record.companyId === companyId &&
-      normalizeParserText(record.bankName || "") === normalizeParserText(bankName) &&
+  const existingIndex = records.findIndex((record) => {
+    if (record.companyId !== companyId) return false;
+    if (
+      normalizeParserText(record.bankName || "") !==
+      normalizeParserText(bankName)
+    ) {
+      return false;
+    }
+    if (analysisKey && record.analysisKey === analysisKey) {
+      if (!direction || !record.direction || record.direction === direction) {
+        return true;
+      }
+    }
+    return (
       record.normalizedDescription === normalizedDescription &&
       record.accountCode === accountCode
-  );
+    );
+  });
 
   const payload = {
     id: existingIndex >= 0 ? records[existingIndex].id : buildRecordId(),
@@ -128,15 +179,23 @@ export function saveAccountMemoryFromEdit(row = {}, context = {}) {
     normalizedDescription,
     accountCode,
     accountName,
+    cariId,
+    cariName: accountName,
     counterAccountCode: String(row.karsiHesapKodu || "").trim(),
-    documentType: String(row.belgeTuru || "").trim().toUpperCase(),
+    documentType: belgeTuru,
+    belgeTuru,
+    analysisKey,
+    direction,
+    transactionType,
+    descriptionTemplate,
+    iban,
     lastUsedAt: new Date().toISOString(),
     usageCount:
       existingIndex >= 0 ? Number(records[existingIndex].usageCount || 0) + 1 : 1,
   };
 
   if (existingIndex >= 0) {
-    records[existingIndex] = payload;
+    records[existingIndex] = { ...records[existingIndex], ...payload };
   } else {
     records.unshift(payload);
   }
@@ -145,11 +204,79 @@ export function saveAccountMemoryFromEdit(row = {}, context = {}) {
   return payload;
 }
 
+export function findAccountMemoryByAnalysisKey(
+  records = [],
+  analysisKey = "",
+  context = {},
+  direction = ""
+) {
+  const key = String(analysisKey || "").trim();
+  const companyId = String(context.firmaId || context.companyId || "").trim();
+  if (!key || !companyId) return null;
+
+  let best = null;
+  for (const record of records) {
+    if (record.companyId !== companyId) continue;
+    if (record.analysisKey !== key) continue;
+    if (direction && record.direction && record.direction !== direction) continue;
+    if (
+      !best ||
+      new Date(record.lastUsedAt || 0) > new Date(best.lastUsedAt || 0)
+    ) {
+      best = record;
+    }
+  }
+  return best;
+}
+
+export function findAccountMemoryByIban(records = [], iban = "", context = {}) {
+  const needle = String(iban || "")
+    .toUpperCase()
+    .replace(/\s+/g, "");
+  const companyId = String(context.firmaId || context.companyId || "").trim();
+  if (!needle || !companyId) return null;
+
+  let best = null;
+  for (const record of records) {
+    if (record.companyId !== companyId) continue;
+    const recordIban = String(record.iban || "")
+      .toUpperCase()
+      .replace(/\s+/g, "");
+    if (!recordIban || recordIban !== needle) continue;
+    if (
+      !best ||
+      new Date(record.lastUsedAt || 0) > new Date(best.lastUsedAt || 0)
+    ) {
+      best = record;
+    }
+  }
+  return best;
+}
+
 export function findAccountMemoryMatchInRecords(records = [], row = {}, context = {}) {
   const companyId = resolveCompanyId(row, context);
   const rowDescription = getRowDescription(row);
+  const analysisKey = String(row.analysisKey || "").trim();
+  const direction =
+    row.direction ||
+    row.yon ||
+    (Number(row.borc || 0) > 0 ? "GIRIS" : Number(row.alacak || 0) > 0 ? "CIKIS" : "");
 
-  if (!companyId || !rowDescription) return null;
+  if (!companyId) return null;
+
+  if (analysisKey) {
+    const byKey = findAccountMemoryByAnalysisKey(
+      records,
+      analysisKey,
+      { ...context, companyId, firmaId: companyId },
+      direction
+    );
+    if (byKey) {
+      return { record: byKey, confidence: 100, exactMatch: true };
+    }
+  }
+
+  if (!rowDescription) return null;
 
   let best = null;
   let bestScore = 0;
@@ -159,7 +286,10 @@ export function findAccountMemoryMatchInRecords(records = [], row = {}, context 
 
     const score = computeSimilarityScore(
       rowDescription,
-      record.normalizedDescription || record.description || ""
+      record.normalizedDescription ||
+        record.descriptionTemplate ||
+        record.description ||
+        ""
     );
 
     if (score < 70) continue;
@@ -213,8 +343,9 @@ export function applyAccountMemoryV1RecordsToRows(
             hesapKodu: record.accountCode || row.hesapKodu,
             hesapAdi: record.accountName || row.hesapAdi,
             karsiHesapKodu: record.counterAccountCode || row.karsiHesapKodu,
-            belgeTuru: record.documentType || row.belgeTuru,
+            belgeTuru: record.documentType || record.belgeTuru || row.belgeTuru,
             accountMemoryAutoFilled: true,
+            transactionType: row.transactionType || record.transactionType || "",
           }
         : {}),
       hafizaGuvenSkoru: confidence,

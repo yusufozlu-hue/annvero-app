@@ -60,7 +60,11 @@ import {
   getRowAnalysisKey,
 } from "@/src/utils/previewExportValidation";
 import { groupUnresolvedRuleRows } from "@/src/utils/bankSmartSuggestions";
-import { groupUnresolvedCariRows } from "@/src/utils/cariAccountMatcher";
+import {
+  buildCariDecisionReport,
+  formatCariDecisionReportText,
+  groupUnresolvedCariRows,
+} from "@/src/utils/cariAccountMatcher";
 import {
   buildBankStandardLucaLearningMemoryPayload,
   mapLearningMemoryRecordToItem,
@@ -286,6 +290,7 @@ export default function BankaParserPage() {
   const [missingHesapReport, setMissingHesapReport] = useState(null);
   const [ruleGroupReport, setRuleGroupReport] = useState(null);
   const [cariGroupReport, setCariGroupReport] = useState(null);
+  const [cariDecisionReport, setCariDecisionReport] = useState(null);
   const [selectedRuleGroupKey, setSelectedRuleGroupKey] = useState("");
   const [standardLucaRows, setStandardLucaRows] = useState([]);
   const [totalLucaCount, setTotalLucaCount] = useState(0);
@@ -916,7 +921,20 @@ export default function BankaParserPage() {
     syncLucaPage(lucaPage);
     if (learn && selectedCompanyId) {
       saveAccountMemoryFromEdit(
-        { ...row, hesapKodu: code },
+        {
+          ...row,
+          hesapKodu: code,
+          analysisKey: getRowAnalysisKey(row) || row.analysisKey || "",
+          direction:
+            Number(row.borc || 0) > 0
+              ? "GIRIS"
+              : Number(row.alacak || 0) > 0
+                ? "CIKIS"
+                : row.direction || "",
+          transactionType: row.transactionType || "",
+          belgeTuru: row.belgeTuru || "",
+          cariId: code,
+        },
         { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
       );
     }
@@ -959,7 +977,20 @@ export default function BankaParserPage() {
     syncLucaPage(lucaPage);
     if (learn && selectedCompanyId) {
       saveAccountMemoryFromEdit(
-        { ...row, hesapKodu: code },
+        {
+          ...row,
+          hesapKodu: code,
+          analysisKey: getRowAnalysisKey(row) || row.analysisKey || "",
+          direction:
+            Number(row.borc || 0) > 0
+              ? "GIRIS"
+              : Number(row.alacak || 0) > 0
+                ? "CIKIS"
+                : row.direction || "",
+          transactionType: row.transactionType || "",
+          belgeTuru: row.belgeTuru || "",
+          cariId: code,
+        },
         { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
       );
     }
@@ -1342,6 +1373,20 @@ export default function BankaParserPage() {
           null,
         uniqueReport: result.uniqueReport || null,
       }));
+      {
+        const decisionReport = buildCariDecisionReport({
+          analysisStats: result.callCounts || {},
+          timings: result.timings || {},
+          previousMissingCount: cariDecisionReport?.currentMissingCount ?? null,
+          currentMissingCount: null,
+          cariGroupReport: null,
+        });
+        setCariDecisionReport(decisionReport);
+        console.info(
+          "[ANNVERO][CARI-DECISION]",
+          formatCariDecisionReportText(decisionReport)
+        );
+      }
       parserJob.markSuccess(
         `Muhasebe analizi tamamlandı (${movementsRef.current.length} hareket · ${
           result.uniqueDescriptionCount ||
@@ -1433,7 +1478,8 @@ export default function BankaParserPage() {
       lucaRef.current = lucaResult.standardLucaRows || [];
       setLucaReady(true);
       setTotalLucaCount(lucaRef.current.length);
-      setMissingHesapReport(analyzeMissingHesapRows(lucaRef.current));
+      const missingReport = analyzeMissingHesapRows(lucaRef.current);
+      setMissingHesapReport(missingReport);
       {
         const grouped = groupUnresolvedRuleRows(lucaRef.current, {
           companyPlans,
@@ -1457,6 +1503,23 @@ export default function BankaParserPage() {
           withSuggestion: (cariGrouped.top20 || []).filter((g) => g.suggestedAccount)
             .length,
         });
+        if (lastTimings?.analysisCallCounts || lastTimings?.analysisTimings) {
+          const decisionReport = buildCariDecisionReport({
+            analysisStats: lastTimings.analysisCallCounts || {},
+            timings: lastTimings.analysisTimings || {},
+            previousMissingCount:
+              cariDecisionReport?.currentMissingCount ??
+              cariDecisionReport?.previousMissingCount ??
+              null,
+            currentMissingCount: missingReport.missingCount,
+            cariGroupReport: cariGrouped,
+          });
+          setCariDecisionReport(decisionReport);
+          console.info(
+            "[ANNVERO][CARI-DECISION]",
+            formatCariDecisionReportText(decisionReport)
+          );
+        }
       }
       setPreviewSummary((prev) => ({
         ...(prev || computeMovementPreviewSummary(movementsRef.current)),
@@ -2081,6 +2144,15 @@ export default function BankaParserPage() {
               Tam Excel engellendi. İnceleyin veya açıkça kısmi export seçin. Kayıtlar
               sessizce atılmaz.
             </p>
+          </div>
+        ) : null}
+
+        {cariDecisionReport ? (
+          <div className="rounded-xl border border-teal-700/40 bg-teal-950/30 px-4 py-3 text-sm text-teal-100">
+            <p className="font-semibold">Cari karar özeti</p>
+            <pre className="mt-2 whitespace-pre-wrap font-sans text-xs text-teal-100/90">
+              {formatCariDecisionReportText(cariDecisionReport)}
+            </pre>
           </div>
         ) : null}
 

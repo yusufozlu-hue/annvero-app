@@ -158,6 +158,7 @@ function buildMovementMappingContext(options = {}) {
     cariIndex,
     analysisStats: options.analysisStats || null,
     analysisTimings: options.analysisTimings || null,
+    accountMemoryRecords: options.accountMemoryRecords || null,
   };
 }
 
@@ -480,6 +481,18 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     cariExactHit: 0,
     cariTokenScan: 0,
     cariFuzzyCandidateCount: 0,
+    cariRequiredAttempts: 0,
+    cariAutoFound: 0,
+    cariFromFirmaMemory: 0,
+    cariFromAnalysisKey: 0,
+    cariFromIban: 0,
+    cariFromVergiNo: 0,
+    cariFromUnvan: 0,
+    cariFromAlias: 0,
+    cariFromToken: 0,
+    cariFromLearnedDescription: 0,
+    cariFromIbanHistory: 0,
+    cariUnresolved: 0,
     accountExactHit: 0,
     accountCandidateScan: 0,
     accountFuzzyCandidateCount: 0,

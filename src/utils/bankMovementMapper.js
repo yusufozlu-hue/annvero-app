@@ -14,6 +14,22 @@ import {
   resolveCariAccountMatch,
 } from "@/src/utils/cariAccountMatcher";
 import {
+  resolveBankTransactionType,
+  isPersonelRequiredForType,
+  isVergiSgkType,
+  missingCategoryForTransactionType,
+  BANK_TRANSACTION_TYPE,
+  isExpenseOrIncomeGlAccount,
+  isLikelyCariGlAccount,
+  isDirectExpenseAllowedType,
+} from "@/src/utils/bankTransactionType";
+import { normalizeBankAnalysisKey } from "@/src/utils/textNormalize";
+import {
+  findAccountMemoryByAnalysisKey,
+  findAccountMemoryByIban,
+  findAccountMemoryMatchInRecords,
+} from "@/src/utils/accountMemoryV1";
+import {
   buildCreditCardPaymentDescription,
   findCreditCardByText,
   getCreditCardAccount,
@@ -315,8 +331,14 @@ function applyCariResolution(
   warnings,
   planCodeSet = null,
   cariIndex = null,
-  analysisStats = null
+  analysisStats = null,
+  memorySources = {}
 ) {
+  // Cari gereken türde gider hesabı (770 vb.) tutma — cari ara
+  if (isExpenseOrIncomeGlAccount(counterAccountCode)) {
+    counterAccountCode = "";
+  }
+
   const needsResolve =
     !counterAccountCode ||
     (isGenericCariAccount(counterAccountCode) &&
@@ -326,12 +348,18 @@ function applyCariResolution(
     return { counterAccountCode, cariSuggestions: [] };
   }
 
+  if (analysisStats) {
+    analysisStats.cariRequiredAttempts =
+      (analysisStats.cariRequiredAttempts || 0) + 1;
+  }
+
   const result = resolveCariAccountMatch(companyPlans, {
     description,
     lucaDescription,
     ruleAciklama,
     cariIndex,
     stats: analysisStats,
+    ...memorySources,
   });
 
   removeWarningsMatching(
@@ -342,10 +370,26 @@ function applyCariResolution(
   );
 
   if (result.code && result.autoApplied !== false) {
+    // Güvenlik: otomatik gider hesabı asla cari sonucu olmasın
+    if (isExpenseOrIncomeGlAccount(result.code)) {
+      appendWarning(warnings, buildCariNotFoundWarning(result.suggestions));
+      if (analysisStats) {
+        analysisStats.cariUnresolved = (analysisStats.cariUnresolved || 0) + 1;
+      }
+      return {
+        counterAccountCode: "",
+        cariSuggestions: result.suggestions,
+        cariMatchConfidence: result.confidence || 0,
+        cariMatchReason: result.matchReason || "",
+      };
+    }
     appendWarning(
       warnings,
       `Cari hesap eşleşti (${result.confidence}% · ${result.matchReason || "exact"})`
     );
+    if (analysisStats) {
+      analysisStats.cariAutoFound = (analysisStats.cariAutoFound || 0) + 1;
+    }
     return {
       counterAccountCode: result.code,
       cariSuggestions: [],
@@ -388,6 +432,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     cariIndex = null,
     analysisStats = null,
     analysisTimings = null,
+    accountMemoryRecords = null,
   } = context;
 
   const addTiming = (key, started) => {
@@ -412,6 +457,19 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   let cariMatchConfidence = 0;
   let cariMatchReason = "";
   let accountSuggestions = [];
+  let transactionType = BANK_TRANSACTION_TYPE.BILINMEYEN;
+  let cariRequired = false;
+  let personelRequired = false;
+
+  // İşlem türü — cari/personelden ÖNCE
+  const typeResolution = resolveBankTransactionType(description, direction, {
+    companyPlans,
+    cariUnvan: rawRow.unvan || rawRow.cariUnvan || "",
+    personelAdi: rawRow.personelAdi || "",
+  });
+  transactionType = typeResolution.transactionType;
+  cariRequired = typeResolution.cariRequired;
+  personelRequired = typeResolution.personelRequired;
 
   const bankLucaBase = resolve102BankAccount(
     selectedCompany?.bankAccounts || [],
@@ -447,6 +505,9 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       islem: "KREDI KARTI",
       anahtar: card?.lastFourDigits || card?.cardName || "",
     };
+    transactionType = BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI;
+    cariRequired = false;
+    personelRequired = false;
 
     counterAccountCode = resolvedCard?.accountCode || "";
     documentType = "KR";
@@ -494,7 +555,15 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 
       accountCode = memoryAccounts?.accountCode || bankLucaBase || "";
       counterAccountCode = memoryAccounts?.counterAccountCode || "";
-      if (!counterAccountCode) {
+      // Cari gereken türde öğrenilmiş 770/gider → yok say, cari ara
+      if (
+        cariRequired &&
+        isExpenseOrIncomeGlAccount(counterAccountCode) &&
+        !isDirectExpenseAllowedType(transactionType)
+      ) {
+        counterAccountCode = "";
+        removeWarningsMatching(warnings, (m) => String(m).includes(MEMORY_MATCH_LABEL));
+      } else if (!counterAccountCode) {
         appendWarning(warnings, "Hesap eşleşmesi bulunamadı");
       }
       lucaDescription = formatMemoryDescription(
@@ -507,7 +576,9 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         documentType = memoryMatch.document_type;
       }
 
-      appendWarning(warnings, MEMORY_MATCH_LABEL);
+      if (counterAccountCode || !cariRequired) {
+        appendWarning(warnings, MEMORY_MATCH_LABEL);
+      }
     } else {
       const ruleStarted = Date.now();
       const accountingRule = matchAccountingRule(description, {
@@ -585,21 +656,34 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
           counterAccountCode = legacyRule.hesap || "";
         } else {
           // 3) Güvenli sistem kuralı (firma hafızası / özel kural sonrası)
-          const systemMatch = matchSafeSystemBankRule(description, direction, {
-            companyPlans,
-            cariUnvan: rawRow.unvan || rawRow.cariUnvan || "",
-            personelAdi: rawRow.personelAdi || "",
-          });
+          const systemMatch =
+            typeResolution.systemMatch ||
+            matchSafeSystemBankRule(description, direction, {
+              companyPlans,
+              cariUnvan: rawRow.unvan || rawRow.cariUnvan || "",
+              personelAdi: rawRow.personelAdi || "",
+            });
 
           if (systemMatch) {
             matchedRule = {
               source: "safeSystemRule",
               islem: systemMatch.family,
               anahtar: systemMatch.id,
+              transactionType,
             };
             documentType = systemMatch.documentType || documentType;
             lucaDescription = systemMatch.lucaDescription || lucaDescription;
-            if (systemMatch.autoApplied && systemMatch.accountCode) {
+
+            const systemExpenseBlocked =
+              cariRequired &&
+              systemMatch.autoApplied &&
+              isExpenseOrIncomeGlAccount(systemMatch.accountCode) &&
+              !isDirectExpenseAllowedType(transactionType);
+
+            if (systemExpenseBlocked) {
+              // Çay/aidat/kargo vb. → 770 otomatik uygulanmaz
+              appendWarning(warnings, "Cari eşleşmesi gerekli");
+            } else if (systemMatch.autoApplied && systemMatch.accountCode) {
               counterAccountCode = systemMatch.accountCode;
               appendWarning(
                 warnings,
@@ -609,12 +693,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
               accountSuggestions = systemMatch.accountSuggestions || [];
               appendWarning(warnings, "Hesap planında karşılığı yok");
               appendWarning(warnings, `Sistem ailesi: ${systemMatch.family}`);
-            } else if (systemMatch.needsEntity) {
-              appendWarning(warnings, "Cari hesap bulunamadı");
-              appendWarning(
-                warnings,
-                `Sistem ailesi: ${systemMatch.family} (cari eşleşmesi gerekli)`
-              );
+            } else if (systemMatch.needsEntity && cariRequired) {
               lucaDescription =
                 systemMatch.lucaDescription ||
                 buildFallbackLucaDescription({
@@ -622,6 +701,10 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
                   yon: direction,
                   aciklama: description,
                 });
+            } else if (systemMatch.needsEntity && !cariRequired) {
+              accountSuggestions = systemMatch.accountSuggestions || [];
+              appendWarning(warnings, "Hesap eşleşmesi bulunamadı");
+              appendWarning(warnings, `Sistem ailesi: ${systemMatch.family}`);
             } else {
               accountSuggestions = systemMatch.accountSuggestions || [];
               appendWarning(warnings, "Kural bulunamadı");
@@ -630,7 +713,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
             if (analysisStats) {
               analysisStats.safeSystemHit =
                 (analysisStats.safeSystemHit || 0) + 1;
-              if (systemMatch.autoApplied) {
+              if (systemMatch.autoApplied && !systemExpenseBlocked) {
                 analysisStats.safeSystemAutoApplied =
                   (analysisStats.safeSystemAutoApplied || 0) + 1;
               }
@@ -648,24 +731,118 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       addTiming("ruleMatchMs", ruleStarted);
     }
 
-    const cariStarted = Date.now();
-    const cariResolution = applyCariResolution(
-      companyPlans,
-      description,
-      lucaDescription,
-      ruleAciklama,
-      counterAccountCode,
-      warnings,
-      planCodeSet || planIndex?.codeSet,
-      cariIndex,
-      analysisStats
-    );
-    addTiming("cariResolutionMs", cariStarted);
+    // Cari yalnızca transactionType gerektiriyorsa
+    if (cariRequired) {
+      // Kural/hafıza gider hesabı bırakmışsa temizle
+      if (
+        isExpenseOrIncomeGlAccount(counterAccountCode) &&
+        !isDirectExpenseAllowedType(transactionType)
+      ) {
+        counterAccountCode = "";
+      }
 
-    counterAccountCode = cariResolution.counterAccountCode;
-    cariSuggestions = cariResolution.cariSuggestions;
-    cariMatchConfidence = cariResolution.cariMatchConfidence || 0;
-    cariMatchReason = cariResolution.cariMatchReason || "";
+      const analysisKey = normalizeBankAnalysisKey(description, direction);
+      const memoryList = Array.isArray(accountMemoryRecords)
+        ? accountMemoryRecords
+        : [];
+      const memoryCtx = {
+        firmaId: selectedCompanyId || selectedCompany?.id || "",
+        companyId: selectedCompanyId || selectedCompany?.id || "",
+        bankName: selectedBank || "",
+        kaynakAdi: selectedBank || "",
+      };
+      const analysisKeyMemory = findAccountMemoryByAnalysisKey(
+        memoryList,
+        analysisKey,
+        memoryCtx,
+        direction
+      );
+      const learnedMatch = findAccountMemoryMatchInRecords(
+        memoryList,
+        {
+          detayAciklama: description,
+          fisAciklama: lucaDescription,
+          analysisKey,
+          direction,
+          transactionType,
+        },
+        memoryCtx
+      );
+      const ibanHistoryMemory = findAccountMemoryByIban(
+        memoryList,
+        String(rawRow.iban || "").replace(/\s+/g, "") ||
+          (description.match(/TR\d{2}[\d\s]{20,}/i) || [""])[0].replace(/\s+/g, ""),
+        memoryCtx
+      );
+
+      const cariStarted = Date.now();
+      const cariResolution = applyCariResolution(
+        companyPlans,
+        description,
+        lucaDescription,
+        ruleAciklama,
+        counterAccountCode,
+        warnings,
+        planCodeSet || planIndex?.codeSet,
+        cariIndex,
+        analysisStats,
+        {
+          companyId: selectedCompanyId || selectedCompany?.id || "",
+          bankName: selectedBank || "",
+          analysisKey,
+          direction,
+          transactionType,
+          analysisKeyMemory:
+            analysisKeyMemory && isLikelyCariGlAccount(analysisKeyMemory.accountCode)
+              ? analysisKeyMemory
+              : null,
+          firmaMemoryRecord:
+            analysisKeyMemory && isLikelyCariGlAccount(analysisKeyMemory.accountCode)
+              ? analysisKeyMemory
+              : null,
+          learnedDescriptionMemory:
+            learnedMatch?.record &&
+            isLikelyCariGlAccount(learnedMatch.record.accountCode)
+              ? learnedMatch.record
+              : null,
+          learnedDescriptionConfidence: learnedMatch?.confidence || 0,
+          ibanHistoryMemory:
+            ibanHistoryMemory && isLikelyCariGlAccount(ibanHistoryMemory.accountCode)
+              ? ibanHistoryMemory
+              : null,
+        }
+      );
+      addTiming("cariResolutionMs", cariStarted);
+
+      counterAccountCode = cariResolution.counterAccountCode;
+      cariSuggestions = cariResolution.cariSuggestions;
+      cariMatchConfidence = cariResolution.cariMatchConfidence || 0;
+      cariMatchReason = cariResolution.cariMatchReason || "";
+    } else {
+      // Cari gerektirmeyen türlerde yanlış “Cari bulunamadı” üretme
+      removeWarningsMatching(
+        warnings,
+        (message) =>
+          String(message).includes("Cari hesap bulunamadı") ||
+          String(message).includes("cari eşleşmesi gerekli")
+      );
+      if (
+        !counterAccountCode &&
+        !warnings.some((w) =>
+          /Hesap planında|Kural bulunamadı|Hesap eşleşmesi|Vergi|SGK|Personel/i.test(
+            String(w)
+          )
+        )
+      ) {
+        if (isVergiSgkType(transactionType)) {
+          appendWarning(warnings, "Vergi/SGK türü çözülemedi");
+        } else if (personelRequired || isPersonelRequiredForType(transactionType)) {
+          appendWarning(warnings, "Personel bulunamadı");
+        } else if (!matchedRule || matchedRule?.source === "safeSystemRule") {
+          // plan/account eksikliği zaten uyarıda olabilir
+        }
+      }
+    }
 
     // Hesap çözüldüyse “Kural bulunamadı” uyarı gürültüsünü temizle
     if (counterAccountCode) {
@@ -779,6 +956,12 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     cariSuggestions,
     cariMatchConfidence,
     cariMatchReason,
+    transactionType,
+    cariRequired,
+    personelRequired,
+    missingHesapCategory: !counterAccountCode
+      ? missingCategoryForTransactionType(transactionType)
+      : "",
   };
 }
 

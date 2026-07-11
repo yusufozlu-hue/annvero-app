@@ -1,5 +1,12 @@
 import { CARI_SHORT_CODE_MAPPINGS } from "@/src/config/cariShortCodeMappings";
 import { normalizeBankAnalysisKey, normalizeParserText } from "@/src/utils/textNormalize";
+import {
+  CARI_NOT_REQUIRED_TYPES,
+  CARI_REQUIRED_TYPES,
+  PERSONEL_REQUIRED_TYPES,
+  isLikelyCariGlAccount,
+  isExpenseOrIncomeGlAccount,
+} from "@/src/utils/bankTransactionType";
 
 const COMPANY_SUFFIX_TOKENS = new Set([
   "AS",
@@ -79,10 +86,14 @@ const OTHER_CARI_PREFIXES = ["331", "337", "338", "339"];
 export const CARI_AUTO_APPLY_MIN_CONFIDENCE = 80;
 
 export const CARI_MATCH_REASON = {
+  FIRMA_HAFIZA: "firma hafızası",
+  ANALYSIS_KEY: "öğrenilmiş analysisKey",
   VERGI_NO: "exact vergi no",
   IBAN: "exact IBAN",
+  IBAN_HISTORY: "aynı IBAN geçmişi",
   UNVAN: "exact unvan",
   ALIAS: "alias exact",
+  LEARNED_DESCRIPTION: "öğrenilmiş açıklama",
   TOKEN_STRONG: "güçlü token",
   TOKEN_WEAK: "düşük güven token",
   NONE: "eşleşmedi",
@@ -591,6 +602,30 @@ function emptyMatchResult(suggestions = []) {
   };
 }
 
+function memoryHitToResult(record, reason, extractedParty, vergiList, iban) {
+  const code = String(record.accountCode || record.cariId || "").trim();
+  if (!code || isExpenseOrIncomeGlAccount(code)) return null;
+  if (!isLikelyCariGlAccount(code)) return null;
+  return {
+    code,
+    matchedName: record.accountName || record.cariName || "",
+    note: "Cari hesap eşleşti",
+    confidence: 100,
+    matchReason: reason,
+    autoApplied: true,
+    suggestions: [],
+    extractedParty,
+    hasVergiNo: vergiList.length > 0,
+    hasIban: Boolean(iban),
+    fromMemory: true,
+  };
+}
+
+function bumpCariStat(stats, key) {
+  if (!stats) return;
+  stats[key] = (stats[key] || 0) + 1;
+}
+
 export function resolveCariAccountMatch(companyPlans, sources = {}) {
   const candidates = buildCariSearchCandidates(sources);
   const stats = sources.stats || null;
@@ -613,15 +648,62 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     candidates[0] ||
     "";
 
-  if (!companyPlans?.length) {
-    return emptyMatchResult();
+  // Mapper önceden çözülmüş firma hafızası kayıtları
+  const preMemoryHits = [
+    {
+      record: sources.analysisKeyMemory || null,
+      reason: CARI_MATCH_REASON.ANALYSIS_KEY,
+      stat: "cariFromAnalysisKey",
+    },
+    {
+      record: sources.firmaMemoryRecord || null,
+      reason: CARI_MATCH_REASON.FIRMA_HAFIZA,
+      stat: "cariFromFirmaMemory",
+    },
+  ];
+
+  for (const item of preMemoryHits) {
+    if (!item.record) continue;
+    const hit = memoryHitToResult(
+      item.record,
+      item.reason,
+      extractedParty,
+      vergiList,
+      iban
+    );
+    if (hit) {
+      bumpCariStat(stats, item.stat);
+      bumpCariStat(stats, "cariFromFirmaMemory");
+      bumpCariStat(stats, "cariExactHit");
+      return hit;
+    }
   }
 
-  // 1) Vergi no exact — 100
+  // Exact IBAN (plan)
+  if (iban && index?.byIban?.get(iban)) {
+    const hit = index.byIban.get(iban);
+    bumpCariStat(stats, "cariExactHit");
+    bumpCariStat(stats, "cariFromIban");
+    return {
+      code: hit.code,
+      matchedName: hit.name,
+      note: "Cari hesap eşleşti",
+      confidence: 100,
+      matchReason: CARI_MATCH_REASON.IBAN,
+      autoApplied: true,
+      suggestions: [],
+      extractedParty,
+      hasVergiNo: vergiList.length > 0,
+      hasIban: true,
+    };
+  }
+
+  // 3) Exact Vergi No
   for (const vergi of vergiList) {
     const hit = index?.byVergiNo?.get(vergi);
     if (hit) {
-      if (stats) stats.cariExactHit = (stats.cariExactHit || 0) + 1;
+      bumpCariStat(stats, "cariExactHit");
+      bumpCariStat(stats, "cariFromVergiNo");
       return {
         code: hit.code,
         matchedName: hit.name,
@@ -637,35 +719,7 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     }
   }
 
-  // 2) IBAN exact — 100
-  if (iban && index?.byIban?.get(iban)) {
-    const hit = index.byIban.get(iban);
-    if (stats) stats.cariExactHit = (stats.cariExactHit || 0) + 1;
-    return {
-      code: hit.code,
-      matchedName: hit.name,
-      note: "Cari hesap eşleşti",
-      confidence: 100,
-      matchReason: CARI_MATCH_REASON.IBAN,
-      autoApplied: true,
-      suggestions: [],
-      extractedParty,
-      hasVergiNo: vergiList.length > 0,
-      hasIban: true,
-    };
-  }
-
-  if (!candidates.length) {
-    return {
-      ...emptyMatchResult(),
-      extractedParty,
-      hasVergiNo: vergiList.length > 0,
-      hasIban: Boolean(iban),
-    };
-  }
-
-  // 3–4) Tam unvan / alias exact — 95 / 90
-  // Adayları uzun → kısa sırala; kısa kişi adının otel satırını ezmesini azaltır
+  // 4–5) Tam unvan / alias
   const sortedCandidates = [...candidates].sort(
     (a, b) =>
       normalizeCariNameCore(b).replace(/\s+/g, "").length -
@@ -711,7 +765,6 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
 
   if (exactHits.length) {
     exactHits.sort((a, b) => {
-      // Otel/konaklama: işletme unvanı / alias (daha uzun span) öncelikli
       if (hotelContext) {
         const aBiz = /\b(OTEL|RESORT|TURIZM|KONAKLAMA)\b/.test(
           normalizeParserText(a.hit.name)
@@ -729,7 +782,12 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
       return b.confidence - a.confidence;
     });
     const bestExact = exactHits[0];
-    if (stats) stats.cariExactHit = (stats.cariExactHit || 0) + 1;
+    bumpCariStat(stats, "cariExactHit");
+    if (bestExact.matchReason === CARI_MATCH_REASON.ALIAS) {
+      bumpCariStat(stats, "cariFromAlias");
+    } else {
+      bumpCariStat(stats, "cariFromUnvan");
+    }
     return {
       code: bestExact.hit.code,
       matchedName: bestExact.hit.name,
@@ -744,7 +802,7 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     };
   }
 
-  // 5) Token aday eşleşmesi
+  // 6) Güçlü token
   const tokenCandidates = new Set();
   if (index?.byToken) {
     for (const candidate of sortedCandidates) {
@@ -770,7 +828,8 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
   const suggestions = ranked.slice(0, 3).map(toSuggestionPayload);
 
   if (best && best.confidence >= CARI_AUTO_APPLY_MIN_CONFIDENCE) {
-    if (stats) stats.cariTokenScan = (stats.cariTokenScan || 0) + 1;
+    bumpCariStat(stats, "cariTokenScan");
+    bumpCariStat(stats, "cariFromToken");
     return {
       code: best.code,
       matchedName: best.name,
@@ -784,6 +843,44 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
       hasIban: Boolean(iban),
     };
   }
+
+  // 7) Öğrenilmiş açıklama (mapper ön-çözümü)
+  if (sources.learnedDescriptionMemory) {
+    const hit = memoryHitToResult(
+      sources.learnedDescriptionMemory,
+      CARI_MATCH_REASON.LEARNED_DESCRIPTION,
+      extractedParty,
+      vergiList,
+      iban
+    );
+    if (hit) {
+      hit.confidence = Math.min(
+        98,
+        Number(sources.learnedDescriptionConfidence || 90)
+      );
+      bumpCariStat(stats, "cariFromLearnedDescription");
+      bumpCariStat(stats, "cariFromFirmaMemory");
+      return hit;
+    }
+  }
+
+  // 8) Aynı IBAN geçmişi
+  if (sources.ibanHistoryMemory) {
+    const hit = memoryHitToResult(
+      sources.ibanHistoryMemory,
+      CARI_MATCH_REASON.IBAN_HISTORY,
+      extractedParty,
+      vergiList,
+      iban
+    );
+    if (hit) {
+      bumpCariStat(stats, "cariFromIbanHistory");
+      bumpCariStat(stats, "cariFromFirmaMemory");
+      return hit;
+    }
+  }
+
+  bumpCariStat(stats, "cariUnresolved");
 
   return {
     code: "",
@@ -811,18 +908,31 @@ export function findCariAccountInPlan(companyPlans, description, options = {}) {
 
 /**
  * “Cari bulunamadı” satırlarını analysisKey ile gruplar.
+ * Cari gerektirmeyen transactionType satırları hariç tutulur.
  */
 export function groupUnresolvedCariRows(rows = [], context = {}) {
   const unresolved = (rows || []).filter((row) => {
+    if (row.cariRequired === false) return false;
+    const type = String(row.transactionType || "");
+    if (type && CARI_NOT_REQUIRED_TYPES.has(type)) return false;
+    if (type && !CARI_REQUIRED_TYPES.has(type) && type !== "BILINMEYEN") {
+      // Personel vb. cari grubuna alınmaz
+      if (PERSONEL_REQUIRED_TYPES.has(type)) return false;
+    }
     const missing =
       !String(row.hesapKodu || "").trim() || row.riskDurumu === "HESAP_EKSIK";
     if (!missing) return false;
-    const note = String(row.kontrolNotu || row.uyari || row.warning || "");
     const cat = String(row.missingHesapCategory || "");
-    return (
-      cat === "Cari bulunamadı" ||
-      note.toLocaleLowerCase("tr").includes("cari hesap bulunamadı")
-    );
+    if (cat && cat !== "Cari bulunamadı") return false;
+    if (cat === "Cari bulunamadı") return true;
+    // Eski uyarı metni — yalnızca cariRequired veya cari gereken türlerde
+    const note = String(row.kontrolNotu || row.uyari || row.warning || "");
+    if (!note.toLocaleLowerCase("tr").includes("cari hesap bulunamadı")) {
+      return false;
+    }
+    if (row.cariRequired === true || CARI_REQUIRED_TYPES.has(type)) return true;
+    if (!type || type === "BILINMEYEN") return true;
+    return false;
   });
 
   const groups = new Map();
@@ -918,4 +1028,70 @@ export function groupUnresolvedCariRows(rows = [], context = {}) {
       : 0,
     allGroups: ranked,
   };
+}
+
+/**
+ * Cari karar motoru özet raporu (analiz sonrası).
+ */
+export function buildCariDecisionReport({
+  analysisStats = {},
+  timings = {},
+  previousMissingCount = null,
+  currentMissingCount = null,
+  cariGroupReport = null,
+} = {}) {
+  const required =
+    Number(analysisStats.cariRequiredAttempts || 0) ||
+    Number(analysisStats.cariAutoFound || 0) +
+      Number(analysisStats.cariUnresolved || 0);
+  const autoFound = Number(analysisStats.cariAutoFound || 0);
+  const unresolved =
+    Number(analysisStats.cariUnresolved || 0) ||
+    Number(cariGroupReport?.totalUnresolved || 0);
+
+  return {
+    totalCariRequiredAttempts: required,
+    autoFoundCari: autoFound,
+    fromFirmaMemory: Number(analysisStats.cariFromFirmaMemory || 0),
+    fromAnalysisKey: Number(analysisStats.cariFromAnalysisKey || 0),
+    fromIban: Number(analysisStats.cariFromIban || 0),
+    fromVergiNo: Number(analysisStats.cariFromVergiNo || 0),
+    fromUnvan: Number(analysisStats.cariFromUnvan || 0),
+    fromAlias: Number(analysisStats.cariFromAlias || 0),
+    fromToken: Number(analysisStats.cariFromToken || 0),
+    fromLearnedDescription: Number(analysisStats.cariFromLearnedDescription || 0),
+    fromIbanHistory: Number(analysisStats.cariFromIbanHistory || 0),
+    stillUnresolvedCari: unresolved,
+    unresolvedGroups: Number(cariGroupReport?.groupCount || 0),
+    previousMissingCount,
+    currentMissingCount,
+    missingDelta:
+      previousMissingCount == null || currentMissingCount == null
+        ? null
+        : Number(currentMissingCount) - Number(previousMissingCount),
+    analysisMs: Number(timings.totalAnalysisMs || 0),
+    cariResolutionMs: Number(timings.cariResolutionMs || 0),
+  };
+}
+
+export function formatCariDecisionReportText(report = {}) {
+  if (!report) return "";
+  const delta =
+    report.missingDelta == null
+      ? "—"
+      : report.missingDelta > 0
+        ? `+${report.missingDelta}`
+        : String(report.missingDelta);
+  return [
+    `Cari gereken deneme: ${report.totalCariRequiredAttempts}`,
+    `Otomatik bulunan cari: ${report.autoFoundCari}`,
+    `  · Firma hafızası: ${report.fromFirmaMemory}`,
+    `  · analysisKey: ${report.fromAnalysisKey}`,
+    `  · IBAN: ${report.fromIban}`,
+    `  · Alias: ${report.fromAlias}`,
+    `  · Öğrenilmiş açıklama: ${report.fromLearnedDescription}`,
+    `Hâlâ cari bulunamayan: ${report.stillUnresolvedCari} (${report.unresolvedGroups} grup)`,
+    `Eksik hesap farkı: ${delta} (önceki ${report.previousMissingCount ?? "—"} → yeni ${report.currentMissingCount ?? "—"})`,
+    `Analiz süresi: ${report.analysisMs} ms (cari ${report.cariResolutionMs} ms)`,
+  ].join("\n");
 }
