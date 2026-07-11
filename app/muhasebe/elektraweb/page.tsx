@@ -300,7 +300,7 @@ export default function ElektrawebPage() {
     }
   };
 
-  const handleLucaAktar = () => {
+  const handleLucaAktar = async () => {
     if (standardLucaRows.length === 0) {
       alert("Önce ön izleme oluşturmalısın.");
       return;
@@ -325,9 +325,11 @@ export default function ElektrawebPage() {
       rows: standardLucaRows,
     });
 
-    const saved = saveLucaTransferDataset(payload);
+    const saved = await saveLucaTransferDataset(payload);
     if (!saved.ok) {
-      alert("Elektraweb aktarımı kaydedilemedi. Depolama dolu olabilir.");
+      alert(
+        "Elektraweb aktarımı kaydedilemedi. Lütfen tekrar deneyin veya Excel’i buradan indirip Luca’ya yükleyin."
+      );
       return;
     }
 

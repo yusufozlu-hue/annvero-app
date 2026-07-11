@@ -37,6 +37,7 @@ import {
   parseRowsForBank as parseRowsForBankWorkerSafe,
 } from "@/src/utils/bankParserWorkerCore";
 import { resolveParserName } from "@/src/utils/financialSourceArchitecture";
+import { buildAccountPlanCodeSet } from "@/src/utils/accountPlanSuggestions";
 
 /** Önizleme / Luca / muhasebe analiz chunk boyutları */
 export const MOVEMENT_MAP_CHUNK_SIZE = 40;
@@ -116,18 +117,25 @@ export function buildBankParserResult({
 }
 
 function buildMovementMappingContext(options = {}) {
+  const companyPlans = options.companyPlans || [];
+  const learningMemory = options.learningMemory || [];
+
   return {
     selectedCompany: options.selectedCompany,
-    companyPlans: options.companyPlans,
+    companyPlans,
     companyRules: options.companyRules,
     selectedBank: options.selectedBank,
-    learningMemory: options.learningMemory,
-    accountingRules: options.accountingRules,
+    learningMemory,
+    activeLearningMemory:
+      options.activeLearningMemory ||
+      learningMemory.filter((record) => record?.is_active !== false),
+    accountingRules: options.accountingRules || [],
     selectedCompanyId: options.selectedCompanyId,
     sourceFileName: options.sourceFileName,
     sourceType: options.sourceType || "bank",
     currency: options.currency || "TRY",
     legacyRules: bankaKurallari,
+    planCodeSet: options.planCodeSet || buildAccountPlanCodeSet(companyPlans),
   };
 }
 
@@ -389,7 +397,6 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   const {
     signal = null,
     onProgress = null,
-    coreRowLimit = DEFAULT_CORE_PREVIEW_LIMIT,
   } = options;
   const mappingContext = buildMovementMappingContext(options);
   const sourceMovements = Array.isArray(options.movementRows) ? options.movementRows : [];
@@ -424,9 +431,6 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     memoHits: 0,
     memoMisses: 0,
   };
-
-  const USER_REVIEW_MSG =
-    "Bazı hareketler otomatik değerlendirilemedi ve incelemeye bırakıldı.";
 
   const emitProgress = (stage, detail, percent) => {
     const now = Date.now();
@@ -552,109 +556,14 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   let coreSummary = {
     enabled: false,
     core: 0,
-    fallback: analyzed.length,
+    fallback: 0,
     total: analyzed.length,
     coreLimit: 0,
+    skipped: true,
   };
-  let coreTimedOut = false;
 
-  if (isAnnveroCoreEnabled()) {
-    assertNotAborted(signal);
-    emitProgress(
-      "Muhasebe Analizi",
-      `CORE değerlendiriyor (ilk ${coreRowLimit} / ${sourceMovements.length})`,
-      72
-    );
-    const coreStarted = Date.now();
-    try {
-      const mapped = await mapParsedRowsWithCoreFallback(
-        normalizedRows,
-        mappingContext,
-        {
-          companyId: options.selectedCompanyId,
-          coreRowLimit,
-          signal,
-          batchTimeoutMs: CORE_BATCH_TIMEOUT_MS,
-          totalBudgetMs: Math.min(CORE_TOTAL_BUDGET_MS, ACCOUNTING_CORE_BUDGET_MS),
-          prebuiltMovements: analyzed,
-        }
-      );
-      assertNotAborted(signal);
-      // Preserve analyzed ids/accounts; overlay CORE only where matched
-      const coreMovements = mapped.movements || [];
-      movementRows = analyzed.map((row, index) => {
-        const coreRow = coreMovements[index];
-        if (!coreRow) return row;
-        if (coreRow._coreMatched) {
-          return {
-            ...coreRow,
-            id: row.id,
-            sourceRowIndex: row.sourceRowIndex ?? index,
-            _accountingAnalyzed: true,
-            _parserOnly: false,
-          };
-        }
-        // Keep legacy analysis; mark review-left only if CORE attempted and failed
-        if (index < Number(coreRowLimit || 0) && (coreRow._coreFallback || coreRow._coreSkipped)) {
-          return {
-            ...row,
-            ...coreRow,
-            id: row.id,
-            accountCode: row.accountCode || coreRow.accountCode,
-            counterAccountCode: row.counterAccountCode || coreRow.counterAccountCode,
-            matchedRule: row.matchedRule || coreRow.matchedRule,
-            lucaDescription: row.lucaDescription || coreRow.lucaDescription,
-            sourceRowIndex: row.sourceRowIndex ?? index,
-            _accountingAnalyzed: true,
-            _parserOnly: false,
-          };
-        }
-        return {
-          ...row,
-          _coreSkipped: true,
-          corePreview: coreRow.corePreview || row.corePreview,
-        };
-      });
-      coreTimedOut = Boolean(mapped.coreSummary?.timedOut);
-      coreSummary = {
-        ...mapped.coreSummary,
-        userWarning:
-          mapped.coreSummary?.timedOut || mapped.coreSummary?.batchError
-            ? USER_REVIEW_MSG
-            : Number(coreRowLimit) > 0
-              ? `CORE yalnızca ilk ${coreRowLimit} harekette denendi.`
-              : "",
-      };
-      callCounts.coreApiBatches = Math.ceil(
-        Math.min(Number(coreRowLimit) || 0, analyzed.length) / 20
-      );
-      if (mapped.coreSummary?.batchError || mapped.coreSummary?.timedOut) {
-        callCounts.legacyFallbackRows += Number(mapped.coreSummary?.fallback) || 0;
-      }
-    } catch (error) {
-      if (error?.name === "AbortError") throw error;
-      console.warn("[bank-parser] CORE overlay failed — analiz sonuçları korundu", error);
-      const fallbackStarted = Date.now();
-      // DO NOT re-analyze; keep analyzed results
-      movementRows = analyzed.map((row) => ({
-        ...row,
-        _coreFallback: true,
-        _coreSkipped: true,
-      }));
-      timings.legacyFallbackMs = Date.now() - fallbackStarted;
-      coreSummary = {
-        enabled: true,
-        batchError: true,
-        total: analyzed.length,
-        coreLimit: coreRowLimit,
-        userWarning: USER_REVIEW_MSG,
-      };
-      callCounts.legacyFallbackRows += analyzed.length;
-    }
-    timings.coreMs = Date.now() - coreStarted;
-    await yieldToMain(0);
-  }
-
+  // CORE bu aşamada çalışmaz — opsiyonel “CORE ile Geliştir” / remapMovementsWithCoreAsync
+  timings.coreMs = 0;
   timings.totalAnalysisMs = Date.now() - startedAt;
   emitProgress("Muhasebe Analizi", "Tamamlandı", 100);
 
@@ -662,7 +571,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     ...timings,
     ...callCounts,
     movementCount: sourceMovements.length,
-    coreTimedOut,
+    coreSkippedInAnalysis: true,
   });
 
   return {
@@ -670,7 +579,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     coreSummary,
     processedCount: sourceMovements.length,
     rowErrors,
-    timedOut: coreTimedOut,
+    timedOut: false,
     total: sourceMovements.length,
     timings,
     callCounts,

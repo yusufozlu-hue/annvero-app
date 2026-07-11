@@ -313,14 +313,14 @@ export default function AdatHesaplamaPage() {
     showToast("Excel raporu indirildi.", "success");
   };
 
-  const handleExportLuca = () => {
+  const handleExportLuca = async () => {
     const validation = runExportValidation();
     if (validation.hasBlockingErrors) {
       alert(validation.errors.join("\n"));
       return;
     }
 
-    const result = exportAdatLucaExcel(previewRows.filter((row) => !row.disaridaBirak), {
+    const result = await exportAdatLucaExcel(previewRows.filter((row) => !row.disaridaBirak), {
       ...buildParams(),
       filePrefix: "adat-luca",
     });
@@ -333,14 +333,14 @@ export default function AdatHesaplamaPage() {
     showToast(`${result.fileCount || 1} Luca dosyası indirildi.`, "success");
   };
 
-  const handleExportAll = () => {
+  const handleExportAll = async () => {
     const validation = runExportValidation();
     if (validation.hasBlockingErrors) {
       alert(validation.errors.join("\n"));
       return;
     }
 
-    const result = exportAdatFullPack({
+    const result = await exportAdatFullPack({
       summary: summary || {},
       meta: exportMeta,
       previewRows: previewRows.filter((row) => !row.disaridaBirak),

@@ -6,6 +6,10 @@ export const LEGACY_ACCOUNT_PLAN_STORAGE_KEY = "annvero_hesap_planlari_v1";
 export const RULE_ENGINE_STORAGE_KEY = "annvero_rule_engine_v1";
 export const PENDING_LUCA_ROWS_STORAGE_KEY = "annvero_pending_luca_rows_v1";
 export const LUCA_TRANSFER_SCHEMA_VERSION = 2;
+export const LUCA_TRANSFER_IDB_NAME = "annvero_luca_transfer_v1";
+export const LUCA_TRANSFER_IDB_STORE = "datasets";
+export const LUCA_TRANSFER_TTL_MS = 24 * 60 * 60 * 1000;
+export const LUCA_TRANSFER_MAX_PER_SOURCE_COMPANY = 3;
 
 function normalizeLucaTransferSource(source) {
   const value = String(source || "")
@@ -29,11 +33,152 @@ export function buildLucaTransferPointerKey(source, companyId) {
   return `annvero:luca:${src}:latest:${company}`;
 }
 
+function openLucaTransferDb() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") {
+      reject(new Error("indexeddb_unavailable"));
+      return;
+    }
+
+    const request = indexedDB.open(LUCA_TRANSFER_IDB_NAME, 1);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(LUCA_TRANSFER_IDB_STORE)) {
+        db.createObjectStore(LUCA_TRANSFER_IDB_STORE, { keyPath: "key" });
+      }
+    };
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () =>
+      reject(request.error || new Error("indexeddb_open_failed"));
+  });
+}
+
+function idbRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () =>
+      reject(request.error || new Error("indexeddb_request_failed"));
+  });
+}
+
+function resolveRunIdFromPointerValue(raw) {
+  if (!raw) return "";
+  const text = String(raw).trim();
+  if (!text) return "";
+
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && parsed.runId) {
+      return String(parsed.runId).trim();
+    }
+  } catch {
+    // plain runId string (backward compat)
+  }
+
+  return text;
+}
+
+function validateLucaTransferDataset(parsed, src, company) {
+  if (!parsed || !Array.isArray(parsed.rows) || !parsed.rows.length) return null;
+  if (Number(parsed.schemaVersion) !== LUCA_TRANSFER_SCHEMA_VERSION) return null;
+  if (normalizeLucaTransferSource(parsed.source || parsed.kaynakTipi) !== src) {
+    return null;
+  }
+  if (String(parsed.companyId || parsed.firmaId || "") !== company) {
+    return null;
+  }
+  return parsed;
+}
+
+function createdAtMs(entry) {
+  const fromCreated = Date.parse(entry?.createdAt || "");
+  if (!Number.isNaN(fromCreated)) return fromCreated;
+  const savedAt = Number(entry?.savedAt);
+  return Number.isFinite(savedAt) ? savedAt : 0;
+}
+
+async function cleanupLucaTransferIdb(db, source, companyId) {
+  const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readwrite");
+  const store = tx.objectStore(LUCA_TRANSFER_IDB_STORE);
+  const all = (await idbRequest(store.getAll())) || [];
+  const same = all.filter(
+    (entry) =>
+      normalizeLucaTransferSource(entry?.source) === source &&
+      String(entry?.companyId || entry?.firmaId || "") === companyId
+  );
+
+  same.sort((a, b) => createdAtMs(b) - createdAtMs(a));
+
+  const now = Date.now();
+  const keepKeys = new Set();
+
+  for (const entry of same) {
+    const age = now - (Number(entry.savedAt) || createdAtMs(entry));
+    if (age > LUCA_TRANSFER_TTL_MS) continue;
+    if (keepKeys.size >= LUCA_TRANSFER_MAX_PER_SOURCE_COMPANY) continue;
+    if (entry?.key) keepKeys.add(entry.key);
+  }
+
+  for (const entry of same) {
+    if (entry?.key && !keepKeys.has(entry.key)) {
+      store.delete(entry.key);
+    }
+  }
+
+  await new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error("indexeddb_cleanup_failed"));
+    tx.onabort = () => reject(tx.error || new Error("indexeddb_cleanup_aborted"));
+  });
+}
+
+function cleanupLegacyLucaTransferLocalStorage() {
+  if (typeof localStorage === "undefined") return;
+
+  const keysToRemove = [];
+
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    if (
+      !key.startsWith("annvero:luca:bank:") &&
+      !key.startsWith("annvero:luca:elektraweb:")
+    ) {
+      continue;
+    }
+    // Pointer keys: annvero:luca:{source}:latest:{company}
+    if (key.includes(":latest:")) continue;
+
+    const raw = localStorage.getItem(key);
+    if (!raw) continue;
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        Array.isArray(parsed.rows)
+      ) {
+        keysToRemove.push(key);
+      }
+    } catch {
+      // ignore non-JSON leftovers
+    }
+  }
+
+  for (const key of keysToRemove) {
+    localStorage.removeItem(key);
+  }
+}
+
 /**
- * Kaynak-izolasyonlu Luca aktarım kaydı.
+ * Kaynak-izolasyonlu Luca aktarım kaydı (IndexedDB).
  * Banka ve Elektraweb aynı anahtarı paylaşmaz.
+ * localStorage'da yalnızca küçük pointer tutulur.
  */
-export function saveLucaTransferDataset(payload = {}) {
+export async function saveLucaTransferDataset(payload = {}) {
   if (typeof window === "undefined") {
     return { ok: false, error: "window_unavailable" };
   }
@@ -59,7 +204,10 @@ export function saveLucaTransferDataset(payload = {}) {
     bankId: payload.bankId || "",
     bankName: payload.bankName || payload.kaynakAdi || "",
     kaynakTipi: source === "bank" ? "BANKA" : "ELEKTRAWEB",
-    kaynakAdi: payload.kaynakAdi || payload.bankName || (source === "bank" ? "BANKA" : "ELEKTRAWEB"),
+    kaynakAdi:
+      payload.kaynakAdi ||
+      payload.bankName ||
+      (source === "bank" ? "BANKA" : "ELEKTRAWEB"),
     createdAt: payload.createdAt || new Date().toISOString(),
     movementCount: Number(payload.movementCount) || 0,
     lucaRowCount: Array.isArray(payload.rows) ? payload.rows.length : 0,
@@ -69,13 +217,52 @@ export function saveLucaTransferDataset(payload = {}) {
 
   const key = buildLucaTransferStorageKey(source, companyId, runId);
   const pointerKey = buildLucaTransferPointerKey(source, companyId);
+  const pointerMeta = {
+    runId,
+    companyId,
+    source,
+    rowCount: dataset.lucaRowCount,
+    createdAt: dataset.createdAt,
+    schemaVersion: LUCA_TRANSFER_SCHEMA_VERSION,
+  };
 
   try {
-    localStorage.setItem(key, JSON.stringify(dataset));
-    localStorage.setItem(pointerKey, runId);
-    // Eski generic anahtarı bu kaynaktan gelen veri ile ezme — karışmayı önlemek için
-    // yalnızca aynı source pointer'ını güncelliyoruz.
-    return { ok: true, key, runId, source, companyId, rowCount: dataset.lucaRowCount };
+    const db = await openLucaTransferDb();
+    const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readwrite");
+    const store = tx.objectStore(LUCA_TRANSFER_IDB_STORE);
+    store.put({ key, ...dataset, savedAt: Date.now() });
+
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("indexeddb_put_failed"));
+      tx.onabort = () => reject(tx.error || new Error("indexeddb_put_aborted"));
+    });
+
+    localStorage.setItem(pointerKey, JSON.stringify(pointerMeta));
+
+    try {
+      await cleanupLucaTransferIdb(db, source, companyId);
+    } catch (cleanupError) {
+      console.warn("[luca-transfer] idb cleanup failed", cleanupError);
+    }
+
+    try {
+      cleanupLegacyLucaTransferLocalStorage();
+    } catch (legacyError) {
+      console.warn("[luca-transfer] legacy localStorage cleanup failed", legacyError);
+    }
+
+    db.close();
+
+    return {
+      ok: true,
+      key,
+      runId,
+      source,
+      companyId,
+      rowCount: dataset.lucaRowCount,
+      storage: "indexeddb",
+    };
   } catch (error) {
     console.error("[luca-transfer] save failed", error);
     return {
@@ -86,7 +273,7 @@ export function saveLucaTransferDataset(payload = {}) {
   }
 }
 
-export function loadLucaTransferDataset({
+export async function loadLucaTransferDataset({
   source,
   companyId,
   runId = "",
@@ -99,25 +286,58 @@ export function loadLucaTransferDataset({
 
   let resolvedRunId = String(runId || "").trim();
   if (!resolvedRunId) {
-    resolvedRunId =
-      localStorage.getItem(buildLucaTransferPointerKey(src, company)) || "";
+    resolvedRunId = resolveRunIdFromPointerValue(
+      localStorage.getItem(buildLucaTransferPointerKey(src, company))
+    );
   }
   if (!resolvedRunId) return null;
 
   const key = buildLucaTransferStorageKey(src, company, resolvedRunId);
-  const raw = localStorage.getItem(key);
-  if (!raw) return null;
 
   try {
+    const db = await openLucaTransferDb();
+    const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readonly");
+    const store = tx.objectStore(LUCA_TRANSFER_IDB_STORE);
+    const record = await idbRequest(store.get(key));
+    db.close();
+
+    if (record) {
+      const { key: _key, savedAt: _savedAt, ...dataset } = record;
+      const validated = validateLucaTransferDataset(dataset, src, company);
+      if (validated) return validated;
+    }
+  } catch (error) {
+    console.warn("[luca-transfer] idb load failed, trying localStorage", error);
+  }
+
+  // Migration fallback: eski localStorage full-dataset anahtarı
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+
     const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.rows) || !parsed.rows.length) return null;
-    if (normalizeLucaTransferSource(parsed.source || parsed.kaynakTipi) !== src) {
-      return null;
+    const validated = validateLucaTransferDataset(parsed, src, company);
+    if (!validated) return null;
+
+    try {
+      const db = await openLucaTransferDb();
+      const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readwrite");
+      const store = tx.objectStore(LUCA_TRANSFER_IDB_STORE);
+      store.put({ key, ...validated, savedAt: Date.now() });
+      await new Promise((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () =>
+          reject(tx.error || new Error("indexeddb_migrate_failed"));
+        tx.onabort = () =>
+          reject(tx.error || new Error("indexeddb_migrate_aborted"));
+      });
+      db.close();
+      localStorage.removeItem(key);
+    } catch (migrateError) {
+      console.warn("[luca-transfer] migrate to idb failed", migrateError);
     }
-    if (String(parsed.companyId || parsed.firmaId || "") !== company) {
-      return null;
-    }
-    return parsed;
+
+    return validated;
   } catch {
     return null;
   }

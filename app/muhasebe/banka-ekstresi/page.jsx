@@ -88,10 +88,7 @@ import {
 } from "@/src/utils/bankParserCore";
 import { isAnnveroCoreEnabled } from "@/src/config/annveroCoreFlags";
 import { ANNVERO_COMPANY_CHANGED_EVENT } from "@/src/config/annveroNavConfig";
-import {
-  DEFAULT_CORE_PREVIEW_LIMIT,
-  CORE_REVIEW_LEFT_LABEL,
-} from "@/src/utils/bankCoreBridge";
+import { CORE_REVIEW_LEFT_LABEL } from "@/src/utils/bankCoreBridge";
 import {
   computeCoreIntegrationSummary,
   mergeCoreDecisionIntoMovement,
@@ -284,6 +281,7 @@ export default function BankaParserPage() {
   const [coreIntegrationSummary, setCoreIntegrationSummary] = useState(null);
   const [coreRowsProcessed, setCoreRowsProcessed] = useState(0);
   const [isApplyingCoreAll, setIsApplyingCoreAll] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [teachMovement, setTeachMovement] = useState(null);
   const [teachFormDefaults, setTeachFormDefaults] = useState(null);
   const [isTeachModalOpen, setIsTeachModalOpen] = useState(false);
@@ -349,6 +347,7 @@ export default function BankaParserPage() {
       setIsAnalyzing(false);
       setIsPreparingLuca(false);
       setIsApplyingCoreAll(false);
+      setIsExporting(false);
       normalizedRef.current = [];
       movementsRef.current = [];
       lucaRef.current = [];
@@ -501,7 +500,8 @@ export default function BankaParserPage() {
     setStandardLucaRows(filtered.slice(start, start + PREVIEW_PAGE_SIZE));
   };
 
-  const isJobBusy = isParsing || isAnalyzing || isPreparingLuca || isApplyingCoreAll;
+  const isJobBusy =
+    isParsing || isAnalyzing || isPreparingLuca || isApplyingCoreAll || isExporting;
 
   const beginPipelineRun = () => {
     abortRef.current?.abort();
@@ -522,6 +522,7 @@ export default function BankaParserPage() {
     setIsAnalyzing(false);
     setIsPreparingLuca(false);
     setIsApplyingCoreAll(false);
+    setIsExporting(false);
   };
 
   const handleApplyAccountSuggestion = async (row, suggestion) => {
@@ -630,7 +631,9 @@ export default function BankaParserPage() {
     });
   };
 
-  const exportExcel = (ignoreWarnings = false) => {
+  const exportExcel = async (ignoreWarnings = false) => {
+    if (isExporting) return;
+
     const allRows = lucaRef.current;
     if (!lucaReady || !allRows.length) {
       showToast("Önce “Luca Satırlarını Hazırla” ile Luca satırlarını oluşturun.", "error");
@@ -660,74 +663,120 @@ export default function BankaParserPage() {
       }
     }
 
-    const rowsToExport = readyRows.length ? readyRows : allRows;
-    const bankPrefix = `${String(selectedBank || "banka").toLowerCase()}_luca`;
-    const result = exportStandardLucaExcel(rowsToExport, {
-      filePrefix: bankPrefix,
-      logLabel: "banka-export",
-      onValidationFail: setExportValidation,
-      ignoreWarnings,
+    const { runId, signal } = beginPipelineRun();
+    setIsExporting(true);
+    setActiveStep("excel");
+    parserJob.begin({
+      stage: "Excel",
+      detail: "Luca Excel hazırlanıyor",
     });
 
-    if (!result.ok) {
-      if (result.reason === "warnings" && result.needsConfirm) {
-        const confirmed = window.confirm(
-          buildExportWarningConfirmMessage(result.validation)
-        );
+    try {
+      const rowsToExport = readyRows.length ? readyRows : allRows;
+      const bankPrefix = `${String(selectedBank || "banka").toLowerCase()}_luca`;
+      const result = await exportStandardLucaExcel(rowsToExport, {
+        filePrefix: bankPrefix,
+        logLabel: "banka-export",
+        onValidationFail: setExportValidation,
+        ignoreWarnings,
+        signal,
+        onProgress: (progress) => {
+          if (isRunActive(runId) && !signal.aborted) {
+            parserJob.onProgress(
+              progress?.detail || "Excel hazırlanıyor…"
+            );
+          }
+        },
+      });
 
-        if (confirmed) {
-          exportExcel(true);
-        }
-
+      if (!isRunActive(runId) || signal.aborted || result.reason === "cancelled") {
         return;
       }
 
-      if (result.reason === "validation") {
-        const report = result.validation?.duplicateReport;
-        if (report?.reportLine) {
-          const criticalLines = (report.criticalRows || [])
-            .slice(0, 8)
-            .map(
-              (row) =>
-                `Satır ${row.rowIndex} · hareket ${row.sourceMovementId || "—"} · ${row.date} · ${row.amount} · ${row.hesapKodu} · ${row.reason}`
-            )
-            .join("\n");
-          window.alert(
-            `${report.reportLine}\n\n${
-              criticalLines || "Kritik satır detayı yok."
-            }\n\nYalnızca gerçek kritik mükerrerler Excel’i engeller.`
+      if (!result.ok) {
+        if (result.reason === "warnings" && result.needsConfirm) {
+          const confirmed = window.confirm(
+            buildExportWarningConfirmMessage(result.validation)
+          );
+
+          if (confirmed) {
+            setIsExporting(false);
+            await exportExcel(true);
+          }
+
+          return;
+        }
+
+        if (result.reason === "validation") {
+          const report = result.validation?.duplicateReport;
+          if (report?.reportLine) {
+            const criticalLines = (report.criticalRows || [])
+              .slice(0, 8)
+              .map(
+                (row) =>
+                  `Satır ${row.rowIndex} · hareket ${row.sourceMovementId || "—"} · ${row.date} · ${row.amount} · ${row.hesapKodu} · ${row.reason}`
+              )
+              .join("\n");
+            window.alert(
+              `${report.reportLine}\n\n${
+                criticalLines || "Kritik satır detayı yok."
+              }\n\nYalnızca gerçek kritik mükerrerler Excel’i engeller.`
+            );
+          }
+          showToast(
+            result.validation?.hasCriticalDuplicates
+              ? "Excel oluşturulamadı. Kritik mükerrer kayıtları düzeltin."
+              : "Excel oluşturulamadı. Satır hatalarını düzeltin.",
+            "error"
+          );
+          parserJob.markError(
+            new Error(result.message || "Excel doğrulama hatası")
+          );
+        } else {
+          showToast(
+            result.message || "Önce dosyayı yükleyip ön izleme oluşturun.",
+            "error"
+          );
+          parserJob.markError(
+            new Error(result.message || "Excel oluşturulamadı")
           );
         }
-        showToast(
-          result.validation?.hasCriticalDuplicates
-            ? "Excel oluşturulamadı. Kritik mükerrer kayıtları düzeltin."
-            : "Excel oluşturulamadı. Satır hatalarını düzeltin.",
-          "error"
-        );
-      } else {
-        showToast(result.message || "Önce dosyayı yükleyip ön izleme oluşturun.", "error");
+        return;
       }
-      return;
-    }
 
-    setExportValidation(null);
-    setCompletedSteps((prev) => ({ ...prev, excel: true }));
-    setLastTimings((prev) => ({
-      ...prev,
-      excelMs: Date.now(),
-      excelFiles: result.fileCount || 1,
-    }));
-    showToast(
-      result.fileCount > 1
-        ? `${result.fileCount} adet Luca Excel dosyası oluşturuldu.`
-        : unknownCount > 0
-          ? `Luca Excel oluşturuldu (${readyRows.length} hazır / ${unknownCount} atlandı).`
-          : "Luca Excel dosyası oluşturuldu.",
-      "success"
-    );
+      setExportValidation(null);
+      setCompletedSteps((prev) => ({ ...prev, excel: true }));
+      setLastTimings((prev) => ({
+        ...prev,
+        excelMs: Date.now(),
+        excelFiles: result.fileCount || 1,
+      }));
+      parserJob.markSuccess(
+        result.fileCount > 1
+          ? `${result.fileCount} Excel dosyası oluşturuldu`
+          : "Luca Excel oluşturuldu"
+      );
+      showToast(
+        result.fileCount > 1
+          ? `${result.fileCount} adet Luca Excel dosyası oluşturuldu.`
+          : unknownCount > 0
+            ? `Luca Excel oluşturuldu (${readyRows.length} hazır / ${unknownCount} atlandı).`
+            : "Luca Excel dosyası oluşturuldu.",
+        "success"
+      );
+    } catch (error) {
+      if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
+        return;
+      }
+      console.error("[banka-ekstresi] excel export failed", error);
+      parserJob.markError(error);
+      showToast(error?.message || "Excel oluşturulamadı.", "error");
+    } finally {
+      if (isRunActive(runId)) setIsExporting(false);
+    }
   };
 
-  const handleGoToLucaProducer = (event) => {
+  const handleGoToLucaProducer = async (event) => {
     event.preventDefault();
 
     if (!movementsRef.current.length || !lucaRef.current.length || !lucaReady) {
@@ -754,10 +803,10 @@ export default function BankaParserPage() {
       rows: lucaRef.current,
     });
 
-    const saved = saveLucaTransferDataset(payload);
+    const saved = await saveLucaTransferDataset(payload);
     if (!saved.ok) {
       alert(
-        "Banka Parser aktarımı kaydedilemedi (depolama dolu veya yazma hatası). Excel’i buradan indirip Luca’ya yükleyebilirsiniz."
+        "Banka Parser aktarımı kaydedilemedi. Lütfen tekrar deneyin veya Excel’i buradan indirip Luca’ya yükleyin."
       );
       return;
     }
@@ -1051,7 +1100,7 @@ export default function BankaParserPage() {
 
     try {
       const result = await runAccountingAnalysisOnMovementsAsync({
-        ...buildPipelineOptions(normalizedRef.current, DEFAULT_CORE_PREVIEW_LIMIT),
+        ...buildPipelineOptions(normalizedRef.current, undefined),
         movementRows: movementsRef.current,
         signal,
         onProgress: (message) => {
@@ -1072,9 +1121,7 @@ export default function BankaParserPage() {
       setCoreIntegrationSummary(
         computeCoreIntegrationSummary(movementsRef.current)
       );
-      setCoreRowsProcessed(
-        result.coreSummary?.coreLimit ?? DEFAULT_CORE_PREVIEW_LIMIT
-      );
+      setCoreRowsProcessed(0);
       syncMovementPage(0);
       setExportValidation(null);
       lucaRef.current = [];
@@ -1108,19 +1155,15 @@ export default function BankaParserPage() {
           "?"
         } unique)`
       );
-      if (result.coreSummary?.userWarning) {
-        showToast(result.coreSummary.userWarning, "error");
-      } else {
-        const unique =
-          result.uniqueDescriptionCount ||
-          result.callCounts?.uniqueDescriptionCount;
-        showToast(
-          unique
-            ? `Muhasebe analizi tamamlandı (${unique} unique açıklama / ${movementsRef.current.length} hareket).`
-            : "Muhasebe analizi tamamlandı. Sonraki: Luca Satırlarını Hazırla.",
-          "success"
-        );
-      }
+      const unique =
+        result.uniqueDescriptionCount ||
+        result.callCounts?.uniqueDescriptionCount;
+      showToast(
+        unique
+          ? `Yerel muhasebe analizi tamamlandı (${unique} unique açıklama / ${movementsRef.current.length} hareket).`
+          : "Yerel muhasebe analizi tamamlandı. Sonraki: Luca Satırlarını Hazırla.",
+        "success"
+      );
     } catch (error) {
       if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
         releaseAnalysisLock();
@@ -1297,11 +1340,8 @@ export default function BankaParserPage() {
   };
 
   const corePreviewMovements = movementRows;
-  const hasMoreCoreRows =
-    isAnnveroCoreEnabled() &&
-    accountingAnalyzed &&
-    coreIntegrationSummary?.notRun > 0 &&
-    normalizedRef.current.length > 0;
+  const canRunOptionalCore =
+    isAnnveroCoreEnabled() && accountingAnalyzed && totalMovementCount > 0;
 
   const requestCoreTeach = (movement, row = {}) => {
     if (!selectedCompanyId || !movement) return;
@@ -1722,8 +1762,8 @@ export default function BankaParserPage() {
 
           <button
             type="button"
-            onClick={exportExcel}
-            disabled={isJobBusy || !lucaReady}
+            onClick={() => exportExcel()}
+            disabled={isJobBusy || isExporting || !lucaReady}
             title={
               lucaReady
                 ? "Luca Excel oluştur"
@@ -1731,7 +1771,7 @@ export default function BankaParserPage() {
             }
             className="rounded-xl bg-emerald-600 px-6 py-3 font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Luca Excel Oluştur
+            {isExporting ? "Excel hazırlanıyor…" : "Luca Excel Oluştur"}
           </button>
 
           <button
@@ -1745,13 +1785,15 @@ export default function BankaParserPage() {
 
         {completedSteps.preview && !accountingAnalyzed ? (
           <p className="text-sm text-amber-200/90">
-            Parser önizlemesi hazır. Hesap/kural/CORE için{" "}
+            Parser önizlemesi hazır. Yerel hesap/kural için{" "}
             <span className="font-semibold">Muhasebe Analizini Başlat</span>.
           </p>
         ) : null}
         {accountingAnalyzed && !lucaReady ? (
           <p className="text-sm text-amber-200/90">
-            Muhasebe analizi tamam. Excel için{" "}
+            Yerel muhasebe analizi tamam. İsterseniz{" "}
+            <span className="font-semibold">CORE ile Geliştir</span>
+            ’i kullanın. Excel için{" "}
             <span className="font-semibold">Luca Satırlarını Hazırla</span>.
           </p>
         ) : null}
@@ -1769,21 +1811,22 @@ export default function BankaParserPage() {
                 </h2>
                 <p className="mt-1 text-sm text-gray-400">
                   {!accountingAnalyzed
-                    ? "Yalnızca parse sonucu. Hesap/kural/CORE için Muhasebe Analizini Başlatın."
+                    ? "Yalnızca parse sonucu. Hesap/kural için Muhasebe Analizini Başlatın (yerel)."
                     : isAnnveroCoreEnabled()
-                      ? `İlk ${coreRowsProcessed} satırda CORE denendi; dönmeyenler “${CORE_REVIEW_LEFT_LABEL}”.`
-                      : "Muhasebe analizi uygulandı."}
-                  {hasMoreCoreRows ? " Kalan satırlar legacy mapping ile işlendi." : ""}
+                      ? coreRowsProcessed > 0
+                        ? `CORE ${coreRowsProcessed} harekette uygulandı; dönmeyenler “${CORE_REVIEW_LEFT_LABEL}”.`
+                        : "Yerel muhasebe analizi tamam. İsterseniz CORE ile Geliştir’i kullanın."
+                      : "Yerel muhasebe analizi uygulandı."}
                 </p>
               </div>
-              {hasMoreCoreRows ? (
+              {canRunOptionalCore ? (
                 <button
                   type="button"
                   onClick={handleApplyCoreToAllRows}
                   disabled={isJobBusy}
                   className="rounded-lg border border-indigo-600 bg-indigo-950 px-4 py-2 text-sm font-semibold text-indigo-100 hover:bg-indigo-900 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {isApplyingCoreAll ? "CORE uygulanıyor…" : "Tüm satırlara CORE uygula"}
+                  {isApplyingCoreAll ? "CORE uygulanıyor…" : "CORE ile Geliştir"}
                 </button>
               ) : null}
             </div>
@@ -1833,8 +1876,11 @@ export default function BankaParserPage() {
             ) : null}
             {accountingAnalyzed && coreIntegrationSummary ? (
               <p className="mb-3 text-xs text-slate-400">
-                CORE denemesi: ilk {coreRowsProcessed || 0} hareket
-                {coreIntegrationSummary.coreRecognized === 0
+                {coreRowsProcessed > 0
+                  ? `CORE denemesi: ${coreRowsProcessed} hareket`
+                  : "Analiz yerel (CORE isteğe bağlı)"}
+                {coreRowsProcessed > 0 &&
+                coreIntegrationSummary.coreRecognized === 0
                   ? " · Bu turda CORE eşleşmesi yok (0 tanıdı) — legacy/kural/hafıza sonuçları geçerlidir."
                   : ""}
                 {lastTimings?.analysisCallCounts?.uniqueDescriptionCount ||

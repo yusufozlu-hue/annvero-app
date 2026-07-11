@@ -160,7 +160,7 @@ export function exportKurDegerlemeReportWorkbook({
   return { ok: true };
 }
 
-export function exportKurDegerlemeLucaExcel(valuationRows = [], context = {}) {
+export async function exportKurDegerlemeLucaExcel(valuationRows = [], context = {}) {
   const lucaRows = buildKurDegerlemeLucaRows(valuationRows, context);
   const validation = validateKurDegerlemeLucaExport(valuationRows, lucaRows);
 
@@ -174,7 +174,7 @@ export function exportKurDegerlemeLucaExcel(valuationRows = [], context = {}) {
   }
 
   const filePrefix = context.filePrefix || "kur-degerleme-luca";
-  const result = exportStandardLucaExcel(lucaRows, {
+  const result = await exportStandardLucaExcel(lucaRows, {
     filePrefix,
     logLabel: "kur-degerleme-luca-export",
     ignoreWarnings: true,
@@ -188,7 +188,7 @@ export function exportKurDegerlemeLucaExcel(valuationRows = [], context = {}) {
   };
 }
 
-export function exportKurDegerlemeFullPack({
+export async function exportKurDegerlemeFullPack({
   valuationRows = [],
   summary = {},
   meta = {},
@@ -205,7 +205,7 @@ export function exportKurDegerlemeFullPack({
     fileName: context.reportFileName || "kur-degerleme-rapor",
   });
 
-  const lucaResult = exportKurDegerlemeLucaExcel(valuationRows, {
+  const lucaResult = await exportKurDegerlemeLucaExcel(valuationRows, {
     ...context,
     filePrefix: context.lucaFilePrefix || "kur-degerleme-luca",
   });

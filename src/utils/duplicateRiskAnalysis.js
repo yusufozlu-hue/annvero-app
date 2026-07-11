@@ -1,4 +1,3 @@
-import { parseDateTR } from "@/src/utils/formatDateTR";
 import { parseMoneyTR } from "@/src/utils/parseMoneyTR";
 import { normalizeParserText } from "@/src/utils/textNormalize";
 
@@ -8,8 +7,6 @@ export const MUKERRER_RISK_SEVIYE = {
   YUKSEK: "Yüksek",
   KRITIK: "Kritik",
 };
-
-const NEAR_DATE_DAYS = 3;
 
 function getRowDescription(row = {}) {
   return String(row.detayAciklama || row.fisAciklama || row.aciklama || "").trim();
@@ -31,28 +28,6 @@ function getEvrakNo(row = {}) {
 
 function normalizeEvrakNo(value) {
   return normalizeParserText(value).replace(/\s+/g, "");
-}
-
-function parseRowDate(row = {}) {
-  const text = String(row.fisTarihi || row.evrakTarihi || "").trim();
-  if (!text) return null;
-  const parsed = parseDateTR(text);
-  if (!parsed) return null;
-  parsed.setHours(0, 0, 0, 0);
-  return parsed;
-}
-
-function daysBetween(leftDate, rightDate) {
-  if (!leftDate || !rightDate) return null;
-  const diffMs = Math.abs(leftDate.getTime() - rightDate.getTime());
-  return Math.round(diffMs / (24 * 60 * 60 * 1000));
-}
-
-function formatDayDistance(days) {
-  if (days === null || days === undefined) return "";
-  if (days === 0) return "aynı gün";
-  if (days === 1) return "1 gün önce";
-  return `${days} gün önce`;
 }
 
 function tokenize(text) {
@@ -160,76 +135,16 @@ export function buildCriticalDuplicateKey(row = {}) {
   return [movementId, fisNo, date, amount, role, hesap, bankAccount, belge].join("|");
 }
 
-function compareDuplicateRows(currentRow, previousRow, currentIndex, previousIndex) {
-  if (isExpectedDoubleEntryPair(currentRow, previousRow)) {
-    return [
-      createSignal(
-        0,
-        `Beklenen borç/alacak çifti (Fiş ${currentRow.fisNo}) — mükerrer değil.`,
-        false,
-        "expected-double-entry"
-      ),
-    ];
-  }
-
-  if (isSameMovementDifferentLeg(currentRow, previousRow)) {
-    return [
-      createSignal(
-        0,
-        `Aynı hareketin farklı muhasebe kalemi (${previousIndex + 1}. satır) — mükerrer değil.`,
-        false,
-        "same-movement-split"
-      ),
-    ];
-  }
-
+/** Aynı gün + aynı tutar kovası içindeki şüpheli (kritik olmayan) sinyaller. */
+function compareSuspiciousSameDayPair(currentRow, previousRow, previousIndex) {
   const signals = [];
   const currentDescription = getRowDescription(currentRow);
   const previousDescription = getRowDescription(previousRow);
-  const currentAmount = getRowAmount(currentRow);
-  const previousAmount = getRowAmount(previousRow);
-  const sameAmount = amountsEqual(currentAmount, previousAmount);
   const similarity = descriptionSimilarity(currentDescription, previousDescription);
-  const currentDate = parseRowDate(currentRow);
-  const previousDate = parseRowDate(previousRow);
-  const dayDistance =
-    currentDate && previousDate ? daysBetween(currentDate, previousDate) : null;
-  const nearDate = dayDistance !== null && dayDistance <= NEAR_DATE_DAYS;
-  const sameDate = dayDistance === 0;
-  const dayLabel = formatDayDistance(dayDistance);
   const previousRowLabel = `${previousIndex + 1}. satır`;
 
-  const currentKey = buildCriticalDuplicateKey(currentRow);
-  const previousKey = buildCriticalDuplicateKey(previousRow);
-  const currentMovementId = getSourceMovementId(currentRow);
-  const previousMovementId = getSourceMovementId(previousRow);
-
-  if (
-    currentKey &&
-    currentKey === previousKey &&
-    currentMovementId &&
-    previousMovementId &&
-    getLineRole(currentRow) !== "empty"
-  ) {
-    signals.push(
-      createSignal(
-        100,
-        `Kritik mükerrer: aynı hareket kimliği, tarih, tutar, yön, hesap ve satır rolü (${previousRowLabel}).`,
-        true,
-        "critical-same-leg"
-      )
-    );
-    return signals;
-  }
-
-  // Eski exact-triple artık KRİTİK değil — şüpheli benzer kayıt
-  if (
-    sameDate &&
-    sameAmount &&
-    similarity >= 0.99 &&
-    currentDescription &&
-    previousDescription
-  ) {
+  // Exact-triple asla kritik değil — yalnızca şüpheli
+  if (similarity >= 0.99 && currentDescription && previousDescription) {
     signals.push(
       createSignal(
         88,
@@ -240,49 +155,13 @@ function compareDuplicateRows(currentRow, previousRow, currentIndex, previousInd
     );
   }
 
-  if (nearDate && sameAmount && similarity >= 0.99 && !sameDate) {
-    signals.push(
-      createSignal(
-        82,
-        `Şüpheli: aynı tutar/açıklama, ${dayLabel} (${previousRowLabel}).`,
-        false,
-        "near-date-exact-desc"
-      )
-    );
-  }
-
-  const currentEvrak = getEvrakNo(currentRow);
-  const previousEvrak = getEvrakNo(previousRow);
-
-  if (
-    currentEvrak &&
-    previousEvrak &&
-    normalizeEvrakNo(currentEvrak) === normalizeEvrakNo(previousEvrak)
-  ) {
-    const sameLeg =
-      getLineRole(currentRow) === getLineRole(previousRow) &&
-      normalizeParserText(currentRow.hesapKodu || "") ===
-        normalizeParserText(previousRow.hesapKodu || "");
-    signals.push(
-      createSignal(
-        sameAmount && sameLeg ? 96 : sameAmount ? 78 : 60,
-        sameAmount && sameLeg
-          ? `Kritik: aynı belge no "${currentEvrak}", tutar, hesap ve yön (${previousRowLabel}).`
-          : `Aynı belge no "${currentEvrak}" daha önce kullanılmış olabilir (${previousRowLabel}).`,
-        Boolean(sameAmount && sameLeg),
-        "duplicate-evrak"
-      )
-    );
-  }
-
   const currentCari = getCariName(currentRow);
   const previousCari = getCariName(previousRow);
 
   if (
     currentCari &&
     previousCari &&
-    normalizeParserText(currentCari) === normalizeParserText(previousCari) &&
-    sameAmount
+    normalizeParserText(currentCari) === normalizeParserText(previousCari)
   ) {
     signals.push(
       createSignal(
@@ -297,7 +176,7 @@ function compareDuplicateRows(currentRow, previousRow, currentIndex, previousInd
   const currentKarsi = String(currentRow.karsiHesapKodu || "").trim();
   const previousKarsi = String(previousRow.karsiHesapKodu || "").trim();
 
-  if (sameAmount && currentKarsi && previousKarsi && currentKarsi === previousKarsi) {
+  if (currentKarsi && previousKarsi && currentKarsi === previousKarsi) {
     signals.push(
       createSignal(
         62,
@@ -308,31 +187,29 @@ function compareDuplicateRows(currentRow, previousRow, currentIndex, previousInd
     );
   }
 
-  if (sameAmount && similarity >= 0.85) {
+  if (similarity >= 0.85) {
     signals.push(
       createSignal(
-        sameDate ? 75 : nearDate ? 68 : 58,
-        sameDate
-          ? `Aynı tutar ve benzer açıklama ile ${previousRowLabel} kayıt var.`
-          : `Aynı tutar ve benzer açıklama ile ${dayLabel || "yakın tarihte"} kayıt var (${previousRowLabel}).`,
+        75,
+        `Aynı tutar ve benzer açıklama ile ${previousRowLabel} kayıt var.`,
         false,
         "same-amount-similar-desc"
       )
     );
-  } else if (sameAmount && similarity >= 0.72) {
+  } else if (similarity >= 0.72) {
     signals.push(
       createSignal(
-        nearDate ? 52 : 40,
+        52,
         `Benzer açıklama ve aynı tutar nedeniyle şüpheli kayıt (${previousRowLabel}).`,
         false,
         "same-amount-moderate-desc"
       )
     );
-  } else if (nearDate && sameAmount && similarity >= 0.55) {
+  } else if (similarity >= 0.55) {
     signals.push(
       createSignal(
         35 + Math.round(similarity * 15),
-        `Yakın tarihte (${dayLabel}) aynı tutar ve benzer açıklama (${previousRowLabel}).`,
+        `Yakın tarihte (aynı gün) aynı tutar ve benzer açıklama (${previousRowLabel}).`,
         false,
         "near-date-similar"
       )
@@ -340,6 +217,28 @@ function compareDuplicateRows(currentRow, previousRow, currentIndex, previousInd
   }
 
   return signals;
+}
+
+function shouldSkipDuplicatePair(left, right) {
+  return isExpectedDoubleEntryPair(left, right) || isSameMovementDifferentLeg(left, right);
+}
+
+function finalizeRowResult(rowResult) {
+  const actionable = rowResult.signals.filter(
+    (signal) =>
+      signal.type !== "expected-double-entry" && signal.type !== "same-movement-split"
+  );
+  const bestSignal = actionable.reduce(
+    (best, signal) => (!best || signal.score > best.score ? signal : best),
+    null
+  );
+
+  if (bestSignal) {
+    rowResult.riskScore = bestSignal.score;
+    rowResult.isCritical = actionable.some((signal) => signal.critical);
+    rowResult.riskLevel = resolveRiskLevel(rowResult.riskScore, rowResult.isCritical);
+    rowResult.messages = actionable.map((signal) => signal.message);
+  }
 }
 
 function resolveRiskLevel(score, isCritical) {
@@ -381,9 +280,8 @@ export function analyzeDuplicateRiskForRows(rows = []) {
     signals: [],
   }));
 
-  let expectedPairSignalCount = 0;
+  // 1) Kritik geçiş: criticalKey -> ilk indeks (O(n))
   const criticalKeyFirstIndex = new Map();
-
   for (let index = 0; index < sourceRows.length; index += 1) {
     const key = rowResults[index].criticalKey;
     const movementId = rowResults[index].sourceMovementId;
@@ -401,44 +299,108 @@ export function analyzeDuplicateRiskForRows(rows = []) {
         criticalKeyFirstIndex.set(key, index);
       }
     }
+  }
 
-    for (let previousIndex = 0; previousIndex < index; previousIndex += 1) {
-      const signals = compareDuplicateRows(
-        sourceRows[index],
-        sourceRows[previousIndex],
-        index,
-        previousIndex
-      );
+  // 2) Beklenen çift taraflı fiş çiftleri (O(n) gruplama)
+  const fisNoGroups = new Map();
+  for (let index = 0; index < sourceRows.length; index += 1) {
+    const fisNo = String(sourceRows[index].fisNo ?? "").trim();
+    if (!fisNo) continue;
+    if (!fisNoGroups.has(fisNo)) fisNoGroups.set(fisNo, { borc: 0, alacak: 0 });
+    const role = getLineRole(sourceRows[index]);
+    if (role === "borc") fisNoGroups.get(fisNo).borc += 1;
+    else if (role === "alacak") fisNoGroups.get(fisNo).alacak += 1;
+  }
 
-      if (!signals.length) continue;
+  let expectedDoubleEntryPairs = 0;
+  for (const group of fisNoGroups.values()) {
+    if (group.borc > 0 && group.alacak > 0) {
+      expectedDoubleEntryPairs += group.borc * group.alacak;
+    }
+  }
 
-      for (const signal of signals) {
-        if (signal.type === "expected-double-entry" || signal.type === "same-movement-split") {
-          expectedPairSignalCount += 1;
+  // 3) Şüpheli geçiş: aynı gün + aynı tutar kovaları (O(n + bucket²))
+  const amountDateBuckets = new Map();
+  for (let index = 0; index < sourceRows.length; index += 1) {
+    const amount = rowResults[index].amount;
+    if (amount <= 0) continue;
+    const normalizedDate = normalizeParserText(
+      String(sourceRows[index].fisTarihi || sourceRows[index].evrakTarihi || "")
+    );
+    const bucketKey = `${amount.toFixed(2)}|${normalizedDate}`;
+    if (!amountDateBuckets.has(bucketKey)) amountDateBuckets.set(bucketKey, []);
+    amountDateBuckets.get(bucketKey).push(index);
+  }
+
+  for (const indices of amountDateBuckets.values()) {
+    if (indices.length < 2) continue;
+    for (let i = 1; i < indices.length; i += 1) {
+      const index = indices[i];
+      for (let j = 0; j < i; j += 1) {
+        const previousIndex = indices[j];
+        if (shouldSkipDuplicatePair(sourceRows[index], sourceRows[previousIndex])) {
           continue;
         }
+        const signals = compareSuspiciousSameDayPair(
+          sourceRows[index],
+          sourceRows[previousIndex],
+          previousIndex
+        );
+        if (signals.length) {
+          rowResults[index].signals = mergeRowSignals(rowResults[index].signals, signals);
+        }
+      }
+    }
+  }
+
+  // 4) Evrak kovası: aynı belge no
+  const evrakBuckets = new Map();
+  for (let index = 0; index < sourceRows.length; index += 1) {
+    const evrak = getEvrakNo(sourceRows[index]);
+    if (!evrak) continue;
+    const key = normalizeEvrakNo(evrak);
+    if (!key) continue;
+    if (!evrakBuckets.has(key)) evrakBuckets.set(key, []);
+    evrakBuckets.get(key).push(index);
+  }
+
+  for (const indices of evrakBuckets.values()) {
+    if (indices.length < 2) continue;
+    for (let i = 1; i < indices.length; i += 1) {
+      const index = indices[i];
+      const currentRow = sourceRows[index];
+      const currentEvrak = getEvrakNo(currentRow);
+      const currentAmount = getRowAmount(currentRow);
+      const currentRole = getLineRole(currentRow);
+      const currentHesap = normalizeParserText(currentRow.hesapKodu || "");
+
+      for (let j = 0; j < i; j += 1) {
+        const previousIndex = indices[j];
+        const previousRow = sourceRows[previousIndex];
+        if (shouldSkipDuplicatePair(currentRow, previousRow)) continue;
+
+        const sameAmount = amountsEqual(currentAmount, getRowAmount(previousRow));
+        const sameLeg =
+          currentRole === getLineRole(previousRow) &&
+          currentHesap === normalizeParserText(previousRow.hesapKodu || "");
+        const previousRowLabel = `${previousIndex + 1}. satır`;
+        const isCritical = Boolean(sameAmount && sameLeg);
+
+        const signal = createSignal(
+          isCritical ? 96 : sameAmount ? 78 : 60,
+          isCritical
+            ? `Kritik: aynı belge no "${currentEvrak}", tutar, hesap ve yön (${previousRowLabel}).`
+            : `Aynı belge no "${currentEvrak}" daha önce kullanılmış olabilir (${previousRowLabel}).`,
+          isCritical,
+          "duplicate-evrak"
+        );
         rowResults[index].signals = mergeRowSignals(rowResults[index].signals, [signal]);
       }
     }
+  }
 
-    const actionable = rowResults[index].signals.filter(
-      (signal) =>
-        signal.type !== "expected-double-entry" && signal.type !== "same-movement-split"
-    );
-    const bestSignal = actionable.reduce(
-      (best, signal) => (!best || signal.score > best.score ? signal : best),
-      null
-    );
-
-    if (bestSignal) {
-      rowResults[index].riskScore = bestSignal.score;
-      rowResults[index].isCritical = actionable.some((signal) => signal.critical);
-      rowResults[index].riskLevel = resolveRiskLevel(
-        rowResults[index].riskScore,
-        rowResults[index].isCritical
-      );
-      rowResults[index].messages = actionable.map((signal) => signal.message);
-    }
+  for (const rowResult of rowResults) {
+    finalizeRowResult(rowResult);
   }
 
   const criticalRows = rowResults.filter((row) => row.isCritical);
@@ -451,7 +413,6 @@ export function analyzeDuplicateRiskForRows(rows = []) {
   ).length;
   const lowCount = rowResults.filter((row) => row.riskScore < 31).length;
   const suspiciousCount = highCount + mediumCount;
-  const expectedDoubleEntryPairs = Math.floor(expectedPairSignalCount);
 
   return {
     rows: rowResults,

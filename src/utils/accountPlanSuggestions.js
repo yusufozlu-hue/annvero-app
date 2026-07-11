@@ -13,14 +13,42 @@ function getAccountName(account) {
   return account?.accountName || account?.hesapAdi || "";
 }
 
-export function accountExistsInCompanyPlan(companyPlans, accountCode) {
-  if (!accountCode || !companyPlans?.length) return false;
+/** Hesap planı kod Set'i — O(1) exact varlık kontrolü */
+export function buildAccountPlanCodeSet(companyPlans = []) {
+  const set = new Set();
+  for (const account of companyPlans || []) {
+    if (account?.isActive === false) continue;
+    const code = compactAccount(getAccountCode(account));
+    if (code) set.add(code);
+  }
+  return set;
+}
+
+/**
+ * Exact match: planCodeSet varsa O(1), yoksa dizi taraması.
+ * Fuzzy/öneri bu fonksiyonda çalışmaz.
+ */
+export function accountExistsInCompanyPlan(
+  companyPlans,
+  accountCode,
+  planCodeSet = null
+) {
+  if (!accountCode) return false;
 
   const wanted = compactAccount(accountCode);
+  if (!wanted) return false;
+
+  if (planCodeSet instanceof Set) {
+    return planCodeSet.has(wanted);
+  }
+
+  if (!companyPlans?.length) return false;
 
   return companyPlans.some((account) => {
-    if (account?.isActive === false) return false;
-    return compactAccount(getAccountCode(account)) === wanted;
+    if (account?.isActive !== false) {
+      return compactAccount(getAccountCode(account)) === wanted;
+    }
+    return false;
   });
 }
 
@@ -95,13 +123,30 @@ export function findSimilarAccountsInPlan(
   companyPlans,
   missingCode,
   contextText = "",
-  limit = 3
+  limit = 3,
+  planCodeSet = null
 ) {
   if (!missingCode || !companyPlans?.length) return [];
 
-  const contextWords = getContextWords(contextText);
+  // Exact kod planda varsa fuzzy öneri üretme
+  if (accountExistsInCompanyPlan(companyPlans, missingCode, planCodeSet)) {
+    return [];
+  }
 
-  const ranked = companyPlans
+  const contextWords = getContextWords(contextText);
+  const mainMissing = getMainAccount(missingCode);
+
+  // Aynı ana hesap grubuna öncelik — full plan fuzzy'sini daralt
+  const scoped = mainMissing
+    ? companyPlans.filter((account) => {
+        if (account?.isActive === false) return false;
+        return getMainAccount(getAccountCode(account)) === mainMissing;
+      })
+    : companyPlans;
+
+  const pool = scoped.length ? scoped : companyPlans;
+
+  const ranked = pool
     .map((account) => ({
       account,
       score: scoreSimilarAccount(account, missingCode, contextWords),
@@ -131,7 +176,8 @@ export function collectAccountSuggestions(
   companyPlans,
   missingCodes,
   contextText = "",
-  limit = 3
+  limit = 3,
+  planCodeSet = null
 ) {
   const uniqueCodes = [...new Set((missingCodes || []).filter(Boolean))];
   const suggestions = [];
@@ -142,7 +188,8 @@ export function collectAccountSuggestions(
       companyPlans,
       code,
       contextText,
-      limit
+      limit,
+      planCodeSet
     );
 
     for (const account of matches) {
@@ -191,13 +238,15 @@ export function buildAccountPlanNotFoundWarning(
   companyPlans,
   missingCodes,
   contextText = "",
-  limit = 3
+  limit = 3,
+  planCodeSet = null
 ) {
   const suggestions = collectAccountSuggestions(
     companyPlans,
     missingCodes,
     contextText,
-    limit
+    limit,
+    planCodeSet
   );
 
   if (suggestions.length === 0) {

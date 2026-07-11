@@ -328,7 +328,7 @@ export default function KurDegerlemePage() {
     showToast("Değerleme raporu indirildi.", "success");
   };
 
-  const handleExportLuca = () => {
+  const handleExportLuca = async () => {
     if (!valuationRows.length) {
       alert("Önce değerleme hesaplayın.");
       return;
@@ -346,7 +346,7 @@ export default function KurDegerlemePage() {
       return;
     }
 
-    const result = exportKurDegerlemeLucaExcel(valuationRows, {
+    const result = await exportKurDegerlemeLucaExcel(valuationRows, {
       firmaId: selectedCompanyId,
       paraBirimi,
       belgeTuru,
@@ -364,7 +364,7 @@ export default function KurDegerlemePage() {
     );
   };
 
-  const handleExportAll = () => {
+  const handleExportAll = async () => {
     if (!valuationRows.length) {
       alert("Önce değerleme hesaplayın.");
       return;
@@ -382,7 +382,7 @@ export default function KurDegerlemePage() {
       return;
     }
 
-    const result = exportKurDegerlemeFullPack({
+    const result = await exportKurDegerlemeFullPack({
       valuationRows,
       summary: summary || recalculateKurDegerlemeSummary(valuationRows),
       meta: exportMeta,

@@ -8,12 +8,36 @@ import {
   standardLucaRowsToExcelRows,
 } from "@/src/utils/standardLucaRow";
 
-export function exportStandardLucaExcel(rows = [], options = {}) {
+function yieldToMain() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function isAbortError(error) {
+  return (
+    error?.name === "AbortError" ||
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError")
+  );
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error =
+    typeof DOMException !== "undefined"
+      ? new DOMException("Export cancelled", "AbortError")
+      : Object.assign(new Error("Export cancelled"), { name: "AbortError" });
+  throw error;
+}
+
+export async function exportStandardLucaExcel(rows = [], options = {}) {
   const {
     filePrefix = "luca",
     logLabel = "luca-export",
     onValidationFail,
     ignoreWarnings = false,
+    signal,
+    onProgress,
   } = options;
 
   if (!rows.length) {
@@ -50,43 +74,76 @@ export function exportStandardLucaExcel(rows = [], options = {}) {
     };
   }
 
-  const sortedRows = sortStandardLucaRows(rows);
-  const uniqueFisNo = [...new Set(sortedRows.map((row) => row.fisNo))];
-  const chunkSize = 50;
-  const totalFiles = Math.ceil(uniqueFisNo.length / chunkSize);
+  try {
+    throwIfAborted(signal);
+    await yieldToMain();
+    throwIfAborted(signal);
 
-  for (let fileIndex = 0; fileIndex < totalFiles; fileIndex += 1) {
-    const chunkFisNos = new Set(
-      uniqueFisNo.slice(fileIndex * chunkSize, fileIndex * chunkSize + chunkSize)
-    );
-    const chunkRows = sortedRows.filter((row) => chunkFisNos.has(row.fisNo));
-    const excelRows = standardLucaRowsToExcelRows(chunkRows);
+    const sortedRows = sortStandardLucaRows(rows);
+    const uniqueFisNo = [...new Set(sortedRows.map((row) => row.fisNo))];
+    const rowsByFisNo = new Map();
+    for (const row of sortedRows) {
+      const fisNo = row.fisNo;
+      if (!rowsByFisNo.has(fisNo)) rowsByFisNo.set(fisNo, []);
+      rowsByFisNo.get(fisNo).push(row);
+    }
 
-    const worksheet = XLSX.utils.json_to_sheet(excelRows, {
-      header: LUCA_EXPORT_HEADERS,
-    });
-    enforceLucaExportDateStrings(worksheet, [
-      "Fiş Tarihi",
-      "Evrak Tarihi",
-      "Hesap Kodu",
-    ]);
+    const chunkSize = 50;
+    const totalFiles = Math.ceil(uniqueFisNo.length / chunkSize) || 0;
 
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Luca Fisleri");
+    for (let fileIndex = 0; fileIndex < totalFiles; fileIndex += 1) {
+      throwIfAborted(signal);
 
-    const ilkFis = fileIndex * chunkSize + 1;
-    const sonFis = Math.min((fileIndex + 1) * chunkSize, uniqueFisNo.length);
-    const fileSuffix = totalFiles === 1 ? filePrefix : `${filePrefix}_${ilkFis}-${sonFis}`;
+      const chunkFisNos = uniqueFisNo.slice(
+        fileIndex * chunkSize,
+        fileIndex * chunkSize + chunkSize
+      );
+      const chunkRows = [];
+      for (const fisNo of chunkFisNos) {
+        const group = rowsByFisNo.get(fisNo);
+        if (group) chunkRows.push(...group);
+      }
 
-    XLSX.writeFile(workbook, `${fileSuffix}.xlsx`);
+      const ilkFis = fileIndex * chunkSize + 1;
+      const sonFis = Math.min((fileIndex + 1) * chunkSize, uniqueFisNo.length);
+      const fileSuffix = totalFiles === 1 ? filePrefix : `${filePrefix}_${ilkFis}-${sonFis}`;
+
+      onProgress?.({
+        fileIndex,
+        totalFiles,
+        detail: `Dosya ${fileIndex + 1}/${totalFiles} hazırlanıyor (${ilkFis}-${sonFis})`,
+      });
+
+      const excelRows = standardLucaRowsToExcelRows(chunkRows);
+      const worksheet = XLSX.utils.json_to_sheet(excelRows, {
+        header: LUCA_EXPORT_HEADERS,
+      });
+      enforceLucaExportDateStrings(worksheet, [
+        "Fiş Tarihi",
+        "Evrak Tarihi",
+        "Hesap Kodu",
+      ]);
+
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Luca Fisleri");
+      XLSX.writeFile(workbook, `${fileSuffix}.xlsx`);
+
+      await yieldToMain();
+    }
+
+    throwIfAborted(signal);
+    logStandardLucaReport(logLabel, sortedRows);
+
+    return {
+      ok: true,
+      fileCount: totalFiles,
+      rowCount: sortedRows.length,
+      exportedWithWarnings: validation.hasWarnings && ignoreWarnings,
+    };
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      return { ok: false, reason: "cancelled" };
+    }
+    throw error;
   }
-
-  logStandardLucaReport(logLabel, sortedRows);
-
-  return {
-    ok: true,
-    fileCount: totalFiles,
-    rowCount: sortedRows.length,
-    exportedWithWarnings: validation.hasWarnings && ignoreWarnings,
-  };
 }

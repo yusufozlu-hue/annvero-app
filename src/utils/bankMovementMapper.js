@@ -102,9 +102,10 @@ function findLearningMemoryMatch(learningMemory, description, context = {}) {
   const counterpartyName = normalizeParserText(context.counterpartyName || "");
   const sourceModule = normalizeParserText(context.sourceModule || "");
 
-  const records = (learningMemory || []).filter(
-    (record) => record?.is_active !== false
-  );
+  // Önceden filtrelenmiş aktif liste varsa tekrar filter yok
+  const records = Array.isArray(context.activeLearningMemory)
+    ? context.activeLearningMemory
+    : (learningMemory || []).filter((record) => record?.is_active !== false);
 
   let best = null;
   let bestScore = 0;
@@ -194,8 +195,8 @@ function isCreditCardPaymentText(description) {
   );
 }
 
-function accountExistsInPlan(companyPlans, accountCode) {
-  return accountExistsInCompanyPlan(companyPlans, accountCode);
+function accountExistsInPlan(companyPlans, accountCode, planCodeSet = null) {
+  return accountExistsInCompanyPlan(companyPlans, accountCode, planCodeSet);
 }
 
 export { findCariAccountInPlan } from "@/src/utils/cariAccountMatcher";
@@ -224,12 +225,13 @@ function applyCariResolution(
   lucaDescription,
   ruleAciklama,
   counterAccountCode,
-  warnings
+  warnings,
+  planCodeSet = null
 ) {
   const needsResolve =
     !counterAccountCode ||
     (isGenericCariAccount(counterAccountCode) &&
-      !accountExistsInPlan(companyPlans, counterAccountCode));
+      !accountExistsInPlan(companyPlans, counterAccountCode, planCodeSet));
 
   if (!needsResolve) {
     return { counterAccountCode, cariSuggestions: [] };
@@ -273,8 +275,10 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     selectedBank,
     legacyRules = [],
     learningMemory = [],
+    activeLearningMemory,
     accountingRules = [],
     selectedCompanyId = "",
+    planCodeSet = null,
   } = context;
 
   const description = String(rawRow.aciklama || rawRow.description || "").trim();
@@ -347,6 +351,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         selectedCompany?.documentSeriesRules || []
       ),
       sourceModule: "banka",
+      activeLearningMemory,
     });
 
     if (memoryMatch) {
@@ -468,7 +473,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       lucaDescription,
       ruleAciklama,
       counterAccountCode,
-      warnings
+      warnings,
+      planCodeSet
     );
 
     counterAccountCode = cariResolution.counterAccountCode;
@@ -500,14 +506,14 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   const missingPlanAccounts = [];
   const accountPlanMissing = {};
 
-  if (accountCode && !accountExistsInPlan(companyPlans, accountCode)) {
+  if (accountCode && !accountExistsInPlan(companyPlans, accountCode, planCodeSet)) {
     missingPlanAccounts.push(accountCode);
     accountPlanMissing.accountCode = accountCode;
   }
 
   if (
     counterAccountCode &&
-    !accountExistsInPlan(companyPlans, counterAccountCode) &&
+    !accountExistsInPlan(companyPlans, counterAccountCode, planCodeSet) &&
     !missingPlanAccounts.includes(counterAccountCode)
   ) {
     missingPlanAccounts.push(counterAccountCode);
@@ -521,14 +527,18 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     accountSuggestions = collectAccountSuggestions(
       companyPlans,
       missingPlanAccounts,
-      contextText
+      contextText,
+      3,
+      planCodeSet
     );
     appendWarning(
       warnings,
       buildAccountPlanNotFoundWarning(
         companyPlans,
         missingPlanAccounts,
-        contextText
+        contextText,
+        3,
+        planCodeSet
       )
     );
   }

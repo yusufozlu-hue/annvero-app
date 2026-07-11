@@ -182,7 +182,7 @@ export function exportAdatReportWorkbook({
   return { ok: true };
 }
 
-export function exportAdatLucaExcel(previewRows = [], context = {}) {
+export async function exportAdatLucaExcel(previewRows = [], context = {}) {
   const lucaRows = buildAdatLucaRows(previewRows, context);
 
   if (!lucaRows.length) {
@@ -199,7 +199,7 @@ export function exportAdatLucaExcel(previewRows = [], context = {}) {
     };
   }
 
-  const result = exportStandardLucaExcel(lucaRows, {
+  const result = await exportStandardLucaExcel(lucaRows, {
     filePrefix: context.filePrefix || "adat-luca",
     logLabel: "adat-luca-export",
     ignoreWarnings: true,
@@ -208,7 +208,7 @@ export function exportAdatLucaExcel(previewRows = [], context = {}) {
   return { ...result, lucaRows };
 }
 
-export function exportAdatFullPack({
+export async function exportAdatFullPack({
   summary = {},
   meta = {},
   previewRows = [],
@@ -225,7 +225,7 @@ export function exportAdatFullPack({
     fileName: context.reportFileName || "adat-hesaplama-rapor",
   });
 
-  const lucaResult = exportAdatLucaExcel(previewRows, {
+  const lucaResult = await exportAdatLucaExcel(previewRows, {
     ...context,
     filePrefix: context.lucaFilePrefix || "adat-luca",
   });
