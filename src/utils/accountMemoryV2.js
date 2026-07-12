@@ -8,10 +8,14 @@ import { finalizeStandardLucaRow } from "@/src/utils/standardLucaRow";
 import {
   BANK_TRANSACTION_TYPE,
   CARI_REQUIRED_TYPES,
+  CEK_TYPES,
   FINANCE_TYPES,
+  isCariForbiddenForType,
+  KASA_TYPES,
   PERSONEL_REQUIRED_TYPES,
   POS_TYPES,
   VERGI_SGK_TYPES,
+  VIRMAN_TYPES,
 } from "@/src/utils/bankTransactionType";
 
 function isLikelyCariGlAccount(code = "") {
@@ -112,6 +116,9 @@ export function inferMemoryDecisionType({
     return MEMORY_DECISION_TYPE.PERSONEL;
   }
   if (POS_TYPES.has(tt)) return MEMORY_DECISION_TYPE.POS_ACCOUNT;
+  if (CEK_TYPES.has(tt) || KASA_TYPES.has(tt) || VIRMAN_TYPES.has(tt)) {
+    return MEMORY_DECISION_TYPE.DIRECT_ACCOUNT;
+  }
   if (VERGI_SGK_TYPES.has(tt)) return MEMORY_DECISION_TYPE.TAX_SGK_ACCOUNT;
   if (FINANCE_TYPES.has(tt)) return MEMORY_DECISION_TYPE.FINANCE_ACCOUNT;
   if (
@@ -146,6 +153,7 @@ function migrateV1Record(record = {}) {
     ).trim(),
     direction: String(record.direction || "").trim().toUpperCase(),
     transactionType,
+    accountingScenario: String(record.accountingScenario || "").trim(),
     iban: normalizeMemoryIban(record.iban || ""),
     taxNumber: normalizeMemoryTaxNumber(record.taxNumber || record.vkn || ""),
     counterpartyName: String(
@@ -577,6 +585,27 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
     }
 
     const record = pickBestRecord(list);
+    // CARI hafıza kaydı, cari gerektirmeyen tipte otomatik uygulanmaz
+    if (
+      record?.decisionType === MEMORY_DECISION_TYPE.CARI &&
+      transactionType &&
+      isCariForbiddenForType(transactionType)
+    ) {
+      if (telemetry) {
+        telemetry.cariQuarantine = (telemetry.cariQuarantine || 0) + 1;
+      }
+      return finish({
+        mode: "suggest",
+        tier: MEMORY_MATCH_TIER.CONFLICT,
+        confidence: Math.min(confidence, 69),
+        autoApply: false,
+        record,
+        candidates: list,
+        message:
+          "Hafızadaki cari kararı bu işlem türü için otomatik uygulanmadı (çek/kasa/POS/finans).",
+      });
+    }
+
     const autoApply =
       options.allowAuto !== false &&
       confidence >= MEMORY_AUTO_APPLY_MIN_CONFIDENCE &&
@@ -825,6 +854,9 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
     normalizedDescription,
     direction,
     transactionType,
+    accountingScenario: String(
+      input.accountingScenario || previous?.accountingScenario || ""
+    ).trim(),
     iban:
       normalizeMemoryIban(input.iban || context.iban || "") ||
       normalizeMemoryIban(normalizedDescription),

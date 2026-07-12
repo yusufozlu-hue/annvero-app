@@ -19,6 +19,8 @@ import {
   isVergiSgkType,
   isPosType,
   isFinanceType,
+  isCekType,
+  isKasaType,
   isBareVergiSgkMainAccount,
   missingCategoryForTransactionType,
   BANK_TRANSACTION_TYPE,
@@ -26,6 +28,10 @@ import {
   isLikelyCariGlAccount,
   isDirectExpenseAllowedType,
 } from "@/src/utils/bankTransactionType";
+import {
+  resolveAccountingScenario,
+  resolveCompanyAccountingPolicies,
+} from "@/src/utils/bankAccountingScenarioEngine";
 import { normalizeBankAnalysisKey, normalizeParserText } from "@/src/utils/textNormalize";
 import {
   findAccountMemoryByAnalysisKey,
@@ -466,6 +472,9 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   let transactionType = BANK_TRANSACTION_TYPE.BILINMEYEN;
   let cariRequired = false;
   let personelRequired = false;
+  let accountingScenario = "";
+  let scenarioMissingCategory = "";
+  let scenarioDecision = null;
 
   // İşlem türü — cari/personelden ÖNCE
   const typeResolution = resolveBankTransactionType(description, direction, {
@@ -610,9 +619,65 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         analysisStats.firmMemoryAutoApplied =
           (analysisStats.firmMemoryAutoApplied || 0) + 1;
       }
+      // Hafıza kaydındaki tip/senaryo varsa uygula
+      if (firmDecision.record.transactionType) {
+        transactionType = firmDecision.record.transactionType;
+      }
+      if (firmDecision.record.accountingScenario) {
+        accountingScenario = firmDecision.record.accountingScenario;
+      }
     }
 
-    if (!firmMemoryApplied) {
+    // Firma Muhasebe Politikası → Muhasebe Senaryosu
+    // (hafıza hesabı doldurduysa senaryo yalnızca meta/cari bayrağı için)
+    const companyPolicies = resolveCompanyAccountingPolicies(
+      selectedCompany?.accountingRules || selectedCompany || {}
+    );
+    scenarioDecision = resolveAccountingScenario({
+      transactionType,
+      direction,
+      description,
+      companyPolicies,
+      companyPlans,
+      date,
+      bankAccountCode: accountCode,
+    });
+    accountingScenario =
+      accountingScenario || scenarioDecision.scenarioId || "";
+    cariRequired = Boolean(scenarioDecision.cariRequired);
+    personelRequired = Boolean(scenarioDecision.personelRequired);
+    scenarioMissingCategory = scenarioDecision.missingHesapCategory || "";
+
+    if (
+      !firmMemoryApplied &&
+      scenarioDecision.counterAccountCode &&
+      !counterAccountCode
+    ) {
+      counterAccountCode = scenarioDecision.counterAccountCode;
+      matchedRule = matchedRule || {
+        source: "accountingScenario",
+        islem: scenarioDecision.scenarioId,
+        anahtar: scenarioDecision.counterAccountHint || "",
+      };
+      if (scenarioDecision.documentType) {
+        documentType = scenarioDecision.documentType;
+      }
+      if (scenarioDecision.reviewReason) {
+        appendWarning(warnings, scenarioDecision.reviewReason);
+      }
+      if (analysisStats) {
+        analysisStats.scenarioAccountApplied =
+          (analysisStats.scenarioAccountApplied || 0) + 1;
+      }
+    } else if (
+      !firmMemoryApplied &&
+      scenarioDecision.policyBlocked &&
+      scenarioDecision.reviewReason
+    ) {
+      appendWarning(warnings, scenarioDecision.reviewReason);
+    }
+
+    if (!firmMemoryApplied && !counterAccountCode) {
     const learningStarted = Date.now();
     const memoryMatch = findLearningMemoryMatch(learningMemory, description, {
       bankName: rawRow.banka || rawRow.bankName || selectedBank,
@@ -953,12 +1018,18 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       if (
         !counterAccountCode &&
         !warnings.some((w) =>
-          /Hesap planında|Kural bulunamadı|Hesap eşleşmesi|Vergi|SGK|Personel|POS|Finans/i.test(
+          /Hesap planında|Kural bulunamadı|Hesap eşleşmesi|Vergi|SGK|Personel|POS|Finans|Çek|Kasa/i.test(
             String(w)
           )
         )
       ) {
-        if (isVergiSgkType(transactionType)) {
+        if (scenarioMissingCategory) {
+          appendWarning(warnings, scenarioMissingCategory);
+        } else if (isCekType(transactionType)) {
+          appendWarning(warnings, "Çek hesabı 101/103 eksik");
+        } else if (isKasaType(transactionType)) {
+          appendWarning(warnings, "Kasa hesabı 100 eksik");
+        } else if (isVergiSgkType(transactionType)) {
           appendWarning(warnings, "Vergi/SGK türü çözülemedi");
         } else if (isPosType(transactionType)) {
           appendWarning(warnings, "POS/komisyon ayrımı çözülemedi");
@@ -1083,10 +1154,12 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     cariMatchConfidence,
     cariMatchReason,
     transactionType,
+    accountingScenario,
     cariRequired,
     personelRequired,
     missingHesapCategory: !counterAccountCode
-      ? missingCategoryForTransactionType(transactionType)
+      ? scenarioMissingCategory ||
+        missingCategoryForTransactionType(transactionType)
       : "",
   };
 }

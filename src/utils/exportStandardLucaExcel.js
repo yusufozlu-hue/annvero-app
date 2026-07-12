@@ -1,6 +1,9 @@
 import * as XLSX from "xlsx";
 import { enforceLucaExportDateStrings } from "@/src/utils/formatDateTR";
-import { validatePreviewForExport } from "@/src/utils/previewExportValidation";
+import {
+  recordMemoryUsageAfterSuccessfulValidation,
+  validatePreviewForExport,
+} from "@/src/utils/previewExportValidation";
 import {
   LUCA_EXPORT_HEADERS,
   logStandardLucaReport,
@@ -74,6 +77,12 @@ export async function exportStandardLucaExcel(rows = [], options = {}) {
     };
   }
 
+  // Başarılı validation → Öğrenen Hafıza kullanım istatistikleri
+  const memoryStats = recordMemoryUsageAfterSuccessfulValidation(
+    rows,
+    validation
+  );
+
   try {
     throwIfAborted(signal);
     await yieldToMain();
@@ -139,6 +148,7 @@ export async function exportStandardLucaExcel(rows = [], options = {}) {
       fileCount: totalFiles,
       rowCount: sortedRows.length,
       exportedWithWarnings: validation.hasWarnings && ignoreWarnings,
+      memoryStats,
     };
   } catch (error) {
     if (isAbortError(error) || signal?.aborted) {

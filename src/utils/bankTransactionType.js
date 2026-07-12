@@ -19,13 +19,22 @@ export const BANK_TRANSACTION_TYPE = {
   // Transfer / cari
   GELEN_HAVALE: "GELEN_HAVALE",
   GIDEN_HAVALE: "GIDEN_HAVALE",
+  MUSTERI_TAHSILAT: "MUSTERI_TAHSILAT",
+  TEDARIKCI_ODEME: "TEDARIKCI_ODEME",
+  DIGER_CARI_HAREKET: "DIGER_CARI_HAREKET",
+  /** @deprecated alias → MUSTERI_TAHSILAT / DIGER_CARI_HAREKET */
   CARI_TAHSILAT: "CARI_TAHSILAT",
+  /** @deprecated alias → TEDARIKCI_ODEME / DIGER_CARI_HAREKET */
   CARI_ODEME: "CARI_ODEME",
+  CEK_ODEMESI: "CEK_ODEMESI",
+  CEK_TAHSILATI: "CEK_TAHSILATI",
+  /** @deprecated alias → CEK_ODEMESI / CEK_TAHSILATI */
   CEK: "CEK",
   SENET: "SENET",
 
   // Banka / personel
   BANKA_MASRAFI: "BANKA_MASRAFI",
+  BSMV: "BSMV",
   KREDI_KARTI_ODEMESI: "KREDI_KARTI_ODEMESI",
   MAAS: "MAAS",
   MAAS_AVANSI: "MAAS_AVANSI",
@@ -42,13 +51,20 @@ export const BANK_TRANSACTION_TYPE = {
   ODA_AIDATI: "ODA_AIDATI",
   KONAKLAMA_VERGISI: "KONAKLAMA_VERGISI",
   TURIZM_VERGISI: "TURIZM_VERGISI",
+  TURIZM_PAYI: "TURIZM_PAYI",
   DAMGA_VERGISI: "DAMGA_VERGISI",
   VERGI_CEZASI: "VERGI_CEZASI",
   GECIKME_ZAMMI: "GECIKME_ZAMMI",
   CEZA: "CEZA",
+  TRAFIK_CEZASI: "TRAFIK_CEZASI",
 
-  // Finans
+  // Finans / kasa / virman
+  BANKA_ICI_VIRMAN: "BANKA_ICI_VIRMAN",
+  BANKALAR_ARASI_VIRMAN: "BANKALAR_ARASI_VIRMAN",
+  /** @deprecated alias → BANKA_ICI_VIRMAN / BANKALAR_ARASI_VIRMAN */
   VIRMAN: "VIRMAN",
+  KASA_BANKAYA_YATAN: "KASA_BANKAYA_YATAN",
+  BANKADAN_KASAYA_CEKILEN: "BANKADAN_KASAYA_CEKILEN",
   FON_ALIS: "FON_ALIS",
   FON_SATIS: "FON_SATIS",
   REPO: "REPO",
@@ -63,6 +79,8 @@ export const BANK_TRANSACTION_TYPE = {
   KUR_FARKI: "KUR_FARKI",
   FAIZ_GELIRI: "FAIZ_GELIRI",
   FAIZ_GIDERI: "FAIZ_GIDERI",
+  NAKIT_CEKME: "NAKIT_CEKME",
+  /** @deprecated alias → NAKIT_CEKME */
   NAKIT_CEKIM: "NAKIT_CEKIM",
   NAKIT_YATIRMA: "NAKIT_YATIRMA",
 
@@ -91,14 +109,34 @@ export const VERGI_SGK_TYPES = new Set([
   BANK_TRANSACTION_TYPE.ODA_AIDATI,
   BANK_TRANSACTION_TYPE.KONAKLAMA_VERGISI,
   BANK_TRANSACTION_TYPE.TURIZM_VERGISI,
+  BANK_TRANSACTION_TYPE.TURIZM_PAYI,
   BANK_TRANSACTION_TYPE.DAMGA_VERGISI,
   BANK_TRANSACTION_TYPE.VERGI_CEZASI,
   BANK_TRANSACTION_TYPE.GECIKME_ZAMMI,
   BANK_TRANSACTION_TYPE.CEZA,
+  BANK_TRANSACTION_TYPE.TRAFIK_CEZASI,
+]);
+
+export const CEK_TYPES = new Set([
+  BANK_TRANSACTION_TYPE.CEK_ODEMESI,
+  BANK_TRANSACTION_TYPE.CEK_TAHSILATI,
+  BANK_TRANSACTION_TYPE.CEK,
+]);
+
+export const KASA_TYPES = new Set([
+  BANK_TRANSACTION_TYPE.KASA_BANKAYA_YATAN,
+  BANK_TRANSACTION_TYPE.BANKADAN_KASAYA_CEKILEN,
+]);
+
+export const VIRMAN_TYPES = new Set([
+  BANK_TRANSACTION_TYPE.BANKA_ICI_VIRMAN,
+  BANK_TRANSACTION_TYPE.BANKALAR_ARASI_VIRMAN,
+  BANK_TRANSACTION_TYPE.VIRMAN,
 ]);
 
 export const FINANCE_TYPES = new Set([
-  BANK_TRANSACTION_TYPE.VIRMAN,
+  ...VIRMAN_TYPES,
+  ...KASA_TYPES,
   BANK_TRANSACTION_TYPE.FON_ALIS,
   BANK_TRANSACTION_TYPE.FON_SATIS,
   BANK_TRANSACTION_TYPE.REPO,
@@ -113,6 +151,7 @@ export const FINANCE_TYPES = new Set([
   BANK_TRANSACTION_TYPE.KUR_FARKI,
   BANK_TRANSACTION_TYPE.FAIZ_GELIRI,
   BANK_TRANSACTION_TYPE.FAIZ_GIDERI,
+  BANK_TRANSACTION_TYPE.NAKIT_CEKME,
   BANK_TRANSACTION_TYPE.NAKIT_CEKIM,
   BANK_TRANSACTION_TYPE.NAKIT_YATIRMA,
 ]);
@@ -120,20 +159,27 @@ export const FINANCE_TYPES = new Set([
 /** Bu türlerde cari eşleştirme çalıştırılmaz / “Cari bulunamadı” üretilmez */
 export const CARI_NOT_REQUIRED_TYPES = new Set([
   ...POS_TYPES,
+  ...CEK_TYPES,
+  ...KASA_TYPES,
+  ...VIRMAN_TYPES,
   BANK_TRANSACTION_TYPE.BANKA_MASRAFI,
+  BANK_TRANSACTION_TYPE.BSMV,
   BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI,
   ...VERGI_SGK_TYPES,
   ...FINANCE_TYPES,
 ]);
 
+/** Yalnızca gerçek cari / havale senaryoları */
 export const CARI_REQUIRED_TYPES = new Set([
   BANK_TRANSACTION_TYPE.GELEN_HAVALE,
   BANK_TRANSACTION_TYPE.GIDEN_HAVALE,
+  BANK_TRANSACTION_TYPE.MUSTERI_TAHSILAT,
+  BANK_TRANSACTION_TYPE.TEDARIKCI_ODEME,
+  BANK_TRANSACTION_TYPE.DIGER_CARI_HAREKET,
   BANK_TRANSACTION_TYPE.CARI_TAHSILAT,
   BANK_TRANSACTION_TYPE.CARI_ODEME,
-  BANK_TRANSACTION_TYPE.CEK,
-  BANK_TRANSACTION_TYPE.SENET,
   BANK_TRANSACTION_TYPE.IS_AVANSI,
+  BANK_TRANSACTION_TYPE.SENET,
 ]);
 
 export const PERSONEL_REQUIRED_TYPES = new Set([
@@ -252,7 +298,7 @@ const FAMILY_ID_TO_TYPE = {
   "faiz-gider": BANK_TRANSACTION_TYPE.FAIZ_GIDERI,
   doviz: null,
   "kur-farki": BANK_TRANSACTION_TYPE.KUR_FARKI,
-  "nakit-cekim": BANK_TRANSACTION_TYPE.NAKIT_CEKIM,
+  "nakit-cekim": BANK_TRANSACTION_TYPE.NAKIT_CEKME,
   "nakit-yatirma": BANK_TRANSACTION_TYPE.NAKIT_YATIRMA,
   virman: BANK_TRANSACTION_TYPE.VIRMAN,
   "fon-alis": BANK_TRANSACTION_TYPE.FON_ALIS,
@@ -266,10 +312,39 @@ const FAMILY_ID_TO_TYPE = {
   "ek-hesap-kapama": BANK_TRANSACTION_TYPE.EK_HESAP_KAPAMA,
   cek: BANK_TRANSACTION_TYPE.CEK,
   senet: BANK_TRANSACTION_TYPE.SENET,
-  "cari-tahsilat": BANK_TRANSACTION_TYPE.CARI_TAHSILAT,
-  "cari-odeme": BANK_TRANSACTION_TYPE.CARI_ODEME,
+  "cari-tahsilat": BANK_TRANSACTION_TYPE.MUSTERI_TAHSILAT,
+  "cari-odeme": BANK_TRANSACTION_TYPE.TEDARIKCI_ODEME,
   iade: BANK_TRANSACTION_TYPE.BILINMEYEN,
 };
+
+/** Eski tip → yeni tip (geriye dönük) */
+export function canonicalizeTransactionType(type = "", direction = "") {
+  const t = String(type || "").trim().toUpperCase();
+  if (t === BANK_TRANSACTION_TYPE.CEK) {
+    return direction === "GIRIS"
+      ? BANK_TRANSACTION_TYPE.CEK_TAHSILATI
+      : BANK_TRANSACTION_TYPE.CEK_ODEMESI;
+  }
+  if (t === BANK_TRANSACTION_TYPE.VIRMAN) {
+    return BANK_TRANSACTION_TYPE.BANKA_ICI_VIRMAN;
+  }
+  if (t === BANK_TRANSACTION_TYPE.NAKIT_CEKIM) {
+    return BANK_TRANSACTION_TYPE.NAKIT_CEKME;
+  }
+  if (t === BANK_TRANSACTION_TYPE.CARI_TAHSILAT) {
+    return BANK_TRANSACTION_TYPE.MUSTERI_TAHSILAT;
+  }
+  if (t === BANK_TRANSACTION_TYPE.CARI_ODEME) {
+    return BANK_TRANSACTION_TYPE.TEDARIKCI_ODEME;
+  }
+  if (t === BANK_TRANSACTION_TYPE.TURIZM_VERGISI) {
+    return BANK_TRANSACTION_TYPE.TURIZM_PAYI;
+  }
+  if (t === BANK_TRANSACTION_TYPE.CEZA) {
+    return BANK_TRANSACTION_TYPE.TRAFIK_CEZASI;
+  }
+  return t || BANK_TRANSACTION_TYPE.BILINMEYEN;
+}
 
 function detectPosType(text, direction) {
   if (!text.includes("POS") && !text.includes("UYE ISYERI") && !text.includes("BKM")) {
@@ -328,7 +403,7 @@ function detectPosType(text, direction) {
 
 function detectVergiSgkType(text) {
   if (text.includes("TRAFIK CEZA") || text.includes("TRAFIK CEZASI") || text.includes("EGM CEZA")) {
-    return BANK_TRANSACTION_TYPE.CEZA;
+    return BANK_TRANSACTION_TYPE.TRAFIK_CEZASI;
   }
   if (text.includes("GECIKME ZAMMI") || text.includes("GECIKME FAIZ")) {
     return BANK_TRANSACTION_TYPE.GECIKME_ZAMMI;
@@ -344,7 +419,7 @@ function detectVergiSgkType(text) {
   if (/\bKDV\b/.test(text)) return BANK_TRANSACTION_TYPE.KDV;
   if (text.includes("KONAKLAMA VERGI")) return BANK_TRANSACTION_TYPE.KONAKLAMA_VERGISI;
   if (text.includes("TURIZM PAY") || text.includes("TURIZM VERGI")) {
-    return BANK_TRANSACTION_TYPE.TURIZM_VERGISI;
+    return BANK_TRANSACTION_TYPE.TURIZM_PAYI;
   }
   if (text.includes("DAMGA VERGI") || (text.includes("DAMGA") && text.includes("VERGI"))) {
     return BANK_TRANSACTION_TYPE.DAMGA_VERGISI;
@@ -368,6 +443,58 @@ function detectVergiSgkType(text) {
   return null;
 }
 
+function detectCekType(text, direction) {
+  if (!text.includes("CEK") || text.includes("CEKIM") || text.includes("CEKME")) {
+    return null;
+  }
+  // Çek tahsili / alınan çek
+  if (
+    text.includes("CEK TAHSIL") ||
+    text.includes("ALINAN CEK") ||
+    text.includes("CEK YATIR") ||
+    (direction === "GIRIS" && text.includes("CEK"))
+  ) {
+    return BANK_TRANSACTION_TYPE.CEK_TAHSILATI;
+  }
+  // Verilen çek ödemesi (bankadan çıkan)
+  if (
+    text.includes("CEK ODEME") ||
+    text.includes("CEK BEDEL") ||
+    text.includes("VERILEN CEK") ||
+    text.includes("CEK ODEMESI") ||
+    (direction === "CIKIS" && text.includes("CEK"))
+  ) {
+    return BANK_TRANSACTION_TYPE.CEK_ODEMESI;
+  }
+  return direction === "GIRIS"
+    ? BANK_TRANSACTION_TYPE.CEK_TAHSILATI
+    : BANK_TRANSACTION_TYPE.CEK_ODEMESI;
+}
+
+function detectKasaType(text, direction) {
+  const kasaYatir =
+    text.includes("KASADAN YATAN") ||
+    text.includes("KASA YATIRMA") ||
+    text.includes("KASADAN BANKAYA") ||
+    text.includes("TARIHLI KASA") ||
+    (text.includes("KASA") && text.includes("YATAN"));
+  const kasaCek =
+    text.includes("BANKADAN KASAYA") ||
+    text.includes("KASAYA CEK") ||
+    text.includes("KASA CEKIM") ||
+    (text.includes("KASA") && (text.includes("CEKILEN") || text.includes("CEKME")));
+
+  if (kasaYatir) return BANK_TRANSACTION_TYPE.KASA_BANKAYA_YATAN;
+  if (kasaCek) return BANK_TRANSACTION_TYPE.BANKADAN_KASAYA_CEKILEN;
+  if (text.includes("KASA") && direction === "GIRIS") {
+    return BANK_TRANSACTION_TYPE.KASA_BANKAYA_YATAN;
+  }
+  if (text.includes("KASA") && direction === "CIKIS") {
+    return BANK_TRANSACTION_TYPE.BANKADAN_KASAYA_CEKILEN;
+  }
+  return null;
+}
+
 function detectFinanceType(text, direction) {
   if (text.includes("TERS REPO")) return BANK_TRANSACTION_TYPE.TERS_REPO;
   if (/\bREPO\b/.test(text)) return BANK_TRANSACTION_TYPE.REPO;
@@ -386,11 +513,19 @@ function detectFinanceType(text, direction) {
     return BANK_TRANSACTION_TYPE.FON_SATIS;
   }
   if (
+    text.includes("BANKALAR ARASI") ||
+    text.includes("BANKA ARASI VIRMAN") ||
+    text.includes("DIGER BANKA")
+  ) {
+    return BANK_TRANSACTION_TYPE.BANKALAR_ARASI_VIRMAN;
+  }
+  if (
     text.includes("VIRMAN") ||
     text.includes("HESAPLAR ARASI") ||
-    text.includes("ACCOUNT TRANSFER")
+    text.includes("ACCOUNT TRANSFER") ||
+    text.includes("BANKA ICI")
   ) {
-    return BANK_TRANSACTION_TYPE.VIRMAN;
+    return BANK_TRANSACTION_TYPE.BANKA_ICI_VIRMAN;
   }
   if (
     text.includes("KMH FAIZ") ||
@@ -450,7 +585,7 @@ function detectFinanceType(text, direction) {
       : BANK_TRANSACTION_TYPE.DOVIZ_ALIS;
   }
   if (text.includes("NAKIT CEKIM") || text.includes("ATM CEKIM") || text.includes("PARA CEKME")) {
-    return BANK_TRANSACTION_TYPE.NAKIT_CEKIM;
+    return BANK_TRANSACTION_TYPE.NAKIT_CEKME;
   }
   if (
     text.includes("NAKIT YATIRMA") ||
@@ -474,12 +609,20 @@ function detectFromText(description = "", direction = "") {
     text.includes("HAVALE EFT MASRAF") ||
     text.includes("EFT MASRAF") ||
     text.includes("HAVALE MASRAF") ||
-    text.includes("BSMV") ||
     text.includes("BKM UCR") ||
     text.includes("HESAP ISLETIM")
   ) {
     return BANK_TRANSACTION_TYPE.BANKA_MASRAFI;
   }
+  if (/\bBSMV\b/.test(text)) {
+    return BANK_TRANSACTION_TYPE.BSMV;
+  }
+
+  const cek = detectCekType(text, direction);
+  if (cek) return cek;
+
+  const kasa = detectKasaType(text, direction);
+  if (kasa) return kasa;
 
   const vergi = detectVergiSgkType(text);
   if (vergi) return vergi;
@@ -501,7 +644,6 @@ function detectFromText(description = "", direction = "") {
     return BANK_TRANSACTION_TYPE.MAAS;
   }
   if (text.includes("IS AVANS")) return BANK_TRANSACTION_TYPE.IS_AVANSI;
-  if (text.includes("CEK") && !text.includes("CEKIM")) return BANK_TRANSACTION_TYPE.CEK;
   if (text.includes("SENET") || text.includes("BONO")) {
     return BANK_TRANSACTION_TYPE.SENET;
   }
@@ -533,19 +675,24 @@ function detectFromText(description = "", direction = "") {
   }
 
   if (
-    text.includes("CARI MAHSUP") ||
-    text.includes("CARI ODEME") ||
-    text.includes("CARI TAHSILAT")
+    text.includes("MUSTERI TAHSILAT") ||
+    text.includes("CARI TAHSILAT") ||
+    (text.includes("CARI MAHSUP") && direction === "GIRIS")
   ) {
-    return direction === "GIRIS"
-      ? BANK_TRANSACTION_TYPE.CARI_TAHSILAT
-      : BANK_TRANSACTION_TYPE.CARI_ODEME;
+    return BANK_TRANSACTION_TYPE.MUSTERI_TAHSILAT;
+  }
+  if (
+    text.includes("TEDARIKCI ODEME") ||
+    text.includes("CARI ODEME") ||
+    (text.includes("CARI MAHSUP") && direction === "CIKIS")
+  ) {
+    return BANK_TRANSACTION_TYPE.TEDARIKCI_ODEME;
   }
 
   if (hasReminderDescriptionLanguage(text)) {
     return direction === "GIRIS"
-      ? BANK_TRANSACTION_TYPE.CARI_TAHSILAT
-      : BANK_TRANSACTION_TYPE.CARI_ODEME;
+      ? BANK_TRANSACTION_TYPE.MUSTERI_TAHSILAT
+      : BANK_TRANSACTION_TYPE.TEDARIKCI_ODEME;
   }
 
   return BANK_TRANSACTION_TYPE.BILINMEYEN;
@@ -624,8 +771,8 @@ export function resolveBankTransactionType(
   ) {
     transactionType =
       direction === "GIRIS"
-        ? BANK_TRANSACTION_TYPE.CARI_TAHSILAT
-        : BANK_TRANSACTION_TYPE.CARI_ODEME;
+        ? BANK_TRANSACTION_TYPE.MUSTERI_TAHSILAT
+        : BANK_TRANSACTION_TYPE.TEDARIKCI_ODEME;
     source = "reminderOverride";
     familyId = "";
   }
@@ -644,6 +791,8 @@ export function resolveBankTransactionType(
     transactionType = detectFromText(description, direction);
   }
 
+  transactionType = canonicalizeTransactionType(transactionType, direction);
+
   let cariRequired = CARI_REQUIRED_TYPES.has(transactionType);
   const personelRequired = PERSONEL_REQUIRED_TYPES.has(transactionType);
 
@@ -656,18 +805,14 @@ export function resolveBankTransactionType(
   ) {
     transactionType =
       direction === "GIRIS"
-        ? BANK_TRANSACTION_TYPE.CARI_TAHSILAT
-        : BANK_TRANSACTION_TYPE.CARI_ODEME;
+        ? BANK_TRANSACTION_TYPE.MUSTERI_TAHSILAT
+        : BANK_TRANSACTION_TYPE.TEDARIKCI_ODEME;
     cariRequired = true;
     source = "reminderCari";
   }
 
-  // POS / finans / vergi asla cari gerektirmez
-  if (
-    POS_TYPES.has(transactionType) ||
-    FINANCE_TYPES.has(transactionType) ||
-    VERGI_SGK_TYPES.has(transactionType)
-  ) {
+  // POS / finans / vergi / çek / kasa / virman asla cari gerektirmez
+  if (isCariForbiddenForType(transactionType)) {
     cariRequired = false;
   }
 
@@ -705,14 +850,31 @@ export function isFinanceType(transactionType = "") {
   return FINANCE_TYPES.has(String(transactionType || ""));
 }
 
+export function isCekType(transactionType = "") {
+  return CEK_TYPES.has(String(transactionType || ""));
+}
+
+export function isKasaType(transactionType = "") {
+  return KASA_TYPES.has(String(transactionType || ""));
+}
+
+export function isVirmanType(transactionType = "") {
+  return VIRMAN_TYPES.has(String(transactionType || ""));
+}
+
 /** Eksik hesap kategorisi için işlem türüne göre varsayılan etiket */
 export function missingCategoryForTransactionType(transactionType = "") {
   const type = String(transactionType || "");
   if (isPosType(type)) return "POS/komisyon ayrımı çözülemedi";
+  if (isCekType(type)) return "Çek hesabı 101/103 eksik";
+  if (isKasaType(type)) return "Kasa hesabı 100 eksik";
   if (isVergiSgkType(type)) return "Vergi/SGK türü çözülemedi";
   if (isFinanceType(type)) return "Finans işlem türü çözülemedi";
   if (isPersonelRequiredForType(type)) return "Personel bulunamadı";
-  if (type === BANK_TRANSACTION_TYPE.BANKA_MASRAFI) {
+  if (
+    type === BANK_TRANSACTION_TYPE.BANKA_MASRAFI ||
+    type === BANK_TRANSACTION_TYPE.BSMV
+  ) {
     return "Hesap planında önerilen kod yok";
   }
   if (isCariRequiredForType(type)) return "Cari bulunamadı";

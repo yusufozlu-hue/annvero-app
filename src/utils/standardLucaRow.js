@@ -320,6 +320,9 @@ export function finalizeStandardLucaRow(row) {
       : {}),
     ...(row.cariMatchReason ? { cariMatchReason: row.cariMatchReason } : {}),
     ...(row.transactionType ? { transactionType: row.transactionType } : {}),
+    ...(row.accountingScenario
+      ? { accountingScenario: row.accountingScenario }
+      : {}),
     ...(row.cariRequired != null ? { cariRequired: Boolean(row.cariRequired) } : {}),
     ...(row.personelRequired != null
       ? { personelRequired: Boolean(row.personelRequired) }
@@ -327,6 +330,7 @@ export function finalizeStandardLucaRow(row) {
     ...(row.missingHesapCategory
       ? { missingHesapCategory: row.missingHesapCategory }
       : {}),
+    ...(row.matchedMemoryId ? { matchedMemoryId: row.matchedMemoryId } : {}),
   };
 }
 
@@ -617,9 +621,11 @@ function buildBankLucaLine({
     cariMatchConfidence: movement.cariMatchConfidence || 0,
     cariMatchReason: movement.cariMatchReason || "",
     transactionType: movement.transactionType || "",
+    accountingScenario: movement.accountingScenario || "",
     cariRequired: Boolean(movement.cariRequired),
     personelRequired: Boolean(movement.personelRequired),
     missingHesapCategory: movement.missingHesapCategory || "",
+    matchedMemoryId: movement.matchedMemoryId || null,
   });
 }
 

@@ -46,6 +46,12 @@ export const emptyCompany = {
     policyExpenseMethod: "AYLIK",
     exchangeDifferenceMethod: "DONEM_SONU",
     transferToleranceDays: 1,
+    /** Firma Muhasebe Politikası — senaryo katmanı */
+    useGivenChecksAccount: true,
+    useReceivedChecksAccount: true,
+    usePos108Accounts: true,
+    useCash100Account: true,
+    useFxSeparate102Accounts: true,
   },
 };
 
@@ -78,6 +84,16 @@ export function normalizeCompany(c) {
         (source.accountingRules || {}).transferToleranceDays ??
           emptyCompany.accountingRules.transferToleranceDays
       ),
+      useGivenChecksAccount:
+        (source.accountingRules || {}).useGivenChecksAccount !== false,
+      useReceivedChecksAccount:
+        (source.accountingRules || {}).useReceivedChecksAccount !== false,
+      usePos108Accounts:
+        (source.accountingRules || {}).usePos108Accounts !== false,
+      useCash100Account:
+        (source.accountingRules || {}).useCash100Account !== false,
+      useFxSeparate102Accounts:
+        (source.accountingRules || {}).useFxSeparate102Accounts !== false,
     },
 
     bankAccounts: (source.bankAccounts || [])

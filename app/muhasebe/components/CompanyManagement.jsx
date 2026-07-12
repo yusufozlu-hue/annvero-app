@@ -2405,6 +2405,83 @@ export default function CompanyManagement() {
                     })
                   }
                 />
+
+                <div className="md:col-span-2 mt-2 border-t border-slate-700 pt-4">
+                  <div className="mb-3 text-sm font-semibold text-slate-200">
+                    Firma Muhasebe Politikası
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <Checkbox
+                      label="103 Verilen Çekler kullanılıyor"
+                      checked={company.accountingRules.useGivenChecksAccount !== false}
+                      onChange={(v) =>
+                        setCompany({
+                          ...company,
+                          accountingRules: {
+                            ...company.accountingRules,
+                            useGivenChecksAccount: v,
+                          },
+                        })
+                      }
+                    />
+                    <Checkbox
+                      label="101 Alınan Çekler kullanılıyor"
+                      checked={
+                        company.accountingRules.useReceivedChecksAccount !== false
+                      }
+                      onChange={(v) =>
+                        setCompany({
+                          ...company,
+                          accountingRules: {
+                            ...company.accountingRules,
+                            useReceivedChecksAccount: v,
+                          },
+                        })
+                      }
+                    />
+                    <Checkbox
+                      label="108 POS hesapları kullanılıyor"
+                      checked={company.accountingRules.usePos108Accounts !== false}
+                      onChange={(v) =>
+                        setCompany({
+                          ...company,
+                          accountingRules: {
+                            ...company.accountingRules,
+                            usePos108Accounts: v,
+                          },
+                        })
+                      }
+                    />
+                    <Checkbox
+                      label="100 Kasa hesabı kullanılıyor"
+                      checked={company.accountingRules.useCash100Account !== false}
+                      onChange={(v) =>
+                        setCompany({
+                          ...company,
+                          accountingRules: {
+                            ...company.accountingRules,
+                            useCash100Account: v,
+                          },
+                        })
+                      }
+                    />
+                    <Checkbox
+                      label="Döviz için ayrı 102 alt hesapları"
+                      checked={
+                        company.accountingRules.useFxSeparate102Accounts !== false
+                      }
+                      onChange={(v) =>
+                        setCompany({
+                          ...company,
+                          accountingRules: {
+                            ...company.accountingRules,
+                            useFxSeparate102Accounts: v,
+                          },
+                        })
+                      }
+                    />
+                  </div>
+                </div>
               </div>
             )}
 

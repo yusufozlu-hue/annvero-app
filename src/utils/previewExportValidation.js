@@ -18,9 +18,17 @@ import {
   isVergiSgkType,
   isPosType,
   isFinanceType,
+  isCekType,
+  isKasaType,
   missingCategoryForTransactionType,
   BANK_TRANSACTION_TYPE,
 } from "@/src/utils/bankTransactionType";
+import {
+  touchAccountMemoryV2Record,
+  loadAccountMemoryV2Records,
+  persistAccountMemoryV2Records,
+} from "@/src/utils/accountMemoryV2";
+import { recordLearningMemoryUsage } from "@/src/utils/learningMemory";
 
 export const MISSING_HESAP_CATEGORY = {
   CARI_BULUNAMADI: "Cari bulunamadı",
@@ -32,6 +40,8 @@ export const MISSING_HESAP_CATEGORY = {
   VERGI_SGK: "Vergi/SGK türü çözülemedi",
   POS_KOMISYON: "POS/komisyon ayrımı çözülemedi",
   FINAN_ISLEM: "Finans işlem türü çözülemedi",
+  CEK_HESAP_EKSIK: "Çek hesabı 101/103 eksik",
+  KASA_HESAP_EKSIK: "Kasa hesabı 100 eksik",
   DIGER: "Diğer",
 };
 
@@ -145,6 +155,7 @@ export function classifyMissingHesapCategory(row = {}) {
   const hesap = String(row.hesapKodu || "").trim();
   const transactionType = resolveRowTransactionType(row);
   const existing = String(row.missingHesapCategory || "").trim();
+  const scenario = String(row.accountingScenario || "").trim();
 
   // Mevcut kategori geçerliyse kullan — cari yasaklı türde yanlış cari etiketini düzelt
   if (existing && Object.values(MISSING_HESAP_CATEGORY).includes(existing)) {
@@ -157,23 +168,39 @@ export function classifyMissingHesapCategory(row = {}) {
     return existing;
   }
 
-  // Mutually exclusive — transactionType öncelikli sıra
-  // 1) POS/komisyon
+  // Sabit öncelik: Banka 102 → Çek → Kasa → POS → Vergi/SGK → Finans → Personel → Cari → Diğer
+  if (/BANKA KARSI HESABI BULUNAMADI/.test(note) && !isLikelyBankGlAccount(hesap)) {
+    return MISSING_HESAP_CATEGORY.BANKA_KARSISI;
+  }
+
+  if (
+    isCekType(transactionType) ||
+    /CEK_ODEMESI|CEK_TAHSILATI/.test(scenario) ||
+    /CEK HESABI|101\/103/.test(note)
+  ) {
+    return MISSING_HESAP_CATEGORY.CEK_HESAP_EKSIK;
+  }
+
+  if (
+    isKasaType(transactionType) ||
+    /KASA_BANKAYA|BANKADAN_KASAYA/.test(scenario) ||
+    /KASA HESABI|100 EKSIK/.test(note)
+  ) {
+    return MISSING_HESAP_CATEGORY.KASA_HESAP_EKSIK;
+  }
+
   if (isPosType(transactionType) || /POS.?KOMISYON.?COZULEMEDI/.test(note)) {
     return MISSING_HESAP_CATEGORY.POS_KOMISYON;
   }
 
-  // 2) Vergi / SGK
   if (isVergiSgkType(transactionType) || /VERGI.?SGK TURU COZULEMEDI/.test(note)) {
     return MISSING_HESAP_CATEGORY.VERGI_SGK;
   }
 
-  // 3) Finans
   if (isFinanceType(transactionType) || /FINANS ISLEM TURU COZULEMEDI/.test(note)) {
     return MISSING_HESAP_CATEGORY.FINAN_ISLEM;
   }
 
-  // 4) Personel
   if (
     isPersonelRequiredForType(transactionType) ||
     hasStrictPersonelSignal(row) ||
@@ -182,7 +209,7 @@ export function classifyMissingHesapCategory(row = {}) {
     return MISSING_HESAP_CATEGORY.PERSONEL_BULUNAMADI;
   }
 
-  // 5) Cari — yalnızca gerçekten cari gereken tür
+  // Cari — yalnızca gerçekten cari gereken tür
   if (
     (row.cariRequired === true || isCariRequiredForType(transactionType)) &&
     !isCariForbiddenForType(transactionType)
@@ -199,17 +226,10 @@ export function classifyMissingHesapCategory(row = {}) {
     return missingCategoryForTransactionType(transactionType);
   }
 
-  // 6) Banka bacağı
-  if (/BANKA KARSI HESABI BULUNAMADI/.test(note) && !isLikelyBankGlAccount(hesap)) {
-    return MISSING_HESAP_CATEGORY.BANKA_KARSISI;
-  }
-
-  // 7) Hesap planı
   if (/HESAP PLANINDA BULUNAMADI|HESAP PLANINDA KARSILIGI YOK/.test(note)) {
     return MISSING_HESAP_CATEGORY.PLAN_ONERI_YOK;
   }
 
-  // 8) Kural
   if (/KURAL BULUNAMADI/.test(note)) {
     return MISSING_HESAP_CATEGORY.KURAL_BULUNAMADI;
   }
@@ -599,6 +619,66 @@ export function validatePreviewForExport(rows = []) {
       : hasBlockingErrors
         ? blockingMessages.join("\n")
         : warningMessages.join("\n"),
+  };
+}
+
+/**
+ * Validation sonrası başarılı satırlarda Hafıza V2 + learning_memory istatistikleri.
+ * usageCount / successCount / lastUsedAt / confidence
+ */
+export function recordMemoryUsageAfterSuccessfulValidation(
+  rows = [],
+  validation = {}
+) {
+  const missingIds = new Set(
+    (validation.missingReport?.missingRows || []).map((row) => row.id)
+  );
+  const errorRowIds = new Set(
+    (validation.rowErrors || [])
+      .filter((item) => (item.errors || []).length > 0)
+      .map((item) => item.rowId)
+  );
+
+  const successfulMemoryRows = (rows || []).filter((row) => {
+    if (!row?.matchedMemoryId) return false;
+    if (missingIds.has(row.id)) return false;
+    if (errorRowIds.has(row.id)) return false;
+    if (isMissingHesapRow(row)) return false;
+    return true;
+  });
+
+  if (successfulMemoryRows.length === 0) {
+    return { updatedV2: 0, learningQueued: 0 };
+  }
+
+  // Hafıza V2 — localStorage
+  let records = loadAccountMemoryV2Records();
+  const touched = new Set();
+  for (const row of successfulMemoryRows) {
+    const id = String(row.matchedMemoryId || "").trim();
+    if (!id || touched.has(id)) continue;
+    // Aynı id birden fazla satırda olabilir; her unique id için bir success touch
+    const count = successfulMemoryRows.filter(
+      (r) => String(r.matchedMemoryId) === id
+    ).length;
+    for (let i = 0; i < count; i += 1) {
+      records = touchAccountMemoryV2Record(records, id, {
+        success: true,
+        correction: false,
+      });
+    }
+    touched.add(id);
+  }
+  if (touched.size > 0) {
+    persistAccountMemoryV2Records(records);
+  }
+
+  // learning_memory API (async, fire-and-forget)
+  void recordLearningMemoryUsage(successfulMemoryRows);
+
+  return {
+    updatedV2: touched.size,
+    learningQueued: successfulMemoryRows.length,
   };
 }
 
