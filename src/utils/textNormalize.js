@@ -72,3 +72,57 @@ export function normalizeBankAnalysisKey(description, direction = "") {
 export function buildLegacyAnalysisMemoKey(description, direction = "") {
   return `${normalizeParserText(description)}|${resolveAnalysisDirection(direction)}`;
 }
+
+/** GIRIS/CIKIS dışında boş — borc/alacak türetmez */
+export function normalizeBankDirection(value = "") {
+  const text = String(value || "")
+    .trim()
+    .toUpperCase();
+  if (text === "CIKIS" || text === "ÇIKIŞ" || text === "OUT") return "CIKIS";
+  if (text === "GIRIS" || text === "GİRİŞ" || text === "IN") return "GIRIS";
+  return "";
+}
+
+/** analysisKey son bileşeni: `metin|GIRIS` */
+export function extractDirectionFromAnalysisKey(analysisKey = "") {
+  const parts = String(analysisKey || "").split("|");
+  const last = String(parts[parts.length - 1] || "")
+    .trim()
+    .toUpperCase();
+  return last === "GIRIS" || last === "CIKIS" ? last : "";
+}
+
+/**
+ * Luca satırı / öneri kartı için gerçek banka hareket yönü.
+ * borc/alacak kullanılmaz (karşı bacak etiketi ters düşer).
+ *
+ * Öncelik:
+ * 1) kaynak movement.direction (sourceMovementId / _movementId)
+ * 2) row.direction / row.yon
+ * 3) analysisKey içindeki yön
+ * 4) boş
+ */
+export function resolveLucaRowBankDirection(row = {}, context = {}) {
+  const movementId = row.sourceMovementId || row._movementId || "";
+  let movement = context.movement || null;
+
+  if (!movement && movementId) {
+    if (context.movementById?.get) {
+      movement = context.movementById.get(movementId) || null;
+    } else if (Array.isArray(context.movements)) {
+      movement = context.movements.find((item) => item?.id === movementId) || null;
+    }
+  }
+
+  if (movement) {
+    const fromMovement = normalizeBankDirection(
+      movement.direction || movement.yon || ""
+    );
+    if (fromMovement) return fromMovement;
+  }
+
+  const fromRow = normalizeBankDirection(row.direction || row.yon || "");
+  if (fromRow) return fromRow;
+
+  return extractDirectionFromAnalysisKey(row.analysisKey || "");
+}

@@ -1,5 +1,4 @@
-import { normalizeParserText } from "@/src/utils/textNormalize";
-import { normalizeBankAnalysisKey } from "@/src/utils/textNormalize";
+import { normalizeParserText, normalizeBankAnalysisKey, resolveLucaRowBankDirection } from "@/src/utils/textNormalize";
 import { finalizeStandardLucaRow } from "@/src/utils/standardLucaRow";
 import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
 import {
@@ -1260,12 +1259,7 @@ export function findSmartBankSuggestion(row = {}, context = {}) {
     row.belgeNo,
     row.evrakNo,
   ].join(" ");
-  const direction =
-    Number(row.borc || 0) > 0
-      ? "GIRIS"
-      : Number(row.alacak || 0) > 0
-        ? "CIKIS"
-        : row.direction || row.yon || "";
+  const direction = resolveLucaRowBankDirection(row, context);
 
   const match = matchSafeSystemBankRule(description, direction, context);
   if (!match) return null;
@@ -1342,12 +1336,7 @@ export function groupUnresolvedRuleRows(rows = [], context = {}) {
   const groups = new Map();
   for (const row of unresolved) {
     const desc = row.detayAciklama || row.fisAciklama || row.description || "";
-    const direction =
-      Number(row.borc || 0) > 0
-        ? "GIRIS"
-        : Number(row.alacak || 0) > 0
-          ? "CIKIS"
-          : row.yon || row.direction || "";
+    const direction = resolveLucaRowBankDirection(row, context);
     const key =
       row.analysisKey || normalizeBankAnalysisKey(desc, direction) || "unknown";
     if (!groups.has(key)) {

@@ -1,5 +1,5 @@
 import { CARI_SHORT_CODE_MAPPINGS } from "@/src/config/cariShortCodeMappings";
-import { normalizeBankAnalysisKey, normalizeParserText } from "@/src/utils/textNormalize";
+import { normalizeBankAnalysisKey, normalizeParserText, resolveLucaRowBankDirection } from "@/src/utils/textNormalize";
 import {
   CARI_NOT_REQUIRED_TYPES,
   CARI_REQUIRED_TYPES,
@@ -938,12 +938,7 @@ export function groupUnresolvedCariRows(rows = [], context = {}) {
   const groups = new Map();
   for (const row of unresolved) {
     const desc = row.detayAciklama || row.fisAciklama || row.description || "";
-    const direction =
-      Number(row.borc || 0) > 0
-        ? "GIRIS"
-        : Number(row.alacak || 0) > 0
-          ? "CIKIS"
-          : "";
+    const direction = resolveLucaRowBankDirection(row, context);
     const key =
       row.analysisKey || normalizeBankAnalysisKey(desc, direction) || "unknown";
     if (!groups.has(key)) {

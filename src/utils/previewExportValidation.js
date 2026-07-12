@@ -7,7 +7,7 @@ import {
   analyzeDuplicateRiskForRows,
   MUKERRER_RISK_SEVIYE,
 } from "@/src/utils/duplicateRiskAnalysis";
-import { normalizeBankAnalysisKey, normalizeParserText } from "@/src/utils/textNormalize";
+import { normalizeBankAnalysisKey, normalizeParserText, resolveLucaRowBankDirection } from "@/src/utils/textNormalize";
 import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
 import { groupUnresolvedCariRows } from "@/src/utils/cariAccountMatcher";
 import {
@@ -93,15 +93,10 @@ export function hasStrictPersonelSignal(row = {}) {
   return false;
 }
 
-export function resolveRowTransactionType(row = {}) {
+export function resolveRowTransactionType(row = {}, context = {}) {
   if (row.transactionType) return String(row.transactionType);
   const desc = rowDescription(row);
-  const direction =
-    Number(row.borc || 0) > 0
-      ? "GIRIS"
-      : Number(row.alacak || 0) > 0
-        ? "CIKIS"
-        : row.yon || row.direction || "";
+  const direction = resolveLucaRowBankDirection(row, context);
   return resolveBankTransactionType(desc, direction, {
     lucaDescription: desc,
   }).transactionType;
@@ -428,15 +423,10 @@ export async function downloadMissingHesapExcelReport(
   return { ok: true, count: sheetRows.length };
 }
 
-export function getRowAnalysisKey(row = {}) {
+export function getRowAnalysisKey(row = {}, context = {}) {
   if (row.analysisKey) return row.analysisKey;
   const desc = row.detayAciklama || row.fisAciklama || row.description || "";
-  const direction =
-    Number(row.borc || 0) > 0
-      ? "GIRIS"
-      : Number(row.alacak || 0) > 0
-        ? "CIKIS"
-        : "";
+  const direction = resolveLucaRowBankDirection(row, context);
   return normalizeBankAnalysisKey(desc, direction);
 }
 

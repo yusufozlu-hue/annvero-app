@@ -1138,10 +1138,16 @@ export default function BankaParserPage() {
     });
     setMissingHesapReport(analyzeMissingHesapRows(lucaRef.current));
     setRuleGroupReport(
-      groupUnresolvedRuleRows(lucaRef.current, { companyPlans })
+      groupUnresolvedRuleRows(lucaRef.current, {
+        companyPlans,
+        movements: movementsRef.current,
+      })
     );
     setCariGroupReport(
-      groupUnresolvedCariRows(lucaRef.current, { companyPlans })
+      groupUnresolvedCariRows(lucaRef.current, {
+        companyPlans,
+        movements: movementsRef.current,
+      })
     );
     syncLucaPage(lucaPage);
     let learned = false;
@@ -1216,10 +1222,16 @@ export default function BankaParserPage() {
     });
     setMissingHesapReport(analyzeMissingHesapRows(lucaRef.current));
     setRuleGroupReport(
-      groupUnresolvedRuleRows(lucaRef.current, { companyPlans })
+      groupUnresolvedRuleRows(lucaRef.current, {
+        companyPlans,
+        movements: movementsRef.current,
+      })
     );
     setCariGroupReport(
-      groupUnresolvedCariRows(lucaRef.current, { companyPlans })
+      groupUnresolvedCariRows(lucaRef.current, {
+        companyPlans,
+        movements: movementsRef.current,
+      })
     );
     syncLucaPage(lucaPage);
     let learned = false;
@@ -1767,10 +1779,12 @@ export default function BankaParserPage() {
       {
         const grouped = groupUnresolvedRuleRows(lucaRef.current, {
           companyPlans,
+          movements: movementsRef.current,
         });
         setRuleGroupReport(grouped);
         const cariGrouped = groupUnresolvedCariRows(lucaRef.current, {
           companyPlans,
+          movements: movementsRef.current,
         });
         setCariGroupReport(cariGrouped);
         console.info("[ANNVERO][RULE-GROUPS]", {
