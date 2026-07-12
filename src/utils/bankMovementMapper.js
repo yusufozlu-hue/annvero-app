@@ -17,6 +17,9 @@ import {
   resolveBankTransactionType,
   isPersonelRequiredForType,
   isVergiSgkType,
+  isPosType,
+  isFinanceType,
+  isBareVergiSgkMainAccount,
   missingCategoryForTransactionType,
   BANK_TRANSACTION_TYPE,
   isExpenseOrIncomeGlAccount,
@@ -680,9 +683,18 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
               isExpenseOrIncomeGlAccount(systemMatch.accountCode) &&
               !isDirectExpenseAllowedType(transactionType);
 
+            const bareVergiBlocked =
+              isVergiSgkType(transactionType) &&
+              systemMatch.autoApplied &&
+              isBareVergiSgkMainAccount(systemMatch.accountCode);
+
             if (systemExpenseBlocked) {
               // Çay/aidat/kargo vb. → 770 otomatik uygulanmaz
               appendWarning(warnings, "Cari eşleşmesi gerekli");
+            } else if (bareVergiBlocked) {
+              accountSuggestions = systemMatch.accountSuggestions || [];
+              appendWarning(warnings, "Vergi/SGK türü çözülemedi");
+              appendWarning(warnings, `Sistem ailesi: ${systemMatch.family}`);
             } else if (systemMatch.autoApplied && systemMatch.accountCode) {
               counterAccountCode = systemMatch.accountCode;
               appendWarning(
@@ -691,7 +703,15 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
               );
             } else if (systemMatch.planMissing) {
               accountSuggestions = systemMatch.accountSuggestions || [];
-              appendWarning(warnings, "Hesap planında karşılığı yok");
+              if (isVergiSgkType(transactionType)) {
+                appendWarning(warnings, "Vergi/SGK türü çözülemedi");
+              } else if (isPosType(transactionType)) {
+                appendWarning(warnings, "POS/komisyon ayrımı çözülemedi");
+              } else if (isFinanceType(transactionType)) {
+                appendWarning(warnings, "Finans işlem türü çözülemedi");
+              } else {
+                appendWarning(warnings, "Hesap planında karşılığı yok");
+              }
               appendWarning(warnings, `Sistem ailesi: ${systemMatch.family}`);
             } else if (systemMatch.needsEntity && cariRequired) {
               lucaDescription =
@@ -707,13 +727,25 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
               appendWarning(warnings, `Sistem ailesi: ${systemMatch.family}`);
             } else {
               accountSuggestions = systemMatch.accountSuggestions || [];
-              appendWarning(warnings, "Kural bulunamadı");
+              if (isVergiSgkType(transactionType)) {
+                appendWarning(warnings, "Vergi/SGK türü çözülemedi");
+              } else if (isPosType(transactionType)) {
+                appendWarning(warnings, "POS/komisyon ayrımı çözülemedi");
+              } else if (isFinanceType(transactionType)) {
+                appendWarning(warnings, "Finans işlem türü çözülemedi");
+              } else {
+                appendWarning(warnings, "Kural bulunamadı");
+              }
               appendWarning(warnings, `Sistem ailesi: ${systemMatch.family}`);
             }
             if (analysisStats) {
               analysisStats.safeSystemHit =
                 (analysisStats.safeSystemHit || 0) + 1;
-              if (systemMatch.autoApplied && !systemExpenseBlocked) {
+              if (
+                systemMatch.autoApplied &&
+                !systemExpenseBlocked &&
+                !bareVergiBlocked
+              ) {
                 analysisStats.safeSystemAutoApplied =
                   (analysisStats.safeSystemAutoApplied || 0) + 1;
               }
@@ -826,20 +858,26 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
           String(message).includes("Cari hesap bulunamadı") ||
           String(message).includes("cari eşleşmesi gerekli")
       );
+      // Ham 360/361 kör atama temizle
+      if (isBareVergiSgkMainAccount(counterAccountCode)) {
+        counterAccountCode = "";
+      }
       if (
         !counterAccountCode &&
         !warnings.some((w) =>
-          /Hesap planında|Kural bulunamadı|Hesap eşleşmesi|Vergi|SGK|Personel/i.test(
+          /Hesap planında|Kural bulunamadı|Hesap eşleşmesi|Vergi|SGK|Personel|POS|Finans/i.test(
             String(w)
           )
         )
       ) {
         if (isVergiSgkType(transactionType)) {
           appendWarning(warnings, "Vergi/SGK türü çözülemedi");
+        } else if (isPosType(transactionType)) {
+          appendWarning(warnings, "POS/komisyon ayrımı çözülemedi");
+        } else if (isFinanceType(transactionType)) {
+          appendWarning(warnings, "Finans işlem türü çözülemedi");
         } else if (personelRequired || isPersonelRequiredForType(transactionType)) {
           appendWarning(warnings, "Personel bulunamadı");
-        } else if (!matchedRule || matchedRule?.source === "safeSystemRule") {
-          // plan/account eksikliği zaten uyarıda olabilir
         }
       }
     }

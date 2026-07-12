@@ -37,10 +37,8 @@ export const SAFE_SYSTEM_FAMILIES = [
       "BATCH POS",
       "GUNSONU POS",
       "UYE ISYERI BATCH",
-      "POS BLOKE COZUM",
-      "POS BLOKE COZUMU",
     ],
-    negative: ["KOMISYON", "KOM.", "MASRAF"],
+    negative: ["KOMISYON", "KOM.", "MASRAF", "IADE", "BLOKE", "VIRMAN", "COZUM"],
     directions: ["GIRIS"],
     documentType: "DK",
     accountCandidates: [
@@ -50,8 +48,9 @@ export const SAFE_SYSTEM_FAMILIES = [
     ],
     descriptionStandard: STANDARD_POS_BATCH_TAHSILATI,
     autoFillIfPlanHit: true,
+    requireSubAccount: true,
     confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
-    score: 94,
+    score: 96,
   },
   {
     id: "pos-komisyon",
@@ -64,7 +63,7 @@ export const SAFE_SYSTEM_FAMILIES = [
       "UYE ISYERI KOMISYON",
       "POS HIZMET BEDEL",
     ],
-    negative: ["TAHSILAT", "BATCH", "SATIS ISLEM", "BLOKE COZUM"],
+    negative: ["TAHSILAT", "BATCH", "SATIS ISLEM", "BLOKE COZUM", "HAVALE", "EFT"],
     directions: ["CIKIS"],
     documentType: "DK",
     accountCandidates: [
@@ -76,6 +75,101 @@ export const SAFE_SYSTEM_FAMILIES = [
     ],
     descriptionStandard: STANDARD_POS_KOMISYONU,
     autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 95,
+  },
+  {
+    id: "pos-cozum",
+    label: "POS çözüm / virman",
+    positive: [
+      "POS BLOKE COZUM",
+      "POS BLOKE COZUMU",
+      "BLOKE COZUM",
+      "POS COZUM",
+      "POS VIRMAN",
+    ],
+    negative: ["KOMISYON", "HAVALE", "EFT"],
+    directions: ["GIRIS", "CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "108", nameKeywords: ["POS"] },
+      { code: "108", nameKeywords: ["BLOKE"] },
+      { code: "108", nameKeywords: [] },
+    ],
+    descriptionStandard: STANDARD_POS_TAHSILATI,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 94,
+  },
+  {
+    id: "pos-iade",
+    label: "POS iadesi",
+    positive: ["POS IADE", "POS IPTAL", "POS REFUND", "UYE ISYERI IADE"],
+    negative: ["KOMISYON", "HAVALE"],
+    directions: ["GIRIS", "CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "108", nameKeywords: ["POS"] },
+      { code: "108", nameKeywords: [] },
+    ],
+    descriptionStandard: STANDARD_POS_TAHSILATI,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 93,
+  },
+  {
+    id: "pos-bloke",
+    label: "Blokeli POS",
+    positive: ["BLOKE POS", "POS BLOKE", "POS BLOKEDE"],
+    negative: ["COZUM", "KOMISYON", "HAVALE"],
+    directions: ["GIRIS", "CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "108", nameKeywords: ["POS"] },
+      { code: "108", nameKeywords: ["BLOKE"] },
+      { code: "108", nameKeywords: [] },
+    ],
+    descriptionStandard: STANDARD_POS_TAHSILATI,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 93,
+  },
+  {
+    id: "pos-ertesi-gun",
+    label: "Ertesi gün POS tahsilatı",
+    positive: ["ERTESI GUN POS", "POS ERTESI", "NEXT DAY POS", "T+1 POS"],
+    negative: ["KOMISYON", "HAVALE"],
+    directions: ["GIRIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "108", nameKeywords: ["POS"] },
+      { code: "108", nameKeywords: [] },
+    ],
+    descriptionStandard: STANDARD_POS_BATCH_TAHSILATI,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 93,
+  },
+  {
+    id: "pos-sanal",
+    label: "Sanal POS",
+    positive: ["SANAL POS", "VIRTUAL POS", "E-POS", "EPOS"],
+    negative: ["KOMISYON", "HAVALE", "EFT"],
+    directions: ["GIRIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "108", nameKeywords: ["POS"] },
+      { code: "108", nameKeywords: ["SANAL"] },
+      { code: "108", nameKeywords: [] },
+    ],
+    descriptionStandard: STANDARD_POS_TAHSILATI,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
     confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
     score: 93,
   },
@@ -83,14 +177,27 @@ export const SAFE_SYSTEM_FAMILIES = [
     id: "pos-tahsilat",
     label: "POS tahsilatı",
     positive: [
-      "POS",
-      "SANAL POS",
-      "POS SATIS",
       "POS TAHSILAT",
-      "UYE ISYERI",
+      "POS SATIS",
       "POS PROVIZYON",
+      "UYE ISYERI",
+      "POS",
     ],
-    negative: ["KOMISYON", "KOM.", "MASRAF", "BATCH", "HIZMET BEDEL"],
+    negative: [
+      "KOMISYON",
+      "KOM.",
+      "MASRAF",
+      "BATCH",
+      "HIZMET BEDEL",
+      "HAVALE",
+      "EFT",
+      "FAST",
+      "GLN",
+      "GOND",
+      "IADE",
+      "BLOKE",
+      "SANAL",
+    ],
     directions: ["GIRIS"],
     documentType: "DK",
     accountCandidates: [
@@ -100,8 +207,9 @@ export const SAFE_SYSTEM_FAMILIES = [
     ],
     descriptionStandard: STANDARD_POS_TAHSILATI,
     autoFillIfPlanHit: true,
+    requireSubAccount: true,
     confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
-    score: 92,
+    score: 90,
   },
   {
     id: "havale-masraf",
@@ -287,16 +395,19 @@ export const SAFE_SYSTEM_FAMILIES = [
     id: "sgk",
     label: "SGK ödemesi",
     positive: ["SGK", "MUHSGK", "SOSYAL GUVENLIK", "BAGKUR", "PRIM ODEME"],
-    negative: ["TRAFIK"],
+    negative: ["TRAFIK", "HAVALE", "EFT", "POS"],
     directions: ["CIKIS"],
     documentType: "DK",
     accountCandidates: [
       { code: "361", nameKeywords: ["SGK"] },
       { code: "361", nameKeywords: ["SOSYAL"] },
       { code: "361", nameKeywords: ["PRIM"] },
+      { code: "361", nameKeywords: ["ISSIZLIK"] },
     ],
     descriptionStandard: STANDARD_SGK,
+    // Ham 360/361 kör atama yok — alt hesap plan hit gerekir
     autoFillIfPlanHit: true,
+    requireSubAccount: true,
     confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
     score: 92,
   },
@@ -310,38 +421,147 @@ export const SAFE_SYSTEM_FAMILIES = [
       "KDV2",
       "KDV ",
       "MUHTASAR",
-      "GECIKME ZAMMI",
-      "DAMGA",
       "STOPAJ",
       "GECICI VERGI",
     ],
-    negative: ["TRAFIK", "CEZA", "EMLAK", "MTV", "AIDAT"],
+    negative: ["TRAFIK", "CEZA", "EMLAK", "MTV", "AIDAT", "POS", "HAVALE"],
     directions: ["CIKIS"],
     documentType: "DK",
     accountCandidates: [
-      { code: "360", nameKeywords: ["VERGI"] },
       { code: "360", nameKeywords: ["KDV"] },
-      { code: "360", nameKeywords: ["ODENECEK"] },
       { code: "360", nameKeywords: ["MUHTASAR"] },
+      { code: "360", nameKeywords: ["ODENECEK"] },
+      { code: "360", nameKeywords: ["VERGI"] },
     ],
     descriptionStandard: STANDARD_VERGI,
     autoFillIfPlanHit: true,
+    requireSubAccount: true,
     confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
     score: 91,
   },
   {
-    id: "mtv-emlak-aidat",
-    label: "MTV / emlak / oda aidatı",
-    // Bare "AIDAT" yok — site/cari aidat havaleleri 770'e düşmesin
-    positive: [
-      "MTV",
-      "EMLAK VERGISI",
-      "EMLAK VERGI",
-      "ODA AIDAT",
-      "BELEDIYE VERGI",
-      "BELEDIYE MTV",
-      "MESLEK ODASI",
+    id: "gecikme-zammi",
+    label: "Gecikme zammı",
+    positive: ["GECIKME ZAMMI", "GECIKME FAIZ", "VERGI GECIKME"],
+    negative: ["TRAFIK", "POS"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "770", nameKeywords: ["GECIKME"] },
+      { code: "770", nameKeywords: ["ZAMMI"] },
+      { code: "689", nameKeywords: ["GECIKME"] },
     ],
+    descriptionStandard: STANDARD_VERGI,
+    autoFillIfPlanHit: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 90,
+  },
+  {
+    id: "damga-vergisi",
+    label: "Damga vergisi",
+    positive: ["DAMGA VERGISI", "DAMGA VERGI"],
+    negative: ["TRAFIK", "POS", "HAVALE"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "360", nameKeywords: ["DAMGA"] },
+      { code: "360", nameKeywords: ["VERGI"] },
+    ],
+    descriptionStandard: STANDARD_VERGI,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 90,
+  },
+  {
+    id: "konaklama-vergisi",
+    label: "Konaklama vergisi",
+    positive: ["KONAKLAMA VERGISI", "KONAKLAMA VERGI"],
+    negative: ["POS", "HAVALE", "REZERVASYON"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "360", nameKeywords: ["KONAKLAMA"] },
+      { code: "360", nameKeywords: ["VERGI"] },
+    ],
+    descriptionStandard: STANDARD_VERGI,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 90,
+  },
+  {
+    id: "turizm-vergisi",
+    label: "Turizm / konaklama payı",
+    positive: ["TURIZM PAYI", "TURIZM PAY", "TURIZM VERGISI"],
+    negative: ["POS", "HAVALE"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "360", nameKeywords: ["TURIZM"] },
+      { code: "360", nameKeywords: ["PAY"] },
+    ],
+    descriptionStandard: STANDARD_VERGI,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 89,
+  },
+  {
+    id: "vergi-cezasi",
+    label: "Vergi cezası",
+    positive: ["VERGI CEZASI", "VERGI CEZA", "USULSUZLUK CEZA"],
+    negative: ["TRAFIK", "POS"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "770", nameKeywords: ["CEZA"] },
+      { code: "689", nameKeywords: ["CEZA"] },
+      { code: "770", nameKeywords: ["VERGI"] },
+    ],
+    descriptionStandard: STANDARD_VERGI,
+    autoFillIfPlanHit: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 89,
+  },
+  {
+    id: "emlak-vergisi",
+    label: "Emlak vergisi",
+    positive: ["EMLAK VERGISI", "EMLAK VERGI"],
+    negative: ["TRAFIK", "HAVALE", "POS"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "770", nameKeywords: ["EMLAK"] },
+      { code: "770", nameKeywords: ["VERGI"] },
+      { code: "360", nameKeywords: ["EMLAK"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 85,
+  },
+  {
+    id: "oda-aidati",
+    label: "Oda aidatı",
+    positive: ["ODA AIDAT", "MESLEK ODASI", "ODA AIDATI"],
+    negative: ["TRAFIK", "HAVALE", "EFT", "POS", "SITE AIDAT"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "770", nameKeywords: ["AIDAT"] },
+      { code: "770", nameKeywords: ["ODA"] },
+      { code: "770", nameKeywords: ["MESLEK"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 84,
+  },
+  {
+    id: "mtv-emlak-aidat",
+    label: "MTV",
+    positive: ["MTV", "BELEDIYE MTV", "MOTORLU TASIT"],
     negative: [
       "TRAFIK CEZA",
       "KDV",
@@ -351,19 +571,19 @@ export const SAFE_SYSTEM_FAMILIES = [
       "FAST",
       "GLN",
       "GOND",
-      "GÖND",
+      "POS",
     ],
     directions: ["CIKIS"],
     documentType: "DK",
     accountCandidates: [
-      { code: "770", nameKeywords: ["VERGI"] },
       { code: "770", nameKeywords: ["MTV"] },
+      { code: "770", nameKeywords: ["VERGI"] },
       { code: "360", nameKeywords: ["VERGI"] },
     ],
     descriptionStandard: null,
     autoFillIfPlanHit: true,
     confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
-    score: 82,
+    score: 83,
   },
   {
     id: "trafik",
@@ -434,21 +654,219 @@ export const SAFE_SYSTEM_FAMILIES = [
   },
   {
     id: "doviz",
-    label: "Kur farkı / döviz işlemi",
-    positive: ["DOVIZ", "KUR FARK", "FX ALIS", "FX SATIS", "DOVIZ ALIS", "DOVIZ SATIS"],
-    negative: ["POS", "HAVALE", "EFT"],
+    label: "Döviz alış/satış",
+    positive: ["DOVIZ ALIS", "DOVIZ SATIS", "FX ALIS", "FX SATIS", "DOVIZ"],
+    negative: ["POS", "HAVALE", "EFT", "KUR FARK"],
+    directions: ["GIRIS", "CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "102", nameKeywords: ["USD"] },
+      { code: "102", nameKeywords: ["EUR"] },
+      { code: "102", nameKeywords: ["DOVIZ"] },
+      { code: "646", nameKeywords: ["KUR"] },
+      { code: "656", nameKeywords: ["KUR"] },
+    ],
+    descriptionStandard: STANDARD_DOVIZ,
+    autoFillIfPlanHit: false,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 80,
+  },
+  {
+    id: "kur-farki",
+    label: "Kur farkı",
+    positive: ["KUR FARK", "KUR FARKI", "FX DIFFERENCE"],
+    negative: ["POS", "HAVALE"],
     directions: ["GIRIS", "CIKIS"],
     documentType: "DK",
     accountCandidates: [
       { code: "646", nameKeywords: ["KUR"] },
       { code: "656", nameKeywords: ["KUR"] },
-      { code: "102", nameKeywords: ["USD"] },
-      { code: "102", nameKeywords: ["EUR"] },
+      { code: "646", nameKeywords: [] },
+      { code: "656", nameKeywords: [] },
     ],
     descriptionStandard: STANDARD_DOVIZ,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 82,
+  },
+  {
+    id: "virman",
+    label: "Virman / hesaplar arası",
+    positive: ["VIRMAN", "HESAPLAR ARASI", "ACCOUNT TRANSFER", "IC VIRMAN"],
+    negative: ["POS", "HAVALE MASRAF", "EFT MASRAF"],
+    directions: ["GIRIS", "CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "102", nameKeywords: ["BANKA"] },
+      { code: "102", nameKeywords: [] },
+    ],
+    descriptionStandard: null,
     autoFillIfPlanHit: false,
     confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
-    score: 75,
+    score: 84,
+  },
+  {
+    id: "fon-alis",
+    label: "Fon alış",
+    positive: ["FON ALIS", "YATIRIM FONU ALIS", "FON ALIM"],
+    negative: ["POS", "HAVALE"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "118", nameKeywords: ["FON"] },
+      { code: "11", nameKeywords: ["FON"] },
+      { code: "118", nameKeywords: ["YATIRIM"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 83,
+  },
+  {
+    id: "fon-satis",
+    label: "Fon satış",
+    positive: ["FON SATIS", "YATIRIM FONU SATIS", "FON SATIM"],
+    negative: ["POS", "HAVALE"],
+    directions: ["GIRIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "118", nameKeywords: ["FON"] },
+      { code: "11", nameKeywords: ["FON"] },
+      { code: "118", nameKeywords: ["YATIRIM"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 83,
+  },
+  {
+    id: "ters-repo",
+    label: "Ters repo",
+    positive: ["TERS REPO"],
+    negative: ["POS"],
+    directions: ["GIRIS", "CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "118", nameKeywords: ["REPO"] },
+      { code: "108", nameKeywords: ["REPO"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 84,
+  },
+  {
+    id: "repo",
+    label: "Repo",
+    positive: ["REPO"],
+    negative: ["TERS", "POS", "HAVALE"],
+    directions: ["GIRIS", "CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "118", nameKeywords: ["REPO"] },
+      { code: "300", nameKeywords: ["REPO"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 83,
+  },
+  {
+    id: "kredi-kullanim",
+    label: "Kredi kullanımı",
+    positive: ["KREDI KULLANIM", "KREDI KULLANDIRIM", "KREDI ODEME ALINDI"],
+    negative: ["KART", "POS", "FAIZ", "ANAPARA"],
+    directions: ["GIRIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "300", nameKeywords: ["KREDI"] },
+      { code: "400", nameKeywords: ["KREDI"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 85,
+  },
+  {
+    id: "kredi-anapara",
+    label: "Kredi anapara ödemesi",
+    positive: ["KREDI ANAPARA", "ANAPARA ODEME", "KREDI TAKSIT ANAPARA"],
+    negative: ["KART", "POS", "FAIZ", "KOMISYON"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "300", nameKeywords: ["KREDI"] },
+      { code: "400", nameKeywords: ["KREDI"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 85,
+  },
+  {
+    id: "kredi-faiz",
+    label: "Kredi faiz ödemesi",
+    positive: ["KREDI FAIZ", "KREDI FAIZ ODEME"],
+    negative: ["KART", "POS", "KMH", "EK HESAP"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "780", nameKeywords: ["FAIZ"] },
+      { code: "660", nameKeywords: ["FAIZ"] },
+      { code: "780", nameKeywords: ["KREDI"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 88,
+  },
+  {
+    id: "kmh-faiz",
+    label: "Ek hesap / KMH faiz tahakkuku",
+    positive: [
+      "KMH FAIZ",
+      "EK HESAP FAIZ",
+      "KMH TAHAKKUK",
+      "EK HESAP TAHAKKUK",
+      "EKSİ BAKİYE FAIZ",
+    ],
+    negative: ["POS", "KREDI KART"],
+    directions: ["CIKIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "780", nameKeywords: ["FAIZ"] },
+      { code: "780", nameKeywords: ["KMH"] },
+      { code: "660", nameKeywords: ["FAIZ"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.HIGH,
+    score: 88,
+  },
+  {
+    id: "ek-hesap-kapama",
+    label: "Ek hesap kapama",
+    positive: ["EK HESAP KAPAMA", "KMH KAPAMA", "EKSİ BAKİYE KAPAMA"],
+    negative: ["FAIZ", "POS"],
+    directions: ["CIKIS", "GIRIS"],
+    documentType: "DK",
+    accountCandidates: [
+      { code: "300", nameKeywords: ["KMH"] },
+      { code: "300", nameKeywords: ["EK HESAP"] },
+      { code: "309", nameKeywords: ["KMH"] },
+    ],
+    descriptionStandard: null,
+    autoFillIfPlanHit: true,
+    requireSubAccount: true,
+    confidence: SMART_SUGGESTION_CONFIDENCE.MEDIUM,
+    score: 82,
   },
   {
     id: "nakit-cekim",
@@ -662,7 +1080,8 @@ function textHasAny(text, keywords = []) {
   });
 }
 
-function findAccountInPlan(companyPlans = [], accountCandidates = []) {
+function findAccountInPlan(companyPlans = [], accountCandidates = [], options = {}) {
+  const requireSubAccount = Boolean(options.requireSubAccount);
   const activeAccounts = (companyPlans || []).filter(
     (account) => account?.isActive !== false
   );
@@ -672,33 +1091,42 @@ function findAccountInPlan(companyPlans = [], accountCandidates = []) {
     if (!wantedCode) continue;
     const nameKeywords = candidate.nameKeywords || [];
 
-    const exact = activeAccounts.find((account) => {
+    const matches = (account, mode) => {
       const code = compactAccount(getAccountCode(account));
       const name = normalizeSmartText(getAccountName(account));
-      if (code !== wantedCode) return false;
+      if (mode === "exact" && code !== wantedCode) return false;
+      if (mode === "prefix" && !code.startsWith(wantedCode)) return false;
+      if (requireSubAccount) {
+        // Ham ana hesap (360 / 361 / 108) kör atama yapılmaz
+        if (code === wantedCode || !code.includes(".")) return false;
+      }
       if (!nameKeywords.length) return true;
       return nameKeywords.every((word) => name.includes(normalizeSmartText(word)));
-    });
-    if (exact) return exact;
+    };
 
-    const prefix = activeAccounts.find((account) => {
-      const code = compactAccount(getAccountCode(account));
-      const name = normalizeSmartText(getAccountName(account));
-      if (!code.startsWith(wantedCode)) return false;
-      if (!nameKeywords.length) return true;
-      return nameKeywords.every((word) => name.includes(normalizeSmartText(word)));
-    });
+    // Alt hesap tercih: önce prefix (108.01…), sonra exact
+    const prefix = activeAccounts.find((account) => matches(account, "prefix"));
     if (prefix) return prefix;
+
+    if (!requireSubAccount) {
+      const exact = activeAccounts.find((account) => matches(account, "exact"));
+      if (exact) return exact;
+    }
   }
 
   return null;
 }
 
-function collectPlanSuggestions(companyPlans = [], accountCandidates = [], limit = 3) {
+function collectPlanSuggestions(
+  companyPlans = [],
+  accountCandidates = [],
+  limit = 3,
+  options = {}
+) {
   const suggestions = [];
   const seen = new Set();
   for (const candidate of accountCandidates || []) {
-    const hit = findAccountInPlan(companyPlans, [candidate]);
+    const hit = findAccountInPlan(companyPlans, [candidate], options);
     if (!hit) continue;
     const code = getAccountCode(hit);
     const key = compactAccount(code);
@@ -756,20 +1184,33 @@ export function matchSafeSystemBankRule(description = "", direction = "", contex
 
   const planAccount = findAccountInPlan(
     context.companyPlans || [],
-    best.accountCandidates || []
+    best.accountCandidates || [],
+    { requireSubAccount: Boolean(best.requireSubAccount) }
   );
   const suggestions = collectPlanSuggestions(
     context.companyPlans || [],
-    best.accountCandidates || []
+    best.accountCandidates || [],
+    3,
+    { requireSubAccount: Boolean(best.requireSubAccount) }
   );
 
   const accountCode = getAccountCode(planAccount);
   const accountName = getAccountName(planAccount);
-  const canAutoFill =
+  let canAutoFill =
     Boolean(best.autoFillIfPlanHit) &&
     Boolean(accountCode) &&
     !best.needsEntity &&
     best.confidence !== SMART_SUGGESTION_CONFIDENCE.LOW;
+
+  // Ham ana hesap kör atama engeli (360 / 361 / 108 tek başına)
+  if (
+    canAutoFill &&
+    best.requireSubAccount &&
+    accountCode &&
+    !String(accountCode).includes(".")
+  ) {
+    canAutoFill = false;
+  }
 
   const lucaDescription =
     best.descriptionStandard ||
