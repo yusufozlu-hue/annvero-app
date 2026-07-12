@@ -21,6 +21,10 @@ import {
 import { applyLearningMemoryToStandardLucaRows } from "@/src/utils/bankLearningMemory";
 import { buildUnrecognizedQueueItems } from "@/src/utils/bankParserLearningPipeline";
 import { applyAccountMemoryV1RecordsToRows } from "@/src/utils/accountMemoryV1";
+import {
+  buildMemoryDecisionReport,
+  createEmptyMemoryTelemetry,
+} from "@/src/utils/accountMemoryV2";
 import { applySmartBankSuggestionsToRows } from "@/src/utils/bankSmartSuggestions";
 import { applyDeclarationAccrualDistributionToRows } from "@/src/utils/beyannameTahakkukEngine";
 import {
@@ -495,6 +499,9 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     cariFromLearnedDescription: 0,
     cariFromIbanHistory: 0,
     cariUnresolved: 0,
+    firmMemoryAutoApplied: 0,
+    firmMemoryConflict: 0,
+    memoryTelemetry: createEmptyMemoryTelemetry(),
     accountExactHit: 0,
     accountCandidateScan: 0,
     accountFuzzyCandidateCount: 0,
@@ -707,6 +714,18 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   timings.totalAnalysisMs = Date.now() - startedAt;
   emitProgress("Muhasebe Analizi", "Tamamlandı", 100);
 
+  const memoryDecisionReport = buildMemoryDecisionReport({
+    telemetry: analysisStats.memoryTelemetry || createEmptyMemoryTelemetry(),
+    totalAnalysisGroups: uniqueEntries.length,
+    analysisMs: timings.totalAnalysisMs,
+  });
+  memoryDecisionReport.autoResolved =
+    Number(analysisStats.firmMemoryAutoApplied || 0) ||
+    memoryDecisionReport.autoResolved;
+  memoryDecisionReport.conflicts =
+    Number(analysisStats.firmMemoryConflict || 0) ||
+    memoryDecisionReport.conflicts;
+
   const slowest = Object.entries({
     learningMatchMs: timings.learningMatchMs,
     ruleMatchMs: timings.ruleMatchMs,
@@ -714,6 +733,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     accountSuggestionMs: timings.accountSuggestionMs,
     uniqueBuildMs: timings.uniqueBuildMs,
     resultCloneMapMs: timings.resultCloneMapMs,
+    firmMemoryMs: timings.firmMemoryMs || 0,
   }).sort((a, b) => b[1] - a[1])[0];
 
   console.info("[bank-parser] analysis timings", {
@@ -721,6 +741,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     ...callCounts,
     movementCount: sourceMovements.length,
     uniqueReport,
+    memoryDecisionReport,
     slowestFn: slowest?.[0],
     slowestMs: slowest?.[1],
     coreSkippedInAnalysis: true,
@@ -737,6 +758,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     callCounts,
     uniqueDescriptionCount: uniqueEntries.length,
     uniqueReport,
+    memoryDecisionReport,
   };
 }
 

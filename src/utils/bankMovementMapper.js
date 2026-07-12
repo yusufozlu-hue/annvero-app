@@ -26,19 +26,22 @@ import {
   isLikelyCariGlAccount,
   isDirectExpenseAllowedType,
 } from "@/src/utils/bankTransactionType";
-import { normalizeBankAnalysisKey } from "@/src/utils/textNormalize";
+import { normalizeBankAnalysisKey, normalizeParserText } from "@/src/utils/textNormalize";
 import {
   findAccountMemoryByAnalysisKey,
   findAccountMemoryByIban,
   findAccountMemoryMatchInRecords,
 } from "@/src/utils/accountMemoryV1";
 import {
+  createEmptyMemoryTelemetry,
+  resolveAccountMemoryV2Decision,
+} from "@/src/utils/accountMemoryV2";
+import {
   buildCreditCardPaymentDescription,
   findCreditCardByText,
   getCreditCardAccount,
 } from "@/src/utils/creditCardAccountResolver";
 
-import { normalizeParserText } from "@/src/utils/textNormalize";
 import {
   buildFallbackLucaDescription,
   buildStandardLucaDescription,
@@ -526,6 +529,90 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       appendWarning(warnings, "Hesap eşleşmesi bulunamadı");
     }
   } else {
+    const firmAnalysisKey = normalizeBankAnalysisKey(description, direction);
+    const memoryList = Array.isArray(accountMemoryRecords)
+      ? accountMemoryRecords
+      : [];
+    if (analysisStats && !analysisStats.memoryTelemetry) {
+      analysisStats.memoryTelemetry = createEmptyMemoryTelemetry();
+    }
+    const firmMemoryStarted = Date.now();
+    const firmDecision = resolveAccountMemoryV2Decision(
+      {
+        companyId: selectedCompanyId || selectedCompany?.id || "",
+        analysisKey: firmAnalysisKey,
+        direction,
+        transactionType,
+        iban:
+          String(rawRow.iban || "").replace(/\s+/g, "") ||
+          (description.match(/TR\d{2}[\d\s]{20,}/i) || [""])[0].replace(
+            /\s+/g,
+            ""
+          ),
+        taxNumber: rawRow.vkn || rawRow.taxNumber || "",
+        counterpartyAlias: rawRow.unvan || rawRow.cariUnvan || "",
+        normalizedDescription: description,
+        amount,
+      },
+      memoryList,
+      {
+        telemetry: analysisStats?.memoryTelemetry || null,
+        allowAuto: true,
+      }
+    );
+    addTiming("firmMemoryMs", firmMemoryStarted);
+
+    let firmMemoryApplied = false;
+    if (firmDecision.mode === "conflict") {
+      appendWarning(
+        warnings,
+        firmDecision.message ||
+          "Firma hafızasında çakışan kararlar var; otomatik uygulanmadı."
+      );
+      if (analysisStats) {
+        analysisStats.firmMemoryConflict =
+          (analysisStats.firmMemoryConflict || 0) + 1;
+      }
+    } else if (firmDecision.autoApply && firmDecision.record) {
+      firmMemoryApplied = true;
+      matchedRule = {
+        source: "firmaHafizaV2",
+        islem: firmDecision.record.decisionType || "HAFIZA",
+        anahtar: firmDecision.tier,
+      };
+      matchedMemoryId = firmDecision.record.id || null;
+      counterAccountCode = firmDecision.record.accountCode || "";
+      if (firmDecision.record.documentType) {
+        documentType = firmDecision.record.documentType;
+      }
+      // GLN. HVL / GÖND. HVL standartlarını bozma — şablon yalnızca uyumluysa
+      const template = String(
+        firmDecision.record.finalDescriptionTemplate || ""
+      ).trim();
+      const templateNorm = normalizeParserText(template);
+      if (
+        template &&
+        (templateNorm.includes("GLN HVL") ||
+          templateNorm.includes("GOND HVL") ||
+          templateNorm.startsWith("GLN") ||
+          templateNorm.startsWith("GOND"))
+      ) {
+        lucaDescription = template;
+      } else {
+        lucaDescription = buildFallbackLucaDescription({
+          ...rawRow,
+          yon: direction,
+          aciklama: description,
+        });
+      }
+      appendWarning(warnings, `Firma hafızası (${firmDecision.tier})`);
+      if (analysisStats) {
+        analysisStats.firmMemoryAutoApplied =
+          (analysisStats.firmMemoryAutoApplied || 0) + 1;
+      }
+    }
+
+    if (!firmMemoryApplied) {
     const learningStarted = Date.now();
     const memoryMatch = findLearningMemoryMatch(learningMemory, description, {
       bankName: rawRow.banka || rawRow.bankName || selectedBank,
@@ -762,9 +849,10 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       }
       addTiming("ruleMatchMs", ruleStarted);
     }
+    } // !firmMemoryApplied
 
-    // Cari yalnızca transactionType gerektiriyorsa
-    if (cariRequired) {
+    // Cari yalnızca transactionType gerektiriyorsa (firma hafızası hesabı doldurduysa atlanır)
+    if (cariRequired && !(firmMemoryApplied && counterAccountCode)) {
       // Kural/hafıza gider hesabı bırakmışsa temizle
       if (
         isExpenseOrIncomeGlAccount(counterAccountCode) &&

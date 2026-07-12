@@ -24,6 +24,7 @@ import {
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
 import AnnveroDataTable from "@/src/components/AnnveroDataTable";
+import AccountMemoryV2Panel from "../components/AccountMemoryV2Panel";
 
 const inputClassName =
   "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-white outline-none focus:border-indigo-500";
@@ -372,6 +373,12 @@ export default function OgrenenHafizaPage() {
         Ön izlemede kaydedilen firma bazlı düzeltmeleri yönetin. Pasif kayıtlar parser
         sonrası uygulanmaz; silinen kayıtlar yönetim geçmişinde kalır.
       </p>
+
+      <AccountMemoryV2Panel
+        companies={companies}
+        selectedCompanyId={selectedCompanyId}
+        getCompanyDisplayName={getCompanyDisplayName}
+      />
 
       <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
         <StatCard label="Toplam öğrenilen kayıt" value={stats.total} />

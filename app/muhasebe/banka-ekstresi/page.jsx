@@ -53,6 +53,12 @@ import {
   saveAccountMemoryFromEdit,
 } from "@/src/utils/accountMemoryV1";
 import {
+  formatMemoryDecisionReportText,
+  findSimilarMemoryTargets,
+  loadAccountMemoryV2Records,
+  saveAccountMemoryV2Decision,
+} from "@/src/utils/accountMemoryV2";
+import {
   buildExportWarningConfirmMessage,
   analyzeMissingHesapRows,
   buildMissingHesapSummaryText,
@@ -297,6 +303,7 @@ export default function BankaParserPage() {
   const [ruleGroupReport, setRuleGroupReport] = useState(null);
   const [cariGroupReport, setCariGroupReport] = useState(null);
   const [cariDecisionReport, setCariDecisionReport] = useState(null);
+  const [memoryDecisionReport, setMemoryDecisionReport] = useState(null);
   const [selectedRuleGroupKey, setSelectedRuleGroupKey] = useState("");
   const [standardLucaRows, setStandardLucaRows] = useState([]);
   const [totalLucaCount, setTotalLucaCount] = useState(0);
@@ -396,6 +403,7 @@ export default function BankaParserPage() {
       setRuleGroupReport(null);
       setCariGroupReport(null);
       setCariDecisionReport(null);
+      setMemoryDecisionReport(null);
       setSelectedRuleGroupKey("");
       setToast(null);
       setPreviewErrorDetail("");
@@ -901,18 +909,106 @@ export default function BankaParserPage() {
     await exportExcel(false, { allowPartialMissing: true });
   };
 
-  const handleApplyHesapToAnalysisGroup = (row, accountCode, { learn = false } = {}) => {
+  const handleApplyHesapToAnalysisGroup = (
+    row,
+    accountCode,
+    { learn = false, similar = false } = {}
+  ) => {
     const code = String(accountCode || "").trim();
     if (!code || !row) return;
     const key = getRowAnalysisKey(row);
     const all = lucaRef.current || [];
+    const seedDirection =
+      Number(row.borc || 0) > 0
+        ? "GIRIS"
+        : Number(row.alacak || 0) > 0
+          ? "CIKIS"
+          : row.direction || "";
+    const seedType = String(row.transactionType || "").trim();
+    const similarKeys = new Set();
+    if (similar && selectedCompanyId) {
+      const similarRecords = findSimilarMemoryTargets(
+        loadAccountMemoryV2Records(),
+        {
+          ...row,
+          direction: seedDirection,
+          transactionType: seedType,
+          hesapKodu: code,
+        },
+        { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
+      );
+      for (const record of similarRecords) {
+        if (record.analysisKey) similarKeys.add(record.analysisKey);
+      }
+      if (key) similarKeys.add(key);
+      // Aynı dosyadaki benzer eksik satırlar (normalize örtüşme)
+      const seedText = String(
+        row.detayAciklama || row.fisAciklama || row.aciklama || ""
+      );
+      for (const item of all) {
+        const itemKey = getRowAnalysisKey(item);
+        if (!itemKey) continue;
+        const itemDirection =
+          Number(item.borc || 0) > 0
+            ? "GIRIS"
+            : Number(item.alacak || 0) > 0
+              ? "CIKIS"
+              : item.direction || "";
+        if (seedDirection && itemDirection && seedDirection !== itemDirection) {
+          continue;
+        }
+        if (
+          seedType &&
+          item.transactionType &&
+          seedType !== String(item.transactionType || "").trim()
+        ) {
+          continue;
+        }
+        const itemText = String(
+          item.detayAciklama || item.fisAciklama || item.aciklama || ""
+        );
+        const left = seedText.toLocaleLowerCase("tr-TR");
+        const right = itemText.toLocaleLowerCase("tr-TR");
+        if (
+          left &&
+          right &&
+          (left === right || left.includes(right.slice(0, 24)) || right.includes(left.slice(0, 24)))
+        ) {
+          similarKeys.add(itemKey);
+        }
+      }
+    }
+
     let updated = 0;
     lucaRef.current = all.map((item) => {
       const itemKey = getRowAnalysisKey(item);
       const missing =
         !String(item.hesapKodu || "").trim() || item.riskDurumu === "HESAP_EKSIK";
       if (!missing) return item;
-      if (key && itemKey && key !== itemKey) return item;
+      if (similar) {
+        if (!itemKey || !similarKeys.has(itemKey)) {
+          // aynı yön + transactionType + fuzzy yoksa analysisKey grubu
+          if (!(key && itemKey && key === itemKey)) return item;
+        }
+        const itemDirection =
+          Number(item.borc || 0) > 0
+            ? "GIRIS"
+            : Number(item.alacak || 0) > 0
+              ? "CIKIS"
+              : item.direction || "";
+        if (seedDirection && itemDirection && seedDirection !== itemDirection) {
+          return item;
+        }
+        if (
+          seedType &&
+          item.transactionType &&
+          seedType !== String(item.transactionType || "").trim()
+        ) {
+          return item;
+        }
+      } else if (key && itemKey && key !== itemKey) {
+        return item;
+      }
       updated += 1;
       return {
         ...item,
@@ -926,7 +1022,9 @@ export default function BankaParserPage() {
             .replace(/\s+\|\s+/g, " | ")
             .replace(/^\s*\|\s*|\s*\|\s*$/g, "")
             .trim(),
-          "Manuel hesap uygulandı",
+          similar
+            ? "Benzer açıklamalara uygulandı"
+            : "Manuel hesap uygulandı",
         ]
           .filter(Boolean)
           .join(" | "),
@@ -941,26 +1039,28 @@ export default function BankaParserPage() {
     );
     syncLucaPage(lucaPage);
     if (learn && selectedCompanyId) {
-      saveAccountMemoryFromEdit(
+      saveAccountMemoryV2Decision(
         {
           ...row,
           hesapKodu: code,
+          accountCode: code,
           analysisKey: getRowAnalysisKey(row) || row.analysisKey || "",
-          direction:
-            Number(row.borc || 0) > 0
-              ? "GIRIS"
-              : Number(row.alacak || 0) > 0
-                ? "CIKIS"
-                : row.direction || "",
-          transactionType: row.transactionType || "",
+          direction: seedDirection,
+          transactionType: seedType,
           belgeTuru: row.belgeTuru || "",
+          documentType: row.belgeTuru || "",
           cariId: code,
+          finalDescriptionTemplate:
+            row.fisAciklama || row.detayAciklama || row.aciklama || "",
+          source: similar ? "similar-learn" : "group-learn",
         },
         { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
       );
     }
     showToast(
-      `${updated} satıra ${code} uygulandı${learn ? " (öğrenildi)" : ""}.`,
+      `${updated} satıra ${code} uygulandı${
+        learn ? (similar ? " (benzer + öğrenildi)" : " (öğrenildi)") : ""
+      }.`,
       "success"
     );
   };
@@ -997,10 +1097,11 @@ export default function BankaParserPage() {
     );
     syncLucaPage(lucaPage);
     if (learn && selectedCompanyId) {
-      saveAccountMemoryFromEdit(
+      saveAccountMemoryV2Decision(
         {
           ...row,
           hesapKodu: code,
+          accountCode: code,
           analysisKey: getRowAnalysisKey(row) || row.analysisKey || "",
           direction:
             Number(row.borc || 0) > 0
@@ -1010,7 +1111,11 @@ export default function BankaParserPage() {
                 : row.direction || "",
           transactionType: row.transactionType || "",
           belgeTuru: row.belgeTuru || "",
+          documentType: row.belgeTuru || "",
           cariId: code,
+          finalDescriptionTemplate:
+            row.fisAciklama || row.detayAciklama || row.aciklama || "",
+          source: "row-learn",
         },
         { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
       );
@@ -1148,6 +1253,7 @@ export default function BankaParserPage() {
     setRuleGroupReport(null);
     setCariGroupReport(null);
     setCariDecisionReport(null);
+    setMemoryDecisionReport(null);
     setSelectedRuleGroupKey("");
     setToast(null);
     setPreviewErrorDetail("");
@@ -1430,6 +1536,13 @@ export default function BankaParserPage() {
           "[ANNVERO][CARI-DECISION]",
           formatCariDecisionReportText(decisionReport)
         );
+        if (result.memoryDecisionReport) {
+          setMemoryDecisionReport(result.memoryDecisionReport);
+          console.info(
+            "[ANNVERO][MEMORY-DECISION]",
+            formatMemoryDecisionReportText(result.memoryDecisionReport)
+          );
+        }
       }
       parserJob.markSuccess(
         `Muhasebe analizi tamamlandı (${movementsRef.current.length} hareket · ${
@@ -2200,6 +2313,15 @@ export default function BankaParserPage() {
           </div>
         ) : null}
 
+        {memoryDecisionReport ? (
+          <div className="rounded-xl border border-violet-700/40 bg-violet-950/30 px-4 py-3 text-sm text-violet-100">
+            <p className="font-semibold">Hafıza karar özeti</p>
+            <pre className="mt-2 whitespace-pre-wrap font-sans text-xs text-violet-100/90">
+              {formatMemoryDecisionReportText(memoryDecisionReport)}
+            </pre>
+          </div>
+        ) : null}
+
         {cariGroupReport?.totalUnresolved > 0 ? (
           <div className="rounded-xl border border-cyan-700/40 bg-cyan-950/30 px-4 py-3 text-sm text-cyan-100">
             <p className="font-semibold">
@@ -2246,6 +2368,23 @@ export default function BankaParserPage() {
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         type="button"
+                        className="rounded border border-slate-600/50 bg-slate-900/40 px-2 py-1 text-slate-100"
+                        onClick={() => {
+                          const sampleRow = lucaRef.current.find((row) =>
+                            (group.rowIds || []).includes(row.id)
+                          );
+                          if (!sampleRow) return;
+                          handleApplyHesapToSingleRow(
+                            sampleRow,
+                            group.suggestedAccount,
+                            { learn: false }
+                          );
+                        }}
+                      >
+                        Sadece bu satır
+                      </button>
+                      <button
+                        type="button"
                         className="rounded border border-emerald-700/50 bg-emerald-950/40 px-2 py-1 text-emerald-100"
                         onClick={() => {
                           const sampleRow = lucaRef.current.find((row) =>
@@ -2259,7 +2398,7 @@ export default function BankaParserPage() {
                           );
                         }}
                       >
-                        Toplu uygula ({group.suggestedAccount})
+                        Bu gruba uygula
                       </button>
                       <button
                         type="button"
@@ -2276,24 +2415,24 @@ export default function BankaParserPage() {
                           );
                         }}
                       >
-                        Toplu uygula + firma için öğren
+                        Bu gruba uygula + firma için öğren
                       </button>
                       <button
                         type="button"
-                        className="rounded border border-slate-600/50 bg-slate-900/40 px-2 py-1 text-slate-100"
+                        className="rounded border border-fuchsia-700/50 bg-fuchsia-950/40 px-2 py-1 text-fuchsia-100"
                         onClick={() => {
                           const sampleRow = lucaRef.current.find((row) =>
                             (group.rowIds || []).includes(row.id)
                           );
                           if (!sampleRow) return;
-                          handleApplyHesapToSingleRow(
-                            sampleRow,
+                          handleApplyHesapToAnalysisGroup(
+                            { ...sampleRow, analysisKey: group.analysisKey },
                             group.suggestedAccount,
-                            { learn: false }
+                            { learn: true, similar: true }
                           );
                         }}
                       >
-                        Sadece bu satır
+                        Bu firmada benzer açıklamalara uygula
                       </button>
                     </div>
                   ) : null}
@@ -2347,6 +2486,23 @@ export default function BankaParserPage() {
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         type="button"
+                        className="rounded border border-slate-600/50 bg-slate-900/40 px-2 py-1 text-slate-100"
+                        onClick={() => {
+                          const sampleRow = lucaRef.current.find((row) =>
+                            (group.rowIds || []).includes(row.id)
+                          );
+                          if (!sampleRow) return;
+                          handleApplyHesapToSingleRow(
+                            sampleRow,
+                            group.suggestedAccount,
+                            { learn: false }
+                          );
+                        }}
+                      >
+                        Sadece bu satır
+                      </button>
+                      <button
+                        type="button"
                         className="rounded border border-emerald-700/50 bg-emerald-950/40 px-2 py-1 text-emerald-100"
                         onClick={() => {
                           const sampleRow = lucaRef.current.find((row) =>
@@ -2360,7 +2516,7 @@ export default function BankaParserPage() {
                           );
                         }}
                       >
-                        Toplu uygula ({group.suggestedAccount})
+                        Bu gruba uygula
                       </button>
                       <button
                         type="button"
@@ -2377,24 +2533,24 @@ export default function BankaParserPage() {
                           );
                         }}
                       >
-                        Toplu uygula + firma için öğren
+                        Bu gruba uygula + firma için öğren
                       </button>
                       <button
                         type="button"
-                        className="rounded border border-slate-600/50 bg-slate-900/40 px-2 py-1 text-slate-100"
+                        className="rounded border border-fuchsia-700/50 bg-fuchsia-950/40 px-2 py-1 text-fuchsia-100"
                         onClick={() => {
                           const sampleRow = lucaRef.current.find((row) =>
                             (group.rowIds || []).includes(row.id)
                           );
                           if (!sampleRow) return;
-                          handleApplyHesapToSingleRow(
-                            sampleRow,
+                          handleApplyHesapToAnalysisGroup(
+                            { ...sampleRow, analysisKey: group.analysisKey },
                             group.suggestedAccount,
-                            { learn: false }
+                            { learn: true, similar: true }
                           );
                         }}
                       >
-                        Sadece bu satır
+                        Bu firmada benzer açıklamalara uygula
                       </button>
                     </div>
                   ) : null}
