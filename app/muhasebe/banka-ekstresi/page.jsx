@@ -56,8 +56,11 @@ import {
   formatMemoryDecisionReportText,
   findSimilarMemoryTargets,
   loadAccountMemoryV2Records,
+  migrateAccountMemoryV2InvertedDirections,
+  normalizeMemoryDirection,
   saveAccountMemoryV2Decision,
 } from "@/src/utils/accountMemoryV2";
+import { normalizeBankAnalysisKey } from "@/src/utils/textNormalize";
 import {
   buildExportWarningConfirmMessage,
   analyzeMissingHesapRows,
@@ -534,6 +537,91 @@ export default function BankaParserPage() {
     return movementsRef.current.find((row) => row.id === id) || null;
   };
 
+  /**
+   * Hafıza öğrenme yönü/analysisKey — Luca borc/alacak kullanılmaz.
+   * Kaynak movement.direction esas alınır.
+   */
+  const resolveMemoryLearnContext = (row = {}) => {
+    const movementId = row.sourceMovementId || row._movementId || "";
+    const movement = movementId ? getFullMovement(movementId) : null;
+
+    let direction = "";
+    let analysisKey = "";
+    let transactionType = "";
+    let description = "";
+
+    if (movement) {
+      direction = normalizeMemoryDirection(
+        movement.direction || movement.yon || ""
+      );
+      description = String(
+        movement.description ||
+          movement.rawRow?.aciklama ||
+          movement.rawRow?.description ||
+          ""
+      ).trim();
+      analysisKey = String(
+        movement.analysisKey ||
+          normalizeBankAnalysisKey(description, direction) ||
+          ""
+      ).trim();
+      transactionType = String(
+        movement.transactionType || row.transactionType || ""
+      ).trim();
+    }
+
+    if (!direction) {
+      direction = normalizeMemoryDirection(row.direction || "");
+    }
+
+    if (!analysisKey && direction) {
+      description =
+        description ||
+        String(
+          row.rawDescription ||
+            row.detayAciklama ||
+            row.fisAciklama ||
+            row.aciklama ||
+            ""
+        ).trim();
+      analysisKey = String(
+        row.analysisKey ||
+          normalizeBankAnalysisKey(description, direction) ||
+          ""
+      ).trim();
+    }
+
+    if (!transactionType) {
+      transactionType = String(row.transactionType || "").trim();
+    }
+
+    const ok = Boolean(direction && (analysisKey || description));
+    return {
+      ok,
+      movement,
+      direction,
+      analysisKey:
+        analysisKey ||
+        (direction ? normalizeBankAnalysisKey(description, direction) : ""),
+      transactionType,
+      description,
+      error: ok
+        ? ""
+        : "Kaynak hareket yönü bulunamadı; otomatik öğrenme yapılmadı. Luca borc/alacak yönü kullanılmaz.",
+    };
+  };
+
+  useEffect(() => {
+    const result = migrateAccountMemoryV2InvertedDirections();
+    if (result.migratedCount > 0) {
+      console.info("[ANNVERO][MEMORY-V2-MIGRATE]", {
+        migratedCount: result.migratedCount,
+        conflictCount: result.conflictCount,
+        conflicts: result.conflicts,
+      });
+    }
+  }, []);
+
   useEffect(() => {
     setLucaPage(0);
   }, [previewSearch, previewQuickFilter]);
@@ -710,11 +798,24 @@ export default function BankaParserPage() {
 
   const handleAccountMemorySave = (row) => {
     if (!selectedCompanyId) return;
-
-    saveAccountMemoryFromEdit(row, {
-      firmaId: selectedCompanyId,
-      kaynakAdi: selectedBank,
-    });
+    const learnCtx = resolveMemoryLearnContext(row);
+    if (!learnCtx.ok) {
+      showToast(learnCtx.error, "error");
+      return;
+    }
+    saveAccountMemoryFromEdit(
+      {
+        ...row,
+        analysisKey: learnCtx.analysisKey,
+        direction: learnCtx.direction,
+        transactionType: learnCtx.transactionType || row.transactionType || "",
+        normalizedDescription: learnCtx.description,
+      },
+      {
+        firmaId: selectedCompanyId,
+        kaynakAdi: selectedBank,
+      }
+    );
   };
 
   const exportExcel = async (ignoreWarnings = false, options = {}) => {
@@ -916,23 +1017,28 @@ export default function BankaParserPage() {
   ) => {
     const code = String(accountCode || "").trim();
     if (!code || !row) return;
-    const key = getRowAnalysisKey(row);
+
+    const learnCtx = resolveMemoryLearnContext(row);
+    const seedDirection = learnCtx.direction;
+    const seedType = String(
+      learnCtx.transactionType || row.transactionType || ""
+    ).trim();
+    const key = learnCtx.analysisKey || getRowAnalysisKey(row);
     const all = lucaRef.current || [];
-    const seedDirection =
-      Number(row.borc || 0) > 0
-        ? "GIRIS"
-        : Number(row.alacak || 0) > 0
-          ? "CIKIS"
-          : row.direction || "";
-    const seedType = String(row.transactionType || "").trim();
+
+    if (learn && !learnCtx.ok) {
+      showToast(learnCtx.error, "error");
+    }
+
     const similarKeys = new Set();
-    if (similar && selectedCompanyId) {
+    if (similar && selectedCompanyId && seedDirection) {
       const similarRecords = findSimilarMemoryTargets(
         loadAccountMemoryV2Records(),
         {
           ...row,
           direction: seedDirection,
           transactionType: seedType,
+          analysisKey: key,
           hesapKodu: code,
         },
         { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
@@ -941,38 +1047,43 @@ export default function BankaParserPage() {
         if (record.analysisKey) similarKeys.add(record.analysisKey);
       }
       if (key) similarKeys.add(key);
-      // Aynı dosyadaki benzer eksik satırlar (normalize örtüşme)
       const seedText = String(
-        row.detayAciklama || row.fisAciklama || row.aciklama || ""
+        learnCtx.description ||
+          row.detayAciklama ||
+          row.fisAciklama ||
+          row.aciklama ||
+          ""
       );
       for (const item of all) {
-        const itemKey = getRowAnalysisKey(item);
+        const itemLearn = resolveMemoryLearnContext(item);
+        const itemKey = itemLearn.analysisKey || getRowAnalysisKey(item);
         if (!itemKey) continue;
-        const itemDirection =
-          Number(item.borc || 0) > 0
-            ? "GIRIS"
-            : Number(item.alacak || 0) > 0
-              ? "CIKIS"
-              : item.direction || "";
+        const itemDirection = itemLearn.direction;
         if (seedDirection && itemDirection && seedDirection !== itemDirection) {
           continue;
         }
         if (
           seedType &&
-          item.transactionType &&
-          seedType !== String(item.transactionType || "").trim()
+          itemLearn.transactionType &&
+          seedType !== String(itemLearn.transactionType || "").trim()
         ) {
           continue;
         }
         const itemText = String(
-          item.detayAciklama || item.fisAciklama || item.aciklama || ""
+          itemLearn.description ||
+            item.detayAciklama ||
+            item.fisAciklama ||
+            item.aciklama ||
+            ""
         );
         const left = seedText.toLocaleLowerCase("tr-TR");
         const right = itemText.toLocaleLowerCase("tr-TR");
         if (
           left &&
           right &&
-          (left === right || left.includes(right.slice(0, 24)) || right.includes(left.slice(0, 24)))
+          (left === right ||
+            left.includes(right.slice(0, 24)) ||
+            right.includes(left.slice(0, 24)))
         ) {
           similarKeys.add(itemKey);
         }
@@ -981,28 +1092,23 @@ export default function BankaParserPage() {
 
     let updated = 0;
     lucaRef.current = all.map((item) => {
-      const itemKey = getRowAnalysisKey(item);
+      const itemLearn = resolveMemoryLearnContext(item);
+      const itemKey = itemLearn.analysisKey || getRowAnalysisKey(item);
       const missing =
         !String(item.hesapKodu || "").trim() || item.riskDurumu === "HESAP_EKSIK";
       if (!missing) return item;
       if (similar) {
         if (!itemKey || !similarKeys.has(itemKey)) {
-          // aynı yön + transactionType + fuzzy yoksa analysisKey grubu
           if (!(key && itemKey && key === itemKey)) return item;
         }
-        const itemDirection =
-          Number(item.borc || 0) > 0
-            ? "GIRIS"
-            : Number(item.alacak || 0) > 0
-              ? "CIKIS"
-              : item.direction || "";
+        const itemDirection = itemLearn.direction;
         if (seedDirection && itemDirection && seedDirection !== itemDirection) {
           return item;
         }
         if (
           seedType &&
-          item.transactionType &&
-          seedType !== String(item.transactionType || "").trim()
+          itemLearn.transactionType &&
+          seedType !== String(itemLearn.transactionType || "").trim()
         ) {
           return item;
         }
@@ -1038,36 +1144,56 @@ export default function BankaParserPage() {
       groupUnresolvedCariRows(lucaRef.current, { companyPlans })
     );
     syncLucaPage(lucaPage);
+    let learned = false;
     if (learn && selectedCompanyId) {
-      saveAccountMemoryV2Decision(
-        {
-          ...row,
-          hesapKodu: code,
-          accountCode: code,
-          analysisKey: getRowAnalysisKey(row) || row.analysisKey || "",
-          direction: seedDirection,
-          transactionType: seedType,
-          belgeTuru: row.belgeTuru || "",
-          documentType: row.belgeTuru || "",
-          cariId: code,
-          finalDescriptionTemplate:
-            row.fisAciklama || row.detayAciklama || row.aciklama || "",
-          source: similar ? "similar-learn" : "group-learn",
-        },
-        { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
-      );
+      if (!learnCtx.ok) {
+        // hesap uygulandı; öğrenme atlandı
+      } else {
+        const saved = saveAccountMemoryV2Decision(
+          {
+            ...row,
+            hesapKodu: code,
+            accountCode: code,
+            analysisKey: learnCtx.analysisKey,
+            direction: learnCtx.direction,
+            transactionType: seedType,
+            belgeTuru: row.belgeTuru || "",
+            documentType: row.belgeTuru || "",
+            cariId: code,
+            normalizedDescription: learnCtx.description,
+            finalDescriptionTemplate:
+              row.fisAciklama || row.detayAciklama || row.aciklama || "",
+            source: similar ? "similar-learn" : "group-learn",
+          },
+          { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
+        );
+        learned = Boolean(saved);
+        if (!saved) {
+          showToast("Hafıza kaydı oluşturulamadı.", "error");
+        }
+      }
     }
     showToast(
       `${updated} satıra ${code} uygulandı${
-        learn ? (similar ? " (benzer + öğrenildi)" : " (öğrenildi)") : ""
+        learned
+          ? similar
+            ? " (benzer + öğrenildi)"
+            : " (öğrenildi)"
+          : learn && !learned
+            ? " (öğrenme atlandı)"
+            : ""
       }.`,
-      "success"
+      learned || !learn ? "success" : "error"
     );
   };
 
   const handleApplyHesapToSingleRow = (row, accountCode, { learn = false } = {}) => {
     const code = String(accountCode || "").trim();
     if (!code || !row?.id) return;
+    const learnCtx = resolveMemoryLearnContext(row);
+    if (learn && !learnCtx.ok) {
+      showToast(learnCtx.error, "error");
+    }
     lucaRef.current = (lucaRef.current || []).map((item) => {
       if (item.id !== row.id) return item;
       return {
@@ -1096,33 +1222,34 @@ export default function BankaParserPage() {
       groupUnresolvedCariRows(lucaRef.current, { companyPlans })
     );
     syncLucaPage(lucaPage);
-    if (learn && selectedCompanyId) {
-      saveAccountMemoryV2Decision(
+    let learned = false;
+    if (learn && selectedCompanyId && learnCtx.ok) {
+      const saved = saveAccountMemoryV2Decision(
         {
           ...row,
           hesapKodu: code,
           accountCode: code,
-          analysisKey: getRowAnalysisKey(row) || row.analysisKey || "",
-          direction:
-            Number(row.borc || 0) > 0
-              ? "GIRIS"
-              : Number(row.alacak || 0) > 0
-                ? "CIKIS"
-                : row.direction || "",
-          transactionType: row.transactionType || "",
+          analysisKey: learnCtx.analysisKey,
+          direction: learnCtx.direction,
+          transactionType: learnCtx.transactionType || row.transactionType || "",
           belgeTuru: row.belgeTuru || "",
           documentType: row.belgeTuru || "",
           cariId: code,
+          normalizedDescription: learnCtx.description,
           finalDescriptionTemplate:
             row.fisAciklama || row.detayAciklama || row.aciklama || "",
           source: "row-learn",
         },
         { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
       );
+      learned = Boolean(saved);
+      if (!saved) showToast("Hafıza kaydı oluşturulamadı.", "error");
     }
     showToast(
-      `1 satıra ${code} uygulandı${learn ? " (öğrenildi)" : ""}.`,
-      "success"
+      `1 satıra ${code} uygulandı${
+        learned ? " (öğrenildi)" : learn && !learned ? " (öğrenme atlandı)" : ""
+      }.`,
+      learned || !learn ? "success" : "error"
     );
   };
 

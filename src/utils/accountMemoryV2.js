@@ -210,11 +210,13 @@ export function loadAccountMemoryV2Records() {
     normalizeAccountMemoryV2Record
   );
   const v1 = readJsonArray(V1_STORAGE_KEY).map(migrateV1Record);
-  if (!v1.length) return v2;
-  // V1 kayıtlarını bir kez V2 deposuna taşı
-  const merged = mergeUniqueById(v2, v1);
-  writeJsonArray(ACCOUNT_MEMORY_V2_STORAGE_KEY, merged);
-  return merged;
+  const merged = v1.length ? mergeUniqueById(v2, v1) : v2;
+  const migration = migrateAccountMemoryV2InvertedDirections(merged);
+  // migrate zaten direction fix'te yazar; yalnız V1 taşıması kaldıysa yaz
+  if (v1.length && migration.migratedCount === 0) {
+    persistAccountMemoryV2Records(migration.records);
+  }
+  return migration.records;
 }
 
 export function persistAccountMemoryV2Records(records = []) {
@@ -239,6 +241,101 @@ export function createEmptyMemoryTelemetry() {
     corrections: 0,
     conflicts: 0,
     memoryApplyMs: 0,
+  };
+}
+
+/** analysisKey son bileşeni: `metin|GIRIS` / `metin|CIKIS` */
+export function extractDirectionFromAnalysisKey(analysisKey = "") {
+  const parts = String(analysisKey || "").split("|");
+  const last = String(parts[parts.length - 1] || "")
+    .trim()
+    .toUpperCase();
+  return last === "GIRIS" || last === "CIKIS" ? last : "";
+}
+
+export function normalizeMemoryDirection(value = "") {
+  const text = String(value || "")
+    .trim()
+    .toUpperCase();
+  if (text === "CIKIS" || text === "ÇIKIŞ" || text === "OUT") return "CIKIS";
+  if (text === "GIRIS" || text === "GİRİŞ" || text === "IN") return "GIRIS";
+  return "";
+}
+
+/**
+ * Karşı Luca bacağı borc/alacak yüzünden ters yazılmış direction kayıtlarını
+ * analysisKey içindeki gerçek hareket yönüne çeker. Çakışmada birleştirmez.
+ */
+export function migrateAccountMemoryV2InvertedDirections(existingRecords = null) {
+  const source = Array.isArray(existingRecords)
+    ? existingRecords.map(normalizeAccountMemoryV2Record)
+    : readJsonArray(ACCOUNT_MEMORY_V2_STORAGE_KEY)
+        .map(normalizeAccountMemoryV2Record)
+        .concat(readJsonArray(V1_STORAGE_KEY).map(migrateV1Record));
+
+  const byId = new Map();
+  for (const record of source) {
+    if (!record.companyId || !record.accountCode) continue;
+    byId.set(record.id, record);
+  }
+  let records = Array.from(byId.values());
+
+  let migratedCount = 0;
+  records = records.map((record) => {
+    const keyDirection = extractDirectionFromAnalysisKey(record.analysisKey);
+    if (!keyDirection) return record;
+    const current = normalizeMemoryDirection(record.direction);
+    if (current === keyDirection) return record;
+    migratedCount += 1;
+    return normalizeAccountMemoryV2Record({
+      ...record,
+      direction: keyDirection,
+      updatedAt: nowIso(),
+      source: String(record.source || "")
+        .split("|")
+        .filter((part) => part && part !== "dir-fix")
+        .concat(["dir-fix"])
+        .join("|"),
+    });
+  });
+
+  const groups = new Map();
+  for (const record of records) {
+    if (record.isActive === false) continue;
+    const key = [
+      record.companyId,
+      record.analysisKey,
+      record.direction,
+      record.transactionType || "",
+    ].join("|");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(record);
+  }
+
+  const conflicts = [];
+  for (const [key, items] of groups.entries()) {
+    const codes = new Set(
+      items.map((item) => String(item.accountCode || "").trim()).filter(Boolean)
+    );
+    if (codes.size > 1) {
+      conflicts.push({
+        key,
+        accountCodes: Array.from(codes),
+        recordIds: items.map((item) => item.id),
+        count: items.length,
+      });
+    }
+  }
+
+  if (migratedCount > 0) {
+    persistAccountMemoryV2Records(records);
+  }
+
+  return {
+    migratedCount,
+    conflictCount: conflicts.length,
+    conflicts,
+    records,
   };
 }
 
