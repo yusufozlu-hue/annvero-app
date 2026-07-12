@@ -1,3 +1,9 @@
+import {
+  isGarantiStatementHeaderText,
+  isVakifbankStatementHeaderText,
+  joinRowHeaderText,
+} from "@/src/utils/bankStatementFormatGuard";
+
 export function parseGarantiEkstre(rows) {
     if (!rows || rows.length === 0) return [];
   
@@ -66,18 +72,10 @@ export function parseGarantiEkstre(rows) {
   
   function findHeaderRow(rows) {
     return rows.findIndex((row) => {
-      const text = row.map((cell) => normalizeText(String(cell || ""))).join(" ");
-  
-      return (
-        text.includes("tarih") &&
-        (text.includes("aciklama") || text.includes("islem aciklamasi")) &&
-        (
-          text.includes("bakiye") ||
-          text.includes("borc") ||
-          text.includes("alacak") ||
-          text.includes("tutar")
-        )
-      );
+      const text = joinRowHeaderText(row);
+      // Vakıfbank imzalarını açıkça reddet (İŞLEM TARİHİ, B/A, HESAP HAREKETLERİ, …)
+      if (isVakifbankStatementHeaderText(text)) return false;
+      return isGarantiStatementHeaderText(text);
     });
   }
   

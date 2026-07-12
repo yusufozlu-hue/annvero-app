@@ -119,6 +119,12 @@ import { saveKnowledgeTeachRequest } from "@/src/utils/knowledgeBuilderClient";
 import { useUserRole } from "@/src/hooks/useUserRole";
 import { parseBankExcelOnMainThread } from "@/src/utils/bankExcelMainThreadParse";
 import { runBankParserWorker } from "@/src/utils/workerParserBridge";
+import {
+  assertSelectedBankMatchesSheet,
+  BANK_FORMAT_MISMATCH_HINT,
+  BANK_FORMAT_MISMATCH_MESSAGE,
+} from "@/src/utils/bankStatementFormatGuard";
+import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils";
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -385,10 +391,25 @@ export default function BankaParserPage() {
       });
       setSelectedFile(null);
       setFileName("");
+      setExportValidation(null);
+      setMissingHesapReport(null);
+      setRuleGroupReport(null);
+      setCariGroupReport(null);
+      setCariDecisionReport(null);
+      setSelectedRuleGroupKey("");
+      setToast(null);
+      setPreviewErrorDetail("");
+      setPreviewSummary(null);
+      setCoreIntegrationSummary(null);
+      setCoreRowsProcessed(0);
+      setLastTimings(null);
+      parserJob.reset();
     };
 
     window.addEventListener(ANNVERO_COMPANY_CHANGED_EVENT, handleCompanyChange);
     return () => window.removeEventListener(ANNVERO_COMPANY_CHANGED_EVENT, handleCompanyChange);
+    // Mount-only: parserJob.reset is stable (useCallback).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -1102,7 +1123,7 @@ export default function BankaParserPage() {
     }
   };
 
-  const clearPreviewState = () => {
+  const clearPreviewState = ({ resetParserJob = true } = {}) => {
     normalizedRef.current = [];
     movementsRef.current = [];
     lucaRef.current = [];
@@ -1123,11 +1144,18 @@ export default function BankaParserPage() {
       excel: false,
     });
     setExportValidation(null);
+    setMissingHesapReport(null);
+    setRuleGroupReport(null);
+    setCariGroupReport(null);
+    setCariDecisionReport(null);
+    setSelectedRuleGroupKey("");
+    setToast(null);
     setPreviewErrorDetail("");
     setPreviewSummary(null);
     setCoreIntegrationSummary(null);
     setCoreRowsProcessed(0);
     setLastTimings(null);
+    if (resetParserJob) parserJob.reset();
   };
 
   const buildPipelineOptions = (normalizedRows, coreRowLimit) => ({
@@ -1212,6 +1240,22 @@ export default function BankaParserPage() {
       return;
     }
 
+    try {
+      const arrayBuffer = await selectedFile.arrayBuffer();
+      const sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
+      assertSelectedBankMatchesSheet(sheetRows, selectedBank);
+    } catch (mismatchError) {
+      const detail =
+        mismatchError?.code === "BANK_FORMAT_MISMATCH" ||
+        String(mismatchError?.message || "").includes(BANK_FORMAT_MISMATCH_MESSAGE)
+          ? `${BANK_FORMAT_MISMATCH_MESSAGE} ${BANK_FORMAT_MISMATCH_HINT}`
+          : mismatchError?.message || BANK_FORMAT_MISMATCH_MESSAGE;
+      setPreviewErrorDetail(detail);
+      showToast(detail, "error");
+      parserJob.markError(mismatchError);
+      return;
+    }
+
     const { runId, signal } = beginPipelineRun();
     const t0 = performance.now();
     setIsParsing(true);
@@ -1293,7 +1337,7 @@ export default function BankaParserPage() {
         jobType: "bank-excel-preview",
       });
       parserJob.markError(error);
-      clearPreviewState();
+      clearPreviewState({ resetParserJob: false });
       showToast(detail, "error");
     } finally {
       if (isRunActive(runId)) setIsParsing(false);

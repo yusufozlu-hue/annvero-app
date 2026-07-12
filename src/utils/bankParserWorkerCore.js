@@ -5,6 +5,7 @@
 
 import { parseGarantiEkstre } from "@/parsers/garantiParser";
 import { parseVakifbankEkstre } from "@/parsers/vakifbankParser";
+import { assertSelectedBankMatchesSheet } from "@/src/utils/bankStatementFormatGuard";
 import { normalizeParserText } from "@/src/utils/textNormalize";
 
 export const BANK_PARSE_STAGES = {
@@ -245,6 +246,7 @@ export function normalizeBankParsedRow(row, selectedBank) {
 }
 
 export function parseRowsForBank(sheetRows, selectedBank) {
+  assertSelectedBankMatchesSheet(sheetRows, selectedBank);
   if (selectedBank === "GARANTI") return parseGarantiEkstre(sheetRows);
   if (selectedBank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
   if (selectedBank === "TEB") {

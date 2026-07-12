@@ -34,6 +34,16 @@ function classifyBankParseError(error, stage = "") {
     };
   }
   if (
+    error?.code === "BANK_FORMAT_MISMATCH" ||
+    lower.includes("ekstre formatı uyuşmuyor") ||
+    lower.includes("ekstre formati uyusmuyor")
+  ) {
+    return {
+      code: "BANK_FORMAT_MISMATCH",
+      userMessage: message,
+    };
+  }
+  if (
     lower.includes("başlık") ||
     lower.includes("baslik") ||
     lower.includes("kolon") ||

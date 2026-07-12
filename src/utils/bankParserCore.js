@@ -37,6 +37,7 @@ import {
   parseMoney,
   parseRowsForBank as parseRowsForBankWorkerSafe,
 } from "@/src/utils/bankParserWorkerCore";
+import { assertSelectedBankMatchesSheet } from "@/src/utils/bankStatementFormatGuard";
 import { resolveParserName } from "@/src/utils/financialSourceArchitecture";
 import {
   buildAccountPlanCodeSet,
@@ -79,6 +80,7 @@ export {
 
 /** Ana thread: TEB için tam enrich; worker kendi lite sürümünü kullanır */
 export function parseRowsForBank(sheetRows, selectedBank) {
+  assertSelectedBankMatchesSheet(sheetRows, selectedBank);
   if (selectedBank === "GARANTI") return parseGarantiEkstre(sheetRows);
   if (selectedBank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
   if (selectedBank === "TEB") {
