@@ -10,13 +10,15 @@ import {
   normalizeParserText,
   buildLearningMemoryIndex,
 } from "@/src/utils/bankMovementMapper";
-import { enrichTebParsedRows } from "@/src/utils/tebHavaleGrouping";
+import { enrichTebParsedRows, groupTebHavaleMovements, logTebHavaleGroupingReport } from "@/src/utils/tebHavaleGrouping";
 import {
   bankMovementToStandardLucaRows,
   bankMovementsToStandardLucaRows,
   ensureStandardLucaRowIds,
+  groupedTebHavaleToStandardLucaRows,
   KAYNAK_TIPI,
   sortStandardLucaRows,
+  tebUnmatchedMasrafToStandardLucaRows,
 } from "@/src/utils/standardLucaRow";
 import { applyLearningMemoryToStandardLucaRows } from "@/src/utils/bankLearningMemory";
 import { buildUnrecognizedQueueItems } from "@/src/utils/bankParserLearningPipeline";
@@ -56,6 +58,8 @@ import { buildCariMatchIndex } from "@/src/utils/cariAccountMatcher";
 /** Önizleme / Luca / muhasebe analiz chunk boyutları */
 export const MOVEMENT_MAP_CHUNK_SIZE = 40;
 export const LUCA_MOVEMENT_CHUNK_SIZE = 40;
+/** TEB Luca üretimi — ana thread donmasını önlemek için küçültülmüş chunk */
+export const TEB_LUCA_CHUNK_SIZE = 20;
 export const ACCOUNTING_ANALYSIS_CHUNK_SIZE = 100;
 export const ACCOUNTING_ANALYSIS_UNIQUE_CHUNK_SIZE = 40;
 export const PARSER_PREVIEW_CHUNK_SIZE = 400;
@@ -844,9 +848,45 @@ export async function buildLucaRowsFromMovementsAsync(
   if (bankName === "TEB") {
     assertNotAborted(signal);
     await yieldToMain();
-    baseRows = bankMovementsToStandardLucaRows(movementRows, lucaContext);
-    maybeEarlyPreview(baseRows);
-    await yieldToMain();
+    const tebChunk = TEB_LUCA_CHUNK_SIZE;
+    const { outputItems, report } = groupTebHavaleMovements(movementRows);
+    logTebHavaleGroupingReport(report);
+    let fisNo = 1;
+    for (let offset = 0; offset < outputItems.length; offset += tebChunk) {
+      assertNotAborted(signal);
+      const end = Math.min(offset + tebChunk, outputItems.length);
+      for (let i = offset; i < end; i += 1) {
+        const item = outputItems[i];
+        if (item.kind === "teb_havale_group") {
+          baseRows.push(
+            ...groupedTebHavaleToStandardLucaRows(item, fisNo, lucaContext)
+          );
+        } else if (item.kind === "teb_unmatched_masraf") {
+          baseRows.push(
+            ...tebUnmatchedMasrafToStandardLucaRows(
+              item.movement,
+              fisNo,
+              lucaContext
+            )
+          );
+        } else {
+          baseRows.push(
+            ...bankMovementToStandardLucaRows(item.movement, fisNo, lucaContext)
+          );
+        }
+        fisNo += 1;
+      }
+      maybeEarlyPreview(baseRows);
+      emitProgress(
+        BANK_PARSE_STAGES.LUCA,
+        `TEB Luca ${end}/${outputItems.length} grup → ${baseRows.length} satır`,
+        10 + Math.round((end / Math.max(outputItems.length, 1)) * 55)
+      );
+      await yieldToMain();
+    }
+    const sortStarted = Date.now();
+    baseRows = sortStandardLucaRows(baseRows);
+    timings.sortingMs = Date.now() - sortStarted;
   } else {
     for (let offset = 0; offset < movementRows.length; offset += size) {
       assertNotAborted(signal);
@@ -949,14 +989,14 @@ export async function buildLucaRowsFromMovementsAsync(
   await yieldToMain();
 
   assertNotAborted(signal);
-  const unrecognizedItems = alreadyAnalyzed
-    ? []
-    : buildUnrecognizedQueueItems(declarationResult.rows, {
-        companyId: selectedCompanyId,
-        sourceModule: "banka",
-        sourceBank: selectedBank,
-        learningMemory,
-      });
+  // Analiz sonrası path'te learning yeniden uygulanmaz; kuyruk mevcut Luca satırlarından üretilir.
+  const unrecognizedItems = buildUnrecognizedQueueItems(declarationResult.rows, {
+    companyId: selectedCompanyId,
+    sourceModule: "banka",
+    sourceBank: selectedBank,
+    learningMemory,
+    skipLearningEnrichment: alreadyAnalyzed,
+  });
 
   timings.totalLucaMs = Date.now() - startedAt;
   emitProgress(BANK_PARSE_STAGES.LUCA, "Luca satırları tamamlandı", 100);

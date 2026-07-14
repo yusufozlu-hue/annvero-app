@@ -27,7 +27,7 @@ function postProgress(stage, detail = "") {
   self.postMessage({ type: "progress", stage, detail });
 }
 
-function postError(requestId, error, stage = "") {
+  function postError(requestId, error, stage = "") {
   const message = formatWorkerError(error, stage);
   console.error("[bankParser.worker]", { stage, message, error });
   self.postMessage({
@@ -36,6 +36,7 @@ function postError(requestId, error, stage = "") {
     error: message,
     stage: stage || null,
     errorName: error?.name || null,
+    errorCode: error?.code || null,
   });
 }
 
@@ -100,13 +101,11 @@ self.onmessage = async (event) => {
       (done, total) => postProgress(stage, `${done}/${total} hareket hazırlandı`)
     );
 
-    const plainRows = JSON.parse(JSON.stringify(normalizedRows));
-
     self.postMessage({
       type: "success",
       requestId,
       rawCount,
-      normalizedRows: plainRows,
+      normalizedRows,
       selectedBank: context.selectedBank,
     });
   } catch (error) {

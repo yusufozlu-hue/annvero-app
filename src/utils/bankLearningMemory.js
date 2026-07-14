@@ -227,15 +227,6 @@ export function findBankLucaLearningMemoryMatch(row, learningMemory = [], contex
       )
     );
 
-    console.log("memory match check", {
-      rowDescription: buildBankLucaLearningMemorySearchKey(row),
-      normalizedRow: baseScore.rowKey,
-      memoryKeyword: baseScore.memoryKeyword,
-      memoryCleanDescription: baseScore.memoryCleanDescription,
-      normalizedMemory: baseScore.normalizedMemory,
-      score,
-    });
-
     if (baseScore.score < 65 && score < 65) continue;
 
     if (!best || score >= bestScore) {

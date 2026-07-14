@@ -201,7 +201,10 @@ export function runParserWorker({
       }
 
       emit({ type: "error", jobId: requestId, jobType, error: message.error });
-      reject(new Error(message.error || "Parser başarısız."));
+      const err = new Error(message.error || "Parser başarısız.");
+      if (message.errorCode) err.code = message.errorCode;
+      if (message.errorName) err.name = message.errorName;
+      reject(err);
     };
 
     worker.onerror = (error) => {

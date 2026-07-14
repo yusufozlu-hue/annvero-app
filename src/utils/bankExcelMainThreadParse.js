@@ -69,10 +69,16 @@ function classifyBankParseError(error, stage = "") {
 
 /**
  * Excel'i ana thread'de okuyup banka satırlarını normalize eder.
+ * `arrayBuffer` verilirse dosya yeniden okunmaz (tek-buffer fallback).
  * @returns {{ rawCount: number, normalizedRows: object[], selectedBank: string, parseMode: string }}
  */
-export async function parseBankExcelOnMainThread(file, selectedBank, onProgress) {
-  if (!file) {
+export async function parseBankExcelOnMainThread(
+  file,
+  selectedBank,
+  onProgress,
+  arrayBufferInput = null
+) {
+  if (!file && !arrayBufferInput) {
     const err = new Error("Excel dosyası seçilmedi.");
     Object.assign(err, classifyBankParseError(err, "file_read"));
     throw err;
@@ -83,16 +89,24 @@ export async function parseBankExcelOnMainThread(file, selectedBank, onProgress)
     throw err;
   }
 
-  let arrayBuffer;
-  try {
-    onProgress?.({ stage: "Dosya okunuyor", detail: "Ana thread — dosya okunuyor" });
-    arrayBuffer = await file.arrayBuffer();
+  let arrayBuffer = arrayBufferInput;
+  if (!arrayBuffer) {
+    try {
+      onProgress?.({ stage: "Dosya okunuyor", detail: "Ana thread — dosya okunuyor" });
+      arrayBuffer = await file.arrayBuffer();
+      await yieldToMain();
+    } catch (error) {
+      const classified = classifyBankParseError(error, "file_read");
+      const err = new Error(classified.userMessage);
+      Object.assign(err, classified);
+      throw err;
+    }
+  } else {
+    onProgress?.({
+      stage: "Dosya okunuyor",
+      detail: "Ana thread — hazır buffer kullanılıyor",
+    });
     await yieldToMain();
-  } catch (error) {
-    const classified = classifyBankParseError(error, "file_read");
-    const err = new Error(classified.userMessage);
-    Object.assign(err, classified);
-    throw err;
   }
 
   if (!arrayBuffer || arrayBuffer.byteLength === 0) {

@@ -129,9 +129,9 @@ import { useUserRole } from "@/src/hooks/useUserRole";
 import { parseBankExcelOnMainThread } from "@/src/utils/bankExcelMainThreadParse";
 import { runBankParserWorker } from "@/src/utils/workerParserBridge";
 import {
-  assertSelectedBankMatchesSheet,
   BANK_FORMAT_MISMATCH_HINT,
   BANK_FORMAT_MISMATCH_MESSAGE,
+  assertSelectedBankMatchesSheet,
 } from "@/src/utils/bankStatementFormatGuard";
 import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils";
 
@@ -1442,17 +1442,51 @@ export default function BankaParserPage() {
     const onProgress = (message) => {
       if (!signal?.aborted) parserJob.onProgress(message);
     };
+
+    // Dosya yalnızca bir kez okunur; worker transferi için slice, fallback için orijinal buffer.
+    const arrayBuffer = await file.arrayBuffer();
+    if (signal?.aborted) {
+      const err = new Error("İşlem iptal edildi.");
+      err.name = "AbortError";
+      throw err;
+    }
+    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+      const err = new Error("Dosya içeriği boş veya okunamadı.");
+      err.code = "FILE_READ";
+      throw err;
+    }
+
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      if (signal?.aborted) {
-        const err = new Error("İşlem iptal edildi.");
-        err.name = "AbortError";
+      const sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
+      assertSelectedBankMatchesSheet(sheetRows, selectedBank);
+    } catch (mismatchError) {
+      if (
+        mismatchError?.code === "BANK_FORMAT_MISMATCH" ||
+        String(mismatchError?.message || "").includes(BANK_FORMAT_MISMATCH_MESSAGE)
+      ) {
+        const err = new Error(
+          `${BANK_FORMAT_MISMATCH_MESSAGE} ${BANK_FORMAT_MISMATCH_HINT}`
+        );
+        err.code = "BANK_FORMAT_MISMATCH";
         throw err;
       }
+      throw mismatchError;
+    }
+
+    if (signal?.aborted) {
+      const err = new Error("İşlem iptal edildi.");
+      err.name = "AbortError";
+      throw err;
+    }
+
+    // Worker postMessage transfer'i buffer'ı detach eder — fallback için orijinali sakla.
+    const workerBuffer = arrayBuffer.slice(0);
+
+    try {
       const workerUrl = new URL("./bankParser.worker.js", import.meta.url);
       const workerResult = await runBankParserWorker({
         workerUrl,
-        arrayBuffer,
+        arrayBuffer: workerBuffer,
         context: { selectedBank, selectedCompanyId },
         onProgress,
         timeoutMs: 120_000,
@@ -1469,7 +1503,12 @@ export default function BankaParserPage() {
         stage: BANK_PARSE_STAGES.READING,
         detail: "Worker kullanılamadı — ana thread",
       });
-      return parseBankExcelOnMainThread(file, selectedBank, onProgress);
+      return parseBankExcelOnMainThread(
+        file,
+        selectedBank,
+        onProgress,
+        arrayBuffer
+      );
     }
   };
 
@@ -1485,22 +1524,7 @@ export default function BankaParserPage() {
       return;
     }
 
-    try {
-      const arrayBuffer = await selectedFile.arrayBuffer();
-      const sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
-      assertSelectedBankMatchesSheet(sheetRows, selectedBank);
-    } catch (mismatchError) {
-      const detail =
-        mismatchError?.code === "BANK_FORMAT_MISMATCH" ||
-        String(mismatchError?.message || "").includes(BANK_FORMAT_MISMATCH_MESSAGE)
-          ? `${BANK_FORMAT_MISMATCH_MESSAGE} ${BANK_FORMAT_MISMATCH_HINT}`
-          : mismatchError?.message || BANK_FORMAT_MISMATCH_MESSAGE;
-      setPreviewErrorDetail(detail);
-      showToast(detail, "error");
-      parserJob.markError(mismatchError);
-      return;
-    }
-
+    // Format guard parse içinde (worker / ana thread) — çift Excel okuma yok.
     const { runId, signal } = beginPipelineRun();
     const t0 = performance.now();
     setIsParsing(true);
@@ -1567,10 +1591,14 @@ export default function BankaParserPage() {
         return;
       }
       console.error("[banka-ekstresi] preview failed", error);
-      const detail =
-        error?.userMessage ||
-        error?.message ||
-        "Dosya okunamadı. Excel'de açıp .xlsx olarak kaydedip tekrar deneyin.";
+      const isFormatMismatch =
+        error?.code === "BANK_FORMAT_MISMATCH" ||
+        String(error?.message || "").includes(BANK_FORMAT_MISMATCH_MESSAGE);
+      const detail = isFormatMismatch
+        ? `${BANK_FORMAT_MISMATCH_MESSAGE} ${BANK_FORMAT_MISMATCH_HINT}`
+        : error?.userMessage ||
+          error?.message ||
+          "Dosya okunamadı. Excel'de açıp .xlsx olarak kaydedip tekrar deneyin.";
       setPreviewErrorDetail(detail);
       logParserJobError(error, {
         module: "Banka Parser",
@@ -1774,55 +1802,10 @@ export default function BankaParserPage() {
       lucaRef.current = lucaResult.standardLucaRows || [];
       setLucaReady(true);
       setTotalLucaCount(lucaRef.current.length);
-      const missingReport = analyzeMissingHesapRows(lucaRef.current);
-      setMissingHesapReport(missingReport);
-      {
-        const grouped = groupUnresolvedRuleRows(lucaRef.current, {
-          companyPlans,
-          movements: movementsRef.current,
-        });
-        setRuleGroupReport(grouped);
-        const cariGrouped = groupUnresolvedCariRows(lucaRef.current, {
-          companyPlans,
-          movements: movementsRef.current,
-        });
-        setCariGroupReport(cariGrouped);
-        console.info("[ANNVERO][RULE-GROUPS]", {
-          unresolved: grouped.totalUnresolved,
-          groups: grouped.groupCount,
-          top30CoveragePct: grouped.top30CoveragePct,
-          top30Count: grouped.top30Coverage,
-          safeFamilyGroups: grouped.safeFamilyGroupCount,
-        });
-        console.info("[ANNVERO][CARI-GROUPS]", {
-          unresolved: cariGrouped.totalUnresolved,
-          groups: cariGrouped.groupCount,
-          top20CoveragePct: cariGrouped.top20CoveragePct,
-          withSuggestion: (cariGrouped.top20 || []).filter((g) => g.suggestedAccount)
-            .length,
-        });
-        if (lastTimings?.analysisCallCounts || lastTimings?.analysisTimings) {
-          const decisionReport = buildCariDecisionReport({
-            analysisStats: lastTimings.analysisCallCounts || {},
-            timings: lastTimings.analysisTimings || {},
-            previousMissingCount:
-              cariDecisionReport?.currentMissingCount ??
-              cariDecisionReport?.previousMissingCount ??
-              null,
-            currentMissingCount: missingReport.missingCount,
-            cariGroupReport: cariGrouped,
-          });
-          setCariDecisionReport(decisionReport);
-          console.info(
-            "[ANNVERO][CARI-DECISION]",
-            formatCariDecisionReportText(decisionReport)
-          );
-        }
-      }
+      // Özet/sayfa hemen; ağır raporlar yield sonrası (ana thread'i bloke etme)
       setPreviewSummary((prev) => ({
         ...(prev || computeMovementPreviewSummary(movementsRef.current)),
         lucaRows: lucaRef.current.length,
-        ...computePreviewSummary(lucaRef.current, null),
         totalMovements: movementsRef.current.length,
       }));
       syncLucaPage(0);
@@ -1840,13 +1823,6 @@ export default function BankaParserPage() {
       parserJob.markSuccess(
         `${lucaRef.current.length} Luca satırı hazır (${movementsRef.current.length} hareket × çift taraflı)`
       );
-      setTimeout(() => {
-        if (!isRunActive(runId)) return;
-        recordLearningMemoryUsage(lucaRef.current.slice(0, 300)).catch(() => {});
-        queueUnrecognizedFromWorker(lucaResult.unrecognizedItems || []).catch(
-          () => {}
-        );
-      }, 0);
       const stats = lucaResult.lucaStats;
       showToast(
         stats
@@ -1854,6 +1830,84 @@ export default function BankaParserPage() {
           : `${lucaRef.current.length} Luca satırı hazır. Excel kullanılabilir.`,
         "success"
       );
+
+      const rowsSnapshot = lucaRef.current;
+      const movementsSnapshot = movementsRef.current;
+      const unrecognizedSnapshot = lucaResult.unrecognizedItems || [];
+      const analysisCallCounts = lastTimings?.analysisCallCounts;
+      const analysisTimings = lastTimings?.analysisTimings;
+      const previousMissing =
+        cariDecisionReport?.currentMissingCount ??
+        cariDecisionReport?.previousMissingCount ??
+        null;
+
+      setTimeout(() => {
+        if (!isRunActive(runId)) return;
+        recordLearningMemoryUsage(rowsSnapshot.slice(0, 300)).catch(() => {});
+        queueUnrecognizedFromWorker(unrecognizedSnapshot).catch(() => {});
+
+        void (async () => {
+          const yieldUi = () => new Promise((resolve) => setTimeout(resolve, 0));
+          await yieldUi();
+          if (!isRunActive(runId)) return;
+
+          const missingReport = analyzeMissingHesapRows(rowsSnapshot);
+          if (!isRunActive(runId)) return;
+          setMissingHesapReport(missingReport);
+          setPreviewSummary((prev) => ({
+            ...(prev || {}),
+            lucaRows: rowsSnapshot.length,
+            ...computePreviewSummary(rowsSnapshot, null),
+            totalMovements: movementsSnapshot.length,
+          }));
+
+          await yieldUi();
+          if (!isRunActive(runId)) return;
+          const grouped = groupUnresolvedRuleRows(rowsSnapshot, {
+            companyPlans,
+            movements: movementsSnapshot,
+          });
+          setRuleGroupReport(grouped);
+          console.info("[ANNVERO][RULE-GROUPS]", {
+            unresolved: grouped.totalUnresolved,
+            groups: grouped.groupCount,
+            top30CoveragePct: grouped.top30CoveragePct,
+            top30Count: grouped.top30Coverage,
+            safeFamilyGroups: grouped.safeFamilyGroupCount,
+          });
+
+          await yieldUi();
+          if (!isRunActive(runId)) return;
+          const cariGrouped = groupUnresolvedCariRows(rowsSnapshot, {
+            companyPlans,
+            movements: movementsSnapshot,
+          });
+          setCariGroupReport(cariGrouped);
+          console.info("[ANNVERO][CARI-GROUPS]", {
+            unresolved: cariGrouped.totalUnresolved,
+            groups: cariGrouped.groupCount,
+            top20CoveragePct: cariGrouped.top20CoveragePct,
+            withSuggestion: (cariGrouped.top20 || []).filter(
+              (g) => g.suggestedAccount
+            ).length,
+          });
+
+          if (analysisCallCounts || analysisTimings) {
+            const decisionReport = buildCariDecisionReport({
+              analysisStats: analysisCallCounts || {},
+              timings: analysisTimings || {},
+              previousMissingCount: previousMissing,
+              currentMissingCount: missingReport.missingCount,
+              cariGroupReport: cariGrouped,
+            });
+            setCariDecisionReport(decisionReport);
+            console.info(
+              "[ANNVERO][CARI-DECISION]",
+              formatCariDecisionReportText(decisionReport)
+            );
+          }
+        })();
+      }, 0);
     } catch (error) {
       if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
         releaseLucaLock();

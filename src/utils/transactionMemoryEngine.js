@@ -273,8 +273,10 @@ export function extractTransactionKeyword(raw = "") {
   return tokens.slice(0, 4).join(" ");
 }
 
+export const UNRECOGNIZED_CONFIDENCE_THRESHOLD = 70;
+
 export function isUnrecognizedStandardRow(row = {}) {
-  // Hafızadan tam eşleşen satırlar kuyruğa düşmez
+  // Doğru eşleşmiş hafıza + hesap → kuyruğa düşmez
   if (
     (row?.memory_match || row?.hafizaEslesme || row?.match_source === "learning_memory") &&
     String(row.hesapKodu || row.account_code || "").trim()
@@ -287,36 +289,79 @@ export function isUnrecognizedStandardRow(row = {}) {
     return false;
   }
 
-  const hesapKodu = String(row.hesapKodu || "").trim();
-  const belgeTuru = String(row.belgeTuru || "").trim().toUpperCase();
+  const hesapKodu = String(row.hesapKodu || row.account_code || "").trim();
   const risk = String(row.riskDurumu || "").trim().toUpperCase();
   const suggestionScore = Number(row.suggestionScore || 0);
   const hasStrongSuggestion =
     Boolean(row.smartSuggestionApplied || row.suggestedMemoryId || row.hafizaEslesme) &&
-    suggestionScore >= 70 &&
+    suggestionScore >= UNRECOGNIZED_CONFIDENCE_THRESHOLD &&
     String(row.suggestedAccountCode || row.hesapKodu || "").trim();
   const note = normalizeParserText(
-    `${row.kontrolNotu || ""} ${row.warning || ""} ${row.uyari || ""}`
+    `${row.kontrolNotu || ""} ${row.warning || ""} ${row.uyari || ""} ${row.reviewReason || ""}`
   );
 
   const missingAccount = !hesapKodu || risk === "HESAP_EKSIK";
-  const unclearDocument = !belgeTuru;
-  const resolvedBySuggestion =
-    hasStrongSuggestion && !missingAccount && (!unclearDocument || row.suggestedDocumentType);
+  const counterUnresolved =
+    note.includes("KARSİ HESAP") ||
+    note.includes("KARSI HESAP") ||
+    note.includes("COUNTER") ||
+    String(row.missingHesapCategory || "").toLowerCase().includes("karşı") ||
+    String(row.missingHesapCategory || "").toLowerCase().includes("karsi");
+  const cariUnresolved =
+    note.includes("CARI BULUNAMAD") ||
+    note.includes("CARI COZULEMEDI") ||
+    note.includes("CARI EKSIK") ||
+    Boolean(row.cariUnresolved) ||
+    String(row.missingHesapCategory || "").toLowerCase().includes("cari");
+  const needsManual =
+    Boolean(row.requiresManualReview) ||
+    note.includes("MANUEL") ||
+    note.includes("INCELEME") ||
+    note.includes("ONAY BEKLIYOR") ||
+    risk === "MANUEL" ||
+    risk === "INCELEME";
 
-  if (resolvedBySuggestion) return false;
+  const confidence = Number(
+    row.suggestionScore ??
+      row.mappingConfidence ??
+      row.hafizaGuvenSkoru ??
+      row._coreConfidence ??
+      row.confidence ??
+      NaN
+  );
+  const lowConfidence =
+    Number.isFinite(confidence) &&
+    confidence > 0 &&
+    confidence < UNRECOGNIZED_CONFIDENCE_THRESHOLD;
 
   const notedUnknown =
     note.includes("BULUNAMAD") ||
     note.includes("ESLESMEDI") ||
     note.includes("TANINMAD") ||
-    note.includes("HESAP EKSIK") ||
-    note.includes("CARI BULUNAMAD");
+    note.includes("HESAP EKSIK");
 
-  // İlk kez görülen: hafıza eşleşmesi yok ve hesap/belge eksik
-  const firstSeenUnresolved = !row?.hafizaEslesme && (missingAccount || unclearDocument);
+  if (resolvedWithAccount(hesapKodu, risk, hasStrongSuggestion, missingAccount)) {
+    if (!cariUnresolved && !needsManual && !lowConfidence && !counterUnresolved) {
+      return false;
+    }
+  }
 
-  return missingAccount || unclearDocument || (notedUnknown && !hasStrongSuggestion) || firstSeenUnresolved;
+  if (hasStrongSuggestion && !missingAccount && !cariUnresolved && !needsManual) {
+    return false;
+  }
+
+  return (
+    missingAccount ||
+    counterUnresolved ||
+    cariUnresolved ||
+    needsManual ||
+    lowConfidence ||
+    (notedUnknown && !hasStrongSuggestion)
+  );
+}
+
+function resolvedWithAccount(hesapKodu, risk, hasStrongSuggestion, missingAccount) {
+  return Boolean(hesapKodu) && risk !== "HESAP_EKSIK" && !missingAccount;
 }
 
 /**
@@ -334,10 +379,14 @@ export function buildUnrecognizedFingerprint(item = {}) {
     item.keyword ||
     extractTransactionKeyword(raw);
   const amount = Number(item.amount ?? 0);
+  const date = String(
+    item.transactionDate || item.transaction_date || item.fisTarihi || ""
+  ).trim();
 
   return [
     item.companyId || item.company_id || "",
     keyword,
+    date,
     Number.isFinite(amount) ? amount.toFixed(2) : "0.00",
   ]
     .map((part) => normalizeParserText(part))

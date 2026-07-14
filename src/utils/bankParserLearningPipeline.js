@@ -32,11 +32,9 @@ export function applyBankLearningToStandardRows(
 export function buildUnrecognizedQueueItems(standardRows = [], context = {}) {
   const learningMemory = context.learningMemory || [];
 
-  const enrichedRows = applyBankLearningToStandardRows(
-    standardRows,
-    learningMemory,
-    context
-  );
+  const enrichedRows = context.skipLearningEnrichment
+    ? ensureStandardLucaRowIds(standardRows)
+    : applyBankLearningToStandardRows(standardRows, learningMemory, context);
 
   const candidates = collectUnrecognizedFromStandardRows(enrichedRows, {
     companyId: context.companyId,
