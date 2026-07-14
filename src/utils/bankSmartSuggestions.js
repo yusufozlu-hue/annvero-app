@@ -1081,14 +1081,28 @@ function textHasAny(text, keywords = []) {
 
 function findAccountInPlan(companyPlans = [], accountCandidates = [], options = {}) {
   const requireSubAccount = Boolean(options.requireSubAccount);
-  const activeAccounts = (companyPlans || []).filter(
-    (account) => account?.isActive !== false
-  );
+  const planIndex = options.planIndex || null;
+
+  const fallbackActive = () =>
+    (companyPlans || []).filter((account) => account?.isActive !== false);
+
+  const poolForWanted = (wantedCode) => {
+    if (planIndex?.byMainPrefix) {
+      const main =
+        String(wantedCode || "")
+          .split(".")[0]
+          ?.slice(0, 3) || String(wantedCode || "").slice(0, 3);
+      const pool = planIndex.byMainPrefix.get(main);
+      if (pool?.length) return pool;
+    }
+    return fallbackActive();
+  };
 
   for (const candidate of accountCandidates) {
     const wantedCode = compactAccount(candidate.code);
     if (!wantedCode) continue;
     const nameKeywords = candidate.nameKeywords || [];
+    const activeAccounts = poolForWanted(wantedCode);
 
     const matches = (account, mode) => {
       const code = compactAccount(getAccountCode(account));
@@ -1184,13 +1198,19 @@ export function matchSafeSystemBankRule(description = "", direction = "", contex
   const planAccount = findAccountInPlan(
     context.companyPlans || [],
     best.accountCandidates || [],
-    { requireSubAccount: Boolean(best.requireSubAccount) }
+    {
+      requireSubAccount: Boolean(best.requireSubAccount),
+      planIndex: context.planIndex || null,
+    }
   );
   const suggestions = collectPlanSuggestions(
     context.companyPlans || [],
     best.accountCandidates || [],
     3,
-    { requireSubAccount: Boolean(best.requireSubAccount) }
+    {
+      requireSubAccount: Boolean(best.requireSubAccount),
+      planIndex: context.planIndex || null,
+    }
   );
 
   const accountCode = getAccountCode(planAccount);

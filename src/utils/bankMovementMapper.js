@@ -41,6 +41,7 @@ import {
 import {
   createEmptyMemoryTelemetry,
   resolveAccountMemoryV2Decision,
+  MEMORY_MATCH_TIER,
 } from "@/src/utils/accountMemoryV2";
 import {
   buildCreditCardPaymentDescription,
@@ -445,6 +446,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     analysisStats = null,
     analysisTimings = null,
     accountMemoryRecords = null,
+    accountMemoryV2Index = null,
+    companyAccountingPolicies = null,
   } = context;
 
   const addTiming = (key, started) => {
@@ -479,6 +482,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   // İşlem türü — cari/personelden ÖNCE
   const typeResolution = resolveBankTransactionType(description, direction, {
     companyPlans,
+    planIndex,
     cariUnvan: rawRow.unvan || rawRow.cariUnvan || "",
     personelAdi: rawRow.personelAdi || "",
   });
@@ -542,6 +546,10 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     const memoryList = Array.isArray(accountMemoryRecords)
       ? accountMemoryRecords
       : [];
+    const memoryIndexOrRecords =
+      accountMemoryV2Index && accountMemoryV2Index.byAnalysisKey
+        ? accountMemoryV2Index
+        : memoryList;
     if (analysisStats && !analysisStats.memoryTelemetry) {
       analysisStats.memoryTelemetry = createEmptyMemoryTelemetry();
     }
@@ -563,7 +571,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         normalizedDescription: description,
         amount,
       },
-      memoryList,
+      memoryIndexOrRecords,
       {
         telemetry: analysisStats?.memoryTelemetry || null,
         allowAuto: true,
@@ -630,15 +638,19 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 
     // Firma Muhasebe Politikası → Muhasebe Senaryosu
     // (hafıza hesabı doldurduysa senaryo yalnızca meta/cari bayrağı için)
-    const companyPolicies = resolveCompanyAccountingPolicies(
-      selectedCompany?.accountingRules || selectedCompany || {}
-    );
+    const companyPolicies =
+      companyAccountingPolicies ||
+      resolveCompanyAccountingPolicies(
+        selectedCompany?.accountingRules || selectedCompany || {}
+      );
     scenarioDecision = resolveAccountingScenario({
       transactionType,
       direction,
       description,
       companyPolicies,
+      policiesResolved: Boolean(companyAccountingPolicies),
       companyPlans,
+      planIndex,
       date,
       bankAccountCode: accountCode,
       company: selectedCompany,
@@ -820,6 +832,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
             typeResolution.systemMatch ||
             matchSafeSystemBankRule(description, direction, {
               companyPlans,
+              planIndex,
               cariUnvan: rawRow.unvan || rawRow.cariUnvan || "",
               personelAdi: rawRow.personelAdi || "",
             });
@@ -931,39 +944,70 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         counterAccountCode = "";
       }
 
-      const analysisKey = normalizeBankAnalysisKey(description, direction);
-      const memoryList = Array.isArray(accountMemoryRecords)
-        ? accountMemoryRecords
-        : [];
+      const analysisKey = firmAnalysisKey;
       const memoryCtx = {
         firmaId: selectedCompanyId || selectedCompany?.id || "",
         companyId: selectedCompanyId || selectedCompany?.id || "",
         bankName: selectedBank || "",
         kaynakAdi: selectedBank || "",
+        transactionType,
+        direction,
       };
-      const analysisKeyMemory = findAccountMemoryByAnalysisKey(
-        memoryList,
-        analysisKey,
-        memoryCtx,
-        direction
-      );
-      const learnedMatch = findAccountMemoryMatchInRecords(
-        memoryList,
-        {
-          detayAciklama: description,
-          fisAciklama: lucaDescription,
-          analysisKey,
-          direction,
-          transactionType,
-        },
-        memoryCtx
-      );
-      const ibanHistoryMemory = findAccountMemoryByIban(
-        memoryList,
+      const ibanForMemory =
         String(rawRow.iban || "").replace(/\s+/g, "") ||
-          (description.match(/TR\d{2}[\d\s]{20,}/i) || [""])[0].replace(/\s+/g, ""),
-        memoryCtx
-      );
+        (description.match(/TR\d{2}[\d\s]{20,}/i) || [""])[0].replace(/\s+/g, "");
+
+      // İlk firmDecision sonucunu reuse et — aynı unique için ikinci/üçüncü V2 resolve yok
+      let analysisKeyMemory =
+        firmDecision?.tier === MEMORY_MATCH_TIER.ANALYSIS_KEY && firmDecision.record
+          ? firmDecision.record
+          : null;
+      let ibanHistoryMemory =
+        firmDecision?.tier === MEMORY_MATCH_TIER.IBAN && firmDecision.record
+          ? firmDecision.record
+          : null;
+      let learnedMatch =
+        firmDecision?.record &&
+        (firmDecision.tier === MEMORY_MATCH_TIER.NORMALIZED_DESCRIPTION ||
+          firmDecision.tier === MEMORY_MATCH_TIER.TYPE_TOKEN ||
+          firmDecision.tier === MEMORY_MATCH_TIER.ALIAS)
+          ? {
+              record: firmDecision.record,
+              confidence: firmDecision.confidence,
+              exactMatch: (firmDecision.confidence || 0) >= 94,
+              tier: firmDecision.tier,
+              autoApply: firmDecision.autoApply,
+            }
+          : null;
+
+      if (!analysisKeyMemory) {
+        analysisKeyMemory = findAccountMemoryByAnalysisKey(
+          memoryIndexOrRecords,
+          analysisKey,
+          memoryCtx,
+          direction
+        );
+      }
+      if (!learnedMatch) {
+        learnedMatch = findAccountMemoryMatchInRecords(
+          memoryIndexOrRecords,
+          {
+            detayAciklama: description,
+            fisAciklama: lucaDescription,
+            analysisKey,
+            direction,
+            transactionType,
+          },
+          memoryCtx
+        );
+      }
+      if (!ibanHistoryMemory) {
+        ibanHistoryMemory = findAccountMemoryByIban(
+          memoryIndexOrRecords,
+          ibanForMemory,
+          memoryCtx
+        );
+      }
 
       const cariStarted = Date.now();
       const cariResolution = applyCariResolution(

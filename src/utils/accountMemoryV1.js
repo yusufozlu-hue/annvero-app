@@ -30,8 +30,11 @@ export function saveAccountMemoryFromEdit(row = {}, context = {}) {
   });
 }
 
+/**
+ * @param {object[]|object} indexOrRecords — V2 index ({byAnalysisKey}) veya ham kayıt dizisi
+ */
 export function findAccountMemoryByAnalysisKey(
-  records = [],
+  indexOrRecords = [],
   analysisKey = "",
   context = {},
   direction = ""
@@ -43,7 +46,7 @@ export function findAccountMemoryByAnalysisKey(
       direction,
       transactionType: context.transactionType || "",
     },
-    records,
+    indexOrRecords,
     { allowAuto: true }
   );
   if (
@@ -60,7 +63,10 @@ export function findAccountMemoryByAnalysisKey(
   if (decision?.tier === MEMORY_MATCH_TIER.ANALYSIS_KEY && decision.record) {
     return decision.record;
   }
-  // Doğrudan analysisKey tara
+  // Index üzerinden çözülemediyse ham dizi taraması (geriye uyumluluk)
+  const records = Array.isArray(indexOrRecords)
+    ? indexOrRecords
+    : indexOrRecords?.scoped || [];
   const companyId = String(context.firmaId || context.companyId || "").trim();
   const key = String(analysisKey || "").trim();
   if (!key || !companyId) return null;
@@ -80,7 +86,7 @@ export function findAccountMemoryByAnalysisKey(
   return best;
 }
 
-export function findAccountMemoryByIban(records = [], iban = "", context = {}) {
+export function findAccountMemoryByIban(indexOrRecords = [], iban = "", context = {}) {
   const decision = resolveAccountMemoryV2Decision(
     {
       companyId: context.firmaId || context.companyId,
@@ -88,7 +94,7 @@ export function findAccountMemoryByIban(records = [], iban = "", context = {}) {
       direction: context.direction || "",
       transactionType: context.transactionType || "",
     },
-    records,
+    indexOrRecords,
     { allowAuto: true }
   );
   if (decision?.tier === MEMORY_MATCH_TIER.IBAN && decision.record) {
@@ -97,7 +103,11 @@ export function findAccountMemoryByIban(records = [], iban = "", context = {}) {
   return null;
 }
 
-export function findAccountMemoryMatchInRecords(records = [], row = {}, context = {}) {
+export function findAccountMemoryMatchInRecords(
+  indexOrRecords = [],
+  row = {},
+  context = {}
+) {
   const decision = resolveAccountMemoryV2Decision(
     {
       companyId: context.firmaId || context.companyId || row.firmaId,
@@ -118,7 +128,7 @@ export function findAccountMemoryMatchInRecords(records = [], row = {}, context 
         row.detayAciklama || row.fisAciklama || row.aciklama || "",
       amount: Math.abs(Number(row.borc || row.alacak || row.tutar || 0)),
     },
-    records,
+    indexOrRecords,
     { allowAuto: true }
   );
 
@@ -156,5 +166,3 @@ export function applyAccountMemoryV1ToRows(rows = [], context = {}) {
 }
 
 export { buildAccountMemoryV2Index };
-
-export { buildExportWarningConfirmMessage } from "@/src/utils/previewExportValidation";

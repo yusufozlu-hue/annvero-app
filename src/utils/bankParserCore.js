@@ -24,6 +24,7 @@ import { applyLearningMemoryToStandardLucaRows } from "@/src/utils/bankLearningM
 import { buildUnrecognizedQueueItems } from "@/src/utils/bankParserLearningPipeline";
 import { applyAccountMemoryV1RecordsToRows } from "@/src/utils/accountMemoryV1";
 import {
+  buildAccountMemoryV2Index,
   buildMemoryDecisionReport,
   createEmptyMemoryTelemetry,
 } from "@/src/utils/accountMemoryV2";
@@ -54,6 +55,7 @@ import {
   buildLegacyAnalysisMemoKey,
 } from "@/src/utils/textNormalize";
 import { buildCariMatchIndex } from "@/src/utils/cariAccountMatcher";
+import { resolveCompanyAccountingPolicies } from "@/src/utils/bankAccountingScenarioEngine";
 
 /** Önizleme / Luca / muhasebe analiz chunk boyutları */
 export const MOVEMENT_MAP_CHUNK_SIZE = 40;
@@ -61,7 +63,7 @@ export const LUCA_MOVEMENT_CHUNK_SIZE = 40;
 /** TEB Luca üretimi — ana thread donmasını önlemek için küçültülmüş chunk */
 export const TEB_LUCA_CHUNK_SIZE = 20;
 export const ACCOUNTING_ANALYSIS_CHUNK_SIZE = 100;
-export const ACCOUNTING_ANALYSIS_UNIQUE_CHUNK_SIZE = 40;
+export const ACCOUNTING_ANALYSIS_UNIQUE_CHUNK_SIZE = 80;
 export const PARSER_PREVIEW_CHUNK_SIZE = 400;
 /** Yalnızca CORE aşaması için süre bütçesi (mapping kesilmez) */
 export const ACCOUNTING_ANALYSIS_TOTAL_BUDGET_MS = 60_000;
@@ -135,10 +137,12 @@ export function buildBankParserResult({
   });
 }
 
-function buildMovementMappingContext(options = {}) {
+export function buildMovementMappingContext(options = {}) {
   const companyPlans = options.companyPlans || [];
   const learningMemory = options.learningMemory || [];
   const selectedCompanyId = options.selectedCompanyId || "";
+  const selectedCompany = options.selectedCompany;
+  const accountMemoryRecords = options.accountMemoryRecords || null;
   const planIndex =
     options.planIndex || buildAccountPlanIndex(companyPlans);
   const cariIndex =
@@ -149,8 +153,23 @@ function buildMovementMappingContext(options = {}) {
   const activeLearningMemory =
     options.activeLearningMemory || learningMemoryIndex.active || [];
 
+  // Account Memory V2 index — analiz boyunca 1× (ham kayıt listesi de context’te kalır)
+  const accountMemoryV2Index =
+    options.accountMemoryV2Index && options.accountMemoryV2Index.byAnalysisKey
+      ? options.accountMemoryV2Index
+      : buildAccountMemoryV2Index(
+          Array.isArray(accountMemoryRecords) ? accountMemoryRecords : [],
+          selectedCompanyId || selectedCompany?.id || ""
+        );
+
+  const companyAccountingPolicies =
+    options.companyAccountingPolicies ||
+    resolveCompanyAccountingPolicies(
+      selectedCompany?.accountingRules || selectedCompany || {}
+    );
+
   return {
-    selectedCompany: options.selectedCompany,
+    selectedCompany,
     companyPlans,
     companyRules: options.companyRules,
     selectedBank: options.selectedBank,
@@ -168,7 +187,9 @@ function buildMovementMappingContext(options = {}) {
     cariIndex,
     analysisStats: options.analysisStats || null,
     analysisTimings: options.analysisTimings || null,
-    accountMemoryRecords: options.accountMemoryRecords || null,
+    accountMemoryRecords,
+    accountMemoryV2Index,
+    companyAccountingPolicies,
   };
 }
 
@@ -544,14 +565,17 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   };
 
   // Phase 1: unique groups (yeni + eski karşılaştırma)
+  // memoKeyByMovementIndex: Phase3'te normalizeBankAnalysisKey tekrarını önler
   const uniqueBuildStarted = Date.now();
   emitProgress("Muhasebe Analizi", "Analiz grupları hazırlanıyor", 3);
   const uniqueGroups = new Map();
   const legacyUniqueKeys = new Set();
+  const memoKeyByMovementIndex = new Array(sourceMovements.length);
   for (let index = 0; index < sourceMovements.length; index += 1) {
     const source = sourceMovements[index] || {};
     const raw = source.rawRow || normalizedRows[index] || null;
     const key = buildAnalysisMemoKey(raw || source, source.direction);
+    memoKeyByMovementIndex[index] = key;
     legacyUniqueKeys.add(buildLegacyMemoKeyFromRaw(raw || source, source.direction));
     if (!uniqueGroups.has(key)) {
       uniqueGroups.set(key, {
@@ -662,8 +686,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   const analyzed = new Array(sourceMovements.length);
   for (let index = 0; index < sourceMovements.length; index += 1) {
     const source = sourceMovements[index] || {};
-    const raw = source.rawRow || normalizedRows[index] || null;
-    const memoKey = buildAnalysisMemoKey(raw || source, source.direction);
+    const memoKey = memoKeyByMovementIndex[index];
     const cached = analysisMemo.get(memoKey);
     if (cached) {
       memoHits += 1;

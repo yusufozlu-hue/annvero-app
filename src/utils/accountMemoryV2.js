@@ -252,6 +252,17 @@ export function createEmptyMemoryTelemetry() {
   };
 }
 
+/** Test/perf: buildAccountMemoryV2Index çağrı sayısı (analiz başına 1 beklenir) */
+let accountMemoryV2IndexBuildCount = 0;
+
+export function getAccountMemoryV2IndexBuildCount() {
+  return accountMemoryV2IndexBuildCount;
+}
+
+export function resetAccountMemoryV2IndexBuildCount() {
+  accountMemoryV2IndexBuildCount = 0;
+}
+
 /** analysisKey son bileşeni: `metin|GIRIS` / `metin|CIKIS` */
 export function extractDirectionFromAnalysisKey(analysisKey = "") {
   const parts = String(analysisKey || "").split("|");
@@ -348,6 +359,7 @@ export function migrateAccountMemoryV2InvertedDirections(existingRecords = null)
 }
 
 export function buildAccountMemoryV2Index(records = [], companyId = "") {
+  accountMemoryV2IndexBuildCount += 1;
   const company = String(companyId || "").trim();
   const scoped = (records || []).filter(
     (record) =>

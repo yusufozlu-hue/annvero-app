@@ -105,7 +105,19 @@ function getAccountName(account) {
 /**
  * Firma Muhasebe Politikası — accountingRules'tan normalize bayraklar.
  */
+/** Test/perf: politika resolve sayısı (analiz başına 1 beklenir) */
+let companyAccountingPolicyResolveCount = 0;
+
+export function getCompanyAccountingPolicyResolveCount() {
+  return companyAccountingPolicyResolveCount;
+}
+
+export function resetCompanyAccountingPolicyResolveCount() {
+  companyAccountingPolicyResolveCount = 0;
+}
+
 export function resolveCompanyAccountingPolicies(companyOrRules = {}) {
+  companyAccountingPolicyResolveCount += 1;
   const rules =
     companyOrRules?.accountingRules && typeof companyOrRules.accountingRules === "object"
       ? companyOrRules.accountingRules
@@ -143,13 +155,27 @@ function parseMovementMonth(dateValue = "") {
 /**
  * Plan içinde prefix + opsiyonel isim anahtarları ile alt hesap bul.
  * requireSubAccount: ham ana hesap (103) kabul edilmez.
+ * planIndex varsa byMainPrefix havuzundan tarar; yok/boşsa companyPlans fallback.
  */
 export function findPlanSubAccount(
   companyPlans = [],
   candidates = [],
-  { requireSubAccount = true } = {}
+  { requireSubAccount = true, planIndex = null } = {}
 ) {
-  const active = (companyPlans || []).filter((a) => a?.isActive !== false);
+  const fallbackActive = () =>
+    (companyPlans || []).filter((a) => a?.isActive !== false);
+
+  const poolForWanted = (wanted) => {
+    if (planIndex?.byMainPrefix) {
+      const main =
+        String(wanted || "")
+          .split(".")[0]
+          ?.slice(0, 3) || String(wanted || "").slice(0, 3);
+      const pool = planIndex.byMainPrefix.get(main);
+      if (pool?.length) return pool;
+    }
+    return fallbackActive();
+  };
 
   for (const candidate of candidates) {
     const wanted = compactAccount(candidate.code);
@@ -157,6 +183,7 @@ export function findPlanSubAccount(
     const nameKeywords = (candidate.nameKeywords || []).map((k) =>
       normalizeParserText(k)
     );
+    const active = poolForWanted(wanted);
 
     const matches = (account, mode) => {
       const code = compactAccount(getAccountCode(account));
@@ -185,24 +212,37 @@ export function findPlanSubAccount(
 /**
  * Aylık 103 verilen çekler — işlem ayına göre plan alt hesabı.
  */
-export function resolveMonthlyGivenCheckAccount(companyPlans = [], date = "") {
+export function resolveMonthlyGivenCheckAccount(
+  companyPlans = [],
+  date = "",
+  planIndex = null
+) {
   const month = parseMovementMonth(date);
   const monthKeys = month ? MONTH_KEYWORDS[month - 1] || [] : [];
+  const opts = { planIndex };
 
   if (monthKeys.length) {
-    const byMonth = findPlanSubAccount(companyPlans, [
-      { code: "103", nameKeywords: [monthKeys[0]] },
-      ...monthKeys.slice(1).map((k) => ({ code: "103", nameKeywords: [k] })),
-      { code: "103", nameKeywords: ["VERILEN", "CEK"] },
-    ]);
+    const byMonth = findPlanSubAccount(
+      companyPlans,
+      [
+        { code: "103", nameKeywords: [monthKeys[0]] },
+        ...monthKeys.slice(1).map((k) => ({ code: "103", nameKeywords: [k] })),
+        { code: "103", nameKeywords: ["VERILEN", "CEK"] },
+      ],
+      opts
+    );
     if (byMonth) return byMonth;
   }
 
-  return findPlanSubAccount(companyPlans, [
-    { code: "103", nameKeywords: ["VERILEN", "CEK"] },
-    { code: "103", nameKeywords: ["CEK"] },
-    { code: "103", nameKeywords: [] },
-  ]);
+  return findPlanSubAccount(
+    companyPlans,
+    [
+      { code: "103", nameKeywords: ["VERILEN", "CEK"] },
+      { code: "103", nameKeywords: ["CEK"] },
+      { code: "103", nameKeywords: [] },
+    ],
+    opts
+  );
 }
 
 function mapTypeToScenarioId(transactionType = "") {
@@ -326,20 +366,26 @@ export function resolveAccountingScenario({
   description = "",
   companyPolicies = {},
   companyPlans = [],
+  planIndex = null,
+  /** true: companyPolicies zaten resolveCompanyAccountingPolicies çıktısı */
+  policiesResolved = false,
   date = "",
   bankAccountCode = "",
   company = null,
   bankName = "",
 } = {}) {
-  const policies = {
-    ...DEFAULT_COMPANY_ACCOUNTING_POLICIES,
-    ...resolveCompanyAccountingPolicies(companyPolicies),
-  };
+  const policies = policiesResolved
+    ? { ...DEFAULT_COMPANY_ACCOUNTING_POLICIES, ...companyPolicies }
+    : {
+        ...DEFAULT_COMPANY_ACCOUNTING_POLICIES,
+        ...resolveCompanyAccountingPolicies(companyPolicies),
+      };
   const type = String(transactionType || BANK_TRANSACTION_TYPE.BILINMEYEN);
   const scenarioId = mapTypeToScenarioId(type);
   const cariRequired = isCariRequiredForType(type);
   const personelRequired = isPersonelRequiredForType(type);
   const dir = direction === "CIKIS" ? "CIKIS" : "GIRIS";
+  const planOpts = { planIndex };
 
   const base = emptyDecision({
     scenarioId,
@@ -387,7 +433,7 @@ export function resolveAccountingScenario({
         legs: { debit: "103", credit: bankAccountCode || "102" },
       };
     }
-    const hit = resolveMonthlyGivenCheckAccount(companyPlans, date);
+    const hit = resolveMonthlyGivenCheckAccount(companyPlans, date, planIndex);
     const code = hit ? compactAccount(getAccountCode(hit)) : "";
     return {
       ...base,
@@ -413,11 +459,15 @@ export function resolveAccountingScenario({
         legs: { debit: bankAccountCode || "102", credit: "101" },
       };
     }
-    const hit = findPlanSubAccount(companyPlans, [
-      { code: "101", nameKeywords: ["ALINAN", "CEK"] },
-      { code: "101", nameKeywords: ["CEK"] },
-      { code: "101", nameKeywords: [] },
-    ]);
+    const hit = findPlanSubAccount(
+      companyPlans,
+      [
+        { code: "101", nameKeywords: ["ALINAN", "CEK"] },
+        { code: "101", nameKeywords: ["CEK"] },
+        { code: "101", nameKeywords: [] },
+      ],
+      planOpts
+    );
     const code = hit ? compactAccount(getAccountCode(hit)) : "";
     return {
       ...base,
@@ -442,10 +492,14 @@ export function resolveAccountingScenario({
         legs: { debit: bankAccountCode || "102", credit: "100" },
       };
     }
-    const hit = findPlanSubAccount(companyPlans, [
-      { code: "100", nameKeywords: ["KASA"] },
-      { code: "100", nameKeywords: [] },
-    ]);
+    const hit = findPlanSubAccount(
+      companyPlans,
+      [
+        { code: "100", nameKeywords: ["KASA"] },
+        { code: "100", nameKeywords: [] },
+      ],
+      planOpts
+    );
     const code = hit ? compactAccount(getAccountCode(hit)) : "";
     return {
       ...base,
@@ -470,10 +524,14 @@ export function resolveAccountingScenario({
         legs: { debit: "100", credit: bankAccountCode || "102" },
       };
     }
-    const hit = findPlanSubAccount(companyPlans, [
-      { code: "100", nameKeywords: ["KASA"] },
-      { code: "100", nameKeywords: [] },
-    ]);
+    const hit = findPlanSubAccount(
+      companyPlans,
+      [
+        { code: "100", nameKeywords: ["KASA"] },
+        { code: "100", nameKeywords: [] },
+      ],
+      planOpts
+    );
     const code = hit ? compactAccount(getAccountCode(hit)) : "";
     return {
       ...base,
@@ -510,16 +568,20 @@ export function resolveAccountingScenario({
       const preferredHit = findPlanSubAccount(
         companyPlans,
         [{ code: preferred, nameKeywords: [] }],
-        { requireSubAccount: preferred.includes(".") }
+        { requireSubAccount: preferred.includes("."), planIndex }
       );
       code = preferredHit ? compactAccount(getAccountCode(preferredHit)) : preferred;
     }
     if (!code) {
-      const hit = findPlanSubAccount(companyPlans, [
-        { code: "108", nameKeywords: ["POS"] },
-        { code: "108", nameKeywords: ["KREDI", "KART"] },
-        { code: "108", nameKeywords: [] },
-      ]);
+      const hit = findPlanSubAccount(
+        companyPlans,
+        [
+          { code: "108", nameKeywords: ["POS"] },
+          { code: "108", nameKeywords: ["KREDI", "KART"] },
+          { code: "108", nameKeywords: [] },
+        ],
+        planOpts
+      );
       code = hit ? compactAccount(getAccountCode(hit)) : "";
     }
     return {
@@ -561,7 +623,7 @@ export function resolveAccountingScenario({
               { code: "102", nameKeywords: ["USD"] },
               { code: "102", nameKeywords: ["EUR"] },
             ],
-        { requireSubAccount: true }
+        { requireSubAccount: true, planIndex }
       );
       const code = hit ? compactAccount(getAccountCode(hit)) : "";
       return {
