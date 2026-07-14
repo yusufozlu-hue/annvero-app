@@ -1,4 +1,22 @@
-export function normalizeParserText(value) {
+const NORMALIZE_MEMO_MAX = 20000;
+
+/** Analiz boyu memo — begin/end ile bağlanır; global kalıcı cache değildir. */
+let activeNormalizeMemo = null;
+
+export function beginNormalizeMemo(map = new Map()) {
+  activeNormalizeMemo = map instanceof Map ? map : new Map();
+  return activeNormalizeMemo;
+}
+
+export function endNormalizeMemo() {
+  activeNormalizeMemo = null;
+}
+
+export function getActiveNormalizeMemoSize() {
+  return activeNormalizeMemo?.size || 0;
+}
+
+function computeNormalizeParserText(value) {
   return String(value || "")
     .replaceAll("ı", "i")
     .toUpperCase()
@@ -13,6 +31,33 @@ export function normalizeParserText(value) {
     .trim();
 }
 
+export function normalizeParserText(value) {
+  const profile = globalThis.__ANNVERO_ANALYSIS_PROFILE__;
+  const started = profile?.enabled ? performance.now() : 0;
+  const key = String(value ?? "");
+
+  if (activeNormalizeMemo?.has(key)) {
+    if (profile?.enabled) {
+      profile.normalizeCallCount += 1;
+      profile.normalizeMemoHitCount = (profile.normalizeMemoHitCount || 0) + 1;
+      profile.normalizeTotalMs += performance.now() - started;
+    }
+    return activeNormalizeMemo.get(key);
+  }
+
+  const result = computeNormalizeParserText(value);
+  if (activeNormalizeMemo && activeNormalizeMemo.size < NORMALIZE_MEMO_MAX) {
+    activeNormalizeMemo.set(key, result);
+  }
+
+  if (profile?.enabled) {
+    const elapsed = performance.now() - started;
+    profile.normalizeCallCount += 1;
+    profile.normalizeTotalMs += elapsed;
+  }
+  return result;
+}
+
 function resolveAnalysisDirection(direction = "") {
   const value = String(direction || "").trim().toUpperCase();
   return value === "CIKIS" || value === "ÇIKIŞ" || value === "OUT" ? "CIKIS" : "GIRIS";
@@ -23,10 +68,18 @@ function resolveAnalysisDirection(direction = "") {
  * Görünen açıklamayı veya muhasebe kurallarını değiştirmez.
  */
 export function normalizeBankAnalysisKey(description, direction = "") {
+  const profile = globalThis.__ANNVERO_ANALYSIS_PROFILE__;
+  const started = profile?.enabled ? performance.now() : 0;
   // Apostrof yalnızca analysis key için boşluğa (no'lu → NO LU)
   let text = normalizeParserText(String(description || "").replace(/'/g, " "));
   if (!text) {
-    return `|${resolveAnalysisDirection(direction)}`;
+    const emptyKey = `|${resolveAnalysisDirection(direction)}`;
+    if (profile?.enabled) {
+      const elapsed = performance.now() - started;
+      profile.normalizeBankKeyCallCount += 1;
+      profile.normalizeBankKeyTotalMs += elapsed;
+    }
+    return emptyKey;
   }
 
   // Etiketli kimlik: "1849228780 sorgu no'lu" ve "sorgu no 1849228780"
@@ -65,7 +118,13 @@ export function normalizeBankAnalysisKey(description, direction = "") {
 
   text = text.replace(/\s+/g, " ").trim();
 
-  return `${text}|${resolveAnalysisDirection(direction)}`;
+  const key = `${text}|${resolveAnalysisDirection(direction)}`;
+  if (profile?.enabled) {
+    const elapsed = performance.now() - started;
+    profile.normalizeBankKeyCallCount += 1;
+    profile.normalizeBankKeyTotalMs += elapsed;
+  }
+  return key;
 }
 
 /** Eski unique anahtar — karşılaştırma / telemetri için */

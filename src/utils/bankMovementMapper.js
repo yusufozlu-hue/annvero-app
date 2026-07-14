@@ -196,16 +196,28 @@ function findLearningMemoryMatch(learningMemory, description, context = {}) {
   const stats = context.analysisStats || null;
   const index = context.learningMemoryIndex || null;
   const companyId = String(context.companyId || "").trim();
+  const profile = globalThis.__ANNVERO_ANALYSIS_PROFILE__;
+  const started = profile?.enabled ? performance.now() : 0;
 
   if (!text) return null;
 
   // Exact keyword == full description
   if (index?.byExactKeyword?.has(text)) {
     if (stats) stats.learningExactHit = (stats.learningExactHit || 0) + 1;
+    if (profile?.enabled) {
+      profile.learningHitCount += 1;
+      profile.functionMs.findLearningMemoryMatch =
+        (profile.functionMs.findLearningMemoryMatch || 0) + (performance.now() - started);
+    }
     return index.byExactKeyword.get(text);
   }
   if (companyId && index?.byCompanyKeyword?.has(`${companyId}|${text}`)) {
     if (stats) stats.learningExactHit = (stats.learningExactHit || 0) + 1;
+    if (profile?.enabled) {
+      profile.learningHitCount += 1;
+      profile.functionMs.findLearningMemoryMatch =
+        (profile.functionMs.findLearningMemoryMatch || 0) + (performance.now() - started);
+    }
     return index.byCompanyKeyword.get(`${companyId}|${text}`);
   }
 
@@ -220,6 +232,13 @@ function findLearningMemoryMatch(learningMemory, description, context = {}) {
     }
 
     if (candidates.size === 0) {
+      if (profile?.enabled) {
+        const elapsed = performance.now() - started;
+        profile.learningMissCount += 1;
+        profile.learningMissTotalMs += elapsed;
+        profile.functionMs.findLearningMemoryMatch =
+          (profile.functionMs.findLearningMemoryMatch || 0) + elapsed;
+      }
       return null;
     }
 
@@ -238,6 +257,16 @@ function findLearningMemoryMatch(learningMemory, description, context = {}) {
         bestScore = score;
       }
     }
+    if (profile?.enabled) {
+      const elapsed = performance.now() - started;
+      if (best) profile.learningHitCount += 1;
+      else {
+        profile.learningMissCount += 1;
+        profile.learningMissTotalMs += elapsed;
+      }
+      profile.functionMs.findLearningMemoryMatch =
+        (profile.functionMs.findLearningMemoryMatch || 0) + elapsed;
+    }
     return best;
   }
 
@@ -255,6 +284,16 @@ function findLearningMemoryMatch(learningMemory, description, context = {}) {
       best = record;
       bestScore = score;
     }
+  }
+  if (profile?.enabled) {
+    const elapsed = performance.now() - started;
+    if (best) profile.learningHitCount += 1;
+    else {
+      profile.learningMissCount += 1;
+      profile.learningMissTotalMs += elapsed;
+    }
+    profile.functionMs.findLearningMemoryMatch =
+      (profile.functionMs.findLearningMemoryMatch || 0) + elapsed;
   }
   return best;
 }
@@ -828,14 +867,15 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
           counterAccountCode = legacyRule.hesap || "";
         } else {
           // 3) Güvenli sistem kuralı (firma hafızası / özel kural sonrası)
-          const systemMatch =
-            typeResolution.systemMatch ||
-            matchSafeSystemBankRule(description, direction, {
-              companyPlans,
-              planIndex,
-              cariUnvan: rawRow.unvan || rawRow.cariUnvan || "",
-              personelAdi: rawRow.personelAdi || "",
-            });
+          // resolveBankTransactionType zaten sistem kuralını çözdü — ikinci çağrı yok
+          const systemMatch = typeResolution.systemRuleResolved
+            ? typeResolution.systemMatch
+            : matchSafeSystemBankRule(description, direction, {
+                companyPlans,
+                planIndex,
+                cariUnvan: rawRow.unvan || rawRow.cariUnvan || "",
+                personelAdi: rawRow.personelAdi || "",
+              });
 
           if (systemMatch) {
             matchedRule = {

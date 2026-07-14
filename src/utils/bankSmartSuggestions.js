@@ -1059,6 +1059,8 @@ function getAccountName(account) {
 }
 
 function compactAccount(code = "") {
+  // Tarihsel davranış: normalizeParserText noktaları kaldırır (108.01.001 → 10801001).
+  // requireSubAccount / exact eşleşme bu semantikle kalır (sonuç parity).
   return normalizeParserText(code).replace(/\s+/g, "");
 }
 
@@ -1082,31 +1084,72 @@ function textHasAny(text, keywords = []) {
 function findAccountInPlan(companyPlans = [], accountCandidates = [], options = {}) {
   const requireSubAccount = Boolean(options.requireSubAccount);
   const planIndex = options.planIndex || null;
+  const profile = globalThis.__ANNVERO_ANALYSIS_PROFILE__;
+  const started = profile?.enabled ? performance.now() : 0;
 
   const fallbackActive = () =>
     (companyPlans || []).filter((account) => account?.isActive !== false);
 
-  const poolForWanted = (wantedCode) => {
-    if (planIndex?.byMainPrefix) {
-      const main =
-        String(wantedCode || "")
-          .split(".")[0]
-          ?.slice(0, 3) || String(wantedCode || "").slice(0, 3);
-      const pool = planIndex.byMainPrefix.get(main);
-      if (pool?.length) return pool;
+  /**
+   * Exact/prefix aramada: planIndex varken boş main bucket → [] (full plan yok).
+   * planIndex yoksa legacy active list (entry'ye sarılır).
+   */
+  const poolEntriesForWanted = (wantedCode) => {
+    const main =
+      String(wantedCode || "")
+        .split(".")[0]
+        ?.slice(0, 3) || String(wantedCode || "").slice(0, 3);
+    // entriesByMainPrefix anahtarları noktalı koda göre (108); strip form da aynı main
+    const mainKey = main.replace(/\D/g, "").slice(0, 3) || main;
+
+    if (planIndex?.entriesByMainPrefix) {
+      return (
+        planIndex.entriesByMainPrefix.get(main) ||
+        planIndex.entriesByMainPrefix.get(mainKey) ||
+        []
+      );
     }
-    return fallbackActive();
+    if (planIndex?.byMainPrefix) {
+      return (planIndex.byMainPrefix.get(main) || []).map((account) => ({
+        account,
+        normalizedCode: compactAccount(getAccountCode(account)),
+        smartNormalizedName: normalizeSmartText(getAccountName(account)),
+      }));
+    }
+
+    if (profile?.enabled) {
+      profile.planFallbackScanCount += 1;
+      profile.findAccountInPlanFallbackCount += 1;
+      const fallbackStarted = performance.now();
+      const active = fallbackActive();
+      profile.planFallbackTotalMs += performance.now() - fallbackStarted;
+      return active.map((account) => ({
+        account,
+        normalizedCode: compactAccount(getAccountCode(account)),
+        smartNormalizedName: normalizeSmartText(getAccountName(account)),
+      }));
+    }
+    return fallbackActive().map((account) => ({
+      account,
+      normalizedCode: compactAccount(getAccountCode(account)),
+      smartNormalizedName: normalizeSmartText(getAccountName(account)),
+    }));
   };
 
   for (const candidate of accountCandidates) {
     const wantedCode = compactAccount(candidate.code);
     if (!wantedCode) continue;
-    const nameKeywords = candidate.nameKeywords || [];
-    const activeAccounts = poolForWanted(wantedCode);
+    const nameKeywords = (candidate.nameKeywords || []).map((word) =>
+      normalizeSmartText(word)
+    );
+    const activeEntries = poolEntriesForWanted(wantedCode);
 
-    const matches = (account, mode) => {
-      const code = compactAccount(getAccountCode(account));
-      const name = normalizeSmartText(getAccountName(account));
+    const matches = (entry, mode) => {
+      // compactAccount: tarihsel strip semantiği (nokta silinir) — index/fallback parity
+      const code = compactAccount(getAccountCode(entry.account));
+      const name =
+        entry.smartNormalizedName ||
+        normalizeSmartText(getAccountName(entry.account));
       if (mode === "exact" && code !== wantedCode) return false;
       if (mode === "prefix" && !code.startsWith(wantedCode)) return false;
       if (requireSubAccount) {
@@ -1114,19 +1157,35 @@ function findAccountInPlan(companyPlans = [], accountCandidates = [], options = 
         if (code === wantedCode || !code.includes(".")) return false;
       }
       if (!nameKeywords.length) return true;
-      return nameKeywords.every((word) => name.includes(normalizeSmartText(word)));
+      return nameKeywords.every((word) => name.includes(word));
     };
 
     // Alt hesap tercih: önce prefix (108.01…), sonra exact
-    const prefix = activeAccounts.find((account) => matches(account, "prefix"));
-    if (prefix) return prefix;
+    const prefix = activeEntries.find((entry) => matches(entry, "prefix"));
+    if (prefix) {
+      if (profile?.enabled) {
+        profile.functionMs.findAccountInPlan =
+          (profile.functionMs.findAccountInPlan || 0) + (performance.now() - started);
+      }
+      return prefix.account;
+    }
 
     if (!requireSubAccount) {
-      const exact = activeAccounts.find((account) => matches(account, "exact"));
-      if (exact) return exact;
+      const exact = activeEntries.find((entry) => matches(entry, "exact"));
+      if (exact) {
+        if (profile?.enabled) {
+          profile.functionMs.findAccountInPlan =
+            (profile.functionMs.findAccountInPlan || 0) + (performance.now() - started);
+        }
+        return exact.account;
+      }
     }
   }
 
+  if (profile?.enabled) {
+    profile.functionMs.findAccountInPlan =
+      (profile.functionMs.findAccountInPlan || 0) + (performance.now() - started);
+  }
   return null;
 }
 
@@ -1136,6 +1195,10 @@ function collectPlanSuggestions(
   limit = 3,
   options = {}
 ) {
+  const profile = globalThis.__ANNVERO_ANALYSIS_PROFILE__;
+  if (profile?.enabled) {
+    profile.collectPlanSuggestionsCalls += 1;
+  }
   const suggestions = [];
   const seen = new Set();
   for (const candidate of accountCandidates || []) {
@@ -1179,6 +1242,10 @@ function scoreFamily(family, text, direction) {
  * Güvenli sistem kuralı — hafıza/firma kuralından sonra, incelemeden önce.
  */
 export function matchSafeSystemBankRule(description = "", direction = "", context = {}) {
+  const profile = globalThis.__ANNVERO_ANALYSIS_PROFILE__;
+  if (profile?.enabled) {
+    profile.safeSystemRuleCallCount = (profile.safeSystemRuleCallCount || 0) + 1;
+  }
   const text = normalizeSmartText(description);
   if (!text) return null;
 

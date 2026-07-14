@@ -739,6 +739,8 @@ export function resolveBankTransactionType(
   direction = "",
   context = {}
 ) {
+  const profile = globalThis.__ANNVERO_ANALYSIS_PROFILE__;
+  const started = profile?.enabled ? performance.now() : 0;
   const system = matchSafeSystemBankRule(description, direction, context);
   let transactionType = BANK_TRANSACTION_TYPE.BILINMEYEN;
   let source = "heuristic";
@@ -816,6 +818,14 @@ export function resolveBankTransactionType(
     cariRequired = false;
   }
 
+  if (profile?.enabled) {
+    const elapsed = performance.now() - started;
+    profile.txTypeDetectCount += 1;
+    profile.txTypeDetectTotalMs += elapsed;
+    profile.functionMs.resolveBankTransactionType =
+      (profile.functionMs.resolveBankTransactionType || 0) + elapsed;
+  }
+
   return {
     transactionType,
     cariRequired,
@@ -823,6 +833,8 @@ export function resolveBankTransactionType(
     source,
     familyId,
     systemMatch: system,
+    /** Mapper ikinci matchSafeSystemBankRule çağrısını engeller (null olsa bile). */
+    systemRuleResolved: true,
   };
 }
 

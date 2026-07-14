@@ -5,6 +5,13 @@ function compactAccount(code) {
   return normalizeParserText(code).replace(/\s+/g, "");
 }
 
+/** Prefix/exact taramada noktalı kod (108.01.001) — requireSubAccount için gerekli. */
+function dottedAccountCode(code = "") {
+  return String(code || "")
+    .trim()
+    .replace(/\s+/g, "");
+}
+
 function getAccountCode(account) {
   return account?.accountCode || account?.hesapKodu || "";
 }
@@ -19,7 +26,23 @@ export function buildAccountPlanCodeSet(companyPlans = []) {
 }
 
 /**
+ * findAccountInPlan adı ile aynı soft normalize (IBAN/tarih/sayı temizliği).
+ * Orijinal plan objesine yazılmaz; yalnızca index entry alanıdır.
+ */
+function normalizePlanSmartName(value = "") {
+  return normalizeParserText(value)
+    .replace(/\bTR\d{2}[A-Z0-9]{10,30}\b/g, " ")
+    .replace(/\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/g, " ")
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ")
+    .replace(/\b\d{6,}\b/g, " ")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Hesap planı indeksi: kod Map, ad Map, token → adaylar, grup prefix.
+ * entriesByMainPrefix: normalize önbellekli kayıtlar (full plan fallback yok).
  */
 export function buildAccountPlanIndex(companyPlans = []) {
   const codeSet = new Set();
@@ -27,28 +50,56 @@ export function buildAccountPlanIndex(companyPlans = []) {
   const byNormalizedName = new Map();
   const byToken = new Map();
   const byMainPrefix = new Map();
+  const entriesByMainPrefix = new Map();
+  const entryByNormalizedCode = new Map();
   let activeCount = 0;
 
   for (const account of companyPlans || []) {
     if (account?.isActive === false) continue;
     activeCount += 1;
     const code = getAccountCode(account);
-    const compact = compactAccount(code);
-    if (!compact) continue;
+    const compactKey = compactAccount(code);
+    const normalizedCode = dottedAccountCode(code);
+    if (!compactKey && !normalizedCode) continue;
 
-    codeSet.add(compact);
-    byCode.set(compact, account);
+    const normalizedName = normalizeParserText(getAccountName(account));
+    const smartNormalizedName = normalizePlanSmartName(getAccountName(account));
+    const mainPrefix =
+      (normalizedCode || compactKey).split(".")[0]?.slice(0, 3) ||
+      (normalizedCode || compactKey).slice(0, 3);
+    const entry = {
+      account,
+      normalizedCode: normalizedCode || compactKey,
+      compactKey,
+      normalizedName,
+      smartNormalizedName,
+      mainPrefix,
+      isActive: true,
+    };
 
-    const main = compact.split(".")[0]?.slice(0, 3) || compact.slice(0, 3);
-    if (main) {
-      if (!byMainPrefix.has(main)) byMainPrefix.set(main, []);
-      byMainPrefix.get(main).push(account);
+    if (compactKey) {
+      codeSet.add(compactKey);
+      byCode.set(compactKey, account);
+    }
+    if (normalizedCode) {
+      codeSet.add(normalizedCode);
+      byCode.set(normalizedCode, account);
+      entryByNormalizedCode.set(normalizedCode, entry);
+    }
+    if (compactKey) entryByNormalizedCode.set(compactKey, entry);
+
+    if (mainPrefix) {
+      if (!byMainPrefix.has(mainPrefix)) byMainPrefix.set(mainPrefix, []);
+      byMainPrefix.get(mainPrefix).push(account);
+      if (!entriesByMainPrefix.has(mainPrefix)) {
+        entriesByMainPrefix.set(mainPrefix, []);
+      }
+      entriesByMainPrefix.get(mainPrefix).push(entry);
     }
 
-    const name = normalizeParserText(getAccountName(account));
-    if (name) {
-      byNormalizedName.set(name, account);
-      for (const token of name.split(" ").filter((t) => t.length >= 3)) {
+    if (normalizedName) {
+      byNormalizedName.set(normalizedName, account);
+      for (const token of normalizedName.split(" ").filter((t) => t.length >= 3)) {
         if (!byToken.has(token)) byToken.set(token, []);
         byToken.get(token).push(account);
       }
@@ -61,6 +112,8 @@ export function buildAccountPlanIndex(companyPlans = []) {
     byNormalizedName,
     byToken,
     byMainPrefix,
+    entriesByMainPrefix,
+    entryByNormalizedCode,
     activeCount,
     planSize: (companyPlans || []).length,
   };

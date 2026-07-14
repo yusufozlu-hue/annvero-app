@@ -155,26 +155,46 @@ function parseMovementMonth(dateValue = "") {
 /**
  * Plan içinde prefix + opsiyonel isim anahtarları ile alt hesap bul.
  * requireSubAccount: ham ana hesap (103) kabul edilmez.
- * planIndex varsa byMainPrefix havuzundan tarar; yok/boşsa companyPlans fallback.
+ * planIndex varken boş prefix bucket → full plan taraması YOK (sonuç yok).
+ * planIndex yoksa companyPlans active fallback (legacy).
  */
 export function findPlanSubAccount(
   companyPlans = [],
   candidates = [],
   { requireSubAccount = true, planIndex = null } = {}
 ) {
+  const profile = globalThis.__ANNVERO_ANALYSIS_PROFILE__;
+  const started = profile?.enabled ? performance.now() : 0;
   const fallbackActive = () =>
     (companyPlans || []).filter((a) => a?.isActive !== false);
 
-  const poolForWanted = (wanted) => {
-    if (planIndex?.byMainPrefix) {
-      const main =
-        String(wanted || "")
-          .split(".")[0]
-          ?.slice(0, 3) || String(wanted || "").slice(0, 3);
-      const pool = planIndex.byMainPrefix.get(main);
-      if (pool?.length) return pool;
+  const poolEntriesForWanted = (wanted) => {
+    const main =
+      String(wanted || "")
+        .split(".")[0]
+        ?.slice(0, 3) || String(wanted || "").slice(0, 3);
+
+    if (planIndex?.entriesByMainPrefix) {
+      return planIndex.entriesByMainPrefix.get(main) || [];
     }
-    return fallbackActive();
+    if (planIndex?.byMainPrefix) {
+      // Eski index şekli — yine full fallback yok
+      return (planIndex.byMainPrefix.get(main) || []).map((account) => ({
+        account,
+        normalizedCode: compactAccount(getAccountCode(account)),
+        normalizedName: normalizeParserText(getAccountName(account)),
+      }));
+    }
+
+    if (profile?.enabled) {
+      profile.planFallbackScanCount += 1;
+      profile.findPlanSubAccountFallbackCount += 1;
+    }
+    return fallbackActive().map((account) => ({
+      account,
+      normalizedCode: compactAccount(getAccountCode(account)),
+      normalizedName: normalizeParserText(getAccountName(account)),
+    }));
   };
 
   for (const candidate of candidates) {
@@ -183,11 +203,11 @@ export function findPlanSubAccount(
     const nameKeywords = (candidate.nameKeywords || []).map((k) =>
       normalizeParserText(k)
     );
-    const active = poolForWanted(wanted);
+    const active = poolEntriesForWanted(wanted);
 
-    const matches = (account, mode) => {
-      const code = compactAccount(getAccountCode(account));
-      const name = normalizeParserText(getAccountName(account));
+    const matches = (entry, mode) => {
+      const code = entry.normalizedCode;
+      const name = entry.normalizedName || "";
       if (mode === "exact" && code !== wanted) return false;
       if (mode === "prefix" && !code.startsWith(wanted)) return false;
       if (requireSubAccount) {
@@ -198,14 +218,33 @@ export function findPlanSubAccount(
     };
 
     const prefix = active.find((a) => matches(a, "prefix"));
-    if (prefix) return prefix;
+    if (prefix) {
+      if (profile?.enabled) {
+        const elapsed = performance.now() - started;
+        profile.functionMs.findPlanSubAccount =
+          (profile.functionMs.findPlanSubAccount || 0) + elapsed;
+      }
+      return prefix.account;
+    }
 
     if (!requireSubAccount) {
       const exact = active.find((a) => matches(a, "exact"));
-      if (exact) return exact;
+      if (exact) {
+        if (profile?.enabled) {
+          const elapsed = performance.now() - started;
+          profile.functionMs.findPlanSubAccount =
+            (profile.functionMs.findPlanSubAccount || 0) + elapsed;
+        }
+        return exact.account;
+      }
     }
   }
 
+  if (profile?.enabled) {
+    const elapsed = performance.now() - started;
+    profile.functionMs.findPlanSubAccount =
+      (profile.functionMs.findPlanSubAccount || 0) + elapsed;
+  }
   return null;
 }
 

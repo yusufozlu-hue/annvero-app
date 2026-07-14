@@ -372,6 +372,8 @@ export function buildAccountMemoryV2Index(records = [], companyId = "") {
   const byTax = new Map();
   const byAlias = new Map();
   const byNormalized = new Map();
+  const byTransactionType = new Map();
+  const byToken = new Map();
 
   const push = (map, key, record) => {
     const k = String(key || "").trim();
@@ -390,14 +392,56 @@ export function buildAccountMemoryV2Index(records = [], companyId = "") {
       normalizeParserText(record.counterpartyAlias || ""),
       record
     );
-    push(
-      byNormalized,
-      `${normalizeParserText(record.normalizedDescription)}|${record.direction}`,
-      record
-    );
+    const normalizedDesc = normalizeParserText(record.normalizedDescription);
+    push(byNormalized, `${normalizedDesc}|${record.direction}`, record);
+    push(byTransactionType, String(record.transactionType || "").trim().toUpperCase(), record);
+    const tokenSource = `${normalizedDesc} ${normalizeParserText(record.counterpartyAlias || "")} ${normalizeParserText(record.finalDescriptionTemplate || "")}`;
+    for (const token of tokenize(tokenSource)) {
+      push(byToken, token, record);
+    }
   }
 
-  return { scoped, byAnalysisKey, byIban, byTax, byAlias, byNormalized };
+  return {
+    scoped,
+    byAnalysisKey,
+    byIban,
+    byTax,
+    byAlias,
+    byNormalized,
+    byTransactionType,
+    byToken,
+  };
+}
+
+function collectFuzzyCandidateRecords(
+  index,
+  normalizedDescription = "",
+  transactionType = "",
+  direction = ""
+) {
+  const candidates = new Set();
+  const typeKey = String(transactionType || "").trim().toUpperCase();
+
+  if (typeKey && index.byTransactionType?.has(typeKey)) {
+    for (const record of index.byTransactionType.get(typeKey) || []) {
+      if (directionCompatible(record.direction, direction)) {
+        candidates.add(record);
+      }
+    }
+  }
+
+  for (const token of tokenize(normalizedDescription)) {
+    for (const record of index.byToken?.get(token) || []) {
+      if (directionCompatible(record.direction, direction)) {
+        candidates.add(record);
+      }
+    }
+  }
+
+  if (candidates.size === 0) {
+    return index.scoped || [];
+  }
+  return [...candidates];
 }
 
 function directionCompatible(recordDirection, rowDirection) {
@@ -699,12 +743,23 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
   // type + güçlü token (otomatik değil; yüksek skorlu öneri)
   if (transactionType && normalizedDescription) {
     const tokens = new Set(tokenize(normalizedDescription));
-    const typeCandidates = index.scoped.filter((record) => {
+    const profile = globalThis.__ANNVERO_ANALYSIS_PROFILE__;
+    const typeScanStarted = profile?.enabled ? performance.now() : 0;
+    const typePool =
+      index.byTransactionType?.get(transactionType) || index.scoped || [];
+    const typeCandidates = typePool.filter((record) => {
       if (record.transactionType !== transactionType) return false;
       if (!directionCompatible(record.direction, direction)) return false;
       const recTokens = tokenize(record.normalizedDescription || record.counterpartyAlias);
       return recTokens.some((token) => tokens.has(token) && token.length >= 5);
     });
+    if (profile?.enabled) {
+      profile.typeTokenScopedScanCount += 1;
+      profile.typeTokenScopedCandidateCount += typePool.length;
+      const elapsed = performance.now() - typeScanStarted;
+      profile.functionMs.typeTokenScopedFilter =
+        (profile.functionMs.typeTokenScopedFilter || 0) + elapsed;
+    }
     if (typeCandidates.length) {
       const hit = tryTier(MEMORY_MATCH_TIER.TYPE_TOKEN, typeCandidates, 88);
       if (hit) {
@@ -714,40 +769,61 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
     }
   }
 
-  // Fuzzy — yalnız öneri
-  let best = null;
-  let bestScore = 0;
-  for (const record of index.scoped) {
-    if (!directionCompatible(record.direction, direction)) continue;
-    if (
-      !transactionTypeCompatible(record.transactionType, transactionType, {
-        strict: true,
-      })
-    ) {
-      continue;
-    }
-    if (!amountInRange(record, query.amount)) continue;
-    const score = computeFuzzyScore(
+  // Fuzzy — yalnız öneri (type/token aday daraltma; boşsa scoped full fallback)
+  {
+    const profile = globalThis.__ANNVERO_ANALYSIS_PROFILE__;
+    const fuzzyStarted = profile?.enabled ? performance.now() : 0;
+    const fuzzyPool = collectFuzzyCandidateRecords(
+      index,
       normalizedDescription,
-      record.normalizedDescription || record.finalDescriptionTemplate || ""
+      transactionType,
+      direction
     );
-    if (score < MEMORY_SUGGEST_MIN_CONFIDENCE) continue;
-    if (score > bestScore) {
-      best = record;
-      bestScore = score;
+    if (profile?.enabled) {
+      profile.fuzzyScanCount += 1;
+      profile.fuzzyCandidateCount += fuzzyPool.length;
     }
-  }
+    let best = null;
+    let bestScore = 0;
+    for (const record of fuzzyPool) {
+      if (!directionCompatible(record.direction, direction)) continue;
+      if (
+        !transactionTypeCompatible(record.transactionType, transactionType, {
+          strict: true,
+        })
+      ) {
+        continue;
+      }
+      if (!amountInRange(record, query.amount)) continue;
+      if (profile?.enabled) profile.fuzzyScoreCallCount += 1;
+      const score = computeFuzzyScore(
+        normalizedDescription,
+        record.normalizedDescription || record.finalDescriptionTemplate || ""
+      );
+      if (score < MEMORY_SUGGEST_MIN_CONFIDENCE) continue;
+      if (score > bestScore) {
+        best = record;
+        bestScore = score;
+      }
+    }
+    if (profile?.enabled) {
+      const elapsed = performance.now() - fuzzyStarted;
+      profile.fuzzyTotalMs += elapsed;
+      profile.functionMs.computeFuzzyScan =
+        (profile.functionMs.computeFuzzyScan || 0) + elapsed;
+    }
 
-  if (best) {
-    if (telemetry) telemetry.fuzzySuggestion = (telemetry.fuzzySuggestion || 0) + 1;
-    return finish({
-      mode: "suggest",
-      tier: MEMORY_MATCH_TIER.FUZZY,
-      confidence: bestScore,
-      autoApply: false,
-      record: best,
-      candidates: [best],
-    });
+    if (best) {
+      if (telemetry) telemetry.fuzzySuggestion = (telemetry.fuzzySuggestion || 0) + 1;
+      return finish({
+        mode: "suggest",
+        tier: MEMORY_MATCH_TIER.FUZZY,
+        confidence: bestScore,
+        autoApply: false,
+        record: best,
+        candidates: [best],
+      });
+    }
   }
 
   if (telemetry) telemetry.pendingReview = (telemetry.pendingReview || 0) + 1;

@@ -53,6 +53,9 @@ import {
 import {
   normalizeBankAnalysisKey,
   buildLegacyAnalysisMemoKey,
+  beginNormalizeMemo,
+  endNormalizeMemo,
+  getActiveNormalizeMemoSize,
 } from "@/src/utils/textNormalize";
 import { buildCariMatchIndex } from "@/src/utils/cariAccountMatcher";
 import { resolveCompanyAccountingPolicies } from "@/src/utils/bankAccountingScenarioEngine";
@@ -68,6 +71,161 @@ export const PARSER_PREVIEW_CHUNK_SIZE = 400;
 /** Yalnızca CORE aşaması için süre bütçesi (mapping kesilmez) */
 export const ACCOUNTING_ANALYSIS_TOTAL_BUDGET_MS = 60_000;
 export const ACCOUNTING_CORE_BUDGET_MS = 20_000;
+
+const ANALYSIS_PROFILE_FLAG = "ANNVERO_ANALYSIS_PROFILE";
+
+/** Dev-only profiling — production'da her zaman kapalı; localStorage/env ile açılır. */
+export function isAnalysisProfileEnabled() {
+  try {
+    if (typeof process !== "undefined" && process.env?.NODE_ENV === "production") {
+      return false;
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (
+      typeof process !== "undefined" &&
+      String(process.env?.ANNVERO_ANALYSIS_PROFILE || "") === "1"
+    ) {
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (
+      typeof window !== "undefined" &&
+      window.localStorage?.getItem(ANALYSIS_PROFILE_FLAG) === "1"
+    ) {
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+export function createAnalysisProfile() {
+  return {
+    enabled: true,
+    fuzzyScanCount: 0,
+    fuzzyCandidateCount: 0,
+    fuzzyScoreCallCount: 0,
+    fuzzyTotalMs: 0,
+    typeTokenScopedScanCount: 0,
+    typeTokenScopedCandidateCount: 0,
+    normalizeCallCount: 0,
+    normalizeTotalMs: 0,
+    normalizeMemoHitCount: 0,
+    normalizeBankKeyCallCount: 0,
+    normalizeBankKeyTotalMs: 0,
+    planFallbackScanCount: 0,
+    planFallbackTotalMs: 0,
+    findPlanSubAccountFallbackCount: 0,
+    findAccountInPlanFallbackCount: 0,
+    collectPlanSuggestionsCalls: 0,
+    safeSystemRuleCallCount: 0,
+    cariRankCallCount: 0,
+    cariCandidateCount: 0,
+    cariRankTotalMs: 0,
+    cariScoreCallCount: 0,
+    ruleScanCount: 0,
+    ruleScanTotalMs: 0,
+    learningMissCount: 0,
+    learningMissTotalMs: 0,
+    learningHitCount: 0,
+    txTypeDetectCount: 0,
+    txTypeDetectTotalMs: 0,
+    progressEmitCount: 0,
+    progressEmitTotalMs: 0,
+    uniqueGroupDurations: [],
+    chunkDurations: [],
+    functionMs: Object.create(null),
+    totalAnalysisMs: 0,
+    meta: {},
+  };
+}
+
+export function attachAnalysisProfile(profile) {
+  globalThis.__ANNVERO_ANALYSIS_PROFILE__ = profile || null;
+}
+
+export function getActiveAnalysisProfile() {
+  return globalThis.__ANNVERO_ANALYSIS_PROFILE__ || null;
+}
+
+export function bumpProfileFn(name, ms) {
+  const profile = getActiveAnalysisProfile();
+  if (!profile?.enabled || !name) return;
+  const elapsed = Number(ms) || 0;
+  profile.functionMs[name] = (profile.functionMs[name] || 0) + elapsed;
+}
+
+export function finalizeAnalysisProfile(profile, extras = {}) {
+  if (!profile?.enabled) return null;
+  if (extras.totalAnalysisMs != null) {
+    profile.totalAnalysisMs = extras.totalAnalysisMs;
+  }
+  Object.assign(profile.meta, extras.meta || {});
+
+  const topUniqueGroups = [...(profile.uniqueGroupDurations || [])]
+    .sort((a, b) => (b.ms || 0) - (a.ms || 0))
+    .slice(0, 20);
+  const topFunctions = Object.entries(profile.functionMs || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([name, ms]) => ({ name, ms: Number(ms.toFixed?.(3) ?? ms) }));
+
+  const avgUniqueMs =
+    profile.uniqueGroupDurations.length > 0
+      ? profile.uniqueGroupDurations.reduce((s, g) => s + (g.ms || 0), 0) /
+        profile.uniqueGroupDurations.length
+      : 0;
+
+  const summary = {
+    fuzzyScanCount: profile.fuzzyScanCount,
+    fuzzyCandidateCount: profile.fuzzyCandidateCount,
+    fuzzyScoreCallCount: profile.fuzzyScoreCallCount,
+    fuzzyTotalMs: Number(profile.fuzzyTotalMs.toFixed(3)),
+    typeTokenScopedScanCount: profile.typeTokenScopedScanCount,
+    typeTokenScopedCandidateCount: profile.typeTokenScopedCandidateCount,
+    normalizeCallCount: profile.normalizeCallCount,
+    normalizeTotalMs: Number(profile.normalizeTotalMs.toFixed(3)),
+    normalizeMemoHitCount: profile.normalizeMemoHitCount || 0,
+    normalizeBankKeyCallCount: profile.normalizeBankKeyCallCount,
+    normalizeBankKeyTotalMs: Number(profile.normalizeBankKeyTotalMs.toFixed(3)),
+    planFallbackScanCount: profile.planFallbackScanCount,
+    planFallbackTotalMs: Number(profile.planFallbackTotalMs.toFixed(3)),
+    findPlanSubAccountFallbackCount: profile.findPlanSubAccountFallbackCount,
+    findAccountInPlanFallbackCount: profile.findAccountInPlanFallbackCount,
+    collectPlanSuggestionsCalls: profile.collectPlanSuggestionsCalls,
+    safeSystemRuleCallCount: profile.safeSystemRuleCallCount || 0,
+    cariRankCallCount: profile.cariRankCallCount,
+    cariCandidateCount: profile.cariCandidateCount,
+    cariRankTotalMs: Number(profile.cariRankTotalMs.toFixed(3)),
+    cariScoreCallCount: profile.cariScoreCallCount,
+    ruleScanCount: profile.ruleScanCount,
+    ruleScanTotalMs: Number(profile.ruleScanTotalMs.toFixed(3)),
+    learningMissCount: profile.learningMissCount,
+    learningMissTotalMs: Number(profile.learningMissTotalMs.toFixed(3)),
+    learningHitCount: profile.learningHitCount,
+    txTypeDetectCount: profile.txTypeDetectCount,
+    txTypeDetectTotalMs: Number(profile.txTypeDetectTotalMs.toFixed(3)),
+    progressEmitCount: profile.progressEmitCount,
+    progressEmitTotalMs: Number(profile.progressEmitTotalMs.toFixed(3)),
+    uniqueGroupCount: profile.uniqueGroupDurations.length,
+    avgUniqueMs: Number(avgUniqueMs.toFixed(3)),
+    chunkDurations: profile.chunkDurations,
+    topUniqueGroups,
+    topFunctions,
+    totalAnalysisMs: profile.totalAnalysisMs,
+    meta: profile.meta,
+  };
+
+  console.info("[ANNVERO_ANALYSIS_PROFILE]", summary);
+  return summary;
+}
 
 function yieldToMain(ms = 0) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -187,6 +345,7 @@ export function buildMovementMappingContext(options = {}) {
     cariIndex,
     analysisStats: options.analysisStats || null,
     analysisTimings: options.analysisTimings || null,
+    analysisProfile: options.analysisProfile || null,
     accountMemoryRecords,
     accountMemoryV2Index,
     companyAccountingPolicies,
@@ -487,6 +646,12 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     options.normalizedRows || sourceMovements.map((m) => m.rawRow).filter(Boolean);
   const uniqueChunk = ACCOUNTING_ANALYSIS_UNIQUE_CHUNK_SIZE;
   const startedAt = Date.now();
+  const profile =
+    options.analysisProfile ||
+    (isAnalysisProfileEnabled() ? createAnalysisProfile() : null);
+  if (profile?.enabled) attachAnalysisProfile(profile);
+  beginNormalizeMemo();
+  try {
   let lastProgressAt = 0;
   let rowErrors = 0;
   let memoHits = 0;
@@ -537,6 +702,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     ...options,
     analysisStats,
     analysisTimings: timings,
+    analysisProfile: profile,
   });
 
   const callCounts = {
@@ -561,7 +727,14 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     if (now - lastProgressAt < 400 && percent < 100) return;
     lastProgressAt = now;
     callCounts.progressUpdates += 1;
+    const progressStarted = profile?.enabled ? performance.now() : 0;
     onProgress?.({ stage, detail, percent });
+    if (profile?.enabled) {
+      const elapsed = performance.now() - progressStarted;
+      profile.progressEmitCount += 1;
+      profile.progressEmitTotalMs += elapsed;
+      bumpProfileFn("onProgress", elapsed);
+    }
   };
 
   // Phase 1: unique groups (yeni + eski karşılaştırma)
@@ -624,8 +797,10 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   for (let offset = 0; offset < uniqueEntries.length; offset += uniqueChunk) {
     assertNotAborted(signal);
     const end = Math.min(offset + uniqueChunk, uniqueEntries.length);
+    const chunkStarted = profile?.enabled ? performance.now() : 0;
     for (let u = offset; u < end; u += 1) {
       const [memoKey, group] = uniqueEntries[u];
+      const groupStarted = profile?.enabled ? performance.now() : 0;
       try {
         const raw = group.raw;
         if (!raw) {
@@ -658,7 +833,26 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
           mappingError: true,
           warning: `Analiz hatası: ${rowError?.message || "mapping"}`,
         });
+      } finally {
+        if (profile?.enabled) {
+          const groupMs = performance.now() - groupStarted;
+          profile.uniqueGroupDurations.push({
+            key: String(memoKey || "").slice(0, 120),
+            ms: Number(groupMs.toFixed(3)),
+            size: group.indices?.length || 0,
+            sample: String(group.sampleDescriptions?.[0] || "").slice(0, 80),
+          });
+          bumpProfileFn("mapUniqueGroup", groupMs);
+        }
       }
+    }
+    if (profile?.enabled) {
+      profile.chunkDurations.push({
+        offset,
+        end,
+        size: end - offset,
+        ms: Number((performance.now() - chunkStarted).toFixed(3)),
+      });
     }
     emitProgress(
       "Muhasebe Analizi",
@@ -774,6 +968,19 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     coreSkippedInAnalysis: true,
   });
 
+  const analysisProfileSummary = profile?.enabled
+    ? finalizeAnalysisProfile(profile, {
+        totalAnalysisMs: timings.totalAnalysisMs,
+        meta: {
+          movementCount: sourceMovements.length,
+          uniqueCount: uniqueEntries.length,
+          rowErrors,
+          memoryDecisionReport,
+          normalizeMemoSize: getActiveNormalizeMemoSizeSafe(),
+        },
+      })
+    : null;
+
   return {
     movementRows: analyzed,
     coreSummary,
@@ -786,7 +993,20 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     uniqueDescriptionCount: uniqueEntries.length,
     uniqueReport,
     memoryDecisionReport,
+    analysisProfile: analysisProfileSummary,
   };
+  } finally {
+    endNormalizeMemo();
+    if (profile?.enabled) attachAnalysisProfile(null);
+  }
+}
+
+function getActiveNormalizeMemoSizeSafe() {
+  try {
+    return getActiveNormalizeMemoSize();
+  } catch {
+    return 0;
+  }
 }
 
 /**
