@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node ./scripts/run-production-build.mjs",
     "start": "next start",
     "lint": "eslint",
     "deploy:onayla": "node .cursor/hooks/deploy-approved.mjs",
