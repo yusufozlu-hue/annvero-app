@@ -33,6 +33,22 @@ export const emptyCompany = {
 
   bankAccounts: [],
   creditCards: [],
+  cashAccounts: [],
+  posMerchantAccounts: [],
+  checkAccountMappings: {
+    receivedChecksAccount: "",
+    givenChecksAccount: "",
+    useMonthlyGivenChecks: true,
+    bankGivenChecks: [],
+  },
+  taxSgkAccountMappings: {
+    sgkMainAccount: "",
+    sgdpAccount: "",
+    unemploymentAccount: "",
+    extraMappings: [],
+  },
+  accountMappingResults: [],
+  accountMappingSummary: null,
   documentSeriesRules: [],
   vehicles: [],
   employees: [],
@@ -54,6 +70,76 @@ export const emptyCompany = {
     useFxSeparate102Accounts: true,
   },
 };
+
+function newId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `id-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function normalizeAliasList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  return String(value || "")
+    .split(/[,;\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeCashAccounts(list = []) {
+  return (list || []).map((row) => ({
+    id: row.id || newId(),
+    name: String(row.name || row.cashName || "").trim(),
+    currency: String(row.currency || "TL").trim() || "TL",
+    lucaAccountCode: String(row.lucaAccountCode || "").trim(),
+    aliases: normalizeAliasList(row.aliases),
+    isActive: row.isActive !== false,
+  }));
+}
+
+function normalizePosMerchantAccounts(list = []) {
+  return (list || []).map((row) => ({
+    id: row.id || newId(),
+    bankName: String(row.bankName || "").trim(),
+    merchantNo: String(row.merchantNo || row.isyeriNo || "").trim(),
+    posNo: String(row.posNo || "").trim(),
+    alias: String(row.alias || "").trim(),
+    lucaAccountCode: String(row.lucaAccountCode || "").trim(),
+    isActive: row.isActive !== false,
+  }));
+}
+
+function normalizeCheckAccountMappings(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    receivedChecksAccount: String(source.receivedChecksAccount || "").trim(),
+    givenChecksAccount: String(source.givenChecksAccount || "").trim(),
+    useMonthlyGivenChecks: source.useMonthlyGivenChecks !== false,
+    bankGivenChecks: (source.bankGivenChecks || []).map((row) => ({
+      id: row.id || newId(),
+      bankName: String(row.bankName || "").trim(),
+      lucaAccountCode: String(row.lucaAccountCode || "").trim(),
+    })),
+  };
+}
+
+function normalizeTaxSgkAccountMappings(value = {}, accountingRules = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    sgkMainAccount: String(
+      source.sgkMainAccount || accountingRules.sgkMainAccount || ""
+    ).trim(),
+    sgdpAccount: String(source.sgdpAccount || "").trim(),
+    unemploymentAccount: String(source.unemploymentAccount || "").trim(),
+    extraMappings: (source.extraMappings || []).map((row) => ({
+      id: row.id || newId(),
+      label: String(row.label || "").trim(),
+      lucaAccountCode: String(row.lucaAccountCode || "").trim(),
+    })),
+  };
+}
 
 export function normalizeCompany(c) {
   const source = c || {};
@@ -98,10 +184,13 @@ export function normalizeCompany(c) {
 
     bankAccounts: (source.bankAccounts || [])
       .map((account) => ({
-        id: account.id || crypto.randomUUID(),
+        id: account.id || newId(),
         bankName: account.bankName || "",
         accountName: account.accountName || "",
         iban: account.iban || "",
+        accountNumber: String(
+          account.accountNumber || account.hesapNo || ""
+        ).trim(),
         currency: account.currency || "TL",
         accountType: account.accountType || "VADESIZ",
         lucaAccountCode: account.lucaAccountCode || "",
@@ -117,7 +206,7 @@ export function normalizeCompany(c) {
       ),
 
     creditCards: (source.creditCards || []).map((card) => ({
-      id: card.id || crypto.randomUUID(),
+      id: card.id || newId(),
       bankName: card.bankName || "",
       cardName: card.cardName || "",
       lastFourDigits: card.lastFourDigits || "",
@@ -138,15 +227,31 @@ export function normalizeCompany(c) {
       isActive: card.isActive ?? true,
     })),
 
+    cashAccounts: normalizeCashAccounts(source.cashAccounts),
+    posMerchantAccounts: normalizePosMerchantAccounts(
+      source.posMerchantAccounts || source.posAccounts
+    ),
+    checkAccountMappings: normalizeCheckAccountMappings(
+      source.checkAccountMappings
+    ),
+    taxSgkAccountMappings: normalizeTaxSgkAccountMappings(
+      source.taxSgkAccountMappings,
+      source.accountingRules || {}
+    ),
+    accountMappingResults: Array.isArray(source.accountMappingResults)
+      ? source.accountMappingResults
+      : [],
+    accountMappingSummary: source.accountMappingSummary || null,
+
     documentSeriesRules: (source.documentSeriesRules || []).map((rule) => ({
-      id: rule.id || crypto.randomUUID(),
+      id: rule.id || newId(),
       prefix: rule.prefix || "",
       documentType: rule.documentType || "EA",
       description: rule.description || "",
     })),
 
     vehicles: (source.vehicles || []).map((vehicle) => ({
-      id: vehicle.id || crypto.randomUUID(),
+      id: vehicle.id || newId(),
       plate: vehicle.plate || "",
       brand: vehicle.brand || "",
       model: vehicle.model || "",
@@ -157,7 +262,7 @@ export function normalizeCompany(c) {
     })),
 
     employees: (source.employees || []).map((employee) => ({
-      id: employee.id || crypto.randomUUID(),
+      id: employee.id || newId(),
       fullName: employee.fullName || "",
       tcNo: employee.tcNo || "",
       phone: employee.phone || "",

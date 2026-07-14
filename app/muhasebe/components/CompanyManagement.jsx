@@ -14,6 +14,11 @@ import {
 import GibCredentialsSection from "@/app/dashboard/ofis-takip/resmi-bildirimler/components/GibCredentialsSection";
 import TicaretSicilCompanyPanel from "@/src/components/TicaretSicilCompanyPanel";
 import IkPersonelCompanyPanel from "@/src/components/IkPersonelCompanyPanel";
+import CompanyAccountingMappingsPanel from "./CompanyAccountingMappingsPanel";
+import {
+  getAccountPlanForCompany,
+  loadAccountPlansFromStorage,
+} from "@/src/utils/companyCenter";
 
 const EMPLOYEE_PAGE_SIZE = 20;
 
@@ -21,6 +26,7 @@ const COMPANY_TAB_SAVE_MESSAGES = {
   general: "Genel bilgiler kaydedildi",
   gib: "GİB e-Tebligat bilgileri kaydedildi",
   banks: "Banka ve kredi kartı bilgileri kaydedildi",
+  accountingMaps: "Muhasebe politikaları / hesap eşlemeleri kaydedildi",
   documents: "Belge serileri kaydedildi",
   vehicles: "Araç bilgileri kaydedildi",
   employees: "Personel bilgileri kaydedildi",
@@ -81,6 +87,8 @@ export default function CompanyManagement() {
   const [employeeImportPreview, setEmployeeImportPreview] = useState(null);
   const [employeeImportError, setEmployeeImportError] = useState("");
   const [employeeDuplicateMode, setEmployeeDuplicateMode] = useState("update");
+  const [accountPlans, setAccountPlans] = useState({});
+  const [companyAccountPlan, setCompanyAccountPlan] = useState([]);
 
   const showToast = (message, type) => {
     setToast({ message, type });
@@ -98,11 +106,21 @@ export default function CompanyManagement() {
       const formatted = await fetchCompanies();
 
       setCompanies(formatted);
+      setAccountPlans(loadAccountPlansFromStorage());
       setIsLoaded(true);
     };
 
     loadCompanies();
   }, []);
+
+  useEffect(() => {
+    if (!company?.id && !company?.companyName) {
+      setCompanyAccountPlan([]);
+      return;
+    }
+    const plan = getAccountPlanForCompany(accountPlans, company);
+    setCompanyAccountPlan(Array.isArray(plan) ? plan : []);
+  }, [accountPlans, company]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -111,6 +129,7 @@ export default function CompanyManagement() {
       "general",
       "gib",
       "banks",
+      "accountingMaps",
       "documents",
       "vehicles",
       "employees",
@@ -396,6 +415,7 @@ export default function CompanyManagement() {
     bankName: "",
     accountName: "",
     iban: "",
+    accountNumber: "",
     currency: "TL",
     accountType: "VADESIZ",
     lucaAccountCode: "",
@@ -961,6 +981,7 @@ export default function CompanyManagement() {
     ["general", "Genel Bilgiler"],
     ["gib", "GİB e-Tebligat"],
     ["banks", "Banka & Kredi Kartları"],
+    ["accountingMaps", "Muhasebe Politikaları / Hesap Eşlemeleri"],
 
     ["documents", "Belge Serileri"],
 
@@ -1633,6 +1654,13 @@ export default function CompanyManagement() {
                           value={bankFormDraft.iban}
                           onChange={(v) => updateBankFormDraft("iban", v)}
                         />
+                        <Input
+                          label="Hesap Numarası"
+                          value={bankFormDraft.accountNumber || ""}
+                          onChange={(v) =>
+                            updateBankFormDraft("accountNumber", v)
+                          }
+                        />
                         <Select
                           label="Para Birimi"
                           value={bankFormDraft.currency}
@@ -1833,7 +1861,15 @@ export default function CompanyManagement() {
               </div>
             )}
 
-{activeTab === "documents" && (
+            {activeTab === "accountingMaps" && (
+              <CompanyAccountingMappingsPanel
+                company={company}
+                setCompany={setCompany}
+                accountPlan={companyAccountPlan}
+              />
+            )}
+
+            {activeTab === "documents" && (
               <div className="space-y-4">
                 <button
                   type="button"
@@ -2405,83 +2441,6 @@ export default function CompanyManagement() {
                     })
                   }
                 />
-
-                <div className="md:col-span-2 mt-2 border-t border-slate-700 pt-4">
-                  <div className="mb-3 text-sm font-semibold text-slate-200">
-                    Firma Muhasebe Politikası
-                  </div>
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                    <Checkbox
-                      label="103 Verilen Çekler kullanılıyor"
-                      checked={company.accountingRules.useGivenChecksAccount !== false}
-                      onChange={(v) =>
-                        setCompany({
-                          ...company,
-                          accountingRules: {
-                            ...company.accountingRules,
-                            useGivenChecksAccount: v,
-                          },
-                        })
-                      }
-                    />
-                    <Checkbox
-                      label="101 Alınan Çekler kullanılıyor"
-                      checked={
-                        company.accountingRules.useReceivedChecksAccount !== false
-                      }
-                      onChange={(v) =>
-                        setCompany({
-                          ...company,
-                          accountingRules: {
-                            ...company.accountingRules,
-                            useReceivedChecksAccount: v,
-                          },
-                        })
-                      }
-                    />
-                    <Checkbox
-                      label="108 POS hesapları kullanılıyor"
-                      checked={company.accountingRules.usePos108Accounts !== false}
-                      onChange={(v) =>
-                        setCompany({
-                          ...company,
-                          accountingRules: {
-                            ...company.accountingRules,
-                            usePos108Accounts: v,
-                          },
-                        })
-                      }
-                    />
-                    <Checkbox
-                      label="100 Kasa hesabı kullanılıyor"
-                      checked={company.accountingRules.useCash100Account !== false}
-                      onChange={(v) =>
-                        setCompany({
-                          ...company,
-                          accountingRules: {
-                            ...company.accountingRules,
-                            useCash100Account: v,
-                          },
-                        })
-                      }
-                    />
-                    <Checkbox
-                      label="Döviz için ayrı 102 alt hesapları"
-                      checked={
-                        company.accountingRules.useFxSeparate102Accounts !== false
-                      }
-                      onChange={(v) =>
-                        setCompany({
-                          ...company,
-                          accountingRules: {
-                            ...company.accountingRules,
-                            useFxSeparate102Accounts: v,
-                          },
-                        })
-                      }
-                    />
-                  </div>
-                </div>
               </div>
             )}
 

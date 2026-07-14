@@ -24,6 +24,7 @@ import {
   VERGI_SGK_TYPES,
   VIRMAN_TYPES,
 } from "@/src/utils/bankTransactionType";
+import { resolveMappedAccountFromCompany } from "@/src/utils/companyAccountAutoDetect";
 
 export const ACCOUNTING_SCENARIO = {
   CEK_ODEMESI: "CEK_ODEMESI",
@@ -327,6 +328,8 @@ export function resolveAccountingScenario({
   companyPlans = [],
   date = "",
   bankAccountCode = "",
+  company = null,
+  bankName = "",
 } = {}) {
   const policies = {
     ...DEFAULT_COMPANY_ACCOUNTING_POLICIES,
@@ -345,6 +348,32 @@ export function resolveAccountingScenario({
     personelRequired,
     policies,
   });
+
+  // Firma otomatik/onaylı hesap eşlemesi — plan taramasından önce
+  if (company) {
+    const mapped = resolveMappedAccountFromCompany(company, {
+      scenarioType: scenarioId,
+      description,
+      bankName: bankName || company.bankAccounts?.[0]?.bankName || "",
+      cardLast4: (description.match(/\*{2,}(\d{4})\b/) || [])[1] || "",
+      taxSgkSubtype: description,
+    });
+    if (mapped.accountCode && mapped.confidence >= 70) {
+      return {
+        ...base,
+        cariRequired: scenarioRequiresCari(scenarioId)
+          ? base.cariRequired
+          : false,
+        counterAccountCode: mapped.accountCode,
+        counterAccountHint: mapped.accountCode.slice(0, 3),
+        reviewReason: "",
+        missingHesapCategory: "",
+        mappingSource: mapped.source,
+        mappingConfidence: mapped.confidence,
+        legs: null,
+      };
+    }
+  }
 
   // ——— ÇEK ÖDEMESİ: 103 Borç / 102 Alacak ———
   if (scenarioId === ACCOUNTING_SCENARIO.CEK_ODEMESI) {

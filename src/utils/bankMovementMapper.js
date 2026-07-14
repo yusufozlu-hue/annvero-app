@@ -641,6 +641,11 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       companyPlans,
       date,
       bankAccountCode: accountCode,
+      company: selectedCompany,
+      bankName:
+        selectedCompany?.bankAccounts?.[0]?.bankName ||
+        selectedCompany?.bankName ||
+        "",
     });
     accountingScenario =
       accountingScenario || scenarioDecision.scenarioId || "";

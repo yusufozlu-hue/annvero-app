@@ -11,6 +11,8 @@ import {
   setCompanyAccountPlan,
   updateCompanyAccounts,
 } from "@/src/utils/companyCenter";
+import { runCompanyAccountAutoDetect } from "@/src/utils/companyAccountMappingMemory";
+import { buildDetectSignalsFromCompany } from "@/src/utils/companyAccountAutoDetect";
 
 export default function HesapPlaniPage() {
   const {
@@ -21,18 +23,16 @@ export default function HesapPlaniPage() {
     getCompanyDisplayName,
   } = useCompanyList();
 
-  const [accountPlans, setAccountPlans] = useState({});
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [accountPlans, setAccountPlans] = useState(() => {
+    if (typeof window === "undefined") return {};
+    return loadAccountPlansFromStorage();
+  });
+  const [isLoaded] = useState(() => typeof window !== "undefined");
   const [search, setSearch] = useState("");
-
-  useEffect(() => {
-    setAccountPlans(loadAccountPlansFromStorage());
-    setIsLoaded(true);
-  }, []);
+  const [detectMessage, setDetectMessage] = useState("");
 
   useEffect(() => {
     if (!isLoaded) return;
-
     saveAccountPlansToStorage(accountPlans);
   }, [accountPlans, isLoaded]);
 
@@ -50,6 +50,51 @@ export default function HesapPlaniPage() {
       `${row.accountCode} ${row.accountName}`.toLowerCase().includes(q)
     );
   }, [currentPlan, search]);
+
+  const bootstrapMappings = (parsedPlan) => {
+    if (!selectedCompanyId || !parsedPlan?.length) return;
+    try {
+      const company = selectedCompany || { id: selectedCompanyId };
+      const isMare = /mare/i.test(
+        String(company?.name || company?.title || company?.companyName || "")
+      );
+      const signals = {
+        ...buildDetectSignalsFromCompany(company),
+        ...(isMare
+          ? {
+              bankName: "VAKIFBANK",
+              iban: "TR820001500158007308428449",
+              accountNumber: "00158007308428449",
+              posMerchantNo: "57700001130449",
+              posNo: "01670904",
+              cardLast4List: ["4682", "6725"],
+            }
+          : {}),
+      };
+      const result = runCompanyAccountAutoDetect({
+        companyId: selectedCompanyId,
+        company,
+        accountPlan: parsedPlan,
+        signals,
+      });
+      setDetectMessage(
+        `Otomatik eşleme: ${result.summary.autoApplied} otomatik, ${result.summary.needsApproval} onay, ${result.summary.missing} eksik — Firma Kartı → Hesap Eşlemeleri`
+      );
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("annvero:account-mappings-updated", {
+            detail: {
+              companyId: selectedCompanyId,
+              summary: result.summary,
+            },
+          })
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      setDetectMessage("Hesap planı kaydedildi; otomatik eşleme çalıştırılamadı.");
+    }
+  };
 
   const handleExcelUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -88,6 +133,7 @@ export default function HesapPlaniPage() {
     setAccountPlans((prev) =>
       setCompanyAccountPlan(prev, selectedCompanyId, parsed)
     );
+    bootstrapMappings(parsed);
 
     e.target.value = "";
   };
@@ -135,6 +181,9 @@ export default function HesapPlaniPage() {
         <p className="mt-4 text-sm text-gray-400">
           Aktif firma: {getCompanyDisplayName(selectedCompany) || "Firma seçilmedi"}
         </p>
+        {detectMessage ? (
+          <p className="mt-3 text-sm text-emerald-300">{detectMessage}</p>
+        ) : null}
       </div>
 
       <div className="mb-6 flex flex-wrap gap-3">
