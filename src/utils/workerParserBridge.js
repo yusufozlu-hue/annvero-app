@@ -145,6 +145,44 @@ export function enqueueParseJob(job = {}, runner) {
   return entry.id;
 }
 
+/**
+ * ErrorEvent çoğu ortamda JSON/console'da `{}` görünür.
+ * Next.js dev overlay console.error + ErrorEvent yüzünden tüm ekranı kapatır.
+ * Yalnızca düz JSON-serializable alanlar loglanır.
+ */
+export function serializeWorkerErrorEvent(errorEvent) {
+  const nested = errorEvent?.error;
+  return {
+    message:
+      (typeof errorEvent?.message === "string" && errorEvent.message) ||
+      nested?.message ||
+      null,
+    filename: errorEvent?.filename || null,
+    lineno: Number.isFinite(errorEvent?.lineno) ? errorEvent.lineno : null,
+    colno: Number.isFinite(errorEvent?.colno) ? errorEvent.colno : null,
+    type: errorEvent?.type || null,
+    errorName: nested?.name || null,
+    errorMessage: nested?.message || null,
+    errorStack: nested?.stack ? String(nested.stack).split("\n").slice(0, 4).join("\n") : null,
+  };
+}
+
+function formatWorkerLoadFailureMessage(detail) {
+  const parts = [
+    detail.message,
+    detail.errorMessage && detail.errorMessage !== detail.message
+      ? detail.errorMessage
+      : null,
+    detail.errorName ? `name=${detail.errorName}` : null,
+    detail.filename ? `file=${detail.filename}` : null,
+    Number.isFinite(detail.lineno) ? `line=${detail.lineno}` : null,
+    Number.isFinite(detail.colno) ? `col=${detail.colno}` : null,
+  ].filter(Boolean);
+
+  if (parts.length > 0) return parts.join(" | ");
+  return "Worker modülü yüklenemedi (URL/bundle çözümleme hatası). Ana thread fallback kullanılacak.";
+}
+
 export function runParserWorker({
   workerUrl,
   payload = {},
@@ -152,12 +190,39 @@ export function runParserWorker({
   onProgress,
   timeoutMs = 120_000,
   jobType = "generic",
+  /**
+   * bankParser zero-import classic Worker: Turbopack media kopyası module
+   * evaluation (bare/`@/` import) yapamaz. Diğer worker'lar module kalır.
+   */
+  classicWorker = false,
 }) {
   return new Promise((resolve, reject) => {
     cancelActiveParseJob("replaced");
 
     const requestId = `job-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-    const worker = new Worker(workerUrl, { type: "module" });
+
+    let worker;
+    try {
+      if (!workerUrl) {
+        throw new Error("Worker URL tanımsız.");
+      }
+      worker = classicWorker
+        ? new Worker(workerUrl)
+        : new Worker(workerUrl, { type: "module" });
+    } catch (constructError) {
+      const message =
+        constructError?.message ||
+        "Worker oluşturulamadı (new Worker başarısız).";
+      console.warn("[workerParserBridge] Worker construct failed", {
+        message,
+        workerUrl: String(workerUrl || ""),
+      });
+      const err = new Error(message);
+      err.code = "WORKER_CONSTRUCT_FAILED";
+      reject(err);
+      return;
+    }
+
     activeWorker = worker;
     activeJob = {
       id: requestId,
@@ -188,7 +253,7 @@ export function runParserWorker({
       if (activeWorker === worker) activeWorker = null;
       activeJob = null;
 
-      if (message.type === "success") {
+      if (message.type === "success" || message.type === "result") {
         emit({ type: "done", jobId: requestId, jobType, result: message });
         resolve(message);
         return;
@@ -200,70 +265,122 @@ export function runParserWorker({
         return;
       }
 
-      emit({ type: "error", jobId: requestId, jobType, error: message.error });
-      const err = new Error(message.error || "Parser başarısız.");
+      const errorText =
+        message.errorMessage || message.error || "Parser başarısız.";
+      emit({
+        type: "error",
+        jobId: requestId,
+        jobType,
+        error: errorText,
+        phase: message.phase || message.stage || null,
+      });
+      const err = new Error(errorText);
       if (message.errorCode) err.code = message.errorCode;
       if (message.errorName) err.name = message.errorName;
+      if (message.phase) err.phase = message.phase;
+      if (message.stack) err.stack = message.stack;
       reject(err);
     };
 
-    worker.onerror = (error) => {
+    worker.onerror = (errorEvent) => {
       clearTimeout(timer);
       worker.terminate();
       if (activeWorker === worker) activeWorker = null;
       activeJob = null;
-      const detail = {
-        message: error?.message || null,
-        filename: error?.filename || null,
-        lineno: error?.lineno ?? null,
-        colno: error?.colno ?? null,
-        type: error?.type || null,
-        error: error?.error || null,
-      };
-      console.error("[workerParserBridge] worker.onerror", detail, error);
-      const detailParts = [
-        detail.message,
-        detail.filename ? `file=${detail.filename}` : null,
-        Number.isFinite(detail.lineno) ? `line=${detail.lineno}` : null,
-        Number.isFinite(detail.colno) ? `col=${detail.colno}` : null,
-      ].filter(Boolean);
-      const message =
-        detailParts.length > 0
-          ? detailParts.join(" | ")
-          : "Worker beklenmedik şekilde durdu (modül yükleme veya çalışma zamanı hatası).";
+
+      const detail = serializeWorkerErrorEvent(errorEvent);
+      const message = formatWorkerLoadFailureMessage(detail);
+      // Managed fallback path — do not console.error ErrorEvent (Next overlay).
+      console.warn("[workerParserBridge] worker.onerror", {
+        ...detail,
+        workerUrl: String(workerUrl || ""),
+        resolvedMessage: message,
+      });
+
       emit({ type: "error", jobId: requestId, jobType, error: message, detail });
-      reject(new Error(message));
+      const err = new Error(message);
+      err.code = "WORKER_ONERROR";
+      err.detail = detail;
+      reject(err);
     };
 
-    worker.onmessageerror = (error) => {
+    worker.onmessageerror = (errorEvent) => {
+      clearTimeout(timer);
+      worker.terminate();
+      if (activeWorker === worker) activeWorker = null;
+      activeJob = null;
+      const detail = serializeWorkerErrorEvent(errorEvent);
+      const message =
+        detail.message ||
+        detail.errorMessage ||
+        "Worker mesajı işlenemedi (structured clone / serializable olmayan veri).";
+      console.warn("[workerParserBridge] worker.onmessageerror", {
+        ...detail,
+        resolvedMessage: message,
+      });
+      emit({ type: "error", jobId: requestId, jobType, error: message, detail });
+      const err = new Error(message);
+      err.code = "WORKER_MESSAGE_ERROR";
+      reject(err);
+    };
+
+    try {
+      worker.postMessage({ requestId, ...payload }, transferables);
+    } catch (postError) {
       clearTimeout(timer);
       worker.terminate();
       if (activeWorker === worker) activeWorker = null;
       activeJob = null;
       const message =
-        error?.message ||
-        "Worker mesajı işlenemedi (structured clone / serializable olmayan veri).";
-      console.error("[workerParserBridge] worker.onmessageerror", error);
-      emit({ type: "error", jobId: requestId, jobType, error: message });
-      reject(new Error(message));
-    };
-
-    worker.postMessage({ requestId, ...payload }, transferables);
+        postError?.message ||
+        "Worker'a mesaj gönderilemedi (transferable / clone hatası).";
+      console.warn("[workerParserBridge] postMessage failed", { message });
+      const err = new Error(message);
+      err.code = "WORKER_POSTMESSAGE_FAILED";
+      reject(err);
+    }
   });
 }
 
+/**
+ * Banka Excel worker — ana thread XLSX okur; worker yalnızca sheetRows parse eder.
+ * Classic + zero-import worker (Turbopack media bundle etmez).
+ */
 export function runBankParserWorker({
   workerUrl,
+  sheetRows,
+  bankName,
+  options = {},
+  /** @deprecated arrayBuffer artık gönderilmez; ana thread'de okuyun */
   arrayBuffer,
+  /** @deprecated selectedBank için bankName kullanın */
   context = {},
   onProgress,
   timeoutMs = 120_000,
 }) {
+  const resolvedBank = bankName || context?.selectedBank || "";
+  if (arrayBuffer && !sheetRows) {
+    const err = new Error(
+      "runBankParserWorker artık arrayBuffer kabul etmez; sheetRows gönderin (ana thread XLSX)."
+    );
+    err.code = "WORKER_PROTOCOL";
+    return Promise.reject(err);
+  }
+
   return runParserWorker({
     workerUrl,
     jobType: PARSER_JOB_TYPES.BANK_EXCEL,
-    payload: { arrayBuffer, context },
-    transferables: arrayBuffer ? [arrayBuffer] : [],
+    classicWorker: true,
+    payload: {
+      type: "parse",
+      bankName: resolvedBank,
+      sheetRows,
+      options: {
+        ...options,
+        selectedCompanyId: options.selectedCompanyId ?? context?.selectedCompanyId,
+      },
+    },
+    transferables: [],
     onProgress,
     timeoutMs,
   });

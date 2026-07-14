@@ -69,16 +69,34 @@ function classifyBankParseError(error, stage = "") {
 
 /**
  * Excel'i ana thread'de okuyup banka satırlarını normalize eder.
- * `arrayBuffer` verilirse dosya yeniden okunmaz (tek-buffer fallback).
+ * 4. argüman: ArrayBuffer | { arrayBuffer?, sheetRows? }
+ * - sheetRows verilirse XLSX / file.arrayBuffer tekrarlanmaz (worker fallback).
+ * - arrayBuffer verilirse dosya yeniden okunmaz.
  * @returns {{ rawCount: number, normalizedRows: object[], selectedBank: string, parseMode: string }}
  */
 export async function parseBankExcelOnMainThread(
   file,
   selectedBank,
   onProgress,
-  arrayBufferInput = null
+  arrayBufferOrOptions = null
 ) {
-  if (!file && !arrayBufferInput) {
+  let arrayBufferInput = null;
+  let sheetRowsInput = null;
+
+  if (arrayBufferOrOptions instanceof ArrayBuffer) {
+    arrayBufferInput = arrayBufferOrOptions;
+  } else if (
+    arrayBufferOrOptions &&
+    typeof arrayBufferOrOptions === "object" &&
+    !Array.isArray(arrayBufferOrOptions)
+  ) {
+    arrayBufferInput = arrayBufferOrOptions.arrayBuffer || null;
+    sheetRowsInput = Array.isArray(arrayBufferOrOptions.sheetRows)
+      ? arrayBufferOrOptions.sheetRows
+      : null;
+  }
+
+  if (!file && !arrayBufferInput && !sheetRowsInput) {
     const err = new Error("Excel dosyası seçilmedi.");
     Object.assign(err, classifyBankParseError(err, "file_read"));
     throw err;
@@ -89,49 +107,57 @@ export async function parseBankExcelOnMainThread(
     throw err;
   }
 
-  let arrayBuffer = arrayBufferInput;
-  if (!arrayBuffer) {
-    try {
-      onProgress?.({ stage: "Dosya okunuyor", detail: "Ana thread — dosya okunuyor" });
-      arrayBuffer = await file.arrayBuffer();
+  let sheetRows = sheetRowsInput;
+  if (sheetRows) {
+    onProgress?.({
+      stage: "Dosya okunuyor",
+      detail: "Ana thread — hazır sheetRows kullanılıyor",
+    });
+    await yieldToMain();
+  } else {
+    let arrayBuffer = arrayBufferInput;
+    if (!arrayBuffer) {
+      try {
+        onProgress?.({ stage: "Dosya okunuyor", detail: "Ana thread — dosya okunuyor" });
+        arrayBuffer = await file.arrayBuffer();
+        await yieldToMain();
+      } catch (error) {
+        const classified = classifyBankParseError(error, "file_read");
+        const err = new Error(classified.userMessage);
+        Object.assign(err, classified);
+        throw err;
+      }
+    } else {
+      onProgress?.({
+        stage: "Dosya okunuyor",
+        detail: "Ana thread — hazır buffer kullanılıyor",
+      });
       await yieldToMain();
-    } catch (error) {
-      const classified = classifyBankParseError(error, "file_read");
+    }
+
+    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+      const classified = classifyBankParseError(
+        new Error("Dosya içeriği boş veya okunamadı."),
+        "file_read"
+      );
       const err = new Error(classified.userMessage);
       Object.assign(err, classified);
       throw err;
     }
-  } else {
-    onProgress?.({
-      stage: "Dosya okunuyor",
-      detail: "Ana thread — hazır buffer kullanılıyor",
-    });
-    await yieldToMain();
-  }
 
-  if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-    const classified = classifyBankParseError(
-      new Error("Dosya içeriği boş veya okunamadı."),
-      "file_read"
-    );
-    const err = new Error(classified.userMessage);
-    Object.assign(err, classified);
-    throw err;
-  }
-
-  let sheetRows;
-  try {
-    onProgress?.({ stage: "Dosya okunuyor", detail: "xlsx yükleniyor (ana thread)" });
-    const { readSheetRowsFromArrayBuffer } = await import("@/src/utils/excelBufferUtils");
-    await yieldToMain();
-    onProgress?.({ stage: "Dosya okunuyor", detail: "Excel sayfası okunuyor" });
-    sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
-    await yieldToMain();
-  } catch (error) {
-    const classified = classifyBankParseError(error, "xlsx_import");
-    const err = new Error(classified.userMessage);
-    Object.assign(err, classified);
-    throw err;
+    try {
+      onProgress?.({ stage: "Dosya okunuyor", detail: "xlsx yükleniyor (ana thread)" });
+      const { readSheetRowsFromArrayBuffer } = await import("@/src/utils/excelBufferUtils");
+      await yieldToMain();
+      onProgress?.({ stage: "Dosya okunuyor", detail: "Excel sayfası okunuyor" });
+      sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
+      await yieldToMain();
+    } catch (error) {
+      const classified = classifyBankParseError(error, "xlsx_import");
+      const err = new Error(classified.userMessage);
+      Object.assign(err, classified);
+      throw err;
+    }
   }
 
   const rawCount = Array.isArray(sheetRows) ? sheetRows.length : 0;

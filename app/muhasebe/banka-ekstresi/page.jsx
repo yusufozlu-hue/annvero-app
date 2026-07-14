@@ -128,6 +128,7 @@ import { saveKnowledgeTeachRequest } from "@/src/utils/knowledgeBuilderClient";
 import { useUserRole } from "@/src/hooks/useUserRole";
 import { parseBankExcelOnMainThread } from "@/src/utils/bankExcelMainThreadParse";
 import { runBankParserWorker } from "@/src/utils/workerParserBridge";
+import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
 import {
   BANK_FORMAT_MISMATCH_HINT,
   BANK_FORMAT_MISMATCH_MESSAGE,
@@ -1443,7 +1444,7 @@ export default function BankaParserPage() {
       if (!signal?.aborted) parserJob.onProgress(message);
     };
 
-    // Dosya yalnızca bir kez okunur; worker transferi için slice, fallback için orijinal buffer.
+    // Dosya + XLSX yalnızca bir kez: worker'a sheetRows, fallback aynı sheetRows.
     const arrayBuffer = await file.arrayBuffer();
     if (signal?.aborted) {
       const err = new Error("İşlem iptal edildi.");
@@ -1456,8 +1457,9 @@ export default function BankaParserPage() {
       throw err;
     }
 
+    let sheetRows;
     try {
-      const sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
+      sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
       assertSelectedBankMatchesSheet(sheetRows, selectedBank);
     } catch (mismatchError) {
       if (
@@ -1479,36 +1481,37 @@ export default function BankaParserPage() {
       throw err;
     }
 
-    // Worker postMessage transfer'i buffer'ı detach eder — fallback için orijinali sakla.
-    const workerBuffer = arrayBuffer.slice(0);
-
     try {
-      const workerUrl = new URL("./bankParser.worker.js", import.meta.url);
       const workerResult = await runBankParserWorker({
-        workerUrl,
-        arrayBuffer: workerBuffer,
-        context: { selectedBank, selectedCompanyId },
+        workerUrl: PARSER_WORKER_URLS.bankExcel,
+        sheetRows,
+        bankName: selectedBank,
+        options: { selectedCompanyId },
         onProgress,
         timeoutMs: 120_000,
       });
       return {
-        rawCount: workerResult.rawCount || 0,
+        rawCount: workerResult.rawCount || sheetRows.length,
         normalizedRows: workerResult.normalizedRows || [],
-        parseMode: "worker",
+        parseMode: workerResult.parseMode || "worker",
+        timings: workerResult.timings || null,
       };
     } catch (workerError) {
       if (workerError?.name === "AbortError" || signal?.aborted) throw workerError;
-      console.warn("[banka-ekstresi] worker parse fallback", workerError);
+      // Managed path — warn only (avoid Next overlay from nested ErrorEvent logs).
+      console.warn("[banka-ekstresi] worker parse fallback", {
+        message: workerError?.message || String(workerError),
+        code: workerError?.code || null,
+        detail: workerError?.detail || null,
+        phase: workerError?.phase || null,
+      });
       onProgress({
         stage: BANK_PARSE_STAGES.READING,
         detail: "Worker kullanılamadı — ana thread",
       });
-      return parseBankExcelOnMainThread(
-        file,
-        selectedBank,
-        onProgress,
-        arrayBuffer
-      );
+      return parseBankExcelOnMainThread(file, selectedBank, onProgress, {
+        sheetRows,
+      });
     }
   };
 
