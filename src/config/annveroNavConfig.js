@@ -124,6 +124,21 @@ export const ANNVERO_NAV_GROUPS = [
   },
 ];
 
+/**
+ * Idle kuyruğunda önce ısıtılacak href'ler (opsiyonel öncelik).
+ * Development'ta yalnızca listedeki ilk N (DEV_IDLE_PREFETCH_LIMIT) kullanılır.
+ * Diğer route'lar hover/focus/pointerDown ile ısıtılır.
+ */
+export const ANNVERO_NAV_IDLE_PREFETCH_PRIORITY = [
+  "/muhasebe/firma-yonetimi",
+  "/muhasebe/banka-ekstresi",
+  "/muhasebe/mali-yukumluluk",
+  "/muhasebe/beyanname-tahakkuk",
+  "/muhasebe/police-giderlestirme",
+  "/muhasebe/hesap-plani",
+  "/dashboard",
+];
+
 export const ANNVERO_SELECTED_COMPANY_KEY = "annvero_selected_company_v1";
 export const ANNVERO_FAVORITE_COMPANIES_KEY = "annvero_favorite_companies_v1";
 export const ANNVERO_RECENT_COMPANIES_KEY = "annvero_recent_companies_v1";
