@@ -15,7 +15,6 @@ import {
 import { useCompanyList } from "../hooks/useCompanyList";
 import {
   BANK_PARSER_OPTIONS,
-  getDefaultBankParserId,
 } from "@/src/config/bankParserOptions";
 import {
   annveroBtnPrimary,
@@ -91,16 +90,31 @@ import {
 } from "@/src/utils/previewRowEdit";
 import { hasBankMovementError } from "@/src/utils/tableSearch";
 import {
-  SYSTEM_ERROR_TYPES,
-} from "@/src/utils/systemLogEngine";
-import {
   loadDeclarationAccrualRecords,
   saveDeclarationAccrualRecords,
 } from "@/src/utils/beyannameTahakkukEngine";
 import ParserJobProgress from "@/src/components/ParserJobProgress";
 import { useParserJob } from "@/src/hooks/useParserJob";
-import { logParserJobError } from "@/src/utils/parserJobLogger";
 import { detectSourceFileType } from "@/src/utils/financialSourceArchitecture";
+import {
+  assertPipelineSignal,
+  BANK_PARSER_DEBUG_STORAGE_KEY,
+  canStartFullPipeline,
+  deriveAutoMatchedMovements,
+  formatDurationMs,
+  getPipelinePhaseLabel,
+  getPipelinePhaseTitle,
+  isBankParserServiceModeVisible,
+  mapLocalProgressToGlobal,
+  PIPELINE_PHASES,
+  shouldRunPipelineStage,
+  userFacingPipelineError,
+} from "@/src/utils/bankOneClickPipeline";
+import {
+  BankPipelineErrorCard,
+  BankPipelineProgressPanel,
+  BankPipelineResultCard,
+} from "./BankOneClickExperience";
 import {
   buildParserPreviewFromNormalizedRowsAsync,
   buildLucaRowsFromMovementsAsync,
@@ -133,6 +147,7 @@ import {
   BANK_FORMAT_MISMATCH_HINT,
   BANK_FORMAT_MISMATCH_MESSAGE,
   assertSelectedBankMatchesSheet,
+  resolveParserBankFromSheet,
 } from "@/src/utils/bankStatementFormatGuard";
 import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils";
 
@@ -323,8 +338,54 @@ export default function BankaParserPage() {
   const [isTeachModalOpen, setIsTeachModalOpen] = useState(false);
   const [isSavingTeach, setIsSavingTeach] = useState(false);
   const [lastTimings, setLastTimings] = useState(null);
+  /** Tek tuş üretim hattı — idle | auto | manual */
+  const [pipelineMode, setPipelineMode] = useState("idle");
+  const [pipelinePhase, setPipelinePhase] = useState(PIPELINE_PHASES.IDLE);
+  const [pipelineProgress, setPipelineProgress] = useState({
+    percent: 0,
+    label: "",
+    detail: "",
+    processed: null,
+    total: null,
+  });
+  const [pipelineResult, setPipelineResult] = useState(null);
+  const [pipelineError, setPipelineError] = useState(null);
+  const pipelinePhaseRef = useRef(PIPELINE_PHASES.IDLE);
+  const unrecognizedCountRef = useRef(0);
+  /** Dosya seçiminde bir kez okunan sheet — parse aşamasında reuse */
+  const fileSheetRowsRef = useRef(null);
+  const fileSheetSourceRef = useRef(null);
+  /** Pipeline/parse bankası — React state'ten bağımsız (stale closure yok) */
+  const activeBankRef = useRef("");
+  /** Aşamalar arası kısa boşlukta ikinci auto/manual start engeli */
+  const [pipelineRunning, setPipelineRunning] = useState(false);
+  /** idle | pending | detected | unknown | manual */
+  const [bankDetection, setBankDetection] = useState({
+    status: "idle",
+    bankId: null,
+    message: "",
+  });
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const manualDetailsRef = useRef(null);
 
   const { isManagementUser } = useUserRole();
+  const [bankDebugFlag, setBankDebugFlag] = useState(false);
+
+  useEffect(() => {
+    try {
+      setBankDebugFlag(
+        window.localStorage.getItem(BANK_PARSER_DEBUG_STORAGE_KEY) === "1"
+      );
+    } catch {
+      setBankDebugFlag(false);
+    }
+  }, []);
+
+  const showBankServiceUi = isBankParserServiceModeVisible({
+    isManagementUser,
+    nodeEnv: process.env.NODE_ENV,
+    debugFlag: bankDebugFlag,
+  });
 
   const {
     selectedCompanyId,
@@ -346,10 +407,54 @@ export default function BankaParserPage() {
     },
   });
 
-  const [selectedBank, setSelectedBank] = useState(getDefaultBankParserId);
+  const [selectedBank, setSelectedBank] = useState("");
+
+  const getRunBank = () =>
+    String(activeBankRef.current || selectedBank || "")
+      .trim()
+      .toUpperCase();
+
+  const setActiveBank = (bankId, detectionPatch = null) => {
+    const next = String(bankId || "")
+      .trim()
+      .toUpperCase();
+    activeBankRef.current = next;
+    setSelectedBank(next);
+    if (detectionPatch) setBankDetection(detectionPatch);
+  };
+
+  const clearActiveBank = () => {
+    activeBankRef.current = "";
+    setSelectedBank("");
+    setBankDetection({ status: "idle", bankId: null, message: "" });
+  };
 
   const showToast = (message, type) => {
     setToast({ message, type });
+  };
+
+  /** Yönetilen pipeline hataları — Next overlay tetiklememek için console.error yok */
+  const logManagedPipelineIssue = (scope, error, meta = {}) => {
+    console.warn(`[banka-ekstresi] ${scope}`, {
+      message: error?.message || String(error || ""),
+      code: error?.code || null,
+      name: error?.name || null,
+      ...meta,
+    });
+  };
+
+  const buildManagedFailureMessage = (error, fallbackPhase) => {
+    const isFormatMismatch =
+      error?.code === "BANK_FORMAT_MISMATCH" ||
+      String(error?.message || "").includes(BANK_FORMAT_MISMATCH_MESSAGE);
+    if (isFormatMismatch) {
+      return `${BANK_FORMAT_MISMATCH_MESSAGE} ${BANK_FORMAT_MISMATCH_HINT}`;
+    }
+    return (
+      error?.userMessage ||
+      userFacingPipelineError(fallbackPhase) ||
+      "İşlem tamamlanamadı. Lütfen tekrar deneyin."
+    );
   };
 
   useEffect(() => {
@@ -358,6 +463,16 @@ export default function BankaParserPage() {
     const timer = setTimeout(() => setToast(null), 3000);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (!pipelineRunning) return undefined;
+    const startedAt = Date.now();
+    setElapsedSec(0);
+    const id = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [pipelineRunning]);
 
   useEffect(() => {
     const reloadLocalWorkspace = () => {
@@ -384,6 +499,7 @@ export default function BankaParserPage() {
       setIsPreparingLuca(false);
       setIsApplyingCoreAll(false);
       setIsExporting(false);
+      setPipelineRunning(false);
       normalizedRef.current = [];
       movementsRef.current = [];
       lucaRef.current = [];
@@ -402,6 +518,11 @@ export default function BankaParserPage() {
       });
       setSelectedFile(null);
       setFileName("");
+      fileSheetRowsRef.current = null;
+      fileSheetSourceRef.current = null;
+      activeBankRef.current = "";
+      setSelectedBank("");
+      setBankDetection({ status: "idle", bankId: null, message: "" });
       setExportValidation(null);
       setMissingHesapReport(null);
       setRuleGroupReport(null);
@@ -415,6 +536,19 @@ export default function BankaParserPage() {
       setCoreIntegrationSummary(null);
       setCoreRowsProcessed(0);
       setLastTimings(null);
+      setPipelineResult(null);
+      setPipelineMode("idle");
+      setPipelinePhase(PIPELINE_PHASES.IDLE);
+      pipelinePhaseRef.current = PIPELINE_PHASES.IDLE;
+      setPipelineProgress({
+        percent: 0,
+        label: "",
+        detail: "",
+        processed: null,
+        total: null,
+      });
+      setPipelineError(null);
+      unrecognizedCountRef.current = 0;
       parserJob.reset();
     };
 
@@ -654,7 +788,12 @@ export default function BankaParserPage() {
   };
 
   const isJobBusy =
-    isParsing || isAnalyzing || isPreparingLuca || isApplyingCoreAll || isExporting;
+    isParsing ||
+    isAnalyzing ||
+    isPreparingLuca ||
+    isApplyingCoreAll ||
+    isExporting ||
+    pipelineRunning;
 
   const beginPipelineRun = () => {
     abortRef.current?.abort();
@@ -667,6 +806,21 @@ export default function BankaParserPage() {
 
   const isRunActive = (runId) => pipelineRunIdRef.current === runId;
 
+  const resetPipelineUiState = () => {
+    setPipelineMode("idle");
+    setPipelinePhase(PIPELINE_PHASES.IDLE);
+    pipelinePhaseRef.current = PIPELINE_PHASES.IDLE;
+    setPipelineRunning(false);
+    setPipelineProgress({
+      percent: 0,
+      label: "",
+      detail: "",
+      processed: null,
+      total: null,
+    });
+    setPipelineError(null);
+  };
+
   const handleCancelJob = () => {
     pipelineRunIdRef.current += 1;
     abortRef.current?.abort();
@@ -676,6 +830,17 @@ export default function BankaParserPage() {
     setIsPreparingLuca(false);
     setIsApplyingCoreAll(false);
     setIsExporting(false);
+    setPipelineRunning(false);
+    setPipelineMode("idle");
+    setPipelinePhase(PIPELINE_PHASES.CANCELLED);
+    pipelinePhaseRef.current = PIPELINE_PHASES.CANCELLED;
+    setPipelineProgress((prev) => ({
+      ...prev,
+      percent: 0,
+      label: "İşlem iptal edildi",
+      detail: "",
+    }));
+    setPipelineError(null);
   };
 
   const handleApplyAccountSuggestion = async (row, suggestion) => {
@@ -1339,13 +1504,16 @@ export default function BankaParserPage() {
     }
   };
 
-  /** Dosya seçimi: yalnızca state; parse başlamaz */
-  const handleFileSelect = (event) => {
+  /** Dosya seçimi: state + banka otomatik tespit (parse/pipeline başlamaz) */
+  const handleFileSelect = async (event) => {
     const file = event.target.files?.[0] || null;
 
     if (!file) {
       setSelectedFile(null);
       setFileName("");
+      fileSheetRowsRef.current = null;
+      fileSheetSourceRef.current = null;
+      clearActiveBank();
       resetFileInput();
       return;
     }
@@ -1353,7 +1521,65 @@ export default function BankaParserPage() {
     setSelectedFile(file);
     setFileName(file.name);
     clearPreviewState();
+    setPipelineError(null);
+    fileSheetRowsRef.current = null;
+    fileSheetSourceRef.current = null;
+    activeBankRef.current = "";
+    setSelectedBank("");
+    setBankDetection({
+      status: "pending",
+      bankId: null,
+      message: "Banka formatı kontrol ediliyor…",
+    });
     resetFileInput();
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      if (!arrayBuffer?.byteLength) {
+        activeBankRef.current = "";
+        setSelectedBank("");
+        setBankDetection({
+          status: "unknown",
+          bankId: null,
+          message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+        });
+        return;
+      }
+      const sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
+      fileSheetRowsRef.current = sheetRows;
+      fileSheetSourceRef.current = file.name;
+      const resolved = resolveParserBankFromSheet(sheetRows);
+      if (resolved.status === "detected" && resolved.bankId) {
+        const label =
+          BANK_PARSER_OPTIONS.find((b) => b.id === resolved.bankId)?.label ||
+          resolved.bankId;
+        // Ref önce — state güncellemesini beklemeyen pipeline için
+        setActiveBank(resolved.bankId, {
+          status: "detected",
+          bankId: resolved.bankId,
+          message: `${label} — otomatik tespit`,
+        });
+      } else {
+        activeBankRef.current = "";
+        setSelectedBank("");
+        setBankDetection({
+          status: "unknown",
+          bankId: null,
+          message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+        });
+      }
+    } catch (error) {
+      logManagedPipelineIssue("bank-detect", error);
+      fileSheetRowsRef.current = null;
+      fileSheetSourceRef.current = null;
+      activeBankRef.current = "";
+      setSelectedBank("");
+      setBankDetection({
+        status: "unknown",
+        bankId: null,
+        message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+      });
+    }
   };
 
   const queueUnrecognizedFromWorker = async (unrecognizedItems = []) => {
@@ -1401,28 +1627,36 @@ export default function BankaParserPage() {
     setCoreIntegrationSummary(null);
     setCoreRowsProcessed(0);
     setLastTimings(null);
+    setPipelineResult(null);
+    unrecognizedCountRef.current = 0;
+    resetPipelineUiState();
     if (resetParserJob) parserJob.reset();
   };
 
-  const buildPipelineOptions = (normalizedRows, coreRowLimit) => ({
-    normalizedRows,
-    selectedBank,
-    selectedCompany,
-    companyPlans,
-    companyRules,
-    learningMemory,
-    accountMemoryRecords: loadAccountMemoryV1Records(),
-    accountingRules,
-    declarationAccrualRecords,
-    selectedCompanyId,
-    sourceFileName: selectedFile?.name || "",
-    sourceFileType: detectSourceFileType(
-      selectedFile?.name || "",
-      selectedFile?.type || ""
-    ),
-    sourceType: "bank",
-    coreRowLimit,
-  });
+  const buildPipelineOptions = (normalizedRows, coreRowLimit, bankName) => {
+    const bank = String(bankName || activeBankRef.current || selectedBank || "")
+      .trim()
+      .toUpperCase();
+    return {
+      normalizedRows,
+      selectedBank: bank,
+      selectedCompany,
+      companyPlans,
+      companyRules,
+      learningMemory,
+      accountMemoryRecords: loadAccountMemoryV1Records(),
+      accountingRules,
+      declarationAccrualRecords,
+      selectedCompanyId,
+      sourceFileName: selectedFile?.name || "",
+      sourceFileType: detectSourceFileType(
+        selectedFile?.name || "",
+        selectedFile?.type || ""
+      ),
+      sourceType: "bank",
+      coreRowLimit,
+    };
+  };
 
   const applyMovementPreview = (movements, coreMeta, raw) => {
     movementsRef.current = movements;
@@ -1439,28 +1673,85 @@ export default function BankaParserPage() {
     setTotalLucaCount(0);
   };
 
-  const parseExcelFile = async (file, signal) => {
+  const setPipelinePhaseSafe = (phase) => {
+    pipelinePhaseRef.current = phase;
+    setPipelinePhase(phase);
+  };
+
+  const emitPipelineProgress = (phase, message = {}) => {
+    const localPercent =
+      typeof message.percent === "number" ? message.percent : 0;
+    const percent = mapLocalProgressToGlobal(phase, localPercent);
+    const label = getPipelinePhaseLabel(phase, message.detail || message.stage || "");
+    const detail = message.detail || "";
+    const processed =
+      typeof message.processed === "number" ? message.processed : null;
+    const total = typeof message.total === "number" ? message.total : null;
+    setPipelineProgress({ percent, label, detail, processed, total });
+    parserJob.onProgress({
+      stage: label || message.stage || "",
+      detail,
+      percent,
+      processed,
+      total,
+    });
+  };
+
+  const parseExcelFile = async (file, signal, bankName) => {
+    const bank = String(bankName || activeBankRef.current || "")
+      .trim()
+      .toUpperCase();
+    if (!bank) {
+      const err = new Error("Banka otomatik belirlenemedi. Lütfen bankayı seçin.");
+      err.code = "BANK_REQUIRED";
+      throw err;
+    }
+
     const onProgress = (message) => {
-      if (!signal?.aborted) parserJob.onProgress(message);
+      if (signal?.aborted) return;
+      const phase = pipelinePhaseRef.current;
+      if (
+        phase === PIPELINE_PHASES.PARSING ||
+        phase === PIPELINE_PHASES.PREVIEW
+      ) {
+        emitPipelineProgress(phase, message);
+      } else {
+        parserJob.onProgress(message);
+      }
     };
 
-    // Dosya + XLSX yalnızca bir kez: worker'a sheetRows, fallback aynı sheetRows.
-    const arrayBuffer = await file.arrayBuffer();
+    // Dosya seçiminde cache varsa XLSX'i tekrar okuma.
+    let sheetRows = null;
+    if (
+      fileSheetRowsRef.current &&
+      fileSheetSourceRef.current === file?.name
+    ) {
+      sheetRows = fileSheetRowsRef.current;
+    } else {
+      const arrayBuffer = await file.arrayBuffer();
+      if (signal?.aborted) {
+        const err = new Error("İşlem iptal edildi.");
+        err.name = "AbortError";
+        throw err;
+      }
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+        const err = new Error("Dosya içeriği boş veya okunamadı.");
+        err.code = "FILE_READ";
+        throw err;
+      }
+      sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
+      fileSheetRowsRef.current = sheetRows;
+      fileSheetSourceRef.current = file?.name || null;
+    }
+
     if (signal?.aborted) {
       const err = new Error("İşlem iptal edildi.");
       err.name = "AbortError";
       throw err;
     }
-    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-      const err = new Error("Dosya içeriği boş veya okunamadı.");
-      err.code = "FILE_READ";
-      throw err;
-    }
 
-    let sheetRows;
     try {
-      sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
-      assertSelectedBankMatchesSheet(sheetRows, selectedBank);
+      assertSelectedBankMatchesSheet(sheetRows, bank);
     } catch (mismatchError) {
       if (
         mismatchError?.code === "BANK_FORMAT_MISMATCH" ||
@@ -1470,6 +1761,8 @@ export default function BankaParserPage() {
           `${BANK_FORMAT_MISMATCH_MESSAGE} ${BANK_FORMAT_MISMATCH_HINT}`
         );
         err.code = "BANK_FORMAT_MISMATCH";
+        err.detectedBank = mismatchError?.detectedBank;
+        err.selectedBank = mismatchError?.selectedBank || bank;
         throw err;
       }
       throw mismatchError;
@@ -1485,7 +1778,7 @@ export default function BankaParserPage() {
       const workerResult = await runBankParserWorker({
         workerUrl: PARSER_WORKER_URLS.bankExcel,
         sheetRows,
-        bankName: selectedBank,
+        bankName: bank,
         options: { selectedCompanyId },
         onProgress,
         timeoutMs: 120_000,
@@ -1495,10 +1788,10 @@ export default function BankaParserPage() {
         normalizedRows: workerResult.normalizedRows || [],
         parseMode: workerResult.parseMode || "worker",
         timings: workerResult.timings || null,
+        bankName: bank,
       };
     } catch (workerError) {
       if (workerError?.name === "AbortError" || signal?.aborted) throw workerError;
-      // Managed path — warn only (avoid Next overlay from nested ErrorEvent logs).
       console.warn("[banka-ekstresi] worker parse fallback", {
         message: workerError?.message || String(workerError),
         code: workerError?.code || null,
@@ -1509,29 +1802,26 @@ export default function BankaParserPage() {
         stage: BANK_PARSE_STAGES.READING,
         detail: "Worker kullanılamadı — ana thread",
       });
-      return parseBankExcelOnMainThread(file, selectedBank, onProgress, {
+      return parseBankExcelOnMainThread(file, bank, onProgress, {
         sheetRows,
       });
     }
   };
 
-  /** AŞAMA 1 — yalnızca parser */
-  const handleCreatePreview = async () => {
-    if (isJobBusy) return;
-    if (!selectedCompanyId) {
-      showToast("Önce firma seçmelisin.", "error");
-      return;
-    }
-    if (!selectedFile) {
-      showToast("Önce banka ekstresi dosyası seçmelisin.", "error");
-      return;
-    }
-
-    // Format guard parse içinde (worker / ana thread) — çift Excel okuma yok.
-    const { runId, signal } = beginPipelineRun();
+  /** Stage çekirdeği — beginPipelineRun YOK; dış signal/runId kullanır */
+  const runPreviewStage = async ({ signal, runId, bankName } = {}) => {
     const t0 = performance.now();
-    setIsParsing(true);
-    setActiveStep("preview");
+    const bank = String(bankName || getRunBank() || "")
+      .trim()
+      .toUpperCase();
+    assertPipelineSignal(signal, isRunActive, runId);
+    if (!bank) {
+      const err = new Error("Banka otomatik belirlenemedi. Lütfen bankayı seçin.");
+      err.code = "BANK_REQUIRED";
+      throw err;
+    }
+    // Kapalı state’e bakmadan açık run context
+    activeBankRef.current = bank;
     setAccountingAnalyzed(false);
     setPreviewErrorDetail("");
     setPreviewSummary(null);
@@ -1544,83 +1834,387 @@ export default function BankaParserPage() {
       luca: false,
       excel: false,
     });
+
+    setPipelinePhaseSafe(PIPELINE_PHASES.PARSING);
+    const mainResult = await parseExcelFile(selectedFile, signal, bank);
+    assertPipelineSignal(signal, isRunActive, runId);
+
+    normalizedRef.current = mainResult.normalizedRows || [];
+    setPipelinePhaseSafe(PIPELINE_PHASES.PREVIEW);
+    const previewResult = await buildParserPreviewFromNormalizedRowsAsync({
+      ...buildPipelineOptions(normalizedRef.current, undefined, bank),
+      signal,
+      onProgress: (message) => {
+        if (isRunActive(runId) && !signal.aborted) {
+          emitPipelineProgress(PIPELINE_PHASES.PREVIEW, message);
+        }
+      },
+    });
+    assertPipelineSignal(signal, isRunActive, runId);
+
+    const movements = previewResult.movementRows || [];
+    applyMovementPreview(movements, null, mainResult.rawCount);
+    setAccountingAnalyzed(false);
+    setCompletedSteps((prev) => ({ ...prev, preview: true }));
+    setActiveStep("analysis");
+    const durationMs = Math.round(performance.now() - t0);
+    setLastTimings((prev) => ({
+      ...prev,
+      previewMs: durationMs,
+      movementCount: movements.length,
+      parseMode: mainResult.parseMode || "main",
+      bankName: bank,
+    }));
+    return {
+      normalizedCount: (mainResult.normalizedRows || []).length,
+      movementCount: movements.length,
+      rawCount: mainResult.rawCount || 0,
+      parseMode: mainResult.parseMode || "main",
+      bankName: bank,
+      durationMs,
+    };
+  };
+
+  const runAccountingAnalysisStage = async ({ signal, runId, bankName } = {}) => {
+    const t0 = performance.now();
+    const bank = String(bankName || getRunBank() || "")
+      .trim()
+      .toUpperCase();
+    assertPipelineSignal(signal, isRunActive, runId);
+    if (!movementsRef.current.length) {
+      throw new Error("Önce ön izleme oluşturun.");
+    }
+
+    const result = await runAccountingAnalysisOnMovementsAsync({
+      ...buildPipelineOptions(normalizedRef.current, undefined, bank),
+      movementRows: movementsRef.current,
+      signal,
+      onProgress: (message) => {
+        if (isRunActive(runId) && !signal.aborted) {
+          emitPipelineProgress(PIPELINE_PHASES.ACCOUNTING_ANALYSIS, message);
+        }
+      },
+    });
+    assertPipelineSignal(signal, isRunActive, runId);
+
+    movementsRef.current = result.movementRows || [];
+    setAccountingAnalyzed(true);
+    setPreviewSummary(computeMovementPreviewSummary(movementsRef.current));
+    setCoreIntegrationSummary(computeCoreIntegrationSummary(movementsRef.current));
+    setCoreRowsProcessed(0);
+    syncMovementPage(0);
+    setExportValidation(null);
+    lucaRef.current = [];
+    setLucaReady(false);
+    setStandardLucaRows([]);
+    setTotalLucaCount(0);
+    setCompletedSteps((prev) => ({
+      ...prev,
+      analysis: true,
+      luca: false,
+      excel: false,
+    }));
+    setActiveStep("luca");
+    const durationMs = Math.round(performance.now() - t0);
+    setLastTimings((prev) => ({
+      ...prev,
+      analysisMs: durationMs,
+      analysisChunk: ACCOUNTING_ANALYSIS_CHUNK_SIZE,
+      analysisProcessed: result.processedCount ?? movementsRef.current.length,
+      analysisTimedOut: Boolean(result.timedOut),
+      analysisTimings: result.timings || null,
+      analysisCallCounts: result.callCounts || null,
+      uniqueDescriptionCount:
+        result.uniqueDescriptionCount ??
+        result.callCounts?.uniqueDescriptionCount ??
+        null,
+      uniqueReport: result.uniqueReport || null,
+    }));
+    {
+      const decisionReport = buildCariDecisionReport({
+        analysisStats: result.callCounts || {},
+        timings: result.timings || {},
+        previousMissingCount: cariDecisionReport?.currentMissingCount ?? null,
+        currentMissingCount: null,
+        cariGroupReport: null,
+      });
+      setCariDecisionReport(decisionReport);
+      console.info("[ANNVERO][CARI-DECISION]", formatCariDecisionReportText(decisionReport));
+      if (result.memoryDecisionReport) {
+        setMemoryDecisionReport(result.memoryDecisionReport);
+        console.info(
+          "[ANNVERO][MEMORY-DECISION]",
+          formatMemoryDecisionReportText(result.memoryDecisionReport)
+        );
+      }
+    }
+
+    const uniqueCount =
+      result.uniqueDescriptionCount ||
+      result.callCounts?.uniqueDescriptionCount ||
+      0;
+    return {
+      movementCount: movementsRef.current.length,
+      uniqueCount,
+      durationMs,
+      result,
+    };
+  };
+
+  const runLucaBuildStage = async ({ signal, runId, bankName } = {}) => {
+    const t0 = performance.now();
+    const bank = String(bankName || getRunBank() || "")
+      .trim()
+      .toUpperCase();
+    assertPipelineSignal(signal, isRunActive, runId);
+    if (!movementsRef.current.length) {
+      throw new Error("Önce ön izleme oluşturun.");
+    }
+    setLucaReady(false);
+    setExportValidation(null);
+
+    const lucaResult = await buildLucaRowsFromMovementsAsync(
+      movementsRef.current,
+      buildPipelineOptions(normalizedRef.current, undefined, bank),
+      {
+        chunkSize: LUCA_MOVEMENT_CHUNK_SIZE,
+        signal,
+        earlyPreviewCount: PREVIEW_PAGE_SIZE,
+        onEarlyPreview: (partialRows) => {
+          if (!isRunActive(runId) || signal.aborted) return;
+          setStandardLucaRows(partialRows.slice(0, PREVIEW_PAGE_SIZE));
+          setTotalLucaCount(partialRows.length);
+        },
+        onProgress: (message) => {
+          if (isRunActive(runId) && !signal.aborted) {
+            emitPipelineProgress(PIPELINE_PHASES.LUCA_BUILD, message);
+          }
+        },
+      }
+    );
+    assertPipelineSignal(signal, isRunActive, runId);
+
+    lucaRef.current = lucaResult.standardLucaRows || [];
+    unrecognizedCountRef.current = (lucaResult.unrecognizedItems || []).length;
+    setLucaReady(true);
+    setTotalLucaCount(lucaRef.current.length);
+    setPreviewSummary((prev) => ({
+      ...(prev || computeMovementPreviewSummary(movementsRef.current)),
+      lucaRows: lucaRef.current.length,
+      totalMovements: movementsRef.current.length,
+    }));
+    syncLucaPage(0);
+    markAppliedDeclarationsPaid(lucaResult.declarationSummary);
+    setCompletedSteps((prev) => ({ ...prev, luca: true }));
+    setActiveStep("excel");
+    const durationMs = Math.round(performance.now() - t0);
+    setLastTimings((prev) => ({
+      ...prev,
+      lucaMs: durationMs,
+      lucaChunk: LUCA_MOVEMENT_CHUNK_SIZE,
+      lucaRows: lucaRef.current.length,
+      lucaTimings: lucaResult.timings || null,
+      lucaStats: lucaResult.lucaStats || null,
+    }));
+
+    // Deferred post-work (same as before) — do not block return
+    const rowsSnapshot = lucaRef.current;
+    const movementsSnapshot = movementsRef.current;
+    const unrecognizedSnapshot = lucaResult.unrecognizedItems || [];
+    const analysisCallCounts = lastTimings?.analysisCallCounts;
+    const analysisTimings = lastTimings?.analysisTimings;
+    const previousMissing =
+      cariDecisionReport?.currentMissingCount ??
+      cariDecisionReport?.previousMissingCount ??
+      null;
+
+    setTimeout(() => {
+      if (!isRunActive(runId)) return;
+      recordLearningMemoryUsage(rowsSnapshot.slice(0, 300)).catch(() => {});
+      queueUnrecognizedFromWorker(unrecognizedSnapshot).catch(() => {});
+
+      void (async () => {
+        const yieldUi = () => new Promise((resolve) => setTimeout(resolve, 0));
+        await yieldUi();
+        if (!isRunActive(runId)) return;
+
+        const missingReport = analyzeMissingHesapRows(rowsSnapshot);
+        if (!isRunActive(runId)) return;
+        setMissingHesapReport(missingReport);
+        setPreviewSummary((prev) => ({
+          ...(prev || {}),
+          lucaRows: rowsSnapshot.length,
+          ...computePreviewSummary(rowsSnapshot, null),
+          totalMovements: movementsSnapshot.length,
+        }));
+
+        await yieldUi();
+        if (!isRunActive(runId)) return;
+        const grouped = groupUnresolvedRuleRows(rowsSnapshot, {
+          companyPlans,
+          movements: movementsSnapshot,
+        });
+        setRuleGroupReport(grouped);
+        console.info("[ANNVERO][RULE-GROUPS]", {
+          unresolved: grouped.totalUnresolved,
+          groups: grouped.groupCount,
+          top30CoveragePct: grouped.top30CoveragePct,
+          top30Count: grouped.top30Coverage,
+          safeFamilyGroups: grouped.safeFamilyGroupCount,
+        });
+
+        await yieldUi();
+        if (!isRunActive(runId)) return;
+        const cariGrouped = groupUnresolvedCariRows(rowsSnapshot, {
+          companyPlans,
+          movements: movementsSnapshot,
+        });
+        setCariGroupReport(cariGrouped);
+        console.info("[ANNVERO][CARI-GROUPS]", {
+          unresolved: cariGrouped.totalUnresolved,
+          groups: cariGrouped.groupCount,
+          top20CoveragePct: cariGrouped.top20CoveragePct,
+          withSuggestion: (cariGrouped.top20 || []).filter((g) => g.suggestedAccount)
+            .length,
+        });
+
+        if (analysisCallCounts || analysisTimings) {
+          const decisionReport = buildCariDecisionReport({
+            analysisStats: analysisCallCounts || {},
+            timings: analysisTimings || {},
+            previousMissingCount: previousMissing,
+            currentMissingCount: missingReport.missingCount,
+            cariGroupReport: cariGrouped,
+          });
+          setCariDecisionReport(decisionReport);
+          console.info(
+            "[ANNVERO][CARI-DECISION]",
+            formatCariDecisionReportText(decisionReport)
+          );
+        }
+      })();
+    }, 0);
+
+    return {
+      lucaRowCount: lucaRef.current.length,
+      unrecognizedCount: unrecognizedCountRef.current,
+      durationMs,
+      lucaStats: lucaResult.lucaStats || null,
+    };
+  };
+
+  const runValidationStage = async ({ signal, runId }) => {
+    const t0 = performance.now();
+    assertPipelineSignal(signal, isRunActive, runId);
+    const rows = lucaRef.current || [];
+    const missingReport = analyzeMissingHesapRows(rows);
+    setMissingHesapReport(missingReport);
+    assertPipelineSignal(signal, isRunActive, runId);
+    return {
+      missingCount: missingReport.missingCount || 0,
+      unrecognizedCount: unrecognizedCountRef.current || 0,
+      readyCount: missingReport.readyCount || 0,
+      totalRows: missingReport.totalRows || rows.length,
+      durationMs: Math.round(performance.now() - t0),
+    };
+  };
+
+  /** AŞAMA 1 — manuel */
+  const handleCreatePreview = async () => {
+    if (isJobBusy) return;
+    if (!selectedCompanyId) {
+      showToast("Önce firma seçmelisin.", "error");
+      return;
+    }
+    if (!selectedFile) {
+      showToast("Önce banka ekstresi dosyası seçmelisin.", "error");
+      return;
+    }
+    const bank = getRunBank();
+    if (!bank) {
+      setPipelineError({
+        phase: PIPELINE_PHASES.PARSING,
+        phaseLabel: getPipelinePhaseTitle(PIPELINE_PHASES.PARSING),
+        message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+        recoverable: false,
+        tone: "error",
+      });
+      return;
+    }
+
+    const { runId, signal } = beginPipelineRun();
+    setPipelineMode("manual");
+    setPipelineError(null);
+    setIsParsing(true);
+    setActiveStep("preview");
+    setPipelinePhaseSafe(PIPELINE_PHASES.PARSING);
     parserJob.begin({
       stage: BANK_PARSE_STAGES.READING,
       detail: "Dosya okunuyor",
     });
 
     try {
-      const mainResult = await parseExcelFile(selectedFile, signal);
+      const preview = await runPreviewStage({ signal, runId, bankName: bank });
       if (!isRunActive(runId) || signal.aborted) return;
-
-      normalizedRef.current = mainResult.normalizedRows || [];
-      parserJob.onProgress({
-        stage: BANK_PARSE_STAGES.PREVIEW,
-        detail: "Önizleme hazırlanıyor",
-      });
-
-      const previewResult = await buildParserPreviewFromNormalizedRowsAsync({
-        ...buildPipelineOptions(normalizedRef.current, undefined),
-        signal,
-        onProgress: (message) => {
-          if (isRunActive(runId)) parserJob.onProgress(message);
-        },
-      });
-
-      if (!isRunActive(runId) || signal.aborted) return;
-
-      const movements = previewResult.movementRows || [];
-      applyMovementPreview(movements, null, mainResult.rawCount);
-      setAccountingAnalyzed(false);
-      setCompletedSteps((prev) => ({ ...prev, preview: true }));
-      setActiveStep("analysis");
-      setLastTimings((prev) => ({
-        ...prev,
-        previewMs: Math.round(performance.now() - t0),
-        movementCount: movements.length,
-        parseMode: mainResult.parseMode || "main",
-      }));
       setIsParsing(false);
       parserJob.markSuccess(
-        `${movements.length} hareket önizlemede (muhasebe analizi ayrı)`
+        `${preview.movementCount} hareket önizlemede (muhasebe analizi ayrı)`
       );
       showToast(
-        `${movements.length} hareket hazır. Sonraki: Muhasebe Analizini Başlat.`,
+        `${preview.movementCount} hareket hazır. Sonraki: Muhasebe Analizini Başlat.`,
         "success"
       );
+      setPipelineMode("idle");
+      setPipelinePhaseSafe(PIPELINE_PHASES.IDLE);
     } catch (error) {
       if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
         setIsParsing(false);
         return;
       }
-      console.error("[banka-ekstresi] preview failed", error);
-      const isFormatMismatch =
-        error?.code === "BANK_FORMAT_MISMATCH" ||
-        String(error?.message || "").includes(BANK_FORMAT_MISMATCH_MESSAGE);
-      const detail = isFormatMismatch
-        ? `${BANK_FORMAT_MISMATCH_MESSAGE} ${BANK_FORMAT_MISMATCH_HINT}`
-        : error?.userMessage ||
-          error?.message ||
-          "Dosya okunamadı. Excel'de açıp .xlsx olarak kaydedip tekrar deneyin.";
-      setPreviewErrorDetail(detail);
-      logParserJobError(error, {
-        module: "Banka Parser",
-        companyId: selectedCompanyId,
-        companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
-        fileName: selectedFile?.name || "",
-        errorType: SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
-        source: "parser-preview",
-        jobType: "bank-excel-preview",
-      });
-      parserJob.markError(error);
+      logManagedPipelineIssue("preview failed", error);
+      if (
+        error?.code === "BANK_FORMAT_MISMATCH" &&
+        error?.detectedBank &&
+        (error.detectedBank === "VAKIFBANK" || error.detectedBank === "GARANTI")
+      ) {
+        const label =
+          BANK_PARSER_OPTIONS.find((b) => b.id === error.detectedBank)?.label ||
+          error.detectedBank;
+        setActiveBank(error.detectedBank, {
+          status: "detected",
+          bankId: error.detectedBank,
+          message: `${label} — otomatik tespit`,
+        });
+      }
+      const detail = buildManagedFailureMessage(
+        error,
+        PIPELINE_PHASES.PREVIEW
+      );
+      setPreviewErrorDetail("");
+      parserJob.reset();
       clearPreviewState({ resetParserJob: false });
-      showToast(detail, "error");
+      setPipelineError({
+        phase: PIPELINE_PHASES.PREVIEW,
+        phaseLabel: getPipelinePhaseTitle(PIPELINE_PHASES.PREVIEW),
+        message:
+          error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+            ? `Dosya ${error.detectedBank === "VAKIFBANK" ? "Vakıfbank" : "Garanti"} olarak algılandı. Banka seçimi güncellendi.`
+            : detail,
+        recoverable: Boolean(error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank),
+        tone:
+          error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+            ? "info"
+            : "error",
+      });
+      setPipelineMode("idle");
+      setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+      // Hata yalnızca kartta — toast yok (çift mesaj önleme)
     } finally {
       if (isRunActive(runId)) setIsParsing(false);
     }
   };
 
-  /** AŞAMA 2 — muhasebe analizi */
+  /** AŞAMA 2 — manuel */
   const handleStartAccountingAnalysis = async () => {
     if (isAnalyzing) return;
     if (isParsing || isPreparingLuca || isApplyingCoreAll) return;
@@ -1630,128 +2224,65 @@ export default function BankaParserPage() {
     }
 
     const { runId, signal } = beginPipelineRun();
-    const t0 = performance.now();
-    const releaseAnalysisLock = () => {
-      setIsAnalyzing(false);
-    };
-
+    const releaseAnalysisLock = () => setIsAnalyzing(false);
+    setPipelineMode("manual");
+    setPipelineError(null);
     setIsAnalyzing(true);
     setActiveStep("analysis");
+    setPipelinePhaseSafe(PIPELINE_PHASES.ACCOUNTING_ANALYSIS);
     parserJob.begin({
       stage: BANK_PARSE_STAGES.ANALYSIS,
       detail: "Muhasebe kuralları uygulanıyor",
     });
 
     try {
-      const result = await runAccountingAnalysisOnMovementsAsync({
-        ...buildPipelineOptions(normalizedRef.current, undefined),
-        movementRows: movementsRef.current,
+      const analysis = await runAccountingAnalysisStage({
         signal,
-        onProgress: (message) => {
-          if (isRunActive(runId) && !signal.aborted) {
-            parserJob.onProgress(message);
-          }
-        },
+        runId,
+        bankName: getRunBank(),
       });
-
       if (!isRunActive(runId) || signal.aborted) {
         releaseAnalysisLock();
         return;
       }
-
-      movementsRef.current = result.movementRows || [];
-      setAccountingAnalyzed(true);
-      setPreviewSummary(computeMovementPreviewSummary(movementsRef.current));
-      setCoreIntegrationSummary(
-        computeCoreIntegrationSummary(movementsRef.current)
-      );
-      setCoreRowsProcessed(0);
-      syncMovementPage(0);
-      setExportValidation(null);
-      lucaRef.current = [];
-      setLucaReady(false);
-      setStandardLucaRows([]);
-      setTotalLucaCount(0);
-      setCompletedSteps((prev) => ({
-        ...prev,
-        analysis: true,
-        luca: false,
-        excel: false,
-      }));
-      setActiveStep("luca");
-      setLastTimings((prev) => ({
-        ...prev,
-        analysisMs: Math.round(performance.now() - t0),
-        analysisChunk: ACCOUNTING_ANALYSIS_CHUNK_SIZE,
-        analysisProcessed: result.processedCount ?? movementsRef.current.length,
-        analysisTimedOut: Boolean(result.timedOut),
-        analysisTimings: result.timings || null,
-        analysisCallCounts: result.callCounts || null,
-        uniqueDescriptionCount:
-          result.uniqueDescriptionCount ??
-          result.callCounts?.uniqueDescriptionCount ??
-          null,
-        uniqueReport: result.uniqueReport || null,
-      }));
-      {
-        const decisionReport = buildCariDecisionReport({
-          analysisStats: result.callCounts || {},
-          timings: result.timings || {},
-          previousMissingCount: cariDecisionReport?.currentMissingCount ?? null,
-          currentMissingCount: null,
-          cariGroupReport: null,
-        });
-        setCariDecisionReport(decisionReport);
-        console.info(
-          "[ANNVERO][CARI-DECISION]",
-          formatCariDecisionReportText(decisionReport)
-        );
-        if (result.memoryDecisionReport) {
-          setMemoryDecisionReport(result.memoryDecisionReport);
-          console.info(
-            "[ANNVERO][MEMORY-DECISION]",
-            formatMemoryDecisionReportText(result.memoryDecisionReport)
-          );
-        }
-      }
       parserJob.markSuccess(
-        `Muhasebe analizi tamamlandı (${movementsRef.current.length} hareket · ${
-          result.uniqueDescriptionCount ||
-          result.callCounts?.uniqueDescriptionCount ||
-          "?"
-        } grup)`
+        `Muhasebe analizi tamamlandı (${analysis.movementCount} hareket · ${analysis.uniqueCount || "?"} grup)`
       );
-      const unique =
-        result.uniqueDescriptionCount ||
-        result.callCounts?.uniqueDescriptionCount;
-      const legacyUnique = result.uniqueReport?.legacyUniqueCount;
+      const legacyUnique = analysis.result?.uniqueReport?.legacyUniqueCount;
       showToast(
-        unique
-          ? `Yerel analiz tamam (${unique} grup${
+        analysis.uniqueCount
+          ? `Yerel analiz tamam (${analysis.uniqueCount} grup${
               legacyUnique ? ` / eski ${legacyUnique} unique` : ""
-            } · ${movementsRef.current.length} hareket).`
+            } · ${analysis.movementCount} hareket).`
           : "Yerel muhasebe analizi tamamlandı. Sonraki: Luca Satırlarını Hazırla.",
         "success"
       );
+      setPipelineMode("idle");
+      setPipelinePhaseSafe(PIPELINE_PHASES.IDLE);
     } catch (error) {
       if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
         releaseAnalysisLock();
         return;
       }
-      console.error("[banka-ekstresi] accounting analysis failed", {
-        error,
+      logManagedPipelineIssue("accounting analysis failed", error, {
         movementCount: movementsRef.current.length,
       });
-      parserJob.markError(error);
-      showToast(error?.message || "Muhasebe analizi başarısız.", "error");
+      parserJob.reset();
+      setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+      setPipelineError({
+        phase: PIPELINE_PHASES.ACCOUNTING_ANALYSIS,
+        phaseLabel: getPipelinePhaseTitle(PIPELINE_PHASES.ACCOUNTING_ANALYSIS),
+        message: userFacingPipelineError(PIPELINE_PHASES.ACCOUNTING_ANALYSIS),
+        recoverable: true,
+        tone: "error",
+      });
+      setPipelineMode("idle");
     } finally {
-      // Her durumda kilidi aç: iptal/supersede erken return'lerde de unlock edildi;
-      // aktif run için burada garanti altına alınır.
       releaseAnalysisLock();
     }
   };
 
-  /** AŞAMA 3 — Luca */
+  /** AŞAMA 3 — manuel */
   const handlePrepareLuca = async () => {
     if (isPreparingLuca) return;
     if (isParsing || isAnalyzing || isApplyingCoreAll) return;
@@ -1765,163 +2296,302 @@ export default function BankaParserPage() {
     }
 
     const { runId, signal } = beginPipelineRun();
-    const t0 = performance.now();
     const releaseLucaLock = () => setIsPreparingLuca(false);
-
+    setPipelineMode("manual");
+    setPipelineError(null);
     setIsPreparingLuca(true);
     setActiveStep("luca");
-    setLucaReady(false);
-    setExportValidation(null);
+    setPipelinePhaseSafe(PIPELINE_PHASES.LUCA_BUILD);
     parserJob.begin({
       stage: BANK_PARSE_STAGES.LUCA,
       detail: `Luca satırları hazırlanıyor (chunk ${LUCA_MOVEMENT_CHUNK_SIZE})`,
     });
 
     try {
-      const lucaResult = await buildLucaRowsFromMovementsAsync(
-        movementsRef.current,
-        buildPipelineOptions(normalizedRef.current, undefined),
-        {
-          chunkSize: LUCA_MOVEMENT_CHUNK_SIZE,
-          signal,
-          earlyPreviewCount: PREVIEW_PAGE_SIZE,
-          onEarlyPreview: (partialRows) => {
-            if (!isRunActive(runId) || signal.aborted) return;
-            setStandardLucaRows(partialRows.slice(0, PREVIEW_PAGE_SIZE));
-            setTotalLucaCount(partialRows.length);
-          },
-          onProgress: (message) => {
-            if (isRunActive(runId) && !signal.aborted) {
-              parserJob.onProgress(message);
-            }
-          },
-        }
-      );
+      const luca = await runLucaBuildStage({
+        signal,
+        runId,
+        bankName: getRunBank(),
+      });
       if (!isRunActive(runId) || signal.aborted) {
         releaseLucaLock();
         return;
       }
-
-      lucaRef.current = lucaResult.standardLucaRows || [];
-      setLucaReady(true);
-      setTotalLucaCount(lucaRef.current.length);
-      // Özet/sayfa hemen; ağır raporlar yield sonrası (ana thread'i bloke etme)
-      setPreviewSummary((prev) => ({
-        ...(prev || computeMovementPreviewSummary(movementsRef.current)),
-        lucaRows: lucaRef.current.length,
-        totalMovements: movementsRef.current.length,
-      }));
-      syncLucaPage(0);
-      markAppliedDeclarationsPaid(lucaResult.declarationSummary);
-      setCompletedSteps((prev) => ({ ...prev, luca: true }));
-      setActiveStep("excel");
-      setLastTimings((prev) => ({
-        ...prev,
-        lucaMs: Math.round(performance.now() - t0),
-        lucaChunk: LUCA_MOVEMENT_CHUNK_SIZE,
-        lucaRows: lucaRef.current.length,
-        lucaTimings: lucaResult.timings || null,
-        lucaStats: lucaResult.lucaStats || null,
-      }));
       parserJob.markSuccess(
-        `${lucaRef.current.length} Luca satırı hazır (${movementsRef.current.length} hareket × çift taraflı)`
+        `${luca.lucaRowCount} Luca satırı hazır (${movementsRef.current.length} hareket × çift taraflı)`
       );
-      const stats = lucaResult.lucaStats;
+      const stats = luca.lucaStats;
       showToast(
         stats
           ? `${stats.lucaRows} Luca satırı (${stats.movementsWith2Rows} hareket → 2 satır). Excel kullanılabilir.`
-          : `${lucaRef.current.length} Luca satırı hazır. Excel kullanılabilir.`,
+          : `${luca.lucaRowCount} Luca satırı hazır. Excel kullanılabilir.`,
         "success"
       );
-
-      const rowsSnapshot = lucaRef.current;
-      const movementsSnapshot = movementsRef.current;
-      const unrecognizedSnapshot = lucaResult.unrecognizedItems || [];
-      const analysisCallCounts = lastTimings?.analysisCallCounts;
-      const analysisTimings = lastTimings?.analysisTimings;
-      const previousMissing =
-        cariDecisionReport?.currentMissingCount ??
-        cariDecisionReport?.previousMissingCount ??
-        null;
-
-      setTimeout(() => {
-        if (!isRunActive(runId)) return;
-        recordLearningMemoryUsage(rowsSnapshot.slice(0, 300)).catch(() => {});
-        queueUnrecognizedFromWorker(unrecognizedSnapshot).catch(() => {});
-
-        void (async () => {
-          const yieldUi = () => new Promise((resolve) => setTimeout(resolve, 0));
-          await yieldUi();
-          if (!isRunActive(runId)) return;
-
-          const missingReport = analyzeMissingHesapRows(rowsSnapshot);
-          if (!isRunActive(runId)) return;
-          setMissingHesapReport(missingReport);
-          setPreviewSummary((prev) => ({
-            ...(prev || {}),
-            lucaRows: rowsSnapshot.length,
-            ...computePreviewSummary(rowsSnapshot, null),
-            totalMovements: movementsSnapshot.length,
-          }));
-
-          await yieldUi();
-          if (!isRunActive(runId)) return;
-          const grouped = groupUnresolvedRuleRows(rowsSnapshot, {
-            companyPlans,
-            movements: movementsSnapshot,
-          });
-          setRuleGroupReport(grouped);
-          console.info("[ANNVERO][RULE-GROUPS]", {
-            unresolved: grouped.totalUnresolved,
-            groups: grouped.groupCount,
-            top30CoveragePct: grouped.top30CoveragePct,
-            top30Count: grouped.top30Coverage,
-            safeFamilyGroups: grouped.safeFamilyGroupCount,
-          });
-
-          await yieldUi();
-          if (!isRunActive(runId)) return;
-          const cariGrouped = groupUnresolvedCariRows(rowsSnapshot, {
-            companyPlans,
-            movements: movementsSnapshot,
-          });
-          setCariGroupReport(cariGrouped);
-          console.info("[ANNVERO][CARI-GROUPS]", {
-            unresolved: cariGrouped.totalUnresolved,
-            groups: cariGrouped.groupCount,
-            top20CoveragePct: cariGrouped.top20CoveragePct,
-            withSuggestion: (cariGrouped.top20 || []).filter(
-              (g) => g.suggestedAccount
-            ).length,
-          });
-
-          if (analysisCallCounts || analysisTimings) {
-            const decisionReport = buildCariDecisionReport({
-              analysisStats: analysisCallCounts || {},
-              timings: analysisTimings || {},
-              previousMissingCount: previousMissing,
-              currentMissingCount: missingReport.missingCount,
-              cariGroupReport: cariGrouped,
-            });
-            setCariDecisionReport(decisionReport);
-            console.info(
-              "[ANNVERO][CARI-DECISION]",
-              formatCariDecisionReportText(decisionReport)
-            );
-          }
-        })();
-      }, 0);
+      setPipelineMode("idle");
+      setPipelinePhaseSafe(PIPELINE_PHASES.IDLE);
     } catch (error) {
       if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
         releaseLucaLock();
         return;
       }
-      console.error("[banka-ekstresi] luca prepare failed", error);
-      parserJob.markError(error);
-      showToast(error?.message || "Luca satırları hazırlanamadı.", "error");
+      logManagedPipelineIssue("luca prepare failed", error);
+      parserJob.reset();
+      setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+      setPipelineError({
+        phase: PIPELINE_PHASES.LUCA_BUILD,
+        phaseLabel: getPipelinePhaseTitle(PIPELINE_PHASES.LUCA_BUILD),
+        message: userFacingPipelineError(PIPELINE_PHASES.LUCA_BUILD),
+        recoverable: true,
+        tone: "error",
+      });
+      setPipelineMode("idle");
     } finally {
       releaseLucaLock();
     }
+  };
+
+  /** Tek tuş — tek runId / tek AbortController */
+  const runFullBankPipeline = async ({ resumeFrom = null } = {}) => {
+    if (isJobBusy) {
+      showToast("Başka bir işlem sürüyor.", "error");
+      return;
+    }
+    if (!selectedCompanyId) {
+      showToast("Önce firma seçmelisin.", "error");
+      return;
+    }
+    if (!selectedFile) {
+      showToast("Önce dosya seçmelisin.", "error");
+      return;
+    }
+    const runBank = getRunBank();
+    if (!runBank) {
+      setPipelineError({
+        phase: PIPELINE_PHASES.PARSING,
+        phaseLabel: getPipelinePhaseTitle(PIPELINE_PHASES.PARSING),
+        message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+        recoverable: false,
+        tone: "error",
+      });
+      setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+      return;
+    }
+
+    if (
+      !canStartFullPipeline({
+        selectedCompanyId,
+        selectedBank: runBank,
+        selectedFile,
+        isJobBusy: false,
+        pipelinePhase,
+      })
+    ) {
+      return;
+    }
+
+    const { runId, signal } = beginPipelineRun();
+    const tPipeline0 = performance.now();
+    const stageDurations = {};
+    // Run context — state flush beklemeden sabit banka
+    activeBankRef.current = runBank;
+    setPipelineRunning(true);
+    setPipelineMode("auto");
+    setPipelineError(null);
+    if (!resumeFrom) setPipelineResult(null);
+    setPreviewErrorDetail("");
+
+    parserJob.begin({
+      stage: "Banka Ekstresi İşleniyor",
+      detail: "Dosya okunuyor…",
+    });
+
+    let failedPhase = null;
+    try {
+      if (
+        shouldRunPipelineStage(resumeFrom, "PARSING") ||
+        shouldRunPipelineStage(resumeFrom, "PREVIEW")
+      ) {
+        setIsParsing(true);
+        setActiveStep("preview");
+        setPipelinePhaseSafe(PIPELINE_PHASES.PARSING);
+        emitPipelineProgress(PIPELINE_PHASES.PARSING, {
+          percent: 5,
+          detail: "Dosya okunuyor…",
+        });
+        assertPipelineSignal(signal, isRunActive, runId);
+        const preview = await runPreviewStage({
+          signal,
+          runId,
+          bankName: runBank,
+        });
+        stageDurations.previewMs = preview.durationMs;
+        stageDurations.parseMode = preview.parseMode;
+        stageDurations.bankName = preview.bankName || runBank;
+        setIsParsing(false);
+      }
+
+      if (shouldRunPipelineStage(resumeFrom, "ACCOUNTING_ANALYSIS")) {
+        assertPipelineSignal(signal, isRunActive, runId);
+        setIsAnalyzing(true);
+        setActiveStep("analysis");
+        setPipelinePhaseSafe(PIPELINE_PHASES.ACCOUNTING_ANALYSIS);
+        emitPipelineProgress(PIPELINE_PHASES.ACCOUNTING_ANALYSIS, {
+          percent: 0,
+          detail: "Muhasebe kuralları uygulanıyor…",
+        });
+        const analysis = await runAccountingAnalysisStage({
+          signal,
+          runId,
+          bankName: runBank,
+        });
+        stageDurations.analysisMs = analysis.durationMs;
+        setIsAnalyzing(false);
+      }
+
+      if (shouldRunPipelineStage(resumeFrom, "LUCA_BUILD")) {
+        assertPipelineSignal(signal, isRunActive, runId);
+        if (
+          resumeFrom === "LUCA_BUILD" &&
+          !accountingAnalyzed &&
+          !movementsRef.current.some((m) => m?._accountingAnalyzed)
+        ) {
+          throw new Error("Önce Muhasebe Analizini Başlatın.");
+        }
+        setIsPreparingLuca(true);
+        setActiveStep("luca");
+        setPipelinePhaseSafe(PIPELINE_PHASES.LUCA_BUILD);
+        emitPipelineProgress(PIPELINE_PHASES.LUCA_BUILD, {
+          percent: 0,
+          detail: "Luca fiş satırları hazırlanıyor…",
+        });
+        const luca = await runLucaBuildStage({
+          signal,
+          runId,
+          bankName: runBank,
+        });
+        stageDurations.lucaMs = luca.durationMs;
+        setIsPreparingLuca(false);
+      }
+
+      if (shouldRunPipelineStage(resumeFrom, "VALIDATION")) {
+        assertPipelineSignal(signal, isRunActive, runId);
+        setPipelinePhaseSafe(PIPELINE_PHASES.VALIDATION);
+        emitPipelineProgress(PIPELINE_PHASES.VALIDATION, {
+          percent: 50,
+          detail: "Eksik hesaplar kontrol ediliyor…",
+        });
+        const validation = await runValidationStage({ signal, runId });
+        stageDurations.validationMs = validation.durationMs;
+
+        const totalDurationMs = Math.round(performance.now() - tPipeline0);
+        const result = {
+          movementCount: movementsRef.current.length,
+          lucaRowCount: lucaRef.current.length,
+          missingCount: validation.missingCount,
+          unrecognizedCount: validation.unrecognizedCount,
+          readyCount: validation.readyCount,
+          autoMatchedCount: deriveAutoMatchedMovements(validation.readyCount),
+          totalDurationMs,
+          stageDurations,
+          parseMode: stageDurations.parseMode || null,
+        };
+        setPipelineResult(result);
+        setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+        setPipelineProgress({
+          percent: 100,
+          label: "Luca dosyanız hazır.",
+          detail: validation.missingCount
+            ? `${validation.missingCount} eksik hesap satırı var — Excel’i yine hazırlayabilirsiniz.`
+            : "Luca dosyanız hazır.",
+          processed: result.movementCount,
+          total: result.movementCount,
+        });
+        parserJob.markSuccess("Luca dosyanız hazır.");
+        setPipelineMode("idle");
+        showToast(
+          validation.missingCount
+            ? `İşlem tamamlandı. ${result.lucaRowCount} Luca satırı · ${validation.missingCount} eksik hesap.`
+            : `İşlem tamamlandı. ${result.lucaRowCount} Luca satırı hazır.`,
+          "success"
+        );
+      }
+    } catch (error) {
+      setIsParsing(false);
+      setIsAnalyzing(false);
+      setIsPreparingLuca(false);
+      if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
+        setPipelinePhaseSafe(PIPELINE_PHASES.CANCELLED);
+        setPipelineMode("idle");
+        return;
+      }
+      failedPhase = pipelinePhaseRef.current || PIPELINE_PHASES.ERROR;
+      logManagedPipelineIssue("full pipeline failed", error, {
+        phase: failedPhase,
+      });
+      if (
+        error?.code === "BANK_FORMAT_MISMATCH" &&
+        error?.detectedBank &&
+        (error.detectedBank === "VAKIFBANK" || error.detectedBank === "GARANTI")
+      ) {
+        const label =
+          BANK_PARSER_OPTIONS.find((b) => b.id === error.detectedBank)?.label ||
+          error.detectedBank;
+        setActiveBank(error.detectedBank, {
+          status: "detected",
+          bankId: error.detectedBank,
+          message: `${label} — otomatik tespit`,
+        });
+      }
+      const message =
+        error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+          ? `Dosya ${error.detectedBank === "VAKIFBANK" ? "Vakıfbank" : "Garanti"} olarak algılandı. Banka seçimi güncellendi.`
+          : buildManagedFailureMessage(error, failedPhase);
+      if (
+        error?.code === "BANK_FORMAT_MISMATCH" ||
+        failedPhase === PIPELINE_PHASES.PARSING ||
+        failedPhase === PIPELINE_PHASES.PREVIEW
+      ) {
+        if (!movementsRef.current.length) {
+          clearPreviewState({ resetParserJob: false });
+        }
+      }
+      parserJob.reset();
+      setPreviewErrorDetail("");
+      setPipelineError({
+        phase: failedPhase,
+        phaseLabel: getPipelinePhaseTitle(failedPhase),
+        message,
+        recoverable:
+          Boolean(error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank) ||
+          (failedPhase !== PIPELINE_PHASES.PARSING &&
+          failedPhase !== PIPELINE_PHASES.PREVIEW
+            ? Boolean(movementsRef.current.length)
+            : false),
+        tone:
+          error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+            ? "info"
+            : "error",
+      });
+      setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+      setPipelineMode("idle");
+      // Hata yalnızca kartta — toast yok
+    } finally {
+      setPipelineRunning(false);
+    }
+  };
+
+  const handleRetryPipeline = () => {
+    // Format auto-fix sonrası veya recover edilemeyen durumda baştan çalıştır.
+    if (
+      !pipelineError?.recoverable ||
+      !pipelineError?.phase ||
+      pipelineError.phase === PIPELINE_PHASES.PARSING ||
+      pipelineError.phase === PIPELINE_PHASES.PREVIEW
+    ) {
+      void runFullBankPipeline();
+      return;
+    }
+    void runFullBankPipeline({ resumeFrom: pipelineError.phase });
   };
 
   const handleApplyCoreToAllRows = async () => {
@@ -2153,11 +2823,11 @@ export default function BankaParserPage() {
           {toast.message}
         </div>
       )}
-      <div className="mb-8 flex flex-wrap items-end justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
-            Banka Parser Merkezi
-          </h1>
+      <div className="mb-6 min-w-0">
+        <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
+          Banka Parser Merkezi
+        </h1>
+        {showBankServiceUi ? (
           <p className="mt-2 text-sm text-slate-400">
             Tanınmayan işlemler otomatik olarak{" "}
             <Link
@@ -2168,21 +2838,18 @@ export default function BankaParserPage() {
             </Link>
             &apos;ne düşer.
           </p>
-        </div>
+        ) : (
+          <p className="mt-2 text-sm text-slate-400">
+            Ekstre dosyasını seçin, banka otomatik tespit edilir ve işlem tek tuşla tamamlanır.
+          </p>
+        )}
       </div>
 
-      <div className="grid w-full min-w-0 max-w-full gap-6">
+      <div className="grid w-full min-w-0 max-w-full gap-5">
         <div className={annveroCardClass}>
-          <h2 className="mb-1 text-xl font-semibold text-white sm:text-2xl">
-            Firma ve Banka Ekstresi
-          </h2>
-          <p className="mb-5 text-sm text-slate-400">
-            Üst menüden aktif firmayı seçin, banka ekstresini yükleyin ve ön izlemeyi oluşturun.
-          </p>
-
-          <div className="mb-6 flex flex-wrap items-center gap-2 rounded-xl border border-slate-800/80 bg-slate-950/50 px-4 py-3">
+          <div className="mb-5 flex flex-wrap items-center gap-2 rounded-xl border border-slate-800/80 bg-slate-950/50 px-4 py-3">
             <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Aktif firma
+              Aktif Firma
             </span>
             {isLoadingCompanies && !selectedCompany ? (
               <span className="h-5 w-40 animate-pulse rounded bg-slate-800/60" />
@@ -2191,22 +2858,236 @@ export default function BankaParserPage() {
                 {selectedCompany ? getCompanyDisplayName(selectedCompany) : "Firma seçilmedi"}
               </span>
             )}
-            <span className="text-xs text-slate-500">(üst çubuktan değiştirilir)</span>
           </div>
 
-          {isLoadingCompanies && !selectedCompany ? (
-            <CompanySummarySkeleton />
+          <div className="mb-5">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+              Dosya
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <label
+                className={`cursor-pointer rounded-xl px-5 py-2.5 text-sm font-semibold transition ${annveroBtnPrimary} ${
+                  isJobBusy ? "pointer-events-none opacity-60" : ""
+                }`}
+              >
+                Dosya Seç
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={handleFileSelect}
+                  disabled={isJobBusy}
+                  className="hidden"
+                />
+              </label>
+              <span className="text-sm text-gray-300">
+                {fileName ? (
+                  <span className="font-semibold text-white">{fileName}</span>
+                ) : (
+                  <span className="text-gray-400">Henüz dosya seçilmedi</span>
+                )}
+              </span>
+            </div>
+          </div>
+
+          {selectedFile ? (
+            <div className="mb-5">
+              {bankDetection.status === "pending" ? (
+                <p className="text-xs text-slate-400">{bankDetection.message}</p>
+              ) : null}
+
+              {bankDetection.status === "detected" ? (
+                <div>
+                  <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Banka
+                  </p>
+                  <p className="text-sm font-semibold text-emerald-200">
+                    {bankDetection.message ||
+                      `${
+                        BANK_PARSER_OPTIONS.find((b) => b.id === selectedBank)
+                          ?.label || selectedBank
+                      } — otomatik tespit`}
+                  </p>
+                </div>
+              ) : null}
+
+              {bankDetection.status === "unknown" ? (
+                <div>
+                  <p className="mb-2 text-sm text-amber-200/95">
+                    Banka otomatik belirlenemedi. Lütfen bankayı seçin.
+                  </p>
+                  <select
+                    value={selectedBank || ""}
+                    disabled={isJobBusy || isLoadingCompanies}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (!next) return;
+                      const label =
+                        BANK_PARSER_OPTIONS.find((b) => b.id === next)?.label ||
+                        next;
+                      setActiveBank(next, {
+                        status: "manual",
+                        bankId: next,
+                        message: `${label} — elle seçildi`,
+                      });
+                      setPipelineError(null);
+                      setPreviewErrorDetail("");
+                    }}
+                    className={`w-full max-w-xl disabled:opacity-60 ${annveroInputClass}`}
+                  >
+                    <option value="">Banka seçin…</option>
+                    {BANK_PARSER_OPTIONS.map((bank) => (
+                      <option key={bank.id} value={bank.id}>
+                        {bank.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+
+              {bankDetection.status === "manual" && selectedBank ? (
+                <div>
+                  <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Banka
+                  </p>
+                  <p className="text-sm font-semibold text-slate-100">
+                    {bankDetection.message ||
+                      `${
+                        BANK_PARSER_OPTIONS.find((b) => b.id === selectedBank)
+                          ?.label || selectedBank
+                      } — elle seçildi`}
+                  </p>
+                </div>
+              ) : null}
+            </div>
           ) : null}
 
-          {selectedCompany && !isLoadingCompanies && (
-            <div className="mb-6 rounded-2xl border border-slate-800/80 bg-slate-950/50 p-5 shadow-inner shadow-black/10">
-              <div className="mb-4 flex items-center gap-2">
+          <div>
+            <button
+              type="button"
+              onClick={() => void runFullBankPipeline()}
+              disabled={
+                isJobBusy ||
+                !selectedCompanyId ||
+                !selectedFile ||
+                !getRunBank() ||
+                bankDetection.status === "pending" ||
+                bankDetection.status === "unknown"
+              }
+              className={`w-full max-w-xl rounded-xl px-7 py-3.5 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto ${annveroBtnPrimary}`}
+            >
+              {isJobBusy && pipelineMode === "auto"
+                ? "İşleniyor…"
+                : pipelinePhase === PIPELINE_PHASES.READY_FOR_EXPORT
+                  ? "Yeniden İşle"
+                  : "Ekstreyi İşle"}
+            </button>
+          </div>
+
+          <BankPipelineProgressPanel
+            visible={
+              (pipelineMode === "auto" && isJobBusy) ||
+              (pipelineRunning && pipelineMode === "auto")
+            }
+            phase={pipelinePhase}
+            label={pipelineProgress.label}
+            detail={pipelineProgress.detail}
+            percent={pipelineProgress.percent}
+            elapsedSeconds={elapsedSec}
+            processed={
+              showBankServiceUi ? pipelineProgress.processed : null
+            }
+            total={showBankServiceUi ? pipelineProgress.total : null}
+            errorPhase={pipelineError?.phase}
+            onCancel={isJobBusy ? handleCancelJob : undefined}
+          />
+
+          {showBankServiceUi && pipelineMode === "manual" && isJobBusy ? (
+            <ParserJobProgress
+              visible
+              stage={parserJob.stage}
+              detail={parserJob.detail}
+              percent={parserJob.percent}
+              timeoutWarning={parserJob.timeoutWarning}
+              status={parserJob.status}
+              error=""
+              onCancel={handleCancelJob}
+              className="mt-4"
+            />
+          ) : null}
+
+          <BankPipelineErrorCard
+            error={pipelineError}
+            disabled={isJobBusy}
+            onRetry={handleRetryPipeline}
+            onOpenManual={
+              showBankServiceUi
+                ? () => {
+                    if (manualDetailsRef.current) {
+                      manualDetailsRef.current.open = true;
+                      manualDetailsRef.current.scrollIntoView({
+                        behavior: "smooth",
+                        block: "nearest",
+                      });
+                    }
+                  }
+                : undefined
+            }
+          />
+
+          {pipelinePhase === PIPELINE_PHASES.READY_FOR_EXPORT && pipelineResult ? (
+            <BankPipelineResultCard
+              result={pipelineResult}
+              isExporting={isExporting}
+              lucaReady={lucaReady}
+              onDownloadExcel={() => exportExcel()}
+              onReviewMissing={handleReviewMissingAccounts}
+              onPartialExport={handlePartialExportConfirm}
+              onGoToLucaProducer={handleGoToLucaProducer}
+              secondaryBtnClass={annveroBtnSecondary}
+            />
+          ) : null}
+
+          {showBankServiceUi && previewErrorDetail && !pipelineError ? (
+            <p className="mt-2 rounded-lg border border-red-800/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">
+              {previewErrorDetail}
+            </p>
+          ) : null}
+
+          {showBankServiceUi &&
+          rawCount > 0 &&
+          !isParsing &&
+          pipelinePhase !== PIPELINE_PHASES.READY_FOR_EXPORT ? (
+            <p className="mt-4 text-sm text-green-400">
+              Ham dosyadan {rawCount} satır okundu
+              {totalMovementCount > 0 ? ` · ${totalMovementCount} hareket` : ""}.
+              {!lucaReady && totalMovementCount > 0
+                ? " Luca satırları henüz hazır değil."
+                : ""}
+            </p>
+          ) : null}
+        </div>
+
+        {showBankServiceUi ? (
+        <details
+          ref={manualDetailsRef}
+          className="min-w-0 rounded-2xl border border-slate-800/80 bg-slate-950/40 px-4 py-3"
+        >
+          <summary className="cursor-pointer select-none text-sm font-semibold text-slate-200">
+            Gelişmiş / Manuel Kontrol
+          </summary>
+          <p className="mt-2 text-xs text-slate-500">
+            Firma durumu, aşama rozetleri ve tek tek işlem butonları.
+          </p>
+
+          {selectedCompany && !isLoadingCompanies ? (
+            <div className="mt-4 rounded-2xl border border-slate-800/80 bg-slate-950/50 p-4">
+              <div className="mb-3 flex items-center gap-2">
                 <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
-                <h3 className="text-base font-semibold text-gray-100">
-                  Seçili Firma Kontrol Özeti
+                <h3 className="text-sm font-semibold text-gray-100">
+                  Firma Kontrol Özeti
                 </h3>
               </div>
-
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <ControlStat
                   label="Banka Hesabı"
@@ -2229,47 +3110,52 @@ export default function BankaParserPage() {
                   status={hasRules ? "ready" : "missing"}
                 />
               </div>
-
-              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <ControlStat
-                  label="Son Hesap Planı Yükleme"
-                  value={lastPlanUploadedAt || "Kayıt yok"}
-                  secondary
-                />
-                <ControlStat
-                  label="Son Kural Güncelleme"
-                  value={lastRuleUpdatedAt || "Kayıt yok"}
-                  secondary
-                />
-                <ControlStat
-                  label="Bekleyen Luca Satırı"
-                  value={pendingRowCount}
-                  badge={pendingRowCount > 0 ? "warning" : "ok"}
-                />
-              </div>
-
-              <p className="mt-4 text-xs text-gray-500">
-                Banka ekstresi işleme öncesi firma yapılandırma kontrolü
-              </p>
             </div>
-          )}
+          ) : null}
 
-          <label className="mb-2 block text-sm font-medium text-slate-300">
-            Banka Seç
+          <div className="mt-4 flex min-w-0 flex-wrap gap-2">
+            {PIPELINE_STEPS.map((step) => {
+              const done = completedSteps[step.id];
+              const active = activeStep === step.id && isJobBusy;
+              const tone = done
+                ? "border-emerald-600/50 bg-emerald-950/40 text-emerald-200"
+                : active
+                  ? "border-sky-500/50 bg-sky-950/50 text-sky-100"
+                  : "border-slate-700 bg-slate-950/40 text-slate-400";
+              return (
+                <div
+                  key={step.id}
+                  className={`rounded-lg border px-3 py-2 text-xs font-semibold ${tone}`}
+                >
+                  {step.label}
+                  {done ? " ✓" : active ? " …" : ""}
+                </div>
+              );
+            })}
+          </div>
+
+          <label className="mb-2 mt-4 block text-xs font-medium text-slate-400">
+            Banka (manuel değişiklik — otomatik tespiti geçersiz kılar)
           </label>
-
           <select
-            value={selectedBank}
-            disabled={isParsing || isLoadingCompanies}
+            value={selectedBank || ""}
+            disabled={isJobBusy || isLoadingCompanies || !selectedFile}
             onChange={(e) => {
-              setSelectedBank(e.target.value);
-              setSelectedFile(null);
-              setFileName("");
-              clearPreviewState();
-              resetFileInput();
+              const next = e.target.value;
+              if (!next) return;
+              const label =
+                BANK_PARSER_OPTIONS.find((b) => b.id === next)?.label || next;
+              setActiveBank(next, {
+                status: "manual",
+                bankId: next,
+                message: `${label} — elle seçildi`,
+              });
+              setPipelineError(null);
+              setPreviewErrorDetail("");
             }}
-            className={`mb-6 w-full max-w-xl disabled:opacity-60 ${annveroInputClass}`}
+            className={`mb-3 w-full max-w-xl disabled:opacity-60 ${annveroInputClass}`}
           >
+            <option value="">Banka seçin…</option>
             {BANK_PARSER_OPTIONS.map((bank) => (
               <option key={bank.id} value={bank.id}>
                 {bank.label}
@@ -2277,180 +3163,98 @@ export default function BankaParserPage() {
             ))}
           </select>
 
-          <p className="mb-6 text-sm text-slate-400">
-            Banka ekstresi Excel dosyasını seçin. Okuma ve parse işlemi yalnızca{" "}
-            <span className="font-semibold text-gray-300">Ön İzleme Oluştur</span>{" "}
-            ile başlar.
-          </p>
-
-          <div className="flex flex-wrap items-center gap-4">
-            <label
-              className={`cursor-pointer rounded-xl px-5 py-2.5 text-sm font-semibold transition ${annveroBtnPrimary} ${
-                isParsing ? "pointer-events-none opacity-60" : ""
-              }`}
+          <div className="mt-3 flex min-w-0 flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={handleCreatePreview}
+              disabled={isJobBusy || !selectedFile}
+              className={`rounded-xl px-6 py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${annveroBtnPrimary}`}
             >
-              Dosya Seç
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                onChange={handleFileSelect}
-                disabled={isJobBusy}
-                className="hidden"
-              />
-            </label>
+              {isParsing ? parserJob.stage || "İşleniyor…" : "Ön İzleme Oluştur"}
+            </button>
 
-            <span className="text-sm text-gray-300">
-              {fileName ? (
-                <>
-                  Seçili dosya:{" "}
-                  <span className="font-semibold text-white">{fileName}</span>
-                </>
-              ) : (
-                <span className="text-gray-400">Henüz dosya seçilmedi</span>
-              )}
-            </span>
+            <button
+              type="button"
+              onClick={handleStartAccountingAnalysis}
+              disabled={
+                isAnalyzing ||
+                !completedSteps.preview ||
+                isParsing ||
+                isPreparingLuca ||
+                isApplyingCoreAll ||
+                pipelineMode === "auto"
+              }
+              className="rounded-xl border border-indigo-600/60 bg-indigo-950 px-6 py-3 font-semibold text-indigo-100 transition hover:bg-indigo-900 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isAnalyzing
+                ? parserJob.detail || parserJob.stage || "Analiz ediliyor…"
+                : "Muhasebe Analizini Başlat"}
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePrepareLuca}
+              disabled={isJobBusy || !accountingAnalyzed}
+              className="rounded-xl border border-amber-600/60 bg-amber-950 px-6 py-3 font-semibold text-amber-100 transition hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isPreparingLuca
+                ? parserJob.stage || "Luca hazırlanıyor…"
+                : "Luca Satırlarını Hazırla"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => exportExcel()}
+              disabled={isJobBusy || isExporting || !lucaReady}
+              title={
+                lucaReady
+                  ? "Luca Excel oluştur"
+                  : "Önce Luca Satırlarını Hazırla"
+              }
+              className="rounded-xl bg-emerald-600 px-6 py-3 font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isExporting ? "Excel hazırlanıyor…" : "Luca Excel Oluştur"}
+            </button>
+
+            {lucaReady && (missingHesapReport?.missingCount || 0) > 0 ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleReviewMissingAccounts}
+                  className="rounded-xl border border-rose-600/60 bg-rose-950 px-4 py-3 text-sm font-semibold text-rose-100 hover:bg-rose-900"
+                >
+                  Eksik Hesapları İncele ({missingHesapReport.missingCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadMissingReport}
+                  className="rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-sm font-semibold text-slate-100 hover:bg-slate-800"
+                >
+                  Eksik Raporu İndir
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePartialExportConfirm}
+                  disabled={isJobBusy || isExporting}
+                  className="rounded-xl border border-amber-600/60 bg-amber-950 px-4 py-3 text-sm font-semibold text-amber-100 hover:bg-amber-900 disabled:opacity-50"
+                >
+                  Eksik satırları hariç tutarak devam et
+                </button>
+              </>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={handleGoToLucaProducer}
+              className={annveroBtnSecondary}
+            >
+              Luca Fiş Üretici →
+            </button>
           </div>
+        </details>
+        ) : null}
 
-          <ParserJobProgress
-            visible={isJobBusy || parserJob.isDone || parserJob.isError}
-            stage={parserJob.stage}
-            detail={parserJob.detail}
-            percent={parserJob.percent}
-            timeoutWarning={parserJob.timeoutWarning}
-            status={parserJob.status}
-            error={parserJob.error}
-            onCancel={isJobBusy ? handleCancelJob : undefined}
-            className="mt-4"
-          />
-
-          {previewErrorDetail ? (
-            <p className="mt-2 rounded-lg border border-red-800/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">
-              {previewErrorDetail}
-            </p>
-          ) : null}
-
-          {rawCount > 0 && !isParsing ? (
-            <p className="mt-4 text-sm text-green-400">
-              Ham dosyadan {rawCount} satır okundu
-              {totalMovementCount > 0 ? ` · ${totalMovementCount} hareket` : ""}.
-              {!lucaReady && totalMovementCount > 0
-                ? " Luca satırları henüz hazır değil."
-                : ""}
-            </p>
-          ) : null}
-        </div>
-
-        <div className="flex min-w-0 flex-wrap gap-2">
-          {PIPELINE_STEPS.map((step) => {
-            const done = completedSteps[step.id];
-            const active = activeStep === step.id && isJobBusy;
-            const tone = done
-              ? "border-emerald-600/50 bg-emerald-950/40 text-emerald-200"
-              : active
-                ? "border-sky-500/50 bg-sky-950/50 text-sky-100"
-                : "border-slate-700 bg-slate-950/40 text-slate-400";
-            return (
-              <div
-                key={step.id}
-                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${tone}`}
-              >
-                {step.label}
-                {done ? " ✓" : active ? " …" : ""}
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="flex min-w-0 flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={handleCreatePreview}
-            disabled={isJobBusy || !selectedFile}
-            className={`rounded-xl px-6 py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${annveroBtnPrimary}`}
-          >
-            {isParsing ? parserJob.stage || "İşleniyor…" : "Ön İzleme Oluştur"}
-          </button>
-
-          <button
-            type="button"
-            onClick={handleStartAccountingAnalysis}
-            disabled={
-              isAnalyzing ||
-              !completedSteps.preview ||
-              isParsing ||
-              isPreparingLuca ||
-              isApplyingCoreAll
-            }
-            className="rounded-xl border border-indigo-600/60 bg-indigo-950 px-6 py-3 font-semibold text-indigo-100 transition hover:bg-indigo-900 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isAnalyzing
-              ? parserJob.detail || parserJob.stage || "Analiz ediliyor…"
-              : "Muhasebe Analizini Başlat"}
-          </button>
-
-          <button
-            type="button"
-            onClick={handlePrepareLuca}
-            disabled={isJobBusy || !accountingAnalyzed}
-            className="rounded-xl border border-amber-600/60 bg-amber-950 px-6 py-3 font-semibold text-amber-100 transition hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isPreparingLuca
-              ? parserJob.stage || "Luca hazırlanıyor…"
-              : "Luca Satırlarını Hazırla"}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => exportExcel()}
-            disabled={isJobBusy || isExporting || !lucaReady}
-            title={
-              lucaReady
-                ? "Luca Excel oluştur"
-                : "Önce Luca Satırlarını Hazırla"
-            }
-            className="rounded-xl bg-emerald-600 px-6 py-3 font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isExporting ? "Excel hazırlanıyor…" : "Luca Excel Oluştur"}
-          </button>
-
-          {lucaReady && (missingHesapReport?.missingCount || 0) > 0 ? (
-            <>
-              <button
-                type="button"
-                onClick={handleReviewMissingAccounts}
-                className="rounded-xl border border-rose-600/60 bg-rose-950 px-4 py-3 text-sm font-semibold text-rose-100 hover:bg-rose-900"
-              >
-                Eksik Hesapları İncele ({missingHesapReport.missingCount})
-              </button>
-              <button
-                type="button"
-                onClick={handleDownloadMissingReport}
-                className="rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-sm font-semibold text-slate-100 hover:bg-slate-800"
-              >
-                Eksik Raporu İndir
-              </button>
-              <button
-                type="button"
-                onClick={handlePartialExportConfirm}
-                disabled={isJobBusy || isExporting}
-                className="rounded-xl border border-amber-600/60 bg-amber-950 px-4 py-3 text-sm font-semibold text-amber-100 hover:bg-amber-900 disabled:opacity-50"
-              >
-                Eksik satırları hariç tutarak devam et
-              </button>
-            </>
-          ) : null}
-
-          <button
-            type="button"
-            onClick={handleGoToLucaProducer}
-            className={annveroBtnSecondary}
-          >
-            Luca Fiş Üretici →
-          </button>
-        </div>
-
-        {missingHesapReport?.missingCount > 0 ? (
+        {showBankServiceUi && missingHesapReport?.missingCount > 0 ? (
           <div className="rounded-xl border border-rose-700/50 bg-rose-950/30 px-4 py-3 text-sm text-rose-100">
             <p className="font-semibold">
               Eksik hesap: {missingHesapReport.missingCount} /{" "}
@@ -2502,7 +3306,7 @@ export default function BankaParserPage() {
           </div>
         ) : null}
 
-        {cariDecisionReport ? (
+        {showBankServiceUi && cariDecisionReport ? (
           <div className="rounded-xl border border-teal-700/40 bg-teal-950/30 px-4 py-3 text-sm text-teal-100">
             <p className="font-semibold">Cari karar özeti</p>
             <pre className="mt-2 whitespace-pre-wrap font-sans text-xs text-teal-100/90">
@@ -2511,7 +3315,7 @@ export default function BankaParserPage() {
           </div>
         ) : null}
 
-        {memoryDecisionReport ? (
+        {showBankServiceUi && memoryDecisionReport ? (
           <div className="rounded-xl border border-violet-700/40 bg-violet-950/30 px-4 py-3 text-sm text-violet-100">
             <p className="font-semibold">Hafıza karar özeti</p>
             <pre className="mt-2 whitespace-pre-wrap font-sans text-xs text-violet-100/90">
@@ -2520,7 +3324,7 @@ export default function BankaParserPage() {
           </div>
         ) : null}
 
-        {cariGroupReport?.totalUnresolved > 0 ? (
+        {showBankServiceUi && cariGroupReport?.totalUnresolved > 0 ? (
           <div className="rounded-xl border border-cyan-700/40 bg-cyan-950/30 px-4 py-3 text-sm text-cyan-100">
             <p className="font-semibold">
               Cari bulunamadı grupları: {cariGroupReport.totalUnresolved} satır ·{" "}
@@ -2640,7 +3444,7 @@ export default function BankaParserPage() {
           </div>
         ) : null}
 
-        {ruleGroupReport?.totalUnresolved > 0 ? (
+        {showBankServiceUi && ruleGroupReport?.totalUnresolved > 0 ? (
           <div className="rounded-xl border border-indigo-700/40 bg-indigo-950/30 px-4 py-3 text-sm text-indigo-100">
             <p className="font-semibold">
               Kural bulunamadı grupları: {ruleGroupReport.totalUnresolved} satır ·{" "}
@@ -2791,13 +3595,13 @@ export default function BankaParserPage() {
           </div>
         ) : null}
 
-        {completedSteps.preview && !accountingAnalyzed ? (
+        {showBankServiceUi && completedSteps.preview && !accountingAnalyzed ? (
           <p className="text-sm text-amber-200/90">
             Parser önizlemesi hazır. Yerel hesap/kural için{" "}
             <span className="font-semibold">Muhasebe Analizini Başlat</span>.
           </p>
         ) : null}
-        {accountingAnalyzed && !lucaReady ? (
+        {showBankServiceUi && accountingAnalyzed && !lucaReady ? (
           <p className="text-sm text-amber-200/90">
             Yerel muhasebe analizi tamam. İsterseniz{" "}
             <span className="font-semibold">CORE ile Geliştir</span>
@@ -2806,7 +3610,7 @@ export default function BankaParserPage() {
           </p>
         ) : null}
 
-        {totalMovementCount > 0 ? (
+        {showBankServiceUi && totalMovementCount > 0 ? (
           <div className={`${annveroCardClass} border-indigo-900/40`}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -2882,7 +3686,7 @@ export default function BankaParserPage() {
                 />
               </div>
             ) : null}
-            {accountingAnalyzed && coreIntegrationSummary ? (
+            {showBankServiceUi && accountingAnalyzed && coreIntegrationSummary ? (
               <p className="mb-3 text-xs text-slate-400">
                 {coreRowsProcessed > 0
                   ? `CORE denemesi: ${coreRowsProcessed} hareket`
@@ -2962,16 +3766,19 @@ export default function BankaParserPage() {
           onSubmit={handleSaveKnowledgeTeach}
         />
 
+        {(lucaReady || showBankServiceUi) ? (
         <div className={`min-w-0 ${annveroCardClass}`}>
           <h2 className="mb-6 text-xl font-semibold text-white sm:text-2xl">
-            StandardLucaRow Ön İzleme
+            {showBankServiceUi ? "StandardLucaRow Ön İzleme" : "Luca satır önizleme"}
           </h2>
 
           {standardLucaRows.length === 0 ? (
             <p className="text-gray-400">
-              {totalMovementCount > 0
-                ? "Hareket önizlemesi hazır. Luca için “Luca Satırlarını Hazırla” butonuna basın."
-                : "Henüz StandardLucaRow oluşturulmadı."}
+              {showBankServiceUi
+                ? totalMovementCount > 0
+                  ? "Hareket önizlemesi hazır. Luca için “Luca Satırlarını Hazırla” butonuna basın."
+                  : "Henüz StandardLucaRow oluşturulmadı."
+                : "Henüz Luca satırı yok."}
             </p>
           ) : (
             <>
@@ -3108,6 +3915,7 @@ export default function BankaParserPage() {
             </>
           )}
         </div>
+        ) : null}
       </div>
     </div>
   );

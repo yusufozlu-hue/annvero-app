@@ -7,7 +7,7 @@ export const BANK_FORMAT_MISMATCH_MESSAGE =
   "Seçilen banka ile yüklenen ekstre formatı uyuşmuyor.";
 
 export const BANK_FORMAT_MISMATCH_HINT =
-  "Dosyaya uygun bankayı seçip tekrar deneyin.";
+  "Dosyayı yeniden seçin; sistem bankayı otomatik ayarlamayı dener. Gerekirse bankayı düzeltip tekrar deneyin.";
 
 const KNOWN_BANK_FORMATS = new Set(["GARANTI", "VAKIFBANK"]);
 
@@ -121,4 +121,26 @@ export function assertSelectedBankMatchesSheet(sheetRows, selectedBank) {
   }
 
   return detected;
+}
+
+/**
+ * Dosya başlığından parser banka kimliği çözümü.
+ * high → bankId güvenle set edilebilir; unknown → kullanıcı seçmeli.
+ */
+export function resolveParserBankFromSheet(sheetRows, scanLimit = 40) {
+  const detected = detectKnownBankFormat(sheetRows, scanLimit);
+  if (detected === "VAKIFBANK" || detected === "GARANTI") {
+    return {
+      status: "detected",
+      confidence: "high",
+      bankId: detected,
+      detected,
+    };
+  }
+  return {
+    status: "unknown",
+    confidence: "unknown",
+    bankId: null,
+    detected: "UNKNOWN",
+  };
 }
