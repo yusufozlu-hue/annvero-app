@@ -40,6 +40,7 @@ export const MISSING_HESAP_CATEGORY = {
   PERSONEL_BULUNAMADI: "Personel bulunamadı",
   VERGI_SGK: "Vergi/SGK türü çözülemedi",
   POS_KOMISYON: "POS/komisyon ayrımı çözülemedi",
+  KREDI_KARTI: "Kredi kartı hesabı bulunamadı — 309/409 seçilmeli",
   FINAN_ISLEM: "Finans işlem türü çözülemedi",
   VIRMAN_HESAP_EKSIK: "Virman hesabı bulunamadı",
   VIRMAN_ADAY: "Virman adayı — karşı banka hesabı tanımlanmalı",
@@ -203,6 +204,15 @@ export function classifyMissingHesapCategory(row = {}) {
 
   if (isPosType(transactionType) || /POS.?KOMISYON.?COZULEMEDI/.test(note)) {
     return MISSING_HESAP_CATEGORY.POS_KOMISYON;
+  }
+
+  if (
+    transactionType === BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI ||
+    existing === MISSING_HESAP_CATEGORY.KREDI_KARTI ||
+    /KREDI KARTI HESABI BULUNAMADI|309\/409/.test(note) ||
+    row.classification === "CREDIT_CARD_PAYMENT"
+  ) {
+    return MISSING_HESAP_CATEGORY.KREDI_KARTI;
   }
 
   if (isVergiSgkType(transactionType) || /VERGI.?SGK TURU COZULEMEDI/.test(note)) {

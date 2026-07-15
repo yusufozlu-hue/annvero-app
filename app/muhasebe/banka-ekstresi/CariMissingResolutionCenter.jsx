@@ -8,6 +8,7 @@ import {
   filterCariResolutionGroups,
   hydrateCariResolutionGroupCandidates,
   searchCariResolutionCandidates,
+  searchCreditCardResolutionCandidates,
   isAccountAllowedForDirection,
   isExpenseAccountCode,
   createInitialCariRowSelection,
@@ -16,6 +17,7 @@ import {
   buildCariApplyGroupPayload,
   formatCariApplyButtonLabel,
 } from "@/src/utils/cariMissingResolutionGroups";
+import { isCreditCardAccountCode } from "@/src/utils/creditCardAccountResolver";
 import CariGroupTransactionPanel from "./CariGroupTransactionPanel";
 
 function formatMoney(value) {
@@ -135,10 +137,12 @@ function GroupCard({
   );
   const hydrateRequested = useRef(Boolean(group.candidatesReady));
 
-  useEffect(() => {
+  const rowIdsKey = (group.rowIds || []).join("|");
+  const [rowSelectionKey, setRowSelectionKey] = useState(rowIdsKey);
+  if (rowSelectionKey !== rowIdsKey) {
+    setRowSelectionKey(rowIdsKey);
     setSelectedRowIds(createInitialCariRowSelection(group.rowIds || []));
-    // rowIds kimliği grup id + sayı ile sabitlenir; her snapshot’ta yeni dizi referansı seçimi sıfırlamasın
-  }, [group.id, group.count, group.rowIds?.join?.("|")]);
+  }
 
   const transactions = hydratedGroup.transactions || group.transactions || [];
   const selectedApplyCount = useMemo(() => {
@@ -199,6 +203,25 @@ function GroupCard({
     if (group.virmanCandidate || hydratedGroup.virmanCandidate) {
       return { candidates: [], vendorMessage: VIRMAN_CANDIDATE_LABEL_UI };
     }
+    if (group.creditCardGroup || hydratedGroup.creditCardGroup) {
+      if (!expandedSearch && !query) {
+        return {
+          candidates: hydratedGroup.candidates || [],
+          vendorMessage: hydratedGroup.vendorMessage || "",
+        };
+      }
+      return {
+        candidates: searchCreditCardResolutionCandidates(companyPlans, {
+          query,
+          lastFourDigits: hydratedGroup.lastFourDigits || "",
+          periodMonth: hydratedGroup.periodMonth || null,
+          periodYear: hydratedGroup.periodYear || null,
+          bankName: hydratedGroup.bankName || "",
+          limit: expandedSearch ? 25 : 8,
+        }),
+        vendorMessage: hydratedGroup.vendorMessage || "",
+      };
+    }
     if (!expandedSearch && !query) {
       return {
         candidates: hydratedGroup.candidates || [],
@@ -221,6 +244,7 @@ function GroupCard({
     companyPlans,
     expandedSearch,
     group.virmanCandidate,
+    group.creditCardGroup,
     hydratedGroup,
     planCache,
     query,
@@ -231,16 +255,21 @@ function GroupCard({
   const isVirmanCandidateCard = Boolean(
     group.virmanCandidate || hydratedGroup.virmanCandidate
   );
+  const isCreditCardCard = Boolean(
+    group.creditCardGroup || hydratedGroup.creditCardGroup
+  );
 
   const canApply =
     !isVirmanCandidateCard &&
     Boolean(selectedCode) &&
     selectedApplyCount > 0 &&
     !isResolved &&
-    isAccountAllowedForDirection(selectedCode, hydratedGroup.direction) &&
-    !(
-      hydratedGroup.foreignVendor && isExpenseAccountCode(selectedCode)
-    );
+    (isCreditCardCard
+      ? isCreditCardAccountCode(selectedCode)
+      : isAccountAllowedForDirection(selectedCode, hydratedGroup.direction) &&
+        !(
+          hydratedGroup.foreignVendor && isExpenseAccountCode(selectedCode)
+        ));
 
   const showCandidateLoading =
     hydrating ||
@@ -268,6 +297,11 @@ function GroupCard({
             <span className="rounded-md border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
               {hydratedGroup.directionLabel}
             </span>
+            {isCreditCardCard ? (
+              <span className="rounded-md border border-cyan-700/50 bg-cyan-950/40 px-2 py-0.5 text-[11px] text-cyan-100">
+                Kredi kartı ****{hydratedGroup.lastFourDigits || "????"}
+              </span>
+            ) : null}
             {isVirmanCandidateCard ? (
               <span className="rounded-md border border-amber-700/50 bg-amber-950/40 px-2 py-0.5 text-[11px] text-amber-100">
                 Virman adayı
@@ -300,6 +334,16 @@ function GroupCard({
                 }`
               : ""}
           </p>
+          {isCreditCardCard ? (
+            <p className="mt-1 text-xs text-slate-400">
+              Banka: {hydratedGroup.bankName || "—"}
+              {" · "}
+              Ekstre dönemi: {hydratedGroup.statementPeriodLabel || "—"}
+              {hydratedGroup.ambiguous
+                ? " · Birden fazla kart eşleşmesi"
+                : ""}
+            </p>
+          ) : null}
           <ul className="mt-2 space-y-1 text-xs text-slate-400">
             {(hydratedGroup.samples || []).slice(0, 3).map((s) => (
               <li key={s} className="break-words">
@@ -338,6 +382,9 @@ function GroupCard({
                 ""
               }
               groupKey={hydratedGroup.analysisKey || hydratedGroup.id || ""}
+              creditCardMode={Boolean(
+                group.creditCardGroup || hydratedGroup.creditCardGroup
+              )}
               onToggleRow={(id) =>
                 setSelectedRowIds((prev) => toggleCariRowSelection(prev, id))
               }
@@ -476,9 +523,18 @@ function GroupCard({
                 : formatCariApplyButtonLabel(selectedApplyCount)}
             </button>
             <p className="text-[11px] text-slate-500">
-              Onayınız olmadan hesap uygulanmaz. Yalnız seçili satırlar
-              güncellenir; gelen/giden yönü korunur.
+              {isCreditCardCard
+                ? "Yalnız 309/409 kart hesapları uygulanır. Öğrenme açıkken aynı kart sonraki aylarda otomatik tanınır."
+                : "Onayınız olmadan hesap uygulanmaz. Yalnız seçili satırlar güncellenir; gelen/giden yönü korunur."}
             </p>
+            {isCreditCardCard ? (
+              <a
+                href="/muhasebe/firma-yonetimi"
+                className="mt-1 inline-flex text-center text-[11px] font-semibold text-sky-300 hover:text-sky-200"
+              >
+                Firma kartına kredi kartı olarak kaydet / düzenle
+              </a>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -515,6 +571,10 @@ export default function CariMissingResolutionCenter({
     () => snapshot?.virmanCandidateGroups || [],
     [snapshot?.virmanCandidateGroups]
   );
+  const creditCardGroups = useMemo(
+    () => snapshot?.creditCardGroups || [],
+    [snapshot?.creditCardGroups]
+  );
   const selectedCompany = selectedCompanyProp || snapshot?.selectedCompany || null;
   const planCache = useMemo(
     () => snapshot?.planCache || createCariResolutionPlanCache(companyPlans),
@@ -545,12 +605,19 @@ export default function CariMissingResolutionCenter({
         resolvedIds: resolvedSet,
       });
     }
+    if (filter === CARI_RESOLUTION_FILTERS.CREDIT_CARDS) {
+      return filterCariResolutionGroups(creditCardGroups, {
+        filter: CARI_RESOLUTION_FILTERS.ALL,
+        query,
+        resolvedIds: resolvedSet,
+      });
+    }
     return filterCariResolutionGroups(groups, {
       filter,
       query,
       resolvedIds: resolvedSet,
-    }).filter((g) => !g.virmanCandidate);
-  }, [groups, virmanCandidateGroups, filter, query, resolvedSet]);
+    }).filter((g) => !g.virmanCandidate && !g.creditCardGroup);
+  }, [groups, virmanCandidateGroups, creditCardGroups, filter, query, resolvedSet]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -616,7 +683,7 @@ export default function CariMissingResolutionCenter({
             </button>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2">
               <p className="text-[11px] uppercase tracking-wide text-slate-500">
                 Toplam eksik
@@ -639,6 +706,14 @@ export default function CariMissingResolutionCenter({
               </p>
               <p className="text-lg font-semibold text-white">
                 {metric(snapshot?.groupCount)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-cyan-800/40 bg-cyan-950/20 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-cyan-200/70">
+                Kredi kartı
+              </p>
+              <p className="text-lg font-semibold text-cyan-100">
+                {metric(snapshot?.creditCardMissingCount)}
               </p>
             </div>
             <div className="rounded-xl border border-amber-800/40 bg-amber-950/20 px-3 py-2">
@@ -684,6 +759,7 @@ export default function CariMissingResolutionCenter({
                   [CARI_RESOLUTION_FILTERS.INCOMING, "Gelen cariler"],
                   [CARI_RESOLUTION_FILTERS.OUTGOING, "Giden cariler"],
                   [CARI_RESOLUTION_FILTERS.FOREIGN, "Yabancı satıcılar"],
+                  [CARI_RESOLUTION_FILTERS.CREDIT_CARDS, "Kredi Kartları"],
                   [CARI_RESOLUTION_FILTERS.VIRMAN_CANDIDATES, "Virman adayları"],
                   [CARI_RESOLUTION_FILTERS.RESOLVED, "Çözülenler"],
                 ].map(([id, label]) => (

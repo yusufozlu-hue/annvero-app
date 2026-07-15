@@ -13,7 +13,6 @@ import {
 import {
   applyMatchResultToRow,
   buildElektrawebCompanyMappings,
-  buildElektrawebCombinedSearchText,
   logElektrawebAccountMatchReport,
   matchAccountCode,
 } from "@/src/utils/elektrawebAccountMatcher";
@@ -634,6 +633,15 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
   if (!tutar) return [];
 
   const lucaAciklama = movement.lucaDescription || movement.description || "";
+  const rawBankAciklama = String(movement.description || lucaAciklama).trim();
+  const isCreditCardMovement =
+    movement.transactionType === "KREDI_KARTI_ODEMESI" ||
+    movement.classification === "CREDIT_CARD_PAYMENT" ||
+    Boolean(movement.creditCardMeta);
+  // KK: detayda orijinal banka açıklaması (grup dönemi / İncele için);
+  // fişte normalize edilmiş ekstre metni.
+  const detayForLine = isCreditCardMovement ? rawBankAciklama : lucaAciklama;
+  const fisForLine = lucaAciklama;
   const belgeTuru = movement.documentType || "DK";
   const matchedRule = movement.matchedRule;
   const selectedBank = context.kaynakAdi || movement.bankName || "";
@@ -715,8 +723,8 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
       hesapKodu: bankaHesap,
       borc: bankIsBorc ? tutar : "",
       alacak: bankIsBorc ? "" : tutar,
-      fisAciklama: lucaAciklama,
-      detayAciklama: lucaAciklama,
+      fisAciklama: fisForLine,
+      detayAciklama: detayForLine,
       belgeTuru,
       lineRole: bankIsBorc ? "borc" : "alacak",
       sourceRowIndex,
@@ -728,8 +736,8 @@ export function bankMovementToStandardLucaRows(movement, fisNo, context = {}) {
       hesapKodu: karsiHesap,
       borc: bankIsBorc ? "" : tutar,
       alacak: bankIsBorc ? tutar : "",
-      fisAciklama: lucaAciklama,
-      detayAciklama: lucaAciklama,
+      fisAciklama: fisForLine,
+      detayAciklama: detayForLine,
       belgeTuru,
       lineRole: bankIsBorc ? "alacak" : "borc",
       sourceRowIndex,

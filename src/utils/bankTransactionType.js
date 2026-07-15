@@ -636,8 +636,18 @@ function detectFromText(description = "", direction = "") {
   const finance = detectFinanceType(text, direction);
   if (finance) return finance;
 
-  if (text.includes("KREDI KART") || text.includes("KK ODEME") || text.includes("EKSTRE BORC")) {
-    return BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI;
+  if (
+    text.includes("KREDI KART") ||
+    text.includes("KK ODEME") ||
+    text.includes("KART EKSTRE") ||
+    text.includes("CARD PAYMENT") ||
+    text.includes("EKSTRE BORC") ||
+    text.includes("EKSTRESI ODEME")
+  ) {
+    // POS / üye işyeri tahsilatı ayrı family'de kalır
+    if (!text.includes("POS") && !text.includes("UYE ISYERI")) {
+      return BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI;
+    }
   }
   if (
     text.includes("MAAS AVANS") ||
@@ -884,6 +894,9 @@ export function isVirmanType(transactionType = "") {
 export function missingCategoryForTransactionType(transactionType = "") {
   const type = String(transactionType || "");
   if (isPosType(type)) return "POS/komisyon ayrımı çözülemedi";
+  if (type === BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI) {
+    return "Kredi kartı hesabı bulunamadı — 309/409 seçilmeli";
+  }
   if (isCekType(type)) return "Çek hesabı 101/103 eksik";
   if (isKasaType(type)) return "Kasa hesabı 100 eksik";
   if (isVergiSgkType(type)) return "Vergi/SGK türü çözülemedi";

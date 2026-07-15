@@ -15,7 +15,6 @@ import {
   CARI_REQUIRED_TYPES,
   PERSONEL_REQUIRED_TYPES,
   isVergiSgkType,
-  isVirmanType,
 } from "@/src/utils/bankTransactionType";
 import {
   classifyMissingHesapCategory,
@@ -38,6 +37,17 @@ import {
   VIRMAN_CANDIDATE_LABEL,
 } from "@/src/utils/bankInternalTransfer";
 import { getCompanyDisplayName } from "@/src/utils/companies";
+import {
+  resolveCreditCardPayment,
+  extractCardLast4FromText,
+  isCreditCardPaymentDescription,
+  isCreditCardAccountCode,
+  CREDIT_CARD_MISSING_LABEL,
+  buildCreditCardGroupKey,
+  creditCardStatementPeriodKey,
+  findCreditCardAccountsByPlanName,
+} from "@/src/utils/creditCardAccountResolver";
+import { BANK_TRANSACTION_TYPE } from "@/src/utils/bankTransactionType";
 
 export {
   extractIbansFromText,
@@ -61,6 +71,7 @@ export const CARI_RESOLUTION_FILTERS = {
   RESOLVED: "resolved",
   REMAINING: "remaining",
   VIRMAN_CANDIDATES: "virman_candidates",
+  CREDIT_CARDS: "credit_cards",
 };
 
 /** İlk açılışta peşinen aday üretilecek grup sayısı */
@@ -179,6 +190,7 @@ export function isExcludedFromCariResolution(
     cat === MISSING_HESAP_CATEGORY.PERSONEL_BULUNAMADI ||
     cat === MISSING_HESAP_CATEGORY.VERGI_SGK ||
     cat === MISSING_HESAP_CATEGORY.POS_KOMISYON ||
+    cat === MISSING_HESAP_CATEGORY.KREDI_KARTI ||
     cat === MISSING_HESAP_CATEGORY.FINAN_ISLEM ||
     cat === MISSING_HESAP_CATEGORY.VIRMAN_HESAP_EKSIK ||
     cat === MISSING_HESAP_CATEGORY.CEK_HESAP_EKSIK ||
@@ -201,6 +213,19 @@ export function isExcludedFromCariResolution(
       return type.includes("MAAS") || type.includes("PERSONEL");
     }
   }
+  return false;
+}
+
+/** Eksik kredi kartı (309/409) satırı — cari/virman listelerine girmez */
+export function isCreditCardMissingRow(row = {}, context = {}) {
+  if (!isMissingHesapRow(row)) return false;
+  if (isOwnAccountVirmanTransfer(row, context)) return false;
+  const type = String(row.transactionType || "");
+  const cat = classifyMissingHesapCategory(row);
+  if (cat === MISSING_HESAP_CATEGORY.KREDI_KARTI) return true;
+  if (type === BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI) return true;
+  if (row.classification === "CREDIT_CARD_PAYMENT") return true;
+  if (isCreditCardPaymentDescription(rowDescription(row))) return true;
   return false;
 }
 
@@ -255,6 +280,81 @@ export function isExpenseAccountCode(code = "") {
     c.startsWith("770") ||
     c.startsWith("740")
   );
+}
+
+/** Kredi kartı çözüm adayları — yalnız 309/409; ad + dönem sinyali */
+export function searchCreditCardResolutionCandidates(
+  companyPlans = [],
+  {
+    query = "",
+    lastFourDigits = "",
+    periodMonth = null,
+    periodYear = null,
+    bankName = "",
+    cardName = "",
+    limit = 8,
+  } = {}
+) {
+  const q = normalizeParserText(query || "");
+  const last4 = String(lastFourDigits || "").trim();
+  if (last4 || periodMonth || bankName || cardName) {
+    const found = findCreditCardAccountsByPlanName({
+      companyPlans,
+      lastFourDigits: last4,
+      periodMonth,
+      periodYear,
+      bankName,
+      cardName,
+    });
+    let list = found.candidates || [];
+    if (q) {
+      list = list.filter(
+        (c) =>
+          normalizeParserText(`${c.code} ${c.name}`).includes(q) ||
+          compactCode(c.code).includes(compactCode(q))
+      );
+    }
+    if (list.length) {
+      return list.slice(0, Math.max(1, Number(limit) || 8)).map((c) => ({
+        code: c.code,
+        name: c.name,
+        confidence: c.score || c.confidence || 0,
+        matchReason: c.reasonLabel || "plan_name",
+        reasonLabel: c.reasonLabel || `309/409 · ${c.code}`,
+      }));
+    }
+  }
+
+  const ranked = [];
+  const seen = new Set();
+
+  for (const row of companyPlans || []) {
+    if (row?.isActive === false) continue;
+    const code = compactCode(row.accountCode || row.hesapKodu || row.kod || "");
+    if (!isCreditCardAccountCode(code)) continue;
+    const name = String(
+      row.accountName || row.hesapAdi || row.name || ""
+    ).trim();
+    const hay = normalizeParserText(`${code} ${name}`);
+    if (q && !hay.includes(q) && !code.includes(compactCode(q))) continue;
+    let score = 10;
+    if (last4 && (name.includes(last4) || code.includes(last4) || hay.includes(last4))) {
+      score += 40;
+    }
+    if (seen.has(code)) continue;
+    seen.add(code);
+    ranked.push({
+      code,
+      name,
+      confidence: score,
+      matchReason: last4 && score >= 40 ? "last4_plan" : "plan_309_409",
+      reasonLabel:
+        score >= 40 ? `Son 4 hane · ${code}` : `309/409 plan · ${code}`,
+    });
+  }
+
+  ranked.sort((a, b) => b.confidence - a.confidence || a.code.localeCompare(b.code));
+  return ranked.slice(0, Math.max(1, Number(limit) || 8));
 }
 
 export function accountMatchesPrefixes(code = "", prefixes = []) {
@@ -612,6 +712,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
 
   const divertedVirman = [];
   const virmanCandidates = [];
+  const creditCardRows = [];
   const groups = new Map();
   let unresolvedCount = 0;
   let totalMissing = 0;
@@ -637,7 +738,13 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       continue;
     }
 
-    // 2) Virman adayı — cari aday / 120-320 üretme
+    // 2) Kredi kartı — cari / virman adayına girmez
+    if (isCreditCardMissingRow(row, fullContext)) {
+      creditCardRows.push(row);
+      continue;
+    }
+
+    // 3) Virman adayı — cari aday / 120-320 üretme
     if (virman.bucket === "candidate") {
       const verdict = evaluateOwnAccountVirmanTransfer(row, fullContext);
       virmanCandidates.push({
@@ -654,7 +761,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       continue;
     }
 
-    // 3) Normal cari grubu
+    // 4) Normal cari grubu
     if (!isCariMissingRow(row, fullContext)) continue;
     unresolvedCount += 1;
     pushRowIntoCariGroupMap(groups, row, fullContext);
@@ -810,6 +917,200 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     })
     .sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount);
 
+  // Kredi kartı grupları — company_id | banka | son4 | ekstre YYYY-MM | yön | tip
+  const ccGroupMap = new Map();
+  for (const row of creditCardRows) {
+    const desc = rowDescription(row);
+    const direction = resolveLucaRowBankDirection(row, fullContext) || "";
+    const resolved = resolveCreditCardPayment({
+      company: selectedCompany,
+      description: desc,
+      paymentDate: rowDate(row),
+      selectedBank: context.selectedBank || "",
+      companyPlans,
+    });
+    const last4 =
+      resolved.lastFourDigits ||
+      extractCardLast4FromText(desc) ||
+      String(row.creditCardLast4 || "").trim() ||
+      "????";
+    const bankName =
+      resolved.bankName ||
+      row.bankaAdi ||
+      row.bankName ||
+      context.selectedBank ||
+      "";
+    const periodKey =
+      resolved.periodKey ||
+      creditCardStatementPeriodKey({
+        month: resolved.periodMonth,
+        year: resolved.periodYear,
+        source: resolved.periodSource,
+        confidence:
+          resolved.periodSource === "month_name" ||
+          resolved.periodSource === "numeric_my" ||
+          resolved.periodSource === "iso_ym"
+            ? "high"
+            : "low",
+      });
+    const key = buildCreditCardGroupKey({
+      companyId: selectedCompany?.id || "",
+      bankName,
+      lastFourDigits: last4,
+      statementPeriodKey: periodKey,
+      direction,
+      transactionType:
+        row.transactionType || BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI,
+    });
+    if (!ccGroupMap.has(key)) {
+      ccGroupMap.set(key, {
+        key,
+        lastFourDigits: last4,
+        bankName,
+        direction,
+        periodKey,
+        periodMonth: resolved.periodMonth || null,
+        periodYear: resolved.periodYear || null,
+        rows: [],
+        rowResolved: [],
+        samples: [],
+        dates: [],
+        resolved,
+      });
+    }
+    const g = ccGroupMap.get(key);
+    g.rows.push(row);
+    g.rowResolved.push(resolved);
+    if (g.samples.length < 5) g.samples.push(desc.slice(0, 200));
+    const d = rowDate(row);
+    if (d) g.dates.push(d);
+    if (!g.resolved?.accountCode && resolved.accountCode) {
+      g.resolved = resolved;
+    }
+    if (
+      (!g.periodMonth || g.periodKey === "belirsiz") &&
+      resolved.periodMonth &&
+      periodKey !== "belirsiz"
+    ) {
+      g.periodMonth = resolved.periodMonth;
+      g.periodYear = resolved.periodYear;
+      g.periodKey = periodKey;
+    }
+  }
+
+  const creditCardGroups = [...ccGroupMap.values()]
+    .map((g) => {
+      const totalAmount = g.rows.reduce((sum, r) => sum + rowAmount(r), 0);
+      const sortedDates = [...g.dates].filter(Boolean).sort();
+      const resolved = g.resolved || {};
+      const periodKey = g.periodKey || "belirsiz";
+      const periodLabel =
+        periodKey === "belirsiz"
+          ? "Dönem belirsiz"
+          : g.periodMonth && g.periodYear
+            ? `${String(g.periodMonth).padStart(2, "0")}/${g.periodYear}`
+            : g.periodMonth
+              ? `Ay ${g.periodMonth}`
+              : periodKey;
+      const candidates = searchCreditCardResolutionCandidates(companyPlans, {
+        lastFourDigits: g.lastFourDigits,
+        periodMonth: g.periodMonth,
+        periodYear: g.periodYear,
+        bankName: g.bankName,
+        limit: 8,
+      });
+      const suggested =
+        resolved.accountCode ||
+        resolved.suggestedAccountCode ||
+        candidates[0]?.code ||
+        "";
+      return {
+        id: `kk:${g.key}`,
+        analysisKey: g.key,
+        partyName: `****${g.lastFourDigits}`,
+        direction: g.direction || "",
+        directionLabel:
+          g.direction === "GIRIS" || g.direction === "GELEN"
+            ? "Gelen"
+            : g.direction === "CIKIS" || g.direction === "GIDEN"
+              ? "Giden"
+              : "—",
+        count: g.rows.length,
+        totalAmount: Math.round(totalAmount * 100) / 100,
+        samples: g.samples,
+        dateFrom: sortedDates[0] || "",
+        dateTo: sortedDates[sortedDates.length - 1] || "",
+        rowIds: g.rows.map((r) => r.id).filter(Boolean),
+        transactions: g.rows.map((r, idx) => {
+          const view = buildCariResolutionRowView(r, fullContext);
+          const rowResolved = g.rowResolved[idx] || {};
+          const rowPeriodKey =
+            rowResolved.periodKey ||
+            creditCardStatementPeriodKey({
+              month: rowResolved.periodMonth,
+              year: rowResolved.periodYear,
+              source: rowResolved.periodSource,
+              confidence:
+                rowResolved.periodSource === "month_name" ||
+                rowResolved.periodSource === "numeric_my" ||
+                rowResolved.periodSource === "iso_ym"
+                  ? "high"
+                  : "low",
+            });
+          const rowPeriodLabel =
+            rowPeriodKey === "belirsiz"
+              ? "Dönem belirsiz"
+              : rowResolved.periodMonth && rowResolved.periodYear
+                ? `${String(rowResolved.periodMonth).padStart(2, "0")}/${rowResolved.periodYear}`
+                : rowResolved.periodMonth
+                  ? `Ay ${rowResolved.periodMonth}`
+                  : rowPeriodKey;
+          return {
+            ...view,
+            creditCardRow: true,
+            lastFourDigits:
+              rowResolved.lastFourDigits || g.lastFourDigits || "",
+            bankName:
+              rowResolved.bankName ||
+              view.bankName ||
+              g.bankName ||
+              context.selectedBank ||
+              "",
+            statementPeriodKey: rowPeriodKey,
+            statementPeriodLabel: rowPeriodLabel,
+            statusOrSuggestion:
+              rowResolved.accountCode
+                ? `Öneri: ${rowResolved.accountCode}`
+                : rowResolved.warning ||
+                  view.statusOrSuggestion ||
+                  CREDIT_CARD_MISSING_LABEL,
+          };
+        }),
+        seedRow: g.rows[0],
+        foreignVendor: false,
+        status: "remaining",
+        creditCardGroup: true,
+        lastFourDigits: g.lastFourDigits,
+        bankName: g.bankName,
+        statementPeriodKey: periodKey,
+        statementPeriodLabel: periodLabel,
+        periodMonth: g.periodMonth || null,
+        periodYear: g.periodYear || null,
+        vendorMessage: CREDIT_CARD_MISSING_LABEL,
+        preferredPrefixes: ["309", "409"],
+        candidates,
+        suggestedAccount: suggested,
+        suggestedName:
+          candidates.find((c) => c.code === suggested)?.name || "",
+        confidence: Number(resolved.confidence || 0),
+        confidenceLabel: resolved.confidenceLabel || "Hesap seçilmeli",
+        matchReason: resolved.matchReason || "",
+        candidatesReady: true,
+        ambiguous: Boolean(resolved.ambiguous),
+      };
+    })
+    .sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount);
+
   const result = {
     totalMissing,
     cariMissingCount: unresolvedCount,
@@ -828,6 +1129,10 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     virmanCandidateRows: virmanCandidates,
     virmanCandidateGroups,
     virmanCandidateLabel: VIRMAN_CANDIDATE_LABEL,
+    creditCardMissingCount: creditCardRows.length,
+    creditCardGroupCount: creditCardGroups.length,
+    creditCardGroups,
+    creditCardMissingLabel: CREDIT_CARD_MISSING_LABEL,
   };
 
   if (collectStats) {

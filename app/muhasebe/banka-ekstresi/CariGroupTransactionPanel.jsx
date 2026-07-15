@@ -31,6 +31,7 @@ function RowInspectPanel({
   selectedAccount = "",
   matchReason = "",
   groupKey = "",
+  creditCardMode = false,
 }) {
   if (!row) return null;
   const fields = [
@@ -40,14 +41,26 @@ function RowInspectPanel({
     ["Gelen / Giden", row.directionLabel || "—"],
     ["Banka", row.bankName || "—"],
     ["İşlem tipi", row.transactionType || "—"],
+  ];
+  if (creditCardMode || row.creditCardRow) {
+    fields.push(
+      ["Kart son 4", row.lastFourDigits ? `****${row.lastFourDigits}` : "—"],
+      ["Ekstre dönemi", row.statementPeriodLabel || "—"],
+      ["Mevcut durum", row.statusOrSuggestion || row.statusLabel || "—"]
+    );
+  }
+  fields.push(
     ["Grup anahtarı", groupKey || row.analysisKey || "—"],
     ["Seçilecek hesap", selectedAccount || "—"],
-    ["Eşleşme gerekçesi", matchReason || "—"],
-  ];
+    ["Eşleşme gerekçesi", matchReason || "—"]
+  );
   return (
     <div className="mt-2 space-y-1.5 rounded-lg border border-slate-700/70 bg-slate-950/70 px-3 py-2.5 text-[11px] text-slate-300">
       {fields.map(([label, value]) => (
-        <div key={label} className="grid grid-cols-1 gap-0.5 sm:grid-cols-[8.5rem_minmax(0,1fr)]">
+        <div
+          key={label}
+          className="grid grid-cols-1 gap-0.5 sm:grid-cols-[8.5rem_minmax(0,1fr)]"
+        >
           <span className="text-slate-500">{label}</span>
           <span className="break-words text-slate-200">{value}</span>
         </div>
@@ -58,6 +71,7 @@ function RowInspectPanel({
 
 /**
  * Grup içi işlem listesi — seçim + lazy sayfalama + satır inceleme.
+ * Kredi kartı gruplarında ekstre dönemi / son 4 / banka kolonları gösterilir.
  */
 export default function CariGroupTransactionPanel({
   transactions = [],
@@ -69,6 +83,7 @@ export default function CariGroupTransactionPanel({
   selectedAccount = "",
   matchReason = "",
   groupKey = "",
+  creditCardMode = false,
 }) {
   const [visibleCount, setVisibleCount] = useState(
     CARI_RESOLUTION_ROW_PAGE_SIZE
@@ -85,6 +100,9 @@ export default function CariGroupTransactionPanel({
   const allSelected =
     allIds.length > 0 && selectedCount === allIds.length;
   const page = sliceCariRowsForDisplay(transactions, visibleCount);
+  const showCc =
+    creditCardMode ||
+    (transactions || []).some((t) => t?.creditCardRow);
 
   return (
     <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/40">
@@ -119,7 +137,6 @@ export default function CariGroupTransactionPanel({
       </div>
 
       <div className="max-h-72 overflow-x-auto overflow-y-auto">
-        {/* Desktop tablo */}
         <table className="hidden min-w-full text-left text-xs md:table">
           <thead className="sticky top-0 z-[1] bg-slate-900 text-[11px] uppercase tracking-wide text-slate-500">
             <tr>
@@ -130,7 +147,15 @@ export default function CariGroupTransactionPanel({
               <th className="min-w-[14rem] px-3 py-2 font-medium">Açıklama</th>
               <th className="px-3 py-2 font-medium">Yön</th>
               <th className="px-3 py-2 font-medium">Tutar</th>
-              <th className="px-3 py-2 font-medium">İşlem tipi</th>
+              {showCc ? (
+                <>
+                  <th className="px-3 py-2 font-medium">Son 4</th>
+                  <th className="px-3 py-2 font-medium">Banka</th>
+                  <th className="px-3 py-2 font-medium">Ekstre</th>
+                </>
+              ) : (
+                <th className="px-3 py-2 font-medium">İşlem tipi</th>
+              )}
               <th className="px-3 py-2 font-medium">Durum</th>
               <th className="px-3 py-2 font-medium"> </th>
             </tr>
@@ -167,6 +192,7 @@ export default function CariGroupTransactionPanel({
                         selectedAccount={selectedAccount}
                         matchReason={matchReason}
                         groupKey={groupKey}
+                        creditCardMode={showCc}
                       />
                     ) : null}
                   </td>
@@ -176,9 +202,27 @@ export default function CariGroupTransactionPanel({
                   <td className="whitespace-nowrap px-3 py-2 font-medium tabular-nums">
                     {formatMoney(row.amount)} TL
                   </td>
-                  <td className="px-3 py-2 text-slate-400">
-                    {row.transactionType || "—"}
-                  </td>
+                  {showCc ? (
+                    <>
+                      <td className="whitespace-nowrap px-3 py-2 text-slate-300">
+                        {row.lastFourDigits
+                          ? `****${row.lastFourDigits}`
+                          : "—"}
+                      </td>
+                      <td className="max-w-[8rem] px-3 py-2 text-slate-400">
+                        <span className="line-clamp-2 break-words">
+                          {row.bankName || "—"}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2 text-slate-300">
+                        {row.statementPeriodLabel || "—"}
+                      </td>
+                    </>
+                  ) : (
+                    <td className="px-3 py-2 text-slate-400">
+                      {row.transactionType || "—"}
+                    </td>
+                  )}
                   <td className="max-w-[10rem] px-3 py-2 text-slate-400">
                     <span className="line-clamp-2 break-words">
                       {row.statusOrSuggestion || "—"}
@@ -201,7 +245,6 @@ export default function CariGroupTransactionPanel({
           </tbody>
         </table>
 
-        {/* Mobil kartlar */}
         <ul className="space-y-2 p-2 md:hidden">
           {page.visible.map((row) => {
             const id = String(row.id);
@@ -234,9 +277,19 @@ export default function CariGroupTransactionPanel({
                     <div className="mt-1">
                       <TruncatedDescription text={row.description} />
                     </div>
+                    {showCc ? (
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {row.lastFourDigits
+                          ? `****${row.lastFourDigits}`
+                          : "—"}
+                        {" · "}
+                        {row.bankName || "—"}
+                        {" · "}
+                        {row.statementPeriodLabel || "—"}
+                      </p>
+                    ) : null}
                     <p className="mt-1 text-[11px] text-slate-500">
-                      {row.transactionType || "—"}
-                      {" · "}
+                      {!showCc ? `${row.transactionType || "—"} · ` : ""}
                       {row.statusOrSuggestion || "—"}
                     </p>
                     <button
@@ -254,6 +307,7 @@ export default function CariGroupTransactionPanel({
                         selectedAccount={selectedAccount}
                         matchReason={matchReason}
                         groupKey={groupKey}
+                        creditCardMode={showCc}
                       />
                     ) : null}
                   </div>

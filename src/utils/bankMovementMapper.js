@@ -50,10 +50,11 @@ import {
 } from "@/src/utils/accountMemoryV2";
 import {
   buildCreditCardPaymentDescription,
-  findCreditCardByText,
-  getCreditCardAccount,
+  resolveCreditCardPayment,
+  isCreditCardPaymentDescription,
+  CREDIT_CARD_CLASSIFICATION,
+  CREDIT_CARD_MISSING_LABEL,
 } from "@/src/utils/creditCardAccountResolver";
-
 import {
   buildFallbackLucaDescription,
   buildStandardLucaDescription,
@@ -344,15 +345,7 @@ function formatMemoryDescription(memory, description, direction) {
 }
 
 function isCreditCardPaymentText(description) {
-  const text = normalizeParserText(description);
-
-  return (
-    text.includes("K KART") ||
-    text.includes("KREDI KART") ||
-    text.includes("KREDİ KART") ||
-    text.includes("EKSTRE BORC") ||
-    text.includes("EKSTRE BORÇ")
-  );
+  return isCreditCardPaymentDescription(description);
 }
 
 function accountExistsInPlan(companyPlans, accountCode, planCodeSet = null) {
@@ -576,49 +569,119 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     appendWarning(warnings, VIRMAN_CANDIDATE_LABEL);
   }
 
-  const creditCard =
-    findCreditCardByText(selectedCompany?.creditCards || [], description) ||
-    (isCreditCardPaymentText(description)
-      ? findCreditCardByText(selectedCompany?.creditCards || [], description)
-      : null);
+  const creditCardResolution = resolveCreditCardPayment({
+    company: selectedCompany,
+    description,
+    paymentDate: date || new Date(),
+    selectedBank,
+    companyPlans,
+  });
 
+  // Kart için hafızadan 309/409 (analysisKey veya son 4)
+  if (
+    creditCardResolution.isCreditCardPayment &&
+    !creditCardResolution.accountCode &&
+    !creditCardResolution.ambiguous
+  ) {
+    try {
+      const kkKey = normalizeBankAnalysisKey(description, direction);
+      const memList = Array.isArray(accountMemoryRecords)
+        ? accountMemoryRecords
+        : [];
+      const memHit = resolveAccountMemoryV2Decision(
+        {
+          companyId: selectedCompanyId || selectedCompany?.id || "",
+          analysisKey: kkKey,
+          direction,
+          transactionType: BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI,
+          normalizedDescription: description,
+          amount,
+        },
+        accountMemoryV2Index?.byAnalysisKey
+          ? accountMemoryV2Index
+          : memList,
+        { allowAuto: true }
+      );
+      const memCode = String(
+        memHit?.record?.accountCode || memHit?.record?.cariId || ""
+      ).trim();
+      if (
+        memHit?.autoApply &&
+        memCode &&
+        (memCode.startsWith("309") || memCode.startsWith("409"))
+      ) {
+        creditCardResolution.accountCode = memCode;
+        creditCardResolution.matchReason = "memory";
+        creditCardResolution.confidence = 88;
+        creditCardResolution.confidenceLabel = "Yüksek (hafıza)";
+        creditCardResolution.warning = "";
+      }
+    } catch {
+      /* hafıza opsiyonel */
+    }
+  }
   const isCardPaymentRow =
     !virmanDetect.shouldReclassify &&
-    (!!creditCard || isCreditCardPaymentText(description));
+    (creditCardResolution.isCreditCardPayment ||
+      transactionType === BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI);
+
+  let creditCardMeta = null;
 
   if (isCardPaymentRow) {
-    const card =
-      creditCard ||
-      (selectedCompany?.creditCards || []).find((item) => item.isActive !== false) ||
-      null;
+    // Virman adayı ile karışmasın
+    virmanCandidate = false;
+    bankInternalTransferMeta = null;
 
-    const resolvedCard = getCreditCardAccount({
-      creditCard: card,
-      paymentDate: date || new Date(),
-      installmentYearShift: false,
-    }) || { accountCode: "", warning: "Kredi kartı hesabı çözülemedi." };
+    const card = creditCardResolution.creditCard;
+    creditCardMeta = creditCardResolution;
 
     matchedRule = {
       source: "creditCard",
       islem: "KREDI KARTI",
-      anahtar: card?.lastFourDigits || card?.cardName || "",
+      anahtar:
+        card?.lastFourDigits ||
+        creditCardResolution.lastFourDigits ||
+        card?.cardName ||
+        "",
     };
     transactionType = BANK_TRANSACTION_TYPE.KREDI_KARTI_ODEMESI;
     cariRequired = false;
     personelRequired = false;
+    accountingScenario = "KREDI_KARTI";
 
-    counterAccountCode = resolvedCard?.accountCode || "";
+    if (
+      !creditCardResolution.ambiguous &&
+      creditCardResolution.accountCode
+    ) {
+      counterAccountCode = creditCardResolution.accountCode;
+    } else {
+      counterAccountCode = "";
+    }
+
     documentType = "KR";
     lucaDescription = buildCreditCardPaymentDescription({
-      creditCard: card,
+      creditCard: card || {
+        lastFourDigits: creditCardResolution.lastFourDigits,
+      },
       paymentDate: date || new Date(),
       rawDescription: description,
     });
 
-    if (resolvedCard?.warning) appendWarning(warnings, resolvedCard.warning);
-    if (!card) appendWarning(warnings, "Kredi kartı eşleşmedi");
+    if (creditCardResolution.warning) {
+      appendWarning(warnings, creditCardResolution.warning);
+    }
+    if (!card && !creditCardResolution.ambiguous) {
+      appendWarning(warnings, "Kredi kartı eşleşmedi");
+    }
+    if (creditCardResolution.ambiguous) {
+      appendWarning(
+        warnings,
+        "Aynı son 4 hane birden fazla kartta; otomatik uygulanmadı."
+      );
+    }
     if (!counterAccountCode) {
       appendWarning(warnings, "Hesap eşleşmesi bulunamadı");
+      scenarioMissingCategory = CREDIT_CARD_MISSING_LABEL;
     }
   } else {
     const firmAnalysisKey = normalizeBankAnalysisKey(description, direction);
@@ -1311,18 +1374,27 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     personelRequired,
     classification: virmanDetect?.shouldReclassify
       ? "BANK_INTERNAL_TRANSFER"
-      : "",
+      : isCardPaymentRow
+        ? CREDIT_CARD_CLASSIFICATION
+        : "",
     bankInternalTransfer: Boolean(virmanDetect?.shouldReclassify),
     virmanCandidate: Boolean(virmanCandidate),
     virmanSource102: bankInternalTransferMeta?.source102 || "",
     virmanTarget102: bankInternalTransferMeta?.complete
       ? bankInternalTransferMeta.target102
       : "",
+    creditCardLast4: creditCardMeta?.lastFourDigits || "",
+    creditCardPeriodMonth: creditCardMeta?.periodMonth || null,
+    creditCardPeriodYear: creditCardMeta?.periodYear || null,
+    creditCardMatchReason: creditCardMeta?.matchReason || "",
+    creditCardAmbiguous: Boolean(creditCardMeta?.ambiguous),
     missingHesapCategory: !counterAccountCode
       ? virmanCandidate
         ? ""
-        : scenarioMissingCategory ||
-          missingCategoryForTransactionType(transactionType)
+        : isCardPaymentRow
+          ? CREDIT_CARD_MISSING_LABEL
+          : scenarioMissingCategory ||
+            missingCategoryForTransactionType(transactionType)
       : "",
   };
 }
