@@ -1,33 +1,27 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useState, useMemo } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import BuildVersionBadge from "@/app/components/BuildVersionBadge";
 import { ANNVERO_NAV_GROUPS } from "@/src/config/annveroNavConfig";
 import { canSeeNavGroup, canSeeNavItem } from "@/src/config/annveroRoles";
 import { canAccessCoreTestCenter, isDevelopmentEnvironment } from "@/src/lib/dev/coreTestCenterAccess";
 import { useUserRole } from "@/src/hooks/useUserRole";
 import { annveroShellSidebarWidth } from "@/src/styles/annveroDesign";
+import {
+  findBestActiveGroup,
+  isMenuItemActive,
+  normalizeMenuPath,
+} from "@/src/utils/annveroNavActiveGroup";
 
-function normalizeMenuPath(href = "") {
-  return href.split("?")[0].replace(/\/$/, "") || "/";
-}
-
-function isMenuGroupActive(group, pathname) {
-  const current = normalizeMenuPath(pathname);
-  if (group.href && normalizeMenuPath(group.href) === current) return true;
-  return (group.items || []).some((item) => {
-    const target = normalizeMenuPath(item.href);
-    return current === target || current.startsWith(`${target}/`);
-  });
-}
-
-function isMenuItemActive(href, pathname) {
-  const current = normalizeMenuPath(pathname);
-  const target = normalizeMenuPath(href);
-  return current === target || current.startsWith(`${target}/`);
-}
+/** Sık kullanılan muhasebe route'ları — hover/idle prefetch */
+const HOT_PREFETCH_HREFS = [
+  "/muhasebe/firma-yonetimi",
+  "/muhasebe/banka-ekstresi",
+  "/muhasebe/mali-yukumluluk",
+  "/muhasebe/hesap-plani",
+];
 
 const ICON_MAP = {
   Dashboard: "M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z",
@@ -71,19 +65,56 @@ function ChevronIcon({ open }) {
   );
 }
 
-function SidebarGroup({ group, open, active, pathname, showDivider, onToggle, onNavigate, collapsed }) {
+function navLinkClass({ active, pending }) {
+  if (active) {
+    return "bg-[var(--annvero-active)] font-semibold text-[var(--annvero-text)] before:bg-[var(--annvero-accent)]";
+  }
+  if (pending) {
+    return "bg-[var(--annvero-hover)] font-medium text-[var(--annvero-text)] before:bg-[var(--annvero-accent)] opacity-90";
+  }
+  return "text-[var(--annvero-shell-muted)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)] before:bg-[var(--annvero-border)] group-hover/item:before:bg-[var(--annvero-accent)]";
+}
+
+function SidebarGroup({
+  group,
+  open,
+  active,
+  pathname,
+  pendingHref,
+  showDivider,
+  onToggleOnly,
+  onNavIntent,
+  onPrefetchHref,
+  collapsed,
+}) {
   const headerClass = active
     ? "bg-[var(--annvero-active)] text-[var(--annvero-text)] shadow-sm ring-1 ring-[var(--annvero-accent)]/35"
-    : "text-[var(--annvero-shell-text)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)]";
+    : pendingHref &&
+        normalizeMenuPath(pendingHref) ===
+          normalizeMenuPath(group.href || group.items?.[0]?.href || "")
+      ? "bg-[var(--annvero-hover)] text-[var(--annvero-text)] ring-1 ring-[var(--annvero-accent)]/20"
+      : "text-[var(--annvero-shell-text)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)]";
+
+  const landingHref = group.href || group.items?.[0]?.href || "";
 
   if (!group.items?.length) {
+    const href = group.href || "/dashboard";
+    const itemActive = isMenuItemActive(href, pathname);
+    const pending = normalizeMenuPath(pendingHref) === normalizeMenuPath(href);
     return (
       <div className={showDivider ? "border-t border-[var(--annvero-shell-separator)] pt-2" : ""}>
         <Link
-          href={group.href || "/dashboard"}
-          onClick={onNavigate}
+          href={href}
+          prefetch={true}
+          onClick={(e) => onNavIntent?.(e, href)}
+          onMouseEnter={() => onPrefetchHref?.(href)}
+          onFocus={() => onPrefetchHref?.(href)}
           title={group.title}
-          className={`group mb-1 flex items-center gap-3 rounded-xl px-2.5 py-2.5 transition-all duration-200 ${headerClass}`}
+          className={`group mb-1 flex items-center gap-3 rounded-xl px-2.5 py-2.5 transition-colors duration-150 ${
+            itemActive || pending
+              ? "bg-[var(--annvero-active)] text-[var(--annvero-text)] shadow-sm ring-1 ring-[var(--annvero-accent)]/35"
+              : "text-[var(--annvero-shell-text)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)]"
+          }`}
         >
           <MenuIcon title={group.title} />
           {!collapsed ? (
@@ -96,36 +127,65 @@ function SidebarGroup({ group, open, active, pathname, showDivider, onToggle, on
 
   return (
     <div className={showDivider ? "border-t border-[var(--annvero-shell-separator)] pt-2" : ""}>
-      <button
-        type="button"
-        onClick={onToggle}
-        title={group.title}
-        className={`group mb-1 flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition-all duration-200 ${headerClass}`}
+      <div
+        className={`group mb-1 flex w-full items-center gap-1 rounded-xl px-1 py-1 transition-colors duration-150 ${headerClass}`}
       >
-        <MenuIcon title={group.title} />
+        <Link
+          href={landingHref}
+          prefetch={true}
+          title={group.title}
+          onClick={(e) => onNavIntent?.(e, landingHref)}
+          onMouseEnter={() => onPrefetchHref?.(landingHref)}
+          onFocus={() => onPrefetchHref?.(landingHref)}
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1.5 py-1.5"
+        >
+          <MenuIcon title={group.title} />
+          {!collapsed ? (
+            <span className="flex-1 text-left text-[15px] font-bold tracking-tight">
+              {group.title}
+            </span>
+          ) : null}
+        </Link>
         {!collapsed ? (
-          <>
-            <span className="flex-1 text-[15px] font-bold tracking-tight">{group.title}</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onToggleOnly?.(group.title);
+            }}
+            aria-label={open ? `${group.title} menüsünü kapat` : `${group.title} menüsünü aç`}
+            aria-expanded={open}
+            className="rounded-lg p-2 text-[var(--annvero-shell-muted)] hover:bg-[var(--annvero-hover)]"
+          >
             <ChevronIcon open={open} />
-          </>
+          </button>
         ) : null}
-      </button>
+      </div>
       {open && !collapsed ? (
         <div className="mb-2 space-y-0.5 border-b border-[var(--annvero-shell-separator)] pb-2 pl-2">
           {group.items.map((item) => {
             const itemActive = isMenuItemActive(item.href, pathname);
+            const pending =
+              normalizeMenuPath(pendingHref) === normalizeMenuPath(item.href);
             return (
               <Link
                 key={`${group.title}-${item.label}`}
                 href={item.href}
-                onClick={onNavigate}
-                className={`group/item relative flex items-center justify-between rounded-lg py-2 pl-8 pr-3 text-[13px] transition-colors duration-150 ${
-                  itemActive
-                    ? "bg-[var(--annvero-active)] font-semibold text-[var(--annvero-text)] before:bg-[var(--annvero-accent)]"
-                    : "text-[var(--annvero-shell-muted)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)] before:bg-[var(--annvero-border)] group-hover/item:before:bg-[var(--annvero-accent)]"
-                } before:absolute before:left-3 before:top-1/2 before:h-1.5 before:w-1.5 before:-translate-y-1/2 before:rounded-full before:content-['']`}
+                prefetch={true}
+                onClick={(e) => onNavIntent?.(e, item.href)}
+                onMouseEnter={() => onPrefetchHref?.(item.href)}
+                onFocus={() => onPrefetchHref?.(item.href)}
+                className={`group/item relative flex items-center justify-between rounded-lg py-2 pl-8 pr-3 text-[13px] transition-colors duration-100 ${navLinkClass(
+                  { active: itemActive, pending }
+                )} before:absolute before:left-3 before:top-1/2 before:h-1.5 before:w-1.5 before:-translate-y-1/2 before:rounded-full before:content-['']`}
               >
                 <span>{item.label}</span>
+                {pending && !itemActive ? (
+                  <span className="text-[10px] font-medium text-[var(--annvero-accent)]">
+                    …
+                  </span>
+                ) : null}
               </Link>
             );
           })}
@@ -142,8 +202,11 @@ export default function AnnveroSidebar({
   onToggleCollapse,
 }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { role, isManagementUser, isAdmin, isPartner } = useUserRole();
   const [openMenu, setOpenMenu] = useState("");
+  const [pendingHref, setPendingHref] = useState("");
+  const [, startTransition] = useTransition();
 
   const coreTestVisible = canAccessCoreTestCenter({
     isDevelopment: isDevelopmentEnvironment(),
@@ -169,12 +232,74 @@ export default function AnnveroSidebar({
     }).filter(Boolean);
   }, [role, coreTestVisible]);
 
-  useEffect(() => {
-    const activeGroup = visibleNavGroups.find((group) => isMenuGroupActive(group, pathname));
-    if (activeGroup?.items?.length) {
-      setOpenMenu(activeGroup.title);
-    }
+  const activeGroupTitle = useMemo(() => {
+    const group = findBestActiveGroup(visibleNavGroups, pathname);
+    return group?.items?.length ? group.title : "";
   }, [pathname, visibleNavGroups]);
+
+  // Route değişince yalnız pathname grubu açık kalsın (sonsuz loop yok: title string)
+  useEffect(() => {
+    if (activeGroupTitle) {
+      setOpenMenu(activeGroupTitle);
+    }
+    setPendingHref("");
+  }, [pathname, activeGroupTitle]);
+
+  // Idle: sık kullanılan route'ları arka planda ısıt (dev compile / prod RSC)
+  useEffect(() => {
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      for (const href of HOT_PREFETCH_HREFS) {
+        try {
+          router.prefetch(href);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    const idleId =
+      typeof window !== "undefined" && "requestIdleCallback" in window
+        ? window.requestIdleCallback(run, { timeout: 2500 })
+        : window.setTimeout(run, 900);
+    return () => {
+      cancelled = true;
+      if (typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleId);
+      } else {
+        window.clearTimeout(idleId);
+      }
+    };
+  }, [router]);
+
+  const onPrefetchHref = (href) => {
+    if (!href) return;
+    try {
+      router.prefetch(href);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const onNavIntent = (event, href) => {
+    const target = normalizeMenuPath(href);
+    const current = normalizeMenuPath(pathname);
+    if (current === target) {
+      event.preventDefault();
+      setPendingHref("");
+      onMobileClose?.();
+      return;
+    }
+    // Ağır iş yok — anında pending görsel tepki; sidebar bloke edilmez
+    setPendingHref(href);
+    const best = findBestActiveGroup(visibleNavGroups, href);
+    if (best?.items?.length) {
+      setOpenMenu(best.title);
+    }
+    startTransition(() => {
+      onMobileClose?.();
+    });
+  };
 
   const width = collapsed ? "72px" : annveroShellSidebarWidth;
 
@@ -214,14 +339,16 @@ export default function AnnveroSidebar({
               key={group.title}
               group={group}
               open={openMenu === group.title}
-              active={isMenuGroupActive(group, pathname)}
+              active={activeGroupTitle === group.title}
               pathname={pathname}
+              pendingHref={pendingHref}
               showDivider={index > 0}
               collapsed={collapsed}
-              onToggle={() =>
-                setOpenMenu((current) => (current === group.title ? "" : group.title))
+              onToggleOnly={(title) =>
+                setOpenMenu((current) => (current === title ? "" : title))
               }
-              onNavigate={() => onMobileClose?.()}
+              onNavIntent={onNavIntent}
+              onPrefetchHref={onPrefetchHref}
             />
           ))}
         </nav>

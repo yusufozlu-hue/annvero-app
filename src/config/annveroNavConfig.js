@@ -37,6 +37,7 @@ export const ANNVERO_NAV_GROUPS = [
   {
     title: "Beyanname Merkezi",
     items: [
+      { label: "Mali Yükümlülük Merkezi", href: "/muhasebe/mali-yukumluluk" },
       { label: "Beyanname / Tahakkuk", href: "/muhasebe/beyanname-tahakkuk" },
       { label: "Poliçe Giderleştirme", href: "/muhasebe/police-giderlestirme" },
       { label: "Resmi Bildirimler", href: "/dashboard/ofis-takip/resmi-bildirimler" },

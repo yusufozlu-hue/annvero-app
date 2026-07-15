@@ -48,6 +48,8 @@ import {
   findCreditCardAccountsByPlanName,
 } from "@/src/utils/creditCardAccountResolver";
 import { BANK_TRANSACTION_TYPE } from "@/src/utils/bankTransactionType";
+import { buildTaxObligationResolutionGroups } from "@/src/utils/taxObligation/resolutionGroups";
+import { classifyObligationPayment } from "@/src/utils/taxObligation/classify";
 
 export {
   extractIbansFromText,
@@ -72,6 +74,7 @@ export const CARI_RESOLUTION_FILTERS = {
   REMAINING: "remaining",
   VIRMAN_CANDIDATES: "virman_candidates",
   CREDIT_CARDS: "credit_cards",
+  TAX_OBLIGATIONS: "tax_obligations",
 };
 
 /** İlk açılışta peşinen aday üretilecek grup sayısı */
@@ -173,6 +176,19 @@ export function isActiveCompanyOwnCariAccount(candidate = {}, selectedCompany = 
     .split(/\s+/)
     .filter((t) => t.length >= 3 && !companyTokens.includes(t));
   return extra.every((t) => ALLOWED_EXTRA.has(t));
+}
+
+/** Eksik vergi/SGK (360/361) satırı — cari listesine girmez; Vergi/SGK sekmesi */
+export function isTaxObligationMissingRow(row = {}, context = {}) {
+  if (isCreditCardMissingRow(row, context)) return false;
+  const type = String(row.transactionType || "");
+  if (isVergiSgkType(type)) return true;
+  const cat = classifyMissingHesapCategory(row);
+  if (cat === MISSING_HESAP_CATEGORY.VERGI_SGK) return true;
+  const classified = classifyObligationPayment(
+    rowDescription(row)
+  );
+  return Boolean(classified.isObligationPayment);
 }
 
 /** Personel / vergi / finans (+ kesin/aday virman) satırlarını cari çözüm grubundan çıkar */
@@ -713,6 +729,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
   const divertedVirman = [];
   const virmanCandidates = [];
   const creditCardRows = [];
+  const taxObligationRows = [];
   const groups = new Map();
   let unresolvedCount = 0;
   let totalMissing = 0;
@@ -741,6 +758,12 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     // 2) Kredi kartı — cari / virman adayına girmez
     if (isCreditCardMissingRow(row, fullContext)) {
       creditCardRows.push(row);
+      continue;
+    }
+
+    // 2b) Vergi / SGK — cari / virman / KK'ye girmez
+    if (isTaxObligationMissingRow(row, fullContext)) {
+      taxObligationRows.push(row);
       continue;
     }
 
@@ -1111,6 +1134,12 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     })
     .sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount);
 
+  const taxObligationGroups = buildTaxObligationResolutionGroups(
+    taxObligationRows,
+    context.obligationAccruals || [],
+    fullContext
+  );
+
   const result = {
     totalMissing,
     cariMissingCount: unresolvedCount,
@@ -1133,6 +1162,9 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     creditCardGroupCount: creditCardGroups.length,
     creditCardGroups,
     creditCardMissingLabel: CREDIT_CARD_MISSING_LABEL,
+    taxObligationMissingCount: taxObligationRows.length,
+    taxObligationGroupCount: taxObligationGroups.length,
+    taxObligationGroups,
   };
 
   if (collectStats) {

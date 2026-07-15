@@ -258,9 +258,13 @@ function GroupCard({
   const isCreditCardCard = Boolean(
     group.creditCardGroup || hydratedGroup.creditCardGroup
   );
+  const isTaxObligationCard = Boolean(
+    group.taxObligationGroup || hydratedGroup.taxObligationGroup
+  );
 
   const canApply =
     !isVirmanCandidateCard &&
+    !isTaxObligationCard &&
     Boolean(selectedCode) &&
     selectedApplyCount > 0 &&
     !isResolved &&
@@ -300,6 +304,11 @@ function GroupCard({
             {isCreditCardCard ? (
               <span className="rounded-md border border-cyan-700/50 bg-cyan-950/40 px-2 py-0.5 text-[11px] text-cyan-100">
                 Kredi kartı ****{hydratedGroup.lastFourDigits || "????"}
+              </span>
+            ) : null}
+            {isTaxObligationCard ? (
+              <span className="rounded-md border border-teal-700/50 bg-teal-950/40 px-2 py-0.5 text-[11px] text-teal-100">
+                Vergi / SGK {hydratedGroup.obligationType || ""}
               </span>
             ) : null}
             {isVirmanCandidateCard ? (
@@ -344,6 +353,29 @@ function GroupCard({
                 : ""}
             </p>
           ) : null}
+          {isTaxObligationCard ? (
+            <p className="mt-1 text-xs text-slate-400">
+              Dönem: {hydratedGroup.periodLabel || "—"}
+              {" · "}
+              Ödeme: {hydratedGroup.paymentDate || "—"}
+              {" · "}
+              Banka tutarı: {formatMoney(hydratedGroup.bankAmount)} TL
+              {" · "}
+              Tahakkuk:{" "}
+              {hydratedGroup.accrualTotal != null
+                ? `${formatMoney(hydratedGroup.accrualTotal)} TL`
+                : "—"}
+              {" · "}
+              {hydratedGroup.matchStatusLabel || "Manuel inceleme"}
+            </p>
+          ) : null}
+          {isTaxObligationCard ? (
+            <p className="mt-1 text-xs text-teal-200/80">
+              {hydratedGroup.accrualId
+                ? "Tahakkuk seçimi ve Luca dağılımı sonraki pakette."
+                : "Bu ödeme için tahakkuk kaydı bulunamadı."}
+            </p>
+          ) : null}
           <ul className="mt-2 space-y-1 text-xs text-slate-400">
             {(hydratedGroup.samples || []).slice(0, 3).map((s) => (
               <li key={s} className="break-words">
@@ -374,7 +406,9 @@ function GroupCard({
             <CariGroupTransactionPanel
               transactions={transactions}
               selectedIds={selectedRowIds}
-              allowApplySelection={!isVirmanCandidateCard && !isResolved}
+              allowApplySelection={
+                !isVirmanCandidateCard && !isTaxObligationCard && !isResolved
+              }
               selectedAccount={selectedCode || hydratedGroup.suggestedAccount || ""}
               matchReason={
                 hydratedGroup.confidenceLabel ||
@@ -435,7 +469,28 @@ function GroupCard({
         </div>
       ) : null}
 
-      {!isResolved && !isVirmanCandidateCard ? (
+      {!isResolved && isTaxObligationCard ? (
+        <div className="mt-4 space-y-3 rounded-xl border border-teal-700/40 bg-teal-950/25 px-4 py-3 text-sm text-teal-50">
+          <p className="font-semibold">
+            {hydratedGroup.accrualId
+              ? "Vergi / SGK — inceleme"
+              : "Bu ödeme için tahakkuk kaydı bulunamadı."}
+          </p>
+          <p className="text-xs leading-relaxed text-teal-100/85">
+            {hydratedGroup.accrualId
+              ? "Tahakkuk seçimi ve Luca dağılımı sonraki pakette. Bu aşamada otomatik uygulama kapalıdır."
+              : "Banka Parser yalnızca Mali Yükümlülük Merkezi’ndeki normalize tahakkuk kayıtlarını kullanır."}
+          </p>
+          <a
+            href="/muhasebe/mali-yukumluluk"
+            className="inline-flex items-center justify-center rounded-xl border border-teal-600/50 bg-teal-950/40 px-4 py-2.5 text-sm font-semibold text-teal-50 transition hover:bg-teal-900/50"
+          >
+            Mali Yükümlülük Merkezi’ne Git
+          </a>
+        </div>
+      ) : null}
+
+      {!isResolved && !isVirmanCandidateCard && !isTaxObligationCard ? (
         <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
           <div className="min-w-0">
             <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
@@ -575,6 +630,10 @@ export default function CariMissingResolutionCenter({
     () => snapshot?.creditCardGroups || [],
     [snapshot?.creditCardGroups]
   );
+  const taxObligationGroups = useMemo(
+    () => snapshot?.taxObligationGroups || [],
+    [snapshot?.taxObligationGroups]
+  );
   const selectedCompany = selectedCompanyProp || snapshot?.selectedCompany || null;
   const planCache = useMemo(
     () => snapshot?.planCache || createCariResolutionPlanCache(companyPlans),
@@ -612,12 +671,30 @@ export default function CariMissingResolutionCenter({
         resolvedIds: resolvedSet,
       });
     }
+    if (filter === CARI_RESOLUTION_FILTERS.TAX_OBLIGATIONS) {
+      return filterCariResolutionGroups(taxObligationGroups, {
+        filter: CARI_RESOLUTION_FILTERS.ALL,
+        query,
+        resolvedIds: resolvedSet,
+      });
+    }
     return filterCariResolutionGroups(groups, {
       filter,
       query,
       resolvedIds: resolvedSet,
-    }).filter((g) => !g.virmanCandidate && !g.creditCardGroup);
-  }, [groups, virmanCandidateGroups, creditCardGroups, filter, query, resolvedSet]);
+    }).filter(
+      (g) =>
+        !g.virmanCandidate && !g.creditCardGroup && !g.taxObligationGroup
+    );
+  }, [
+    groups,
+    virmanCandidateGroups,
+    creditCardGroups,
+    taxObligationGroups,
+    filter,
+    query,
+    resolvedSet,
+  ]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -683,7 +760,7 @@ export default function CariMissingResolutionCenter({
             </button>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-8">
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2">
               <p className="text-[11px] uppercase tracking-wide text-slate-500">
                 Toplam eksik
@@ -714,6 +791,14 @@ export default function CariMissingResolutionCenter({
               </p>
               <p className="text-lg font-semibold text-cyan-100">
                 {metric(snapshot?.creditCardMissingCount)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-teal-800/40 bg-teal-950/20 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-teal-200/70">
+                Vergi / SGK
+              </p>
+              <p className="text-lg font-semibold text-teal-100">
+                {metric(snapshot?.taxObligationMissingCount)}
               </p>
             </div>
             <div className="rounded-xl border border-amber-800/40 bg-amber-950/20 px-3 py-2">
@@ -760,6 +845,7 @@ export default function CariMissingResolutionCenter({
                   [CARI_RESOLUTION_FILTERS.OUTGOING, "Giden cariler"],
                   [CARI_RESOLUTION_FILTERS.FOREIGN, "Yabancı satıcılar"],
                   [CARI_RESOLUTION_FILTERS.CREDIT_CARDS, "Kredi Kartları"],
+                  [CARI_RESOLUTION_FILTERS.TAX_OBLIGATIONS, "Vergi / SGK"],
                   [CARI_RESOLUTION_FILTERS.VIRMAN_CANDIDATES, "Virman adayları"],
                   [CARI_RESOLUTION_FILTERS.RESOLVED, "Çözülenler"],
                 ].map(([id, label]) => (

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import EditableStandardLucaPreviewTable from "../components/EditableStandardLucaPreviewTable";
@@ -115,7 +116,6 @@ import {
   BankPipelineProgressPanel,
   BankPipelineResultCard,
 } from "./BankOneClickExperience";
-import CariMissingResolutionCenter from "./CariMissingResolutionCenter";
 import {
   buildCariResolutionGroups,
   CARI_RESOLUTION_INITIAL_CANDIDATE_GROUPS,
@@ -125,6 +125,7 @@ import {
   shouldApplyCariResolutionAsyncResult,
   shouldIgnoreCariResolutionOpen,
 } from "@/src/utils/cariMissingResolutionGroups";
+import { loadObligationAccruals } from "@/src/utils/taxObligation/documentStore";
 import {
   buildParserPreviewFromNormalizedRowsAsync,
   buildLucaRowsFromMovementsAsync,
@@ -145,8 +146,6 @@ import {
   isMovementTaughtForDisplay,
   isCoreStatusUnknown,
 } from "@/src/utils/bankCorePreview";
-import CorePreviewTable from "./CorePreviewTable";
-import KnowledgeTeachModal from "./KnowledgeTeachModal";
 import { buildTeachFormFromMovement } from "@/src/utils/knowledgeBuilderForm";
 import { saveKnowledgeTeachRequest } from "@/src/utils/knowledgeBuilderClient";
 import { useUserRole } from "@/src/hooks/useUserRole";
@@ -160,6 +159,17 @@ import {
   resolveParserBankFromSheet,
 } from "@/src/utils/bankStatementFormatGuard";
 import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils";
+
+const CorePreviewTable = dynamic(() => import("./CorePreviewTable"), {
+  ssr: false,
+});
+const KnowledgeTeachModal = dynamic(() => import("./KnowledgeTeachModal"), {
+  ssr: false,
+});
+const CariMissingResolutionCenter = dynamic(
+  () => import("./CariMissingResolutionCenter"),
+  { ssr: false }
+);
 
 const BANK_PREVIEW_FILTERS = [
   { id: "all", label: "Tümü" },
@@ -1186,6 +1196,7 @@ export default function BankaParserPage() {
         companyPlans,
         selectedBank,
         selectedCompany,
+        obligationAccruals: loadObligationAccruals(),
       },
       { initialCandidateGroups }
     );
@@ -4058,30 +4069,33 @@ export default function BankaParserPage() {
           </div>
         ) : null}
 
-        <KnowledgeTeachModal
-          open={isTeachModalOpen}
-          initialForm={teachFormDefaults || {}}
-          canTeachGlobal={isManagementUser}
-          isSaving={isSavingTeach}
-          onClose={handleCloseTeachModal}
-          onSubmit={handleSaveKnowledgeTeach}
-        />
+        {isTeachModalOpen ? (
+          <KnowledgeTeachModal
+            open={isTeachModalOpen}
+            initialForm={teachFormDefaults || {}}
+            canTeachGlobal={isManagementUser}
+            isSaving={isSavingTeach}
+            onClose={handleCloseTeachModal}
+            onSubmit={handleSaveKnowledgeTeach}
+          />
+        ) : null}
 
-        <CariMissingResolutionCenter
-          open={showCariResolutionCenter}
-          onClose={handleCloseCariResolutionCenter}
-          snapshot={cariResolutionSnapshot}
-          companyPlans={companyPlans}
-          resolvedGroupIds={resolvedCariGroupIds}
-          onApplyGroup={handleApplyCariResolutionGroup}
-          applyingId={applyingCariGroupId}
-          lastApplyMessage={lastCariApplyMessage}
-          loading={cariResolutionLoading}
-          error={cariResolutionError}
-          onRetry={handleRetryCariResolutionLoad}
-          showServiceMeta={showBankServiceUi}
-        />
-
+        {showCariResolutionCenter || cariResolutionLoading ? (
+          <CariMissingResolutionCenter
+            open={showCariResolutionCenter}
+            onClose={handleCloseCariResolutionCenter}
+            snapshot={cariResolutionSnapshot}
+            companyPlans={companyPlans}
+            resolvedGroupIds={resolvedCariGroupIds}
+            onApplyGroup={handleApplyCariResolutionGroup}
+            applyingId={applyingCariGroupId}
+            lastApplyMessage={lastCariApplyMessage}
+            loading={cariResolutionLoading}
+            error={cariResolutionError}
+            onRetry={handleRetryCariResolutionLoad}
+            showServiceMeta={showBankServiceUi}
+          />
+        ) : null}
         {/* Teknik Luca önizleme yalnızca servis modunda — normal kullanıcıda hiç yok */}
         {showBankServiceUi ? (
         <div className={`min-w-0 ${annveroCardClass}`}>

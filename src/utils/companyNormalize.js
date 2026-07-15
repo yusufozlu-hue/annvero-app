@@ -45,6 +45,7 @@ export const emptyCompany = {
     sgkMainAccount: "",
     sgdpAccount: "",
     unemploymentAccount: "",
+    sgkIncentiveIncomeAccount: "",
     extraMappings: [],
   },
   accountMappingResults: [],
@@ -133,6 +134,9 @@ function normalizeTaxSgkAccountMappings(value = {}, accountingRules = {}) {
     ).trim(),
     sgdpAccount: String(source.sgdpAccount || "").trim(),
     unemploymentAccount: String(source.unemploymentAccount || "").trim(),
+    sgkIncentiveIncomeAccount: String(
+      source.sgkIncentiveIncomeAccount || ""
+    ).trim(),
     extraMappings: (source.extraMappings || []).map((row) => ({
       id: row.id || newId(),
       label: String(row.label || "").trim(),

@@ -132,7 +132,7 @@ export function detectDeclarationPaymentType(description = "") {
   if (/\bMUHSGK\b/.test(text)) return "MUHSGK";
   if (/\bSGK\b|\bSOSYAL\s+GUVENLIK\b/.test(text)) return "SGK";
   if (/\bKONAKLAMA\b/.test(text)) return "Konaklama Vergisi";
-  if (/\bTURIZM\s+PAYI\b|\bTURIZM\b/.test(text)) return "Turizm Payı";
+  if (/\bTURIZM\s+PAYI\b|\bTURIZM\s+VERGI/.test(text)) return "Turizm Payı";
   if (/\bDAMGA\s+VERGISI\b|\bDAMGA\b/.test(text)) return "Damga Vergisi";
   if (/\bKDV\b/.test(text)) return "KDV";
   return "";

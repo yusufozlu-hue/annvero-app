@@ -1,6 +1,7 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
 import { fetchCompanies, persistCompaniesToLocalStorage, broadcastCompaniesRefresh } from "@/src/utils/companies";
 import { deleteCompanyRecord, saveCompanyRecord } from "@/src/utils/companiesApi";
@@ -11,15 +12,30 @@ import {
   downloadEmployeeTemplate,
   parseEmployeeExcelFile,
 } from "@/src/utils/employeeExcel";
-import GibCredentialsSection from "@/app/dashboard/ofis-takip/resmi-bildirimler/components/GibCredentialsSection";
-import TicaretSicilCompanyPanel from "@/src/components/TicaretSicilCompanyPanel";
-import IkPersonelCompanyPanel from "@/src/components/IkPersonelCompanyPanel";
-import CompanyAccountingMappingsPanel from "./CompanyAccountingMappingsPanel";
 import {
   getAccountPlanForCompany,
   loadAccountPlansFromStorage,
 } from "@/src/utils/companyCenter";
 
+const GibCredentialsSection = dynamic(
+  () =>
+    import(
+      "@/app/dashboard/ofis-takip/resmi-bildirimler/components/GibCredentialsSection"
+    ),
+  { ssr: false }
+);
+const TicaretSicilCompanyPanel = dynamic(
+  () => import("@/src/components/TicaretSicilCompanyPanel"),
+  { ssr: false }
+);
+const IkPersonelCompanyPanel = dynamic(
+  () => import("@/src/components/IkPersonelCompanyPanel"),
+  { ssr: false }
+);
+const CompanyAccountingMappingsPanel = dynamic(
+  () => import("./CompanyAccountingMappingsPanel"),
+  { ssr: false }
+);
 const EMPLOYEE_PAGE_SIZE = 20;
 
 const COMPANY_TAB_SAVE_MESSAGES = {
