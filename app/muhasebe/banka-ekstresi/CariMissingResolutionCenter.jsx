@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CARI_RESOLUTION_FILTERS,
+  CARI_RESOLUTION_MODAL_WIDTH_CSS,
+  createCariResolutionPlanCache,
   filterCariResolutionGroups,
+  hydrateCariResolutionGroupCandidates,
   searchCariResolutionCandidates,
   isAccountAllowedForDirection,
   isExpenseAccountCode,
@@ -38,10 +41,22 @@ function GroupCandidateList({
   selectedCode,
   onSelect,
   vendorMessage,
+  loadingCandidates,
 }) {
+  if (loadingCandidates) {
+    return (
+      <p className="flex items-center gap-2 text-xs text-slate-400">
+        <span
+          className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-600 border-t-sky-300"
+          aria-hidden="true"
+        />
+        Adaylar hazırlanıyor…
+      </p>
+    );
+  }
   if (vendorMessage && (!candidates || candidates.length === 0)) {
     return (
-      <p className="rounded-lg border border-amber-700/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
+      <p className="break-words rounded-lg border border-amber-700/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
         {vendorMessage}
       </p>
     );
@@ -62,16 +77,20 @@ function GroupCandidateList({
             <button
               type="button"
               onClick={() => onSelect(c.code, c.name)}
-              className={`flex w-full items-start justify-between gap-2 rounded-lg border px-3 py-2 text-left text-xs transition ${
+              className={`flex w-full min-w-0 items-start justify-between gap-2 rounded-lg border px-3 py-2 text-left text-xs transition ${
                 active
                   ? "border-emerald-500/50 bg-emerald-950/40 text-emerald-50"
                   : "border-slate-700/80 bg-slate-950/50 text-slate-200 hover:border-slate-500"
               }`}
             >
-              <span>
+              <span className="min-w-0 flex-1">
                 <span className="font-semibold text-white">{c.code}</span>
-                <span className="mt-0.5 block text-slate-400">{c.name || "—"}</span>
-                <span className="mt-0.5 block text-slate-500">{c.reasonLabel}</span>
+                <span className="mt-0.5 block break-words text-slate-400">
+                  {c.name || "—"}
+                </span>
+                <span className="mt-0.5 block break-words text-slate-500">
+                  {c.reasonLabel}
+                </span>
               </span>
               <span className="shrink-0 text-slate-400">
                 {Number(c.confidence) > 0 ? `${c.confidence}%` : ""}
@@ -87,43 +106,105 @@ function GroupCandidateList({
 function GroupCard({
   group,
   companyPlans,
+  planCache,
   isResolved,
   onApply,
   applyingId,
 }) {
+  const cardRef = useRef(null);
+  const [hydratedGroup, setHydratedGroup] = useState(group);
+  const [hydrating, setHydrating] = useState(false);
   const [selectedCode, setSelectedCode] = useState(group.suggestedAccount || "");
   const [selectedName, setSelectedName] = useState(group.suggestedName || "");
   const [learnNext, setLearnNext] = useState(true);
   const [searchAll, setSearchAll] = useState(false);
   const [query, setQuery] = useState("");
   const [expandedSearch, setExpandedSearch] = useState(false);
+  const hydrateRequested = useRef(Boolean(group.candidatesReady));
+
+  const ensureCandidates = () => {
+    if (hydrateRequested.current || group.candidatesReady) return;
+    hydrateRequested.current = true;
+    setHydrating(true);
+    // UI’yı bloke etmeden bir tick sonra
+    setTimeout(() => {
+      const next = hydrateCariResolutionGroupCandidates(group, companyPlans, {
+        planCache,
+        limit: 5,
+      });
+      setHydratedGroup(next);
+      setSelectedCode((prev) => prev || next.suggestedAccount || "");
+      setSelectedName((prev) => prev || next.suggestedName || "");
+      setHydrating(false);
+    }, 0);
+  };
+
+  useEffect(() => {
+    if (isResolved || group.candidatesReady) return undefined;
+    const node = cardRef.current;
+    if (!node || typeof IntersectionObserver !== "function") {
+      ensureCandidates();
+      return undefined;
+    }
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          ensureCandidates();
+          obs.disconnect();
+        }
+      },
+      { root: null, rootMargin: "120px", threshold: 0.01 }
+    );
+    obs.observe(node);
+    return () => obs.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/visibility hydrate once per group id
+  }, [group.id, group.candidatesReady, isResolved]);
 
   const liveSearch = useMemo(() => {
     if (!expandedSearch && !query) {
       return {
-        candidates: group.candidates || [],
-        vendorMessage: group.vendorMessage || "",
+        candidates: hydratedGroup.candidates || [],
+        vendorMessage: hydratedGroup.vendorMessage || "",
       };
     }
     return searchCariResolutionCandidates(companyPlans, {
       query,
-      direction: group.direction,
-      description: group.samples?.[0] || group.partyName,
+      direction: hydratedGroup.direction,
+      description:
+        hydratedGroup.samples?.[0] || hydratedGroup.partyName,
       limit: expandedSearch ? 25 : 5,
-      foreignVendor: group.foreignVendor,
+      foreignVendor: hydratedGroup.foreignVendor,
       searchAll,
+      planCache,
     });
-  }, [companyPlans, expandedSearch, group, query, searchAll]);
+  }, [
+    companyPlans,
+    expandedSearch,
+    hydratedGroup,
+    planCache,
+    query,
+    searchAll,
+  ]);
 
   const canApply =
     Boolean(selectedCode) &&
     !isResolved &&
-    isAccountAllowedForDirection(selectedCode, group.direction) &&
-    !(group.foreignVendor && isExpenseAccountCode(selectedCode));
+    isAccountAllowedForDirection(selectedCode, hydratedGroup.direction) &&
+    !(
+      hydratedGroup.foreignVendor && isExpenseAccountCode(selectedCode)
+    );
+
+  const showCandidateLoading =
+    hydrating ||
+    (!hydratedGroup.candidatesReady &&
+      !expandedSearch &&
+      !query &&
+      !isResolved);
 
   return (
     <article
-      className={`min-w-0 rounded-2xl border px-4 py-4 ${
+      ref={cardRef}
+      className={`min-w-0 overflow-hidden rounded-2xl border px-4 py-4 sm:px-5 ${
         isResolved
           ? "border-emerald-800/50 bg-emerald-950/20"
           : "border-slate-800/80 bg-slate-950/50"
@@ -132,13 +213,13 @@ function GroupCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="truncate text-base font-semibold text-white">
-              {group.partyName || "Karşı taraf"}
+            <h3 className="break-words text-base font-semibold text-white sm:text-lg">
+              {hydratedGroup.partyName || "Karşı taraf"}
             </h3>
             <span className="rounded-md border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
-              {group.directionLabel}
+              {hydratedGroup.directionLabel}
             </span>
-            {group.foreignVendor ? (
+            {hydratedGroup.foreignVendor ? (
               <span className="rounded-md border border-violet-700/50 bg-violet-950/40 px-2 py-0.5 text-[11px] text-violet-100">
                 Yabancı satıcı
               </span>
@@ -154,43 +235,47 @@ function GroupCard({
             )}
           </div>
           <p className="mt-1 text-sm text-slate-300">
-            {group.count} işlem · Toplam {formatMoney(group.totalAmount)} TL
-            {group.dateFrom
-              ? ` · ${group.dateFrom}${
-                  group.dateTo && group.dateTo !== group.dateFrom
-                    ? ` – ${group.dateTo}`
+            {hydratedGroup.count} işlem · Toplam{" "}
+            {formatMoney(hydratedGroup.totalAmount)} TL
+            {hydratedGroup.dateFrom
+              ? ` · ${hydratedGroup.dateFrom}${
+                  hydratedGroup.dateTo &&
+                  hydratedGroup.dateTo !== hydratedGroup.dateFrom
+                    ? ` – ${hydratedGroup.dateTo}`
                     : ""
                 }`
               : ""}
           </p>
           <ul className="mt-2 space-y-1 text-xs text-slate-400">
-            {(group.samples || []).slice(0, 3).map((s) => (
-              <li key={s} className="truncate">
+            {(hydratedGroup.samples || []).slice(0, 3).map((s) => (
+              <li key={s} className="break-words">
                 {s}
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-xs text-slate-500">
-            Güven: {group.confidenceLabel}
-            {group.suggestedAccount
-              ? ` · Öneri: ${group.suggestedAccount}`
+          <p className="mt-2 break-words text-xs text-slate-500">
+            Güven: {hydratedGroup.confidenceLabel}
+            {hydratedGroup.suggestedAccount
+              ? ` · Öneri: ${hydratedGroup.suggestedAccount}`
               : ""}
           </p>
         </div>
       </div>
 
       {!isResolved ? (
-        <div className="mt-4 grid gap-3 lg:grid-cols-[1.2fr_1fr]">
-          <div>
-            <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+          <div className="min-w-0">
+            <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
               <input
                 type="search"
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
                   setExpandedSearch(true);
+                  ensureCandidates();
                 }}
-                placeholder="Hesap kodu, ad, unvan ara…"
+                onFocus={() => ensureCandidates()}
+                placeholder="Hesap kodu, ad, unvan, IBAN ara…"
                 className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-slate-500"
               />
               <button
@@ -198,6 +283,7 @@ function GroupCard({
                 onClick={() => {
                   setSearchAll((v) => !v);
                   setExpandedSearch(true);
+                  ensureCandidates();
                 }}
                 className="rounded-lg border border-slate-700 px-2.5 py-2 text-[11px] font-semibold text-slate-300 hover:bg-slate-900"
               >
@@ -205,25 +291,25 @@ function GroupCard({
               </button>
             </div>
             <GroupCandidateList
-              candidates={(liveSearch.candidates || []).map((c) => ({
-                ...c,
-                confidenceLabel: undefined,
-              }))}
+              candidates={liveSearch.candidates || []}
               selectedCode={selectedCode}
               onSelect={(code, name) => {
                 setSelectedCode(code);
                 setSelectedName(name || "");
               }}
-              vendorMessage={liveSearch.vendorMessage || group.vendorMessage}
+              vendorMessage={
+                liveSearch.vendorMessage || hydratedGroup.vendorMessage
+              }
+              loadingCandidates={showCandidateLoading}
             />
           </div>
 
-          <div className="flex flex-col gap-2 rounded-xl border border-slate-800/80 bg-slate-950/60 p-3">
+          <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-slate-800/80 bg-slate-950/60 p-3 sm:p-4">
             <p className="text-xs text-slate-400">Seçilen hesap</p>
-            <p className="text-sm font-semibold text-white">
+            <p className="break-words text-sm font-semibold text-white">
               {selectedCode || "—"}
               {selectedName ? (
-                <span className="ml-2 font-normal text-slate-400">
+                <span className="mt-1 block font-normal break-words text-slate-400">
                   {selectedName}
                 </span>
               ) : null}
@@ -239,20 +325,20 @@ function GroupCard({
             </label>
             <button
               type="button"
-              disabled={!canApply || applyingId === group.id}
+              disabled={!canApply || applyingId === hydratedGroup.id}
               onClick={() =>
                 onApply({
-                  group,
+                  group: hydratedGroup,
                   accountCode: selectedCode,
                   accountName: selectedName,
                   learn: learnNext,
                 })
               }
-              className="mt-1 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-1 w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {applyingId === group.id
+              {applyingId === hydratedGroup.id
                 ? "Uygulanıyor…"
-                : `Seçilen Hesabı Gruba Uygula (${group.count})`}
+                : `Seçilen Hesabı Gruba Uygula (${hydratedGroup.count})`}
             </button>
             <p className="text-[11px] text-slate-500">
               Onayınız olmadan hesap uygulanmaz. Gelen/giden yönü korunur.
@@ -283,9 +369,10 @@ export default function CariMissingResolutionCenter({
   const [filter, setFilter] = useState(CARI_RESOLUTION_FILTERS.REMAINING);
   const [query, setQuery] = useState("");
 
-  const groups = useMemo(
-    () => snapshot?.groups || [],
-    [snapshot?.groups]
+  const groups = useMemo(() => snapshot?.groups || [], [snapshot?.groups]);
+  const planCache = useMemo(
+    () => snapshot?.planCache || createCariResolutionPlanCache(companyPlans),
+    [snapshot?.planCache, companyPlans]
   );
   const resolvedSet = useMemo(
     () =>
@@ -325,17 +412,25 @@ export default function CariMissingResolutionCenter({
 
   if (!open) return null;
 
+  const metric = (value) => {
+    if (loading) return "—";
+    if (value == null || value === "") return "—";
+    return value;
+  };
+
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-stretch justify-center bg-black/70 p-2 sm:p-4"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-2 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="cari-resolution-title"
     >
-      <div className="flex h-full w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+      <div
+        className={`flex w-full flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl ${CARI_RESOLUTION_MODAL_WIDTH_CSS}`}
+      >
         <header className="shrink-0 border-b border-slate-800 px-4 py-4 sm:px-6">
           <div className="flex items-start justify-between gap-3">
-            <div>
+            <div className="min-w-0">
               <h2
                 id="cari-resolution-title"
                 className="text-xl font-semibold text-white sm:text-2xl"
@@ -343,13 +438,15 @@ export default function CariMissingResolutionCenter({
                 Eksik Hesap Çözüm Merkezi
               </h2>
               <p className="mt-1 text-sm text-slate-400">
-                Cari bulunamayan işlemleri grup halinde eşleştirin.
+                {loading
+                  ? "Cari grupları hazırlanıyor…"
+                  : "Cari bulunamayan işlemleri grup halinde eşleştirin."}
               </p>
             </div>
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-900"
+              className="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-900"
             >
               Kapat
             </button>
@@ -361,7 +458,7 @@ export default function CariMissingResolutionCenter({
                 Toplam eksik
               </p>
               <p className="text-lg font-semibold text-white">
-                {loading ? "…" : snapshot?.totalMissing ?? "—"}
+                {metric(snapshot?.totalMissing)}
               </p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2">
@@ -369,7 +466,7 @@ export default function CariMissingResolutionCenter({
                 Cari bulunamadı
               </p>
               <p className="text-lg font-semibold text-rose-200">
-                {loading ? "…" : snapshot?.cariMissingCount ?? "—"}
+                {metric(snapshot?.cariMissingCount)}
               </p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2">
@@ -377,7 +474,7 @@ export default function CariMissingResolutionCenter({
                 Cari grup
               </p>
               <p className="text-lg font-semibold text-white">
-                {loading ? "…" : snapshot?.groupCount ?? "—"}
+                {metric(snapshot?.groupCount)}
               </p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2">
@@ -385,7 +482,7 @@ export default function CariMissingResolutionCenter({
                 Çözülen grup
               </p>
               <p className="text-lg font-semibold text-emerald-200">
-                {resolvedCount}
+                {loading ? "—" : resolvedCount}
               </p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2">
@@ -393,13 +490,15 @@ export default function CariMissingResolutionCenter({
                 Kalan grup
               </p>
               <p className="text-lg font-semibold text-amber-100">
-                {loading ? "…" : remainingGroups}
+                {metric(
+                  snapshot?.groupCount != null ? remainingGroups : null
+                )}
               </p>
             </div>
           </div>
 
           {lastApplyMessage ? (
-            <p className="mt-3 rounded-xl border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-100">
+            <p className="mt-3 break-words rounded-xl border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-100">
               {lastApplyMessage}
             </p>
           ) : null}
@@ -435,7 +534,7 @@ export default function CariMissingResolutionCenter({
           ) : null}
         </header>
 
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 sm:px-6">
+        <div className="min-h-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto px-4 py-4 sm:px-6">
           {loading ? (
             <div className="space-y-3" aria-busy="true" aria-live="polite">
               <p className="flex items-center gap-2 text-sm text-slate-300">
@@ -461,7 +560,9 @@ export default function CariMissingResolutionCenter({
               <p className="text-sm font-semibold text-rose-100">
                 Gruplar hazırlanamadı
               </p>
-              <p className="mt-1 text-sm text-rose-100/80">{error}</p>
+              <p className="mt-1 break-words text-sm text-rose-100/80">
+                {error}
+              </p>
               <button
                 type="button"
                 onClick={onRetry}
@@ -477,9 +578,10 @@ export default function CariMissingResolutionCenter({
           ) : (
             visible.map((group) => (
               <GroupCard
-                key={group.id}
+                key={`${group.id}:${group.candidatesReady ? "1" : "0"}:${group.suggestedAccount || ""}`}
                 group={group}
                 companyPlans={companyPlans}
+                planCache={planCache}
                 isResolved={resolvedSet.has(group.id)}
                 onApply={onApplyGroup}
                 applyingId={applyingId}
@@ -492,7 +594,7 @@ export default function CariMissingResolutionCenter({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl border border-slate-600 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-800"
+            className="w-full rounded-xl border border-slate-600 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-800 sm:w-auto"
           >
             Daha Sonra İncele
           </button>
