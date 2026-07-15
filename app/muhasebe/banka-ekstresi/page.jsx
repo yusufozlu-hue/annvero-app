@@ -366,6 +366,8 @@ export default function BankaParserPage() {
     message: "",
   });
   const [elapsedSec, setElapsedSec] = useState(0);
+  /** Normal kullanıcı: yalnızca "Eksik Hesapları İncele" ile Luca önizleme açılır */
+  const [showUserLucaReview, setShowUserLucaReview] = useState(false);
   const manualDetailsRef = useRef(null);
 
   const { isManagementUser } = useUserRole();
@@ -1146,6 +1148,7 @@ export default function BankaParserPage() {
     setMissingHesapReport(report);
     setPreviewQuickFilter("missingAccount");
     setActiveStep("excel");
+    setShowUserLucaReview(true);
     showToast(
       report.missingCount
         ? `${report.missingCount} eksik hesap satırı filtrelendi.`
@@ -1628,6 +1631,7 @@ export default function BankaParserPage() {
     setCoreRowsProcessed(0);
     setLastTimings(null);
     setPipelineResult(null);
+    setShowUserLucaReview(false);
     unrecognizedCountRef.current = 0;
     resetPipelineUiState();
     if (resetParserJob) parserJob.reset();
@@ -3068,6 +3072,7 @@ export default function BankaParserPage() {
           ) : null}
         </div>
 
+        {/* Gelişmiş / Manuel Kontrol: yalnızca servis/debug — normal kullanıcıda hiç mount edilmez */}
         {showBankServiceUi ? (
         <details
           ref={manualDetailsRef}
@@ -3562,7 +3567,7 @@ export default function BankaParserPage() {
           </div>
         ) : null}
 
-        {selectedCompanyId && !selectedBankLucaReady ? (
+        {showBankServiceUi && selectedCompanyId && !selectedBankLucaReady ? (
           <div className="rounded-xl border border-amber-700/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">
             <p className="font-semibold">
               {selectedBank} için Luca 102 alt hesabı tanımlı değil
@@ -3588,7 +3593,7 @@ export default function BankaParserPage() {
           </div>
         ) : null}
 
-        {activeBankCount === 0 && selectedCompanyId ? (
+        {showBankServiceUi && activeBankCount === 0 && selectedCompanyId ? (
           <div className="rounded-xl border border-amber-700/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">
             Firma banka hesabı (102) tanımlı değil. Vakıfbank için Luca alt hesabını
             firma kartına ekleyin; aksi halde banka bacağı &quot;102&quot; kalabilir.
@@ -3766,10 +3771,12 @@ export default function BankaParserPage() {
           onSubmit={handleSaveKnowledgeTeach}
         />
 
-        {(lucaReady || showBankServiceUi) ? (
+        {showBankServiceUi || (showUserLucaReview && lucaReady) ? (
         <div className={`min-w-0 ${annveroCardClass}`}>
           <h2 className="mb-6 text-xl font-semibold text-white sm:text-2xl">
-            {showBankServiceUi ? "StandardLucaRow Ön İzleme" : "Luca satır önizleme"}
+            {showBankServiceUi
+              ? "StandardLucaRow Ön İzleme"
+              : "Eksik hesap satırları"}
           </h2>
 
           {standardLucaRows.length === 0 ? (
@@ -3782,7 +3789,7 @@ export default function BankaParserPage() {
             </p>
           ) : (
             <>
-              {previewSummary ? (
+              {showBankServiceUi && previewSummary ? (
                 <div className="mb-4 grid grid-cols-2 gap-2 text-xs text-gray-300 sm:grid-cols-3 lg:grid-cols-6">
                   <div className="rounded-xl border border-slate-800/80 bg-slate-950/60 px-3 py-2.5 shadow-sm shadow-black/10">
                     <div className="text-gray-500">Toplam hareket</div>
@@ -3906,11 +3913,17 @@ export default function BankaParserPage() {
                     Sonraki sayfa (+{PREVIEW_PAGE_SIZE})
                   </button>
                 ) : null}
-                <p className="text-sm text-gray-400">
-                  Toplam {totalLucaCount} Luca satırı.
-                  {` Ekranda sayfa ${lucaPage + 1}: ${displayedStandardLucaRows.length}/${filteredStandardLucaRows.length}.`}
-                  {" Excel, hazır Luca satırlarının tamamından üretilir."}
-                </p>
+                {showBankServiceUi ? (
+                  <p className="text-sm text-gray-400">
+                    Toplam {totalLucaCount} Luca satırı.
+                    {` Ekranda sayfa ${lucaPage + 1}: ${displayedStandardLucaRows.length}/${filteredStandardLucaRows.length}.`}
+                    {" Excel, hazır Luca satırlarının tamamından üretilir."}
+                  </p>
+                ) : (
+                  <p className="text-sm text-gray-400">
+                    {filteredStandardLucaRows.length} eksik hesap satırı listeleniyor.
+                  </p>
+                )}
               </div>
             </>
           )}
