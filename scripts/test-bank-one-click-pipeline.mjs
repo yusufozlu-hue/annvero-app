@@ -239,7 +239,7 @@ test("pipeline requires explicit bank — empty selectedBank blocks start", () =
   );
 });
 
-test("service mode visibility: admin or dev+debug only", () => {
+test("service mode visibility: only with explicit debug flag", () => {
   assert.equal(
     isBankParserServiceModeVisible({
       isManagementUser: false,
@@ -248,13 +248,14 @@ test("service mode visibility: admin or dev+debug only", () => {
     }),
     false
   );
+  // Yönetim kullanıcı + bayrak yok → ürün ekranı (accordion yok)
   assert.equal(
     isBankParserServiceModeVisible({
       isManagementUser: true,
       nodeEnv: "production",
       debugFlag: false,
     }),
-    true
+    false
   );
   assert.equal(
     isBankParserServiceModeVisible({
@@ -272,6 +273,15 @@ test("service mode visibility: admin or dev+debug only", () => {
     }),
     true
   );
+  assert.equal(
+    isBankParserServiceModeVisible({
+      isManagementUser: true,
+      nodeEnv: "production",
+      debugFlag: true,
+    }),
+    true
+  );
+  // Production’da bayrak + normal kullanıcı → kapalı (güvenlik)
   assert.equal(
     isBankParserServiceModeVisible({
       isManagementUser: false,

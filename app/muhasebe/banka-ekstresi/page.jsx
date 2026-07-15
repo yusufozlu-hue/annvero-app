@@ -1185,6 +1185,7 @@ export default function BankaParserPage() {
       {
         companyPlans,
         selectedBank,
+        selectedCompany,
       },
       { initialCandidateGroups }
     );
@@ -1299,11 +1300,7 @@ export default function BankaParserPage() {
     setCariResolutionError("");
     setPreviewQuickFilter("missingAccount");
     setActiveStep("excel");
-    if (showBankServiceUi) {
-      setShowUserLucaReview(true);
-    } else {
-      setShowUserLucaReview(false);
-    }
+    setShowUserLucaReview(false);
     // 2) Paint sonrası gruplar (+ ilk 30 aday)
     loadCariResolutionGroupsAsync();
   };
@@ -3280,6 +3277,7 @@ export default function BankaParserPage() {
             detail={pipelineProgress.detail}
             percent={pipelineProgress.percent}
             elapsedSeconds={elapsedSec}
+            showTiming={showBankServiceUi}
             processed={
               showBankServiceUi ? pipelineProgress.processed : null
             }
@@ -3332,6 +3330,7 @@ export default function BankaParserPage() {
               onGoToLucaProducer={handleGoToLucaProducer}
               secondaryBtnClass={annveroBtnSecondary}
               isReviewMissingLoading={cariResolutionLoading}
+              showServiceMeta={showBankServiceUi}
             />
           ) : null}
 
@@ -3355,11 +3354,12 @@ export default function BankaParserPage() {
           ) : null}
         </div>
 
-        {/* Gelişmiş / Manuel Kontrol: yalnızca servis/debug — normal kullanıcıda hiç mount edilmez */}
+        {/* Gelişmiş / Manuel Kontrol — showBankServiceUi false iken hiç mount edilmez */}
         {showBankServiceUi ? (
         <details
           ref={manualDetailsRef}
           className="min-w-0 rounded-2xl border border-slate-800/80 bg-slate-950/40 px-4 py-3"
+          data-testid="bank-advanced-manual-control"
         >
           <summary className="cursor-pointer select-none text-sm font-semibold text-slate-200">
             Gelişmiş / Manuel Kontrol
@@ -4079,27 +4079,25 @@ export default function BankaParserPage() {
           loading={cariResolutionLoading}
           error={cariResolutionError}
           onRetry={handleRetryCariResolutionLoad}
+          showServiceMeta={showBankServiceUi}
         />
 
-        {showBankServiceUi || (showUserLucaReview && lucaReady) ? (
+        {/* Teknik Luca önizleme yalnızca servis modunda — normal kullanıcıda hiç yok */}
+        {showBankServiceUi ? (
         <div className={`min-w-0 ${annveroCardClass}`}>
           <h2 className="mb-6 text-xl font-semibold text-white sm:text-2xl">
-            {showBankServiceUi
-              ? "StandardLucaRow Ön İzleme"
-              : "Eksik hesap satırları"}
+            StandardLucaRow Ön İzleme
           </h2>
 
           {standardLucaRows.length === 0 ? (
             <p className="text-gray-400">
-              {showBankServiceUi
-                ? totalMovementCount > 0
-                  ? "Hareket önizlemesi hazır. Luca için “Luca Satırlarını Hazırla” butonuna basın."
-                  : "Henüz StandardLucaRow oluşturulmadı."
-                : "Henüz Luca satırı yok."}
+              {totalMovementCount > 0
+                ? "Hareket önizlemesi hazır. Luca için “Luca Satırlarını Hazırla” butonuna basın."
+                : "Henüz StandardLucaRow oluşturulmadı."}
             </p>
           ) : (
             <>
-              {showBankServiceUi && previewSummary ? (
+              {previewSummary ? (
                 <div className="mb-4 grid grid-cols-2 gap-2 text-xs text-gray-300 sm:grid-cols-3 lg:grid-cols-6">
                   <div className="rounded-xl border border-slate-800/80 bg-slate-950/60 px-3 py-2.5 shadow-sm shadow-black/10">
                     <div className="text-gray-500">Toplam hareket</div>
@@ -4229,11 +4227,7 @@ export default function BankaParserPage() {
                     {` Ekranda sayfa ${lucaPage + 1}: ${displayedStandardLucaRows.length}/${filteredStandardLucaRows.length}.`}
                     {" Excel, hazır Luca satırlarının tamamından üretilir."}
                   </p>
-                ) : (
-                  <p className="text-sm text-gray-400">
-                    {filteredStandardLucaRows.length} eksik hesap satırı listeleniyor.
-                  </p>
-                )}
+                ) : null}
               </div>
             </>
           )}

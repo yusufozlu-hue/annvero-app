@@ -6,12 +6,15 @@ import assert from "node:assert/strict";
 import {
   buildCariResolutionGroups,
   createCariResolutionPlanCache,
+  createOwnAccountVirmanContext,
+  evaluateOwnAccountVirmanTransfer,
   filterCariResolutionGroups,
   hydrateCariResolutionGroupCandidates,
   isAccountAllowedForDirection,
   isExpenseAccountCode,
   isForeignVendorDescription,
   isCariMissingRow,
+  isOwnAccountVirmanTransfer,
   preferredCariPrefixesForDirection,
   searchCariResolutionCandidates,
   scheduleAfterPaint,
@@ -257,6 +260,168 @@ test("filter remaining/foreign", () => {
   });
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].id, "2");
+});
+
+const MARE_OWN_IBAN = "TR330001500158000000000001";
+const MARE_OTHER_OWN_IBAN = "TR440001000123000000000002";
+const FOREIGN_IBAN = "TR110006400000011112223344";
+
+function mareCompany() {
+  return {
+    companyName: "MARE RESORT OTEL AS",
+    bankAccounts: [
+      {
+        bankName: "VAKIFBANK",
+        iban: MARE_OWN_IBAN,
+        accountNumber: "1580000001",
+        lucaAccountCode: "102.01.001",
+        isActive: true,
+      },
+      {
+        bankName: "ZIRAAT",
+        iban: MARE_OTHER_OWN_IBAN,
+        accountNumber: "1230000002",
+        lucaAccountCode: "102.02.001",
+        isActive: true,
+      },
+    ],
+    creditCards: [],
+  };
+}
+
+function cariLikeRow(overrides = {}) {
+  return {
+    id: "x1",
+    hesapKodu: "",
+    riskDurumu: "HESAP_EKSIK",
+    transactionType: "GIDEN_HAVALE",
+    cariRequired: true,
+    missingHesapCategory: "Cari bulunamadı",
+    detayAciklama: "GÖND. HVL / DIS TEDARIKCI",
+    borc: 100,
+    alacak: 0,
+    fisTarihi: "2025-01-01",
+    analysisKey: "dis|CIKIS",
+    ...overrides,
+  };
+}
+
+test("own title + other own IBAN → kesin virman, cari grupta yok", () => {
+  const company = mareCompany();
+  const ctx = { selectedCompany: company, selectedBank: "VAKIFBANK" };
+  const row = cariLikeRow({
+    id: "own1",
+    detayAciklama: `GÖND. HVL / MARE RESORT OTEL AS ${MARE_OTHER_OWN_IBAN}`,
+    analysisKey: "mare-own|CIKIS",
+  });
+  assert.equal(isOwnAccountVirmanTransfer(row, ctx), true);
+  assert.equal(isCariMissingRow(row, ctx), false);
+  const snap = buildCariResolutionGroups([row], ctx, {
+    initialCandidateGroups: false,
+  });
+  assert.equal(snap.groupCount, 0);
+  const v = evaluateOwnAccountVirmanTransfer(row, ctx);
+  assert.ok(v.suggested102.startsWith("102"));
+  assert.equal(v.definiteEvidence, true);
+});
+
+test("own title + foreign IBAN → not auto virman", () => {
+  const company = mareCompany();
+  const ctx = { selectedCompany: company };
+  const row = cariLikeRow({
+    id: "cust1",
+    detayAciklama: `GLN. HVL / MARE RESORT OTEL AS ${FOREIGN_IBAN}`,
+    transactionType: "GELEN_HAVALE",
+    analysisKey: "mare-cust|GIRIS",
+  });
+  assert.equal(isOwnAccountVirmanTransfer(row, ctx), false);
+  assert.equal(isCariMissingRow(row, ctx), true);
+});
+
+test("BANKA_ICI_VIRMAN tipi + karşı 102 yok → aday, cari değil", () => {
+  const company = mareCompany();
+  const ctx = { selectedCompany: company, selectedBank: "VAKIFBANK" };
+  const row = cariLikeRow({
+    id: "v1",
+    transactionType: "BANKA_ICI_VIRMAN",
+    cariRequired: false,
+    virmanCandidate: true,
+    missingHesapCategory: "",
+    detayAciklama: "VIRMAN HESAPLAR ARASI",
+    kontrolNotu: "Virman adayı — karşı banka hesabı tanımlanmalı",
+    analysisKey: "virman|CIKIS",
+  });
+  assert.equal(isOwnAccountVirmanTransfer(row, ctx), false);
+  assert.equal(isCariMissingRow(row, ctx), false);
+});
+
+test("other own bank IBAN → kesin 102 hedefi", () => {
+  const company = mareCompany();
+  const ctx = {
+    selectedCompany: company,
+    selectedBank: "VAKIFBANK",
+    ownAccountContext: createOwnAccountVirmanContext(company, "VAKIFBANK"),
+  };
+  const row = cariLikeRow({
+    detayAciklama: `GÖND / MARE RESORT OTEL ${MARE_OTHER_OWN_IBAN}`,
+  });
+  const v = evaluateOwnAccountVirmanTransfer(row, ctx);
+  assert.equal(v.definiteEvidence, true);
+  assert.equal(v.suggested102, "102.02.001");
+  assert.equal(isOwnAccountVirmanTransfer(row, ctx), true);
+});
+
+test("statement own IBAN alone is not virman", () => {
+  const company = mareCompany();
+  const ctx = {
+    selectedCompany: company,
+    selectedBank: "VAKIFBANK",
+    ownAccountContext: createOwnAccountVirmanContext(company, "VAKIFBANK"),
+  };
+  const row = cariLikeRow({
+    detayAciklama: "GÖND / DIS TEDARIKCI fatura bedeli",
+    iban: MARE_OWN_IBAN,
+  });
+  const v = evaluateOwnAccountVirmanTransfer(row, ctx);
+  assert.equal(v.isOwnVirman, false);
+  assert.equal(v.isVirmanCandidate, false);
+});
+
+test("description statement IBAN + unvan → virman adayı (kesin değil)", () => {
+  const company = mareCompany();
+  const ctx = {
+    selectedCompany: company,
+    selectedBank: "VAKIFBANK",
+    ownAccountContext: createOwnAccountVirmanContext(company, "VAKIFBANK"),
+  };
+  const row = cariLikeRow({
+    detayAciklama: `GÖND / MARE RESORT OTEL ${MARE_OWN_IBAN}`,
+    virmanCandidate: true,
+    kontrolNotu: "Virman adayı — karşı banka hesabı tanımlanmalı",
+  });
+  const v = evaluateOwnAccountVirmanTransfer(row, ctx);
+  assert.equal(isOwnAccountVirmanTransfer(row, ctx), false);
+  assert.equal(v.isVirmanCandidate, true);
+  assert.equal(isCariMissingRow(row, ctx), false);
+});
+
+test("same-name customer with foreign IBAN not excluded", () => {
+  const company = mareCompany();
+  const ctx = { selectedCompany: company };
+  const row = cariLikeRow({
+    id: "same-name",
+    transactionType: "GIDEN_HAVALE",
+    detayAciklama: `GÖND. HVL / MARE RESORT OTEL TEDARIK ${FOREIGN_IBAN}`,
+    analysisKey: "mare-supplier|CIKIS",
+  });
+  // Unvan benzer + yabancı IBAN → cari kalır
+  assert.equal(isOwnAccountVirmanTransfer(row, ctx), false);
+  assert.equal(isCariMissingRow(row, ctx), true);
+  const snap = buildCariResolutionGroups([row], ctx, {
+    initialCandidateGroups: false,
+  });
+  assert.equal(snap.groupCount, 1);
+  assert.equal(snap.virmanDivertedCount, 0);
 });
 
 test("double-click / already-open ignored", () => {

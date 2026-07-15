@@ -186,7 +186,12 @@ function GroupCard({
     searchAll,
   ]);
 
+  const isVirmanCandidateCard = Boolean(
+    group.virmanCandidate || hydratedGroup.virmanCandidate
+  );
+
   const canApply =
+    !isVirmanCandidateCard &&
     Boolean(selectedCode) &&
     !isResolved &&
     isAccountAllowedForDirection(selectedCode, hydratedGroup.direction) &&
@@ -262,7 +267,20 @@ function GroupCard({
         </div>
       </div>
 
-      {!isResolved ? (
+      {!isResolved && isVirmanCandidateCard ? (
+        <div className="mt-4 rounded-xl border border-amber-700/40 bg-amber-950/25 px-4 py-3 text-sm text-amber-50">
+          <p className="font-semibold">
+            Virman adayı — karşı banka hesabı tanımlanmalı
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-amber-100/85">
+            Aktif firmanın 120/320 cari hesabı burada uygulanmaz. Firma kartına
+            karşı banka hesabını (IBAN + Luca 102) ekleyip ekstreyi yeniden
+            işlediğinizde 102↔102 kesin virman çözülür.
+          </p>
+        </div>
+      ) : null}
+
+      {!isResolved && !isVirmanCandidateCard ? (
         <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
           <div className="min-w-0">
             <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2">
@@ -365,11 +383,16 @@ export default function CariMissingResolutionCenter({
   loading = false,
   error = "",
   onRetry,
+  showServiceMeta = false,
 }) {
   const [filter, setFilter] = useState(CARI_RESOLUTION_FILTERS.REMAINING);
   const [query, setQuery] = useState("");
 
   const groups = useMemo(() => snapshot?.groups || [], [snapshot?.groups]);
+  const virmanCandidateGroups = useMemo(
+    () => snapshot?.virmanCandidateGroups || [],
+    [snapshot?.virmanCandidateGroups]
+  );
   const planCache = useMemo(
     () => snapshot?.planCache || createCariResolutionPlanCache(companyPlans),
     [snapshot?.planCache, companyPlans]
@@ -391,15 +414,20 @@ export default function CariMissingResolutionCenter({
     [groups, resolvedSet]
   );
 
-  const visible = useMemo(
-    () =>
-      filterCariResolutionGroups(groups, {
-        filter,
+  const visible = useMemo(() => {
+    if (filter === CARI_RESOLUTION_FILTERS.VIRMAN_CANDIDATES) {
+      return filterCariResolutionGroups(virmanCandidateGroups, {
+        filter: CARI_RESOLUTION_FILTERS.ALL,
         query,
         resolvedIds: resolvedSet,
-      }),
-    [groups, filter, query, resolvedSet]
-  );
+      });
+    }
+    return filterCariResolutionGroups(groups, {
+      filter,
+      query,
+      resolvedIds: resolvedSet,
+    });
+  }, [groups, virmanCandidateGroups, filter, query, resolvedSet]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -442,6 +470,19 @@ export default function CariMissingResolutionCenter({
                   ? "Cari grupları hazırlanıyor…"
                   : "Cari bulunamayan işlemleri grup halinde eşleştirin."}
               </p>
+              {Number(snapshot?.virmanCandidateCount || 0) > 0 ? (
+                <p className="mt-1 text-xs text-amber-200/90">
+                  Virman adayı: {snapshot.virmanCandidateCount} satır — karşı banka
+                  hesabı firma kartında tanımlanmalı (120/320 uygulanmaz).
+                </p>
+              ) : null}
+              {showServiceMeta &&
+              !loading &&
+              Number(snapshot?.virmanDivertedCount || 0) > 0 ? (
+                <p className="mt-1 text-xs text-slate-500">
+                  Kesin virman (102↔102): {snapshot.virmanDivertedCount} satır
+                </p>
+              ) : null}
             </div>
             <button
               type="button"
@@ -512,6 +553,7 @@ export default function CariMissingResolutionCenter({
                   [CARI_RESOLUTION_FILTERS.INCOMING, "Gelen cariler"],
                   [CARI_RESOLUTION_FILTERS.OUTGOING, "Giden cariler"],
                   [CARI_RESOLUTION_FILTERS.FOREIGN, "Yabancı satıcılar"],
+                  [CARI_RESOLUTION_FILTERS.VIRMAN_CANDIDATES, "Virman adayları"],
                   [CARI_RESOLUTION_FILTERS.RESOLVED, "Çözülenler"],
                 ].map(([id, label]) => (
                   <FilterChip

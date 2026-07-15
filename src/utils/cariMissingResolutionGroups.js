@@ -14,6 +14,7 @@ import {
   CARI_REQUIRED_TYPES,
   PERSONEL_REQUIRED_TYPES,
   isVergiSgkType,
+  isVirmanType,
 } from "@/src/utils/bankTransactionType";
 import {
   classifyMissingHesapCategory,
@@ -25,6 +26,25 @@ import {
   normalizeParserText,
   resolveLucaRowBankDirection,
 } from "@/src/utils/textNormalize";
+import {
+  extractIbansFromText,
+  createOwnAccountVirmanContext,
+  evaluateOwnAccountVirmanTransfer,
+  isOwnAccountVirmanTransfer,
+  isVirmanCandidateTransfer,
+  BANK_INTERNAL_TRANSFER,
+  VIRMAN_CANDIDATE_LABEL,
+} from "@/src/utils/bankInternalTransfer";
+
+export {
+  extractIbansFromText,
+  createOwnAccountVirmanContext,
+  evaluateOwnAccountVirmanTransfer,
+  isOwnAccountVirmanTransfer,
+  isVirmanCandidateTransfer,
+  BANK_INTERNAL_TRANSFER,
+  VIRMAN_CANDIDATE_LABEL,
+};
 
 export const FOREIGN_VENDOR_RE =
   /\b(GOOGLE|META|FACEBOOK|MICROSOFT|BOOKING|EXPEDIA|AIRBNB|TRIPADVISOR|ADWORDS)\b/i;
@@ -36,6 +56,7 @@ export const CARI_RESOLUTION_FILTERS = {
   FOREIGN: "foreign",
   RESOLVED: "resolved",
   REMAINING: "remaining",
+  VIRMAN_CANDIDATES: "virman_candidates",
 };
 
 /** İlk açılışta peşinen aday üretilecek grup sayısı */
@@ -65,8 +86,12 @@ export function isForeignVendorDescription(text = "") {
   return FOREIGN_VENDOR_RE.test(normalizeParserText(text));
 }
 
-/** Personel / vergi satırlarını cari çözüm grubundan çıkar */
-export function isExcludedFromCariResolution(row = {}) {
+/** Personel / vergi / finans (+ kesin kendi hesap virman) satırlarını cari çözüm grubundan çıkar */
+export function isExcludedFromCariResolution(
+  row = {},
+  context = {},
+  { skipOwnVirman = false } = {}
+) {
   const type = String(row.transactionType || "");
   if (PERSONEL_REQUIRED_TYPES.has(type)) return true;
   if (isVergiSgkType(type)) return true;
@@ -77,8 +102,16 @@ export function isExcludedFromCariResolution(row = {}) {
     cat === MISSING_HESAP_CATEGORY.VERGI_SGK ||
     cat === MISSING_HESAP_CATEGORY.POS_KOMISYON ||
     cat === MISSING_HESAP_CATEGORY.FINAN_ISLEM ||
+    cat === MISSING_HESAP_CATEGORY.VIRMAN_HESAP_EKSIK ||
     cat === MISSING_HESAP_CATEGORY.CEK_HESAP_EKSIK ||
     cat === MISSING_HESAP_CATEGORY.KASA_HESAP_EKSIK
+  ) {
+    return true;
+  }
+  // Virman adayları normal cari listesinde yok — ayrı kova
+  if (
+    cat === MISSING_HESAP_CATEGORY.VIRMAN_ADAY ||
+    isVirmanCandidateTransfer(row, context)
   ) {
     return true;
   }
@@ -91,12 +124,19 @@ export function isExcludedFromCariResolution(row = {}) {
       return type.includes("MAAS") || type.includes("PERSONEL");
     }
   }
+  if (!skipOwnVirman && isOwnAccountVirmanTransfer(row, context)) return true;
   return false;
 }
 
-export function isCariMissingRow(row = {}) {
+export function isCariMissingRow(
+  row = {},
+  context = {},
+  { skipOwnVirman = false } = {}
+) {
   if (!isMissingHesapRow(row)) return false;
-  if (isExcludedFromCariResolution(row)) return false;
+  if (isExcludedFromCariResolution(row, context, { skipOwnVirman })) {
+    return false;
+  }
   if (row.cariRequired === false) return false;
   const type = String(row.transactionType || "");
   if (type && CARI_NOT_REQUIRED_TYPES.has(type)) return false;
@@ -401,13 +441,57 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     collectStats = false,
   } = options;
 
+  const ownAccountContext =
+    context.ownAccountContext ||
+    createOwnAccountVirmanContext(
+      context.selectedCompany,
+      context.selectedBank
+    );
+  const fullContext = { ...context, ownAccountContext };
+
   const groupStart = collectStats ? performance.now() : 0;
-  const unresolved = (rows || []).filter(isCariMissingRow);
+
+  // Virman adayları (kesin 102↔102 olmayan soft sinyaller)
+  const virmanCandidates = [];
+  for (const row of rows || []) {
+    if (!isMissingHesapRow(row)) continue;
+    if (isOwnAccountVirmanTransfer(row, fullContext)) continue;
+    if (!isVirmanCandidateTransfer(row, fullContext)) continue;
+    const verdict = evaluateOwnAccountVirmanTransfer(row, fullContext);
+    virmanCandidates.push({
+      rowId: row.id,
+      analysisKey: row.analysisKey || "",
+      reasons: verdict.reasons || [],
+      suggested102: verdict.suggested102 || "",
+      label: VIRMAN_CANDIDATE_LABEL,
+      description: rowDescription(row).slice(0, 160),
+      direction: resolveLucaRowBankDirection(row, fullContext) || "",
+      amount: rowAmount(row),
+    });
+  }
+
+  // Kesin virman (complete) — cari listesinde yok
+  const divertedVirman = [];
+  for (const row of rows || []) {
+    if (!isCariMissingRow(row, fullContext, { skipOwnVirman: true })) continue;
+    if (!isOwnAccountVirmanTransfer(row, fullContext)) continue;
+    divertedVirman.push({
+      rowId: row.id,
+      analysisKey: row.analysisKey || "",
+      reasons: ["definite_102_pair"],
+      suggested102: "",
+      label: "Firma kendi hesabı / virman",
+    });
+  }
+
+  const unresolved = (rows || []).filter((row) =>
+    isCariMissingRow(row, fullContext)
+  );
   const groups = new Map();
 
   for (const row of unresolved) {
     const desc = rowDescription(row);
-    const direction = resolveLucaRowBankDirection(row, context) || "";
+    const direction = resolveLucaRowBankDirection(row, fullContext) || "";
     const key =
       row.analysisKey ||
       normalizeBankAnalysisKey(desc, direction) ||
@@ -514,12 +598,84 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       return enriched;
     });
 
+  const divertedGroupKeys = new Set(
+    divertedVirman.map((d) => d.analysisKey).filter(Boolean)
+  );
+  const candidateGroupKeys = new Set(
+    virmanCandidates.map((d) => d.analysisKey).filter(Boolean)
+  );
+
+  // Virman adayı grupları — 120/320 aday yok; banka hesabı tanımlama mesajı
+  const candidateGroupMap = new Map();
+  for (const item of virmanCandidates) {
+    const key = item.analysisKey || `virman-aday|${item.rowId}`;
+    if (!candidateGroupMap.has(key)) {
+      candidateGroupMap.set(key, {
+        analysisKey: key,
+        direction: item.direction || "",
+        rows: [],
+        samples: [],
+        totalAmount: 0,
+      });
+    }
+    const g = candidateGroupMap.get(key);
+    g.rows.push(item);
+    if (g.samples.length < 3 && item.description) {
+      g.samples.push(item.description);
+    }
+    g.totalAmount += Number(item.amount) || 0;
+  }
+  const virmanCandidateGroups = [...candidateGroupMap.values()]
+    .map((g) => ({
+      id: `virman-aday:${g.analysisKey}`,
+      analysisKey: g.analysisKey,
+      partyName:
+        normalizeCariName(g.samples[0] || "").slice(0, 80) || "Virman adayı",
+      direction: g.direction || "",
+      directionLabel:
+        g.direction === "GIRIS" || g.direction === "GELEN"
+          ? "Gelen"
+          : g.direction === "CIKIS" || g.direction === "GIDEN"
+            ? "Giden"
+            : "—",
+      count: g.rows.length,
+      totalAmount: Math.round(g.totalAmount * 100) / 100,
+      samples: g.samples,
+      dateFrom: "",
+      dateTo: "",
+      rowIds: g.rows.map((r) => r.rowId).filter(Boolean),
+      foreignVendor: false,
+      status: "remaining",
+      virmanCandidate: true,
+      vendorMessage: VIRMAN_CANDIDATE_LABEL,
+      preferredPrefixes: ["102"],
+      candidates: [],
+      suggestedAccount: "",
+      suggestedName: "",
+      confidence: 0,
+      confidenceLabel: "Banka hesabı tanımla",
+      matchReason: "",
+      candidatesReady: true,
+    }))
+    .sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount);
+
   const result = {
     totalMissing: (rows || []).filter(isMissingHesapRow).length,
     cariMissingCount: unresolved.length,
     groupCount: ranked.length,
     groups: ranked,
     planCache,
+    virmanDivertedCount: divertedVirman.length,
+    virmanDivertedGroupCount: divertedGroupKeys.size,
+    virmanDivertedWith102Count: divertedVirman.filter((d) =>
+      String(d.suggested102 || "").startsWith("102")
+    ).length,
+    virmanDivertedRows: divertedVirman,
+    virmanCandidateCount: virmanCandidates.length,
+    virmanCandidateGroupCount: virmanCandidateGroups.length,
+    virmanCandidateRows: virmanCandidates,
+    virmanCandidateGroups,
+    virmanCandidateLabel: VIRMAN_CANDIDATE_LABEL,
   };
 
   if (collectStats) {

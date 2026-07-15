@@ -153,6 +153,7 @@ export function BankPipelineProgressPanel({
   detail,
   percent = 0,
   elapsedSeconds = 0,
+  showTiming = false,
   processed = null,
   total = null,
   errorPhase = null,
@@ -192,9 +193,11 @@ export function BankPipelineProgressPanel({
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <span className="rounded-lg border border-slate-700/80 bg-slate-950/60 px-2.5 py-1 font-mono text-xs text-slate-200">
-            Geçen süre: {formatElapsedClock(elapsedSeconds)}
-          </span>
+          {showTiming ? (
+            <span className="rounded-lg border border-slate-700/80 bg-slate-950/60 px-2.5 py-1 font-mono text-xs text-slate-200">
+              Geçen süre: {formatElapsedClock(elapsedSeconds)}
+            </span>
+          ) : null}
           <span className="rounded-lg border border-indigo-600/40 bg-indigo-950/50 px-2.5 py-1 text-xs font-semibold text-indigo-100">
             %{safePercent}
           </span>
@@ -264,6 +267,7 @@ export function BankPipelineResultCard({
   primaryBtnClass = "",
   secondaryBtnClass = "",
   isReviewMissingLoading = false,
+  showServiceMeta = false,
 }) {
   if (!result) return null;
 
@@ -279,11 +283,13 @@ export function BankPipelineResultCard({
     },
     { label: "Eksik hesap", value: result.missingCount },
     { label: "Tanınmayan işlem", value: result.unrecognizedCount },
-    {
+  ];
+  if (showServiceMeta) {
+    stats.push({
       label: "Toplam süre",
       value: formatDurationMs(result.totalDurationMs),
-    },
-  ];
+    });
+  }
 
   return (
     <section className="mt-5 min-w-0 rounded-2xl border border-emerald-700/40 bg-gradient-to-b from-emerald-950/40 to-slate-950/50 px-4 py-5 sm:px-6">
@@ -299,7 +305,11 @@ export function BankPipelineResultCard({
         </div>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+      <div
+        className={`mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 ${
+          showServiceMeta ? "lg:grid-cols-6" : "lg:grid-cols-5"
+        }`}
+      >
         {stats.map((item) => (
           <div
             key={item.label}

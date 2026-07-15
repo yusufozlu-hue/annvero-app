@@ -63,6 +63,8 @@ export const BANK_TRANSACTION_TYPE = {
   BANKALAR_ARASI_VIRMAN: "BANKALAR_ARASI_VIRMAN",
   /** @deprecated alias → BANKA_ICI_VIRMAN / BANKALAR_ARASI_VIRMAN */
   VIRMAN: "VIRMAN",
+  /** Ürün sınıflandırma aliası → BANKA_ICI_VIRMAN */
+  BANK_INTERNAL_TRANSFER: "BANK_INTERNAL_TRANSFER",
   KASA_BANKAYA_YATAN: "KASA_BANKAYA_YATAN",
   BANKADAN_KASAYA_CEKILEN: "BANKADAN_KASAYA_CEKILEN",
   FON_ALIS: "FON_ALIS",
@@ -132,6 +134,7 @@ export const VIRMAN_TYPES = new Set([
   BANK_TRANSACTION_TYPE.BANKA_ICI_VIRMAN,
   BANK_TRANSACTION_TYPE.BANKALAR_ARASI_VIRMAN,
   BANK_TRANSACTION_TYPE.VIRMAN,
+  BANK_TRANSACTION_TYPE.BANK_INTERNAL_TRANSFER,
 ]);
 
 export const FINANCE_TYPES = new Set([
@@ -326,6 +329,9 @@ export function canonicalizeTransactionType(type = "", direction = "") {
       : BANK_TRANSACTION_TYPE.CEK_ODEMESI;
   }
   if (t === BANK_TRANSACTION_TYPE.VIRMAN) {
+    return BANK_TRANSACTION_TYPE.BANKA_ICI_VIRMAN;
+  }
+  if (t === BANK_TRANSACTION_TYPE.BANK_INTERNAL_TRANSFER) {
     return BANK_TRANSACTION_TYPE.BANKA_ICI_VIRMAN;
   }
   if (t === BANK_TRANSACTION_TYPE.NAKIT_CEKIM) {
@@ -881,6 +887,7 @@ export function missingCategoryForTransactionType(transactionType = "") {
   if (isCekType(type)) return "Çek hesabı 101/103 eksik";
   if (isKasaType(type)) return "Kasa hesabı 100 eksik";
   if (isVergiSgkType(type)) return "Vergi/SGK türü çözülemedi";
+  if (isVirmanType(type)) return "Virman hesabı bulunamadı";
   if (isFinanceType(type)) return "Finans işlem türü çözülemedi";
   if (isPersonelRequiredForType(type)) return "Personel bulunamadı";
   if (

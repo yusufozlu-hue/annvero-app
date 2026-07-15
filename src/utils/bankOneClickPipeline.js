@@ -241,15 +241,22 @@ export function deriveAutoMatchedMovements(readyLucaCount) {
 export const BANK_PARSER_DEBUG_STORAGE_KEY = "ANNVERO_BANK_DEBUG";
 
 /**
- * Servis / debug UI: yönetim kullanıcısı VEYA development + localStorage bayrağı.
- * Normal kullanıcıda false.
+ * Servis / debug UI (Gelişmiş / Manuel Kontrol, teknik paneller).
+ *
+ * Normal ürün ekranı her zaman kapalıdır.
+ * Açmak için localStorage ANNVERO_BANK_DEBUG=1 gerekir.
+ * Bayrak varken: yönetim kullanıcısı veya development ortamı.
+ *
+ * Böylece admin/partner de bayrak açmadan one-click ürün akışını görür;
+ * “Gelişmiş / Manuel Kontrol” DOM’a eklenmez.
  */
 export function isBankParserServiceModeVisible({
   isManagementUser = false,
   nodeEnv = typeof process !== "undefined" ? process.env.NODE_ENV : "production",
   debugFlag = false,
 } = {}) {
+  if (!Boolean(debugFlag)) return false;
   if (isManagementUser) return true;
-  if (nodeEnv === "development" && Boolean(debugFlag)) return true;
+  if (nodeEnv === "development") return true;
   return false;
 }

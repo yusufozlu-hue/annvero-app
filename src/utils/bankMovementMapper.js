@@ -21,6 +21,7 @@ import {
   isFinanceType,
   isCekType,
   isKasaType,
+  isVirmanType,
   isBareVergiSgkMainAccount,
   missingCategoryForTransactionType,
   BANK_TRANSACTION_TYPE,
@@ -32,6 +33,10 @@ import {
   resolveAccountingScenario,
   resolveCompanyAccountingPolicies,
 } from "@/src/utils/bankAccountingScenarioEngine";
+import {
+  detectAndClassifyBankInternalTransfer,
+  VIRMAN_CANDIDATE_LABEL,
+} from "@/src/utils/bankInternalTransfer";
 import { normalizeBankAnalysisKey, normalizeParserText } from "@/src/utils/textNormalize";
 import {
   findAccountMemoryByAnalysisKey,
@@ -538,13 +543,48 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 
   accountCode = bankLucaBase;
 
+  // 1) Firma içi virman — yalnız kesin 102↔102; adaylar tipi değiştirmez
+  let bankInternalTransferMeta = null;
+  let virmanCandidate = false;
+  const virmanDetect = detectAndClassifyBankInternalTransfer({
+    description,
+    direction,
+    transactionType,
+    selectedCompany,
+    selectedBank,
+    bankAccountCode: accountCode,
+    rawRow,
+  });
+  if (virmanDetect.shouldReclassify) {
+    transactionType = virmanDetect.transactionType;
+    cariRequired = false;
+    personelRequired = false;
+    bankInternalTransferMeta = virmanDetect.pair;
+    appendWarning(warnings, "Banka içi virman (kendi hesap)");
+  } else if (virmanDetect.isVirmanCandidate) {
+    virmanCandidate = true;
+    bankInternalTransferMeta = virmanDetect.pair;
+    // Karşı 102 yokken BANKA_ICI_VIRMAN tipini kesin muhasebe olarak bırakma
+    if (isVirmanType(transactionType)) {
+      transactionType =
+        direction === "CIKIS"
+          ? BANK_TRANSACTION_TYPE.GIDEN_HAVALE
+          : BANK_TRANSACTION_TYPE.GELEN_HAVALE;
+      cariRequired = true;
+      personelRequired = false;
+    }
+    appendWarning(warnings, VIRMAN_CANDIDATE_LABEL);
+  }
+
   const creditCard =
     findCreditCardByText(selectedCompany?.creditCards || [], description) ||
     (isCreditCardPaymentText(description)
       ? findCreditCardByText(selectedCompany?.creditCards || [], description)
       : null);
 
-  const isCardPaymentRow = !!creditCard || isCreditCardPaymentText(description);
+  const isCardPaymentRow =
+    !virmanDetect.shouldReclassify &&
+    (!!creditCard || isCreditCardPaymentText(description));
 
   if (isCardPaymentRow) {
     const card =
@@ -629,7 +669,11 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         analysisStats.firmMemoryConflict =
           (analysisStats.firmMemoryConflict || 0) + 1;
       }
-    } else if (firmDecision.autoApply && firmDecision.record) {
+    } else if (
+      !virmanDetect.shouldReclassify &&
+      firmDecision.autoApply &&
+      firmDecision.record
+    ) {
       firmMemoryApplied = true;
       matchedRule = {
         source: "firmaHafizaV2",
@@ -694,6 +738,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       bankAccountCode: accountCode,
       company: selectedCompany,
       bankName:
+        selectedBank ||
         selectedCompany?.bankAccounts?.[0]?.bankName ||
         selectedCompany?.bankName ||
         "",
@@ -703,6 +748,16 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     cariRequired = Boolean(scenarioDecision.cariRequired);
     personelRequired = Boolean(scenarioDecision.personelRequired);
     scenarioMissingCategory = scenarioDecision.missingHesapCategory || "";
+
+    // Virman: tip ve cari bayrağını senaryo/hafıza geri sarmasın
+    if (virmanDetect.shouldReclassify) {
+      transactionType = BANK_TRANSACTION_TYPE.BANKA_ICI_VIRMAN;
+      cariRequired = false;
+      personelRequired = false;
+      if (scenarioDecision?.reviewReason && !counterAccountCode) {
+        appendWarning(warnings, scenarioDecision.reviewReason);
+      }
+    }
 
     if (
       !firmMemoryApplied &&
@@ -733,7 +788,11 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       appendWarning(warnings, scenarioDecision.reviewReason);
     }
 
-    if (!firmMemoryApplied && !counterAccountCode) {
+    if (
+      !firmMemoryApplied &&
+      !counterAccountCode &&
+      !virmanDetect.shouldReclassify
+    ) {
     const learningStarted = Date.now();
     const memoryMatch = findLearningMemoryMatch(learningMemory, description, {
       bankName: rawRow.banka || rawRow.bankName || selectedBank,
@@ -974,8 +1033,12 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     }
     } // !firmMemoryApplied
 
-    // Cari yalnızca transactionType gerektiriyorsa (firma hafızası hesabı doldurduysa atlanır)
-    if (cariRequired && !(firmMemoryApplied && counterAccountCode)) {
+    // Cari yalnızca transactionType gerektiriyorsa; virman satırına asla cari önerme
+    if (
+      cariRequired &&
+      !virmanDetect.shouldReclassify &&
+      !(firmMemoryApplied && counterAccountCode)
+    ) {
       // Kural/hafıza gider hesabı bırakmışsa temizle
       if (
         isExpenseOrIncomeGlAccount(counterAccountCode) &&
@@ -1246,9 +1309,20 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     accountingScenario,
     cariRequired,
     personelRequired,
+    classification: virmanDetect?.shouldReclassify
+      ? "BANK_INTERNAL_TRANSFER"
+      : "",
+    bankInternalTransfer: Boolean(virmanDetect?.shouldReclassify),
+    virmanCandidate: Boolean(virmanCandidate),
+    virmanSource102: bankInternalTransferMeta?.source102 || "",
+    virmanTarget102: bankInternalTransferMeta?.complete
+      ? bankInternalTransferMeta.target102
+      : "",
     missingHesapCategory: !counterAccountCode
-      ? scenarioMissingCategory ||
-        missingCategoryForTransactionType(transactionType)
+      ? virmanCandidate
+        ? ""
+        : scenarioMissingCategory ||
+          missingCategoryForTransactionType(transactionType)
       : "",
   };
 }

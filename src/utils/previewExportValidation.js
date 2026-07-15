@@ -18,6 +18,7 @@ import {
   isVergiSgkType,
   isPosType,
   isFinanceType,
+  isVirmanType,
   isCekType,
   isKasaType,
   missingCategoryForTransactionType,
@@ -40,6 +41,8 @@ export const MISSING_HESAP_CATEGORY = {
   VERGI_SGK: "Vergi/SGK türü çözülemedi",
   POS_KOMISYON: "POS/komisyon ayrımı çözülemedi",
   FINAN_ISLEM: "Finans işlem türü çözülemedi",
+  VIRMAN_HESAP_EKSIK: "Virman hesabı bulunamadı",
+  VIRMAN_ADAY: "Virman adayı — karşı banka hesabı tanımlanmalı",
   CEK_HESAP_EKSIK: "Çek hesabı 101/103 eksik",
   KASA_HESAP_EKSIK: "Kasa hesabı 100 eksik",
   DIGER: "Diğer",
@@ -157,6 +160,15 @@ export function classifyMissingHesapCategory(row = {}) {
   const existing = String(row.missingHesapCategory || "").trim();
   const scenario = String(row.accountingScenario || "").trim();
 
+  // Virman adayı önce — eski VIRMAN_HESAP_EKSIK etiketini bile adaya çevir
+  if (
+    row.virmanCandidate === true ||
+    /VIRMAN ADAYI/.test(note) ||
+    existing === MISSING_HESAP_CATEGORY.VIRMAN_ADAY
+  ) {
+    return MISSING_HESAP_CATEGORY.VIRMAN_ADAY;
+  }
+
   // Mevcut kategori geçerliyse kullan — cari yasaklı türde yanlış cari etiketini düzelt
   if (existing && Object.values(MISSING_HESAP_CATEGORY).includes(existing)) {
     if (
@@ -195,6 +207,16 @@ export function classifyMissingHesapCategory(row = {}) {
 
   if (isVergiSgkType(transactionType) || /VERGI.?SGK TURU COZULEMEDI/.test(note)) {
     return MISSING_HESAP_CATEGORY.VERGI_SGK;
+  }
+
+  if (
+    (isVirmanType(transactionType) ||
+      /VIRMAN HESABI BULUNAMADI/.test(note) ||
+      scenario === "BANKA_ICI_VIRMAN" ||
+      scenario === "BANKALAR_ARASI_VIRMAN") &&
+    row.bankInternalTransfer === true
+  ) {
+    return MISSING_HESAP_CATEGORY.VIRMAN_HESAP_EKSIK;
   }
 
   if (isFinanceType(transactionType) || /FINANS ISLEM TURU COZULEMEDI/.test(note)) {

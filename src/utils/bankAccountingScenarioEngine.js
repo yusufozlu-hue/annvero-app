@@ -25,6 +25,7 @@ import {
   VIRMAN_TYPES,
 } from "@/src/utils/bankTransactionType";
 import { resolveMappedAccountFromCompany } from "@/src/utils/companyAccountAutoDetect";
+import { resolveVirman102Pair } from "@/src/utils/bankInternalTransfer";
 
 export const ACCOUNTING_SCENARIO = {
   CEK_ODEMESI: "CEK_ODEMESI",
@@ -685,17 +686,54 @@ export function resolveAccountingScenario({
     };
   }
 
-  // ——— VIRMAN ———
+  // ——— VIRMAN / BANK_INTERNAL_TRANSFER ———
+  // Yalnız 102↔102 complete → kesin muhasebe. Aksi halde “virman adayı”
+  // (eksik hesabı VIRMAN_HESAP_EKSIK ile şişirme; 120/320 otomatik değil).
   if (
     scenarioId === ACCOUNTING_SCENARIO.BANKA_ICI_VIRMAN ||
     scenarioId === ACCOUNTING_SCENARIO.BANKALAR_ARASI_VIRMAN
   ) {
+    const selectedBank =
+      bankName || company?.bankAccounts?.[0]?.bankName || "";
+    const pair = resolveVirman102Pair({
+      company,
+      selectedBank,
+      description,
+      direction: dir,
+      bankAccountCode,
+      transactionType: type,
+    });
+
+    if (pair?.complete && pair.legs) {
+      return {
+        ...base,
+        cariRequired: false,
+        counterAccountHint: "102",
+        counterAccountCode: pair.counterAccountCode,
+        documentType: "FT",
+        reviewReason: "",
+        missingHesapCategory: "",
+        legs: pair.legs,
+        bankInternalTransfer: true,
+        virmanCandidate: false,
+        virmanSource102: pair.source102,
+        virmanTarget102: pair.target102,
+      };
+    }
+
     return {
       ...base,
+      // Tip “virman” görünse bile karşı 102 yoksa kesin fiş yok —
+      // cari/havale yoluna benzer: kullanıcı banka hesabı tanımlasın.
       cariRequired: false,
       counterAccountHint: "102",
-      reviewReason: "",
+      counterAccountCode: "",
+      documentType: "FT",
+      reviewReason: "Virman adayı — karşı banka hesabı tanımlanmalı",
+      missingHesapCategory: "",
       legs: null,
+      bankInternalTransfer: false,
+      virmanCandidate: true,
     };
   }
 
