@@ -115,6 +115,14 @@ import {
   BankPipelineProgressPanel,
   BankPipelineResultCard,
 } from "./BankOneClickExperience";
+import CariMissingResolutionCenter from "./CariMissingResolutionCenter";
+import {
+  buildCariResolutionGroups,
+  isAccountAllowedForDirection,
+  isExpenseAccountCode,
+  scheduleAfterPaint,
+  shouldIgnoreCariResolutionOpen,
+} from "@/src/utils/cariMissingResolutionGroups";
 import {
   buildParserPreviewFromNormalizedRowsAsync,
   buildLucaRowsFromMovementsAsync,
@@ -366,8 +374,19 @@ export default function BankaParserPage() {
     message: "",
   });
   const [elapsedSec, setElapsedSec] = useState(0);
-  /** Normal kullanıcı: yalnızca "Eksik Hesapları İncele" ile Luca önizleme açılır */
+  /** Servis UI: Luca önizleme; normal kullanıcı Çözüm Merkezi kullanır */
   const [showUserLucaReview, setShowUserLucaReview] = useState(false);
+  const [showCariResolutionCenter, setShowCariResolutionCenter] =
+    useState(false);
+  const [cariResolutionSnapshot, setCariResolutionSnapshot] = useState(null);
+  const [cariResolutionLoading, setCariResolutionLoading] = useState(false);
+  const [cariResolutionError, setCariResolutionError] = useState("");
+  const [resolvedCariGroupIds, setResolvedCariGroupIds] = useState(
+    () => new Set()
+  );
+  const [applyingCariGroupId, setApplyingCariGroupId] = useState(null);
+  const [lastCariApplyMessage, setLastCariApplyMessage] = useState("");
+  const cariResolutionCancelRef = useRef(null);
   const manualDetailsRef = useRef(null);
 
   const { isManagementUser } = useUserRole();
@@ -1143,18 +1162,211 @@ export default function BankaParserPage() {
     }
   };
 
-  const handleReviewMissingAccounts = () => {
+  const rebuildCariResolutionSnapshot = () => {
     const report = analyzeMissingHesapRows(lucaRef.current);
     setMissingHesapReport(report);
+    setCariGroupReport(
+      groupUnresolvedCariRows(lucaRef.current, {
+        companyPlans,
+        movements: movementsRef.current,
+      })
+    );
+    const snapshot = buildCariResolutionGroups(lucaRef.current, {
+      companyPlans,
+      selectedBank,
+    });
+    setCariResolutionSnapshot(snapshot);
+    setPipelineResult((prev) =>
+      prev
+        ? {
+            ...prev,
+            missingCount: report.missingCount,
+            autoMatchedCount: deriveAutoMatchedMovements(report.readyCount),
+          }
+        : prev
+    );
+    return { report, snapshot };
+  };
+
+  const loadCariResolutionGroupsAsync = () => {
+    setCariResolutionError("");
+    setCariResolutionLoading(true);
+    if (cariResolutionCancelRef.current) {
+      cariResolutionCancelRef.current();
+    }
+    cariResolutionCancelRef.current = scheduleAfterPaint(() => {
+      try {
+        const { report, snapshot } = rebuildCariResolutionSnapshot();
+        setCariResolutionLoading(false);
+        setCariResolutionError("");
+        showToast(
+          report.missingCount
+            ? `${report.missingCount} eksik · ${snapshot.cariMissingCount} cari / ${snapshot.groupCount} grup`
+            : "Eksik hesap satırı yok.",
+          report.missingCount ? "error" : "success"
+        );
+      } catch (error) {
+        setCariResolutionLoading(false);
+        setCariResolutionError(
+          error?.message || "Cari grupları hazırlanamadı. Tekrar deneyin."
+        );
+      } finally {
+        cariResolutionCancelRef.current = null;
+      }
+    });
+  };
+
+  const handleCloseCariResolutionCenter = () => {
+    if (cariResolutionCancelRef.current) {
+      cariResolutionCancelRef.current();
+      cariResolutionCancelRef.current = null;
+    }
+    setShowCariResolutionCenter(false);
+    setCariResolutionLoading(false);
+    setCariResolutionError("");
+    // resolvedCariGroupIds korunur
+  };
+
+  const handleReviewMissingAccounts = () => {
+    if (
+      shouldIgnoreCariResolutionOpen({
+        isOpen: showCariResolutionCenter,
+        isLoading: cariResolutionLoading,
+      })
+    ) {
+      return;
+    }
+
+    setLastCariApplyMessage("");
+    setShowCariResolutionCenter(true);
     setPreviewQuickFilter("missingAccount");
     setActiveStep("excel");
-    setShowUserLucaReview(true);
-    showToast(
-      report.missingCount
-        ? `${report.missingCount} eksik hesap satırı filtrelendi.`
-        : "Eksik hesap satırı yok.",
-      report.missingCount ? "error" : "success"
-    );
+    if (showBankServiceUi) {
+      setShowUserLucaReview(true);
+    } else {
+      setShowUserLucaReview(false);
+    }
+    loadCariResolutionGroupsAsync();
+  };
+
+  const handleRetryCariResolutionLoad = () => {
+    if (cariResolutionLoading) return;
+    loadCariResolutionGroupsAsync();
+  };
+
+  const handleApplyCariResolutionGroup = ({
+    group,
+    accountCode,
+    learn = false,
+  } = {}) => {
+    const code = String(accountCode || "").trim();
+    if (!group?.seedRow || !code) return;
+    if (!isAccountAllowedForDirection(code, group.direction)) {
+      showToast(
+        "Bu hesap, grubun yönü (gelen/giden) için uygun değil.",
+        "error"
+      );
+      return;
+    }
+    if (group.foreignVendor && isExpenseAccountCode(code)) {
+      showToast(
+        "Yabancı satıcıda gider hesabı uygulanmaz; önce 320 cari seçin.",
+        "error"
+      );
+      return;
+    }
+
+    const beforeMissing = analyzeMissingHesapRows(lucaRef.current).missingCount;
+    const targetIds = new Set((group.rowIds || []).filter(Boolean));
+    if (targetIds.size === 0 && group.seedRow?.id) {
+      targetIds.add(group.seedRow.id);
+    }
+
+    setApplyingCariGroupId(group.id);
+    try {
+      const learnCtx = resolveMemoryLearnContext(group.seedRow);
+      let updated = 0;
+      lucaRef.current = (lucaRef.current || []).map((item) => {
+        if (!targetIds.has(item.id)) return item;
+        const missing =
+          !String(item.hesapKodu || "").trim() ||
+          item.riskDurumu === "HESAP_EKSIK";
+        if (!missing) return item;
+        // Yön koruması
+        const itemDir = resolveMemoryLearnContext(item).direction;
+        if (
+          group.direction &&
+          itemDir &&
+          group.direction !== itemDir
+        ) {
+          return item;
+        }
+        updated += 1;
+        return {
+          ...item,
+          hesapKodu: code,
+          riskDurumu: "",
+          missingHesapCategory: "",
+          kontrolNotu: [
+            String(item.kontrolNotu || "")
+              .replace(/Hesap eşleşmesi bulunamadı/gi, "")
+              .replace(/Kural bulunamadı/gi, "")
+              .replace(/Cari hesap bulunamadı[^.|]*/gi, "")
+              .replace(/\s+\|\s+/g, " | ")
+              .replace(/^\s*\|\s*|\s*\|\s*$/g, "")
+              .trim(),
+            "Çözüm Merkezi: cari gruba uygulandı",
+          ]
+            .filter(Boolean)
+            .join(" | "),
+        };
+      });
+
+      let learned = false;
+      if (learn && selectedCompanyId && learnCtx.ok) {
+        const saved = saveAccountMemoryV2Decision(
+          {
+            ...group.seedRow,
+            hesapKodu: code,
+            accountCode: code,
+            analysisKey: learnCtx.analysisKey,
+            direction: learnCtx.direction,
+            transactionType:
+              learnCtx.transactionType || group.seedRow.transactionType || "",
+            belgeTuru: group.seedRow.belgeTuru || "",
+            documentType: group.seedRow.belgeTuru || "",
+            cariId: code,
+            normalizedDescription: learnCtx.description,
+            finalDescriptionTemplate:
+              learnCtx.description ||
+              group.seedRow.detayAciklama ||
+              group.seedRow.fisAciklama ||
+              "",
+            source: "cari-resolution-center",
+          },
+          { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
+        );
+        learned = Boolean(saved);
+      }
+
+      syncLucaPage(lucaPage);
+      const { report, snapshot } = rebuildCariResolutionSnapshot();
+      setResolvedCariGroupIds((prev) => {
+        const next = new Set(prev);
+        next.add(group.id);
+        return next;
+      });
+      setLastCariApplyMessage(
+        `${updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik hesap sayısı ${beforeMissing}’ten ${report.missingCount}’e düştü.`
+      );
+      setCariResolutionSnapshot(snapshot);
+      showToast(
+        `${updated} satıra uygulandı${learned ? " (öğrenildi)" : learn && !learned ? " (öğrenme atlandı)" : ""}`,
+        learned || !learn ? "success" : "error"
+      );
+    } finally {
+      setApplyingCariGroupId(null);
+    }
   };
 
   const handleDownloadMissingReport = async () => {
@@ -1632,6 +1844,17 @@ export default function BankaParserPage() {
     setLastTimings(null);
     setPipelineResult(null);
     setShowUserLucaReview(false);
+    setShowCariResolutionCenter(false);
+    setCariResolutionSnapshot(null);
+    setCariResolutionLoading(false);
+    setCariResolutionError("");
+    setResolvedCariGroupIds(new Set());
+    setApplyingCariGroupId(null);
+    setLastCariApplyMessage("");
+    if (cariResolutionCancelRef.current) {
+      cariResolutionCancelRef.current();
+      cariResolutionCancelRef.current = null;
+    }
     unrecognizedCountRef.current = 0;
     resetPipelineUiState();
     if (resetParserJob) parserJob.reset();
@@ -3049,6 +3272,7 @@ export default function BankaParserPage() {
               onPartialExport={handlePartialExportConfirm}
               onGoToLucaProducer={handleGoToLucaProducer}
               secondaryBtnClass={annveroBtnSecondary}
+              isReviewMissingLoading={cariResolutionLoading}
             />
           ) : null}
 
@@ -3226,9 +3450,22 @@ export default function BankaParserPage() {
                 <button
                   type="button"
                   onClick={handleReviewMissingAccounts}
-                  className="rounded-xl border border-rose-600/60 bg-rose-950 px-4 py-3 text-sm font-semibold text-rose-100 hover:bg-rose-900"
+                  disabled={cariResolutionLoading}
+                  className="inline-flex items-center gap-2 rounded-xl border border-rose-600/60 bg-rose-950 px-4 py-3 text-sm font-semibold text-rose-100 hover:bg-rose-900 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Eksik Hesapları İncele ({missingHesapReport.missingCount})
+                  {cariResolutionLoading ? (
+                    <>
+                      <span
+                        className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-rose-200/30 border-t-rose-100"
+                        aria-hidden="true"
+                      />
+                      Hazırlanıyor…
+                    </>
+                  ) : (
+                    <>
+                      Eksik Hesapları İncele ({missingHesapReport.missingCount})
+                    </>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -3769,6 +4006,20 @@ export default function BankaParserPage() {
           isSaving={isSavingTeach}
           onClose={handleCloseTeachModal}
           onSubmit={handleSaveKnowledgeTeach}
+        />
+
+        <CariMissingResolutionCenter
+          open={showCariResolutionCenter}
+          onClose={handleCloseCariResolutionCenter}
+          snapshot={cariResolutionSnapshot}
+          companyPlans={companyPlans}
+          resolvedGroupIds={resolvedCariGroupIds}
+          onApplyGroup={handleApplyCariResolutionGroup}
+          applyingId={applyingCariGroupId}
+          lastApplyMessage={lastCariApplyMessage}
+          loading={cariResolutionLoading}
+          error={cariResolutionError}
+          onRetry={handleRetryCariResolutionLoad}
         />
 
         {showBankServiceUi || (showUserLucaReview && lucaReady) ? (

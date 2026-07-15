@@ -263,6 +263,7 @@ export function BankPipelineResultCard({
   onGoToLucaProducer,
   primaryBtnClass = "",
   secondaryBtnClass = "",
+  isReviewMissingLoading = false,
 }) {
   if (!result) return null;
 
@@ -334,9 +335,20 @@ export function BankPipelineResultCard({
             <button
               type="button"
               onClick={onReviewMissing}
-              className="rounded-xl border border-rose-600/50 bg-rose-950/40 px-4 py-3 text-sm font-semibold text-rose-100 transition hover:bg-rose-900/50"
+              disabled={isReviewMissingLoading}
+              className="inline-flex items-center gap-2 rounded-xl border border-rose-600/50 bg-rose-950/40 px-4 py-3 text-sm font-semibold text-rose-100 transition hover:bg-rose-900/50 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Eksik Hesapları İncele
+              {isReviewMissingLoading ? (
+                <>
+                  <span
+                    className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-rose-200/30 border-t-rose-100"
+                    aria-hidden="true"
+                  />
+                  Hazırlanıyor…
+                </>
+              ) : (
+                "Eksik Hesapları İncele"
+              )}
             </button>
             <button
               type="button"
