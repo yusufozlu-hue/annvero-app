@@ -18,7 +18,17 @@ import {
   formatCariApplyButtonLabel,
 } from "@/src/utils/cariMissingResolutionGroups";
 import { isCreditCardAccountCode } from "@/src/utils/creditCardAccountResolver";
-import CariGroupTransactionPanel from "./CariGroupTransactionPanel";
+import dynamic from "next/dynamic";
+
+const CariGroupTransactionPanel = dynamic(
+  () => import("./CariGroupTransactionPanel"),
+  {
+    ssr: false,
+    loading: () => (
+      <p className="px-1 py-3 text-xs text-slate-500">İşlem listesi hazırlanıyor…</p>
+    ),
+  }
+);
 
 function formatMoney(value) {
   const n = Number(value) || 0;

@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
@@ -7,34 +7,49 @@ import { fetchCompanies, persistCompaniesToLocalStorage, broadcastCompaniesRefre
 import { deleteCompanyRecord, saveCompanyRecord } from "@/src/utils/companiesApi";
 import { emptyCompany, normalizeCompany } from "@/src/utils/companyNormalize";
 import {
-  DEFAULT_ADVANCE_ACCOUNT,
-  DEFAULT_SALARY_ACCOUNT,
-  downloadEmployeeTemplate,
-  parseEmployeeExcelFile,
-} from "@/src/utils/employeeExcel";
-import {
   getAccountPlanForCompany,
   loadAccountPlansFromStorage,
 } from "@/src/utils/companyCenter";
+import { useOptionalCompanyWorkspace } from "@/src/contexts/CompanyWorkspaceContext";
 
 const GibCredentialsSection = dynamic(
   () =>
     import(
       "@/app/dashboard/ofis-takip/resmi-bildirimler/components/GibCredentialsSection"
     ),
-  { ssr: false }
+  {
+    ssr: false,
+    loading: () => (
+      <p className="px-1 py-6 text-sm text-slate-500">GİB paneli hazırlanıyor…</p>
+    ),
+  }
 );
 const TicaretSicilCompanyPanel = dynamic(
   () => import("@/src/components/TicaretSicilCompanyPanel"),
-  { ssr: false }
+  {
+    ssr: false,
+    loading: () => (
+      <p className="px-1 py-6 text-sm text-slate-500">Ticaret Sicil paneli hazırlanıyor…</p>
+    ),
+  }
 );
 const IkPersonelCompanyPanel = dynamic(
   () => import("@/src/components/IkPersonelCompanyPanel"),
-  { ssr: false }
+  {
+    ssr: false,
+    loading: () => (
+      <p className="px-1 py-6 text-sm text-slate-500">İK paneli hazırlanıyor…</p>
+    ),
+  }
 );
 const CompanyAccountingMappingsPanel = dynamic(
   () => import("./CompanyAccountingMappingsPanel"),
-  { ssr: false }
+  {
+    ssr: false,
+    loading: () => (
+      <p className="px-1 py-6 text-sm text-slate-500">Muhasebe eşlemeleri hazırlanıyor…</p>
+    ),
+  }
 );
 const EMPLOYEE_PAGE_SIZE = 20;
 
@@ -63,12 +78,52 @@ const moduleLabels = {
 };
 
 export default function CompanyManagement() {
-  const [companies, setCompanies] = useState([]);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const workspace = useOptionalCompanyWorkspace();
+
+  const workspaceCompanies = useMemo(() => {
+    if (!workspace || workspace.isLoading) return null;
+    if (workspace.allCompanies?.length > 0) return workspace.allCompanies;
+    if (workspace.companies?.length > 0) return workspace.companies;
+    return null;
+  }, [workspace]);
+
+  /** Yerel değişiklik / fallback fetch — workspace varken tekrar fetch yok */
+  const [localCompanies, setCompanies] = useState(null);
+  const [fetchedDone, setFetchedDone] = useState(false);
+  const companies = localCompanies ?? workspaceCompanies ?? [];
+  const isLoaded =
+    localCompanies !== null ||
+    workspaceCompanies !== null ||
+    fetchedDone;
+
   const [company, setCompany] = useState(emptyCompany);
 
   const [selectedId, setSelectedId] = useState("");
-  const [activeTab, setActiveTab] = useState("general");
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window === "undefined") return "general";
+    const validTabs = new Set([
+      "general",
+      "gib",
+      "banks",
+      "accountingMaps",
+      "documents",
+      "vehicles",
+      "employees",
+      "modules",
+      "rules",
+      "ticaretSicil",
+      "ticaretOperations",
+      "ticaretDocuments",
+      "ticaretReminders",
+      "ikPersonnel",
+      "ikMovements",
+      "ikLeaves",
+      "ikSgk",
+      "ikPayrollRisks",
+    ]);
+    const requestedTab = new URLSearchParams(window.location.search).get("tab");
+    return requestedTab && validTabs.has(requestedTab) ? requestedTab : "general";
+  });
 
   const [bankFormMode, setBankFormMode] = useState(null);
   const [bankFormDraft, setBankFormDraft] = useState(null);
@@ -104,7 +159,11 @@ export default function CompanyManagement() {
   const [employeeImportError, setEmployeeImportError] = useState("");
   const [employeeDuplicateMode, setEmployeeDuplicateMode] = useState("update");
   const [accountPlans, setAccountPlans] = useState({});
-  const [companyAccountPlan, setCompanyAccountPlan] = useState([]);
+  const companyAccountPlan = useMemo(() => {
+    if (!company?.id && !company?.companyName) return [];
+    const plan = getAccountPlanForCompany(accountPlans, company);
+    return Array.isArray(plan) ? plan : [];
+  }, [accountPlans, company]);
 
   const showToast = (message, type) => {
     setToast({ message, type });
@@ -118,57 +177,37 @@ export default function CompanyManagement() {
   }, [toast]);
 
   useEffect(() => {
-    const loadCompanies = async () => {
-      const formatted = await fetchCompanies();
-
-      setCompanies(formatted);
-      setAccountPlans(loadAccountPlansFromStorage());
-      setIsLoaded(true);
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) setAccountPlans(loadAccountPlansFromStorage());
+    });
+    return () => {
+      cancelled = true;
     };
-
-    loadCompanies();
   }, []);
 
   useEffect(() => {
-    if (!company?.id && !company?.companyName) {
-      setCompanyAccountPlan([]);
-      return;
-    }
-    const plan = getAccountPlanForCompany(accountPlans, company);
-    setCompanyAccountPlan(Array.isArray(plan) ? plan : []);
-  }, [accountPlans, company]);
+    if (workspace?.isLoading) return;
+    if (workspaceCompanies !== null) return;
+    if (localCompanies !== null) return;
+    if (fetchedDone) return;
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const formatted = await fetchCompanies();
+        if (!cancelled) setCompanies(formatted);
+      } catch {
+        /* empty list */
+      } finally {
+        if (!cancelled) setFetchedDone(true);
+      }
+    })();
 
-    const validTabs = [
-      "general",
-      "gib",
-      "banks",
-      "accountingMaps",
-      "documents",
-      "vehicles",
-      "employees",
-      "modules",
-      "rules",
-      "ticaretSicil",
-      "ticaretOperations",
-      "ticaretDocuments",
-      "ticaretReminders",
-      "ikPersonnel",
-      "ikMovements",
-      "ikLeaves",
-      "ikSgk",
-      "ikPayrollRisks",
-    ];
-    const requestedTab = new URLSearchParams(window.location.search).get("tab");
-
-    if (requestedTab && validTabs.includes(requestedTab)) {
-      setActiveTab(requestedTab);
-    }
-  }, []);
-
- 
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace?.isLoading, workspaceCompanies, localCompanies, fetchedDone]);
 
   const openNewCompanyModal = () => {
     setNewCompanyDraft({
@@ -862,9 +901,9 @@ export default function CompanyManagement() {
           hireDate: "",
           sgkCode: "",
 
-          salaryAccountCode: DEFAULT_SALARY_ACCOUNT,
+          salaryAccountCode: "335",
 
-          advanceAccountCode: DEFAULT_ADVANCE_ACCOUNT,
+          advanceAccountCode: "196",
 
           isActive: true,
         },
@@ -918,6 +957,7 @@ export default function CompanyManagement() {
     setEmployeeImportError("");
 
     try {
+      const { parseEmployeeExcelFile } = await import("@/src/utils/employeeExcel");
       const parsed = await parseEmployeeExcelFile(file);
 
       if (!parsed.length) {
@@ -2049,7 +2089,12 @@ export default function CompanyManagement() {
                   </button>
 
                   <button
-                    onClick={downloadEmployeeTemplate}
+                    onClick={async () => {
+                      const { downloadEmployeeTemplate } = await import(
+                        "@/src/utils/employeeExcel"
+                      );
+                      downloadEmployeeTemplate();
+                    }}
                     className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium hover:bg-slate-600"
                   >
                     Excel Şablonu İndir

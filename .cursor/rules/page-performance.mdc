@@ -1,0 +1,51 @@
+---
+description: ANNVERO Page Performance Standard — first-load shells, lazy engines, shared workspace
+globs: app/**/page.{jsx,tsx,js,ts}
+alwaysApply: false
+---
+
+# ANNVERO Page Performance Standard
+
+Pilot pattern: `/muhasebe/banka-ekstresi`, `/muhasebe/firma-yonetimi` (thin route shell + deferred workbench). Same standard applies to **every** new or changed route.
+
+## First paint
+
+- Route `page.*` stays a **thin shell**: title, primary controls, skeleton, short “Hazırlanıyor…”.
+- Heavy workbenches load via `next/dynamic` (`ssr: false` when client-only) with a loading fallback — no blank white screen.
+- Do not statically import Excel/PDF (`xlsx`, `file-saver`, `jszip`, export helpers), OCR/parser/AI/report engines, or large preview tables in the route entry.
+
+## Mount only what is visible
+
+- Closed modals, drawers, accordions, and inactive tabs must **not** mount.
+- Tables/charts load when their section is shown (or after first meaningful data).
+- Export libraries `import()` only inside the user export/download handler.
+
+## Data
+
+- Prefer `CompanyWorkspace` / shared hooks (`useCompanyList`, `useOptionalCompanyWorkspace`). Do not re-`fetchCompanies` when workspace already has the list.
+- No `localStorage` / IndexedDB / heavy sync work in render body; hydrate in `useEffect` or on demand (async), or derive with `useMemo` from workspace.
+- Long lists: pagination, windowing, or lazy render — do not hold hundreds of documents in one client state tree without paging.
+
+## UX
+
+- Busy states: skeleton or “Hazırlanıyor…” only — no fake percent.
+- Engine preload before an action: button “Hazırlanıyor…”, disable double-submit, safe retry on import failure.
+- One-click navigation must still land on a usable shell immediately.
+
+## Checklist (new or refactored route)
+
+- [ ] `page.*` &lt; ~8–10 KB and does not import engines/tables directly
+- [ ] Workbench/components split with `dynamic()` + loading UI
+- [ ] Inactive tabs/modals gated (`activeTab === …`, `open && …`)
+- [ ] Export/OCR/parser/AI via dynamic `import()` on action
+- [ ] Workspace reused; no duplicate company fetch
+- [ ] No storage/heavy compute in render
+- [ ] Lists paged or virtualized when large
+- [ ] Smoke: warm nav shell ≤ 1–2 s; no “Rendering…” 5–6 s stall for the shell
+
+## Inventory
+
+Re-run static risk scan after large UI changes:
+
+`node scripts/inventory-page-performance.mjs`
+---
