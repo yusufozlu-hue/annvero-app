@@ -10,7 +10,13 @@ import {
   searchCariResolutionCandidates,
   isAccountAllowedForDirection,
   isExpenseAccountCode,
+  createInitialCariRowSelection,
+  toggleCariRowSelection,
+  setAllCariRowSelection,
+  buildCariApplyGroupPayload,
+  formatCariApplyButtonLabel,
 } from "@/src/utils/cariMissingResolutionGroups";
+import CariGroupTransactionPanel from "./CariGroupTransactionPanel";
 
 function formatMoney(value) {
   const n = Number(value) || 0;
@@ -123,7 +129,26 @@ function GroupCard({
   const [searchAll, setSearchAll] = useState(false);
   const [query, setQuery] = useState("");
   const [expandedSearch, setExpandedSearch] = useState(false);
+  const [showTransactions, setShowTransactions] = useState(false);
+  const [selectedRowIds, setSelectedRowIds] = useState(() =>
+    createInitialCariRowSelection(group.rowIds || [])
+  );
   const hydrateRequested = useRef(Boolean(group.candidatesReady));
+
+  useEffect(() => {
+    setSelectedRowIds(createInitialCariRowSelection(group.rowIds || []));
+    // rowIds kimliği grup id + sayı ile sabitlenir; her snapshot’ta yeni dizi referansı seçimi sıfırlamasın
+  }, [group.id, group.count, group.rowIds?.join?.("|")]);
+
+  const transactions = hydratedGroup.transactions || group.transactions || [];
+  const selectedApplyCount = useMemo(() => {
+    const all = new Set((group.rowIds || []).map(String));
+    let n = 0;
+    for (const id of selectedRowIds) {
+      if (all.has(String(id))) n += 1;
+    }
+    return n;
+  }, [group.rowIds, selectedRowIds]);
 
   const ensureCandidates = () => {
     if (hydrateRequested.current || group.candidatesReady) return;
@@ -210,6 +235,7 @@ function GroupCard({
   const canApply =
     !isVirmanCandidateCard &&
     Boolean(selectedCode) &&
+    selectedApplyCount > 0 &&
     !isResolved &&
     isAccountAllowedForDirection(selectedCode, hydratedGroup.direction) &&
     !(
@@ -288,6 +314,44 @@ function GroupCard({
                 ? ` · Öneri: ${hydratedGroup.suggestedAccount}`
                 : ""}
             </p>
+          ) : null}
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => setShowTransactions((v) => !v)}
+              className="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-900"
+            >
+              {showTransactions
+                ? "İşlemleri Gizle"
+                : `${hydratedGroup.count || transactions.length || 0} İşlemi Göster`}
+            </button>
+          </div>
+          {showTransactions ? (
+            <CariGroupTransactionPanel
+              transactions={transactions}
+              selectedIds={selectedRowIds}
+              allowApplySelection={!isVirmanCandidateCard && !isResolved}
+              selectedAccount={selectedCode || hydratedGroup.suggestedAccount || ""}
+              matchReason={
+                hydratedGroup.confidenceLabel ||
+                hydratedGroup.matchReason ||
+                ""
+              }
+              groupKey={hydratedGroup.analysisKey || hydratedGroup.id || ""}
+              onToggleRow={(id) =>
+                setSelectedRowIds((prev) => toggleCariRowSelection(prev, id))
+              }
+              onSelectAll={() =>
+                setSelectedRowIds(
+                  setAllCariRowSelection(group.rowIds || [], true)
+                )
+              }
+              onClearSelection={() =>
+                setSelectedRowIds(
+                  setAllCariRowSelection(group.rowIds || [], false)
+                )
+              }
+            />
           ) : null}
         </div>
       </div>
@@ -396,7 +460,10 @@ function GroupCard({
               disabled={!canApply || applyingId === hydratedGroup.id}
               onClick={() =>
                 onApply({
-                  group: hydratedGroup,
+                  group: buildCariApplyGroupPayload(
+                    hydratedGroup,
+                    [...selectedRowIds]
+                  ),
                   accountCode: selectedCode,
                   accountName: selectedName,
                   learn: learnNext,
@@ -406,10 +473,11 @@ function GroupCard({
             >
               {applyingId === hydratedGroup.id
                 ? "Uygulanıyor…"
-                : `Seçilen Hesabı Gruba Uygula (${hydratedGroup.count})`}
+                : formatCariApplyButtonLabel(selectedApplyCount)}
             </button>
             <p className="text-[11px] text-slate-500">
-              Onayınız olmadan hesap uygulanmaz. Gelen/giden yönü korunur.
+              Onayınız olmadan hesap uygulanmaz. Yalnız seçili satırlar
+              güncellenir; gelen/giden yönü korunur.
             </p>
           </div>
         </div>

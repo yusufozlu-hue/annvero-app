@@ -44,6 +44,17 @@ next-env.d.ts
 .cursor/deploy-queue.json
 .cursor/hooks.log
 
+# local cursor diagnostics / profiling artifacts (keep hooks/rules tracked)
+.cursor/diagnostics/
+.cursor/analysis-profile*.json
+.cursor/deployments-tmp.json
+.cursor/test-*-out.txt
+.cursor/*-out.txt
+*.profile.json
+*.diagnostics.json
+*.diagnostics.csv
+scripts/profile-*.mjs
+
 # local company data exports / backups
 annvero-companies-export-*.json
 *.backup.json

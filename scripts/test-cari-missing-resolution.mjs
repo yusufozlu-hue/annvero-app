@@ -21,10 +21,18 @@ import {
   shouldIgnoreCariResolutionOpen,
   shouldApplyCariResolutionAsyncResult,
   isActiveCompanyOwnCariAccount,
+  buildCariResolutionRowView,
+  createInitialCariRowSelection,
+  toggleCariRowSelection,
+  setAllCariRowSelection,
+  sliceCariRowsForDisplay,
+  buildCariApplyGroupPayload,
+  formatCariApplyButtonLabel,
   CARI_RESOLUTION_FILTERS,
   CARI_RESOLUTION_INITIAL_CANDIDATE_GROUPS,
   CARI_RESOLUTION_MODAL_MAX_WIDTH_PX,
   CARI_RESOLUTION_MODAL_WIDTH_CSS,
+  CARI_RESOLUTION_ROW_PAGE_SIZE,
 } from "@/src/utils/cariMissingResolutionGroups.js";
 
 function test(name, fn) {
@@ -771,6 +779,225 @@ test("virman adayı grup: hydrate aday üretmez", () => {
   assert.equal(hydrated.candidatesReady, true);
   assert.deepEqual(hydrated.candidates, []);
   assert.equal(hydrated.suggestedAccount, "");
+});
+
+test("grup işlem listesi: 29 satır + varsayılan tümü seçili", () => {
+  const rows = [];
+  for (let i = 0; i < 29; i++) {
+    rows.push({
+      id: `g29-${i}`,
+      hesapKodu: "",
+      riskDurumu: "HESAP_EKSIK",
+      transactionType: "GIDEN_HAVALE",
+      cariRequired: true,
+      missingHesapCategory: "Cari bulunamadı",
+      detayAciklama: `GÖND / PARTNER OTEL fatura ${i}`,
+      borc: 100 + i,
+      alacak: 0,
+      fisTarihi: `2025-01-${String((i % 28) + 1).padStart(2, "0")}`,
+      analysisKey: "partner-otel|CIKIS",
+    });
+  }
+  const snap = buildCariResolutionGroups(rows, {}, {
+    initialCandidateGroups: false,
+  });
+  assert.equal(snap.groupCount, 1);
+  const g = snap.groups[0];
+  assert.equal(g.count, 29);
+  assert.equal(g.transactions.length, 29);
+  assert.equal(g.rowIds.length, 29);
+  const view = g.transactions[0];
+  assert.ok(view.date);
+  assert.ok(view.description);
+  assert.equal(view.directionLabel, "Giden");
+  assert.ok(view.amount > 0);
+  assert.ok(view.transactionType);
+
+  const selected = createInitialCariRowSelection(g.rowIds);
+  assert.equal(selected.size, 29);
+
+  let next = selected;
+  next = toggleCariRowSelection(next, g.rowIds[0]);
+  next = toggleCariRowSelection(next, g.rowIds[1]);
+  assert.equal(next.size, 27);
+  assert.equal(formatCariApplyButtonLabel(next.size), "Seçilen Hesabı 27 İşleme Uygula");
+
+  const payload = buildCariApplyGroupPayload(g, [...next]);
+  assert.equal(payload.rowIds.length, 27);
+  assert.equal(payload.isPartialApply, true);
+  assert.ok(String(payload.id).includes("__partial__"));
+  assert.ok(!payload.rowIds.includes(g.rowIds[0]));
+  assert.ok(!payload.rowIds.includes(g.rowIds[1]));
+});
+
+test("seçili 27 satıra uygulama; 2 eksik kalır; diğer grup dokunulmaz", () => {
+  const rows = [];
+  for (let i = 0; i < 29; i++) {
+    rows.push({
+      id: `p-${i}`,
+      hesapKodu: "",
+      riskDurumu: "HESAP_EKSIK",
+      transactionType: "GIDEN_HAVALE",
+      cariRequired: true,
+      missingHesapCategory: "Cari bulunamadı",
+      detayAciklama: `GÖND / PARTNER ${i}`,
+      borc: 10,
+      alacak: 0,
+      analysisKey: "partner|CIKIS",
+    });
+  }
+  rows.push({
+    id: "other-1",
+    hesapKodu: "",
+    riskDurumu: "HESAP_EKSIK",
+    transactionType: "GIDEN_HAVALE",
+    cariRequired: true,
+    missingHesapCategory: "Cari bulunamadı",
+    detayAciklama: "GÖND / DIGER FIRMA",
+    borc: 50,
+    alacak: 0,
+    analysisKey: "diger|CIKIS",
+  });
+
+  const lucaBefore = rows.map((r) => ({
+    ...r,
+    borc: r.borc,
+    alacak: r.alacak,
+  }));
+  const lucaCountBefore = lucaBefore.length;
+  const balanceBefore = lucaBefore.reduce(
+    (s, r) => s + Number(r.borc || 0) - Number(r.alacak || 0),
+    0
+  );
+
+  const snap = buildCariResolutionGroups(lucaBefore, {}, {
+    initialCandidateGroups: false,
+  });
+  const partner = snap.groups.find((g) => g.analysisKey.includes("partner"));
+  const other = snap.groups.find((g) => g.analysisKey.includes("diger"));
+  assert.equal(partner.count, 29);
+  assert.equal(other.count, 1);
+
+  const skip = new Set([partner.rowIds[0], partner.rowIds[1]]);
+  const selected = partner.rowIds.filter((id) => !skip.has(id));
+  const payload = buildCariApplyGroupPayload(partner, selected);
+  assert.equal(payload.rowIds.length, 27);
+
+  const target = new Set(payload.rowIds);
+  let updated = 0;
+  const lucaAfter = lucaBefore.map((item) => {
+    if (!target.has(item.id)) return item;
+    updated += 1;
+    return {
+      ...item,
+      hesapKodu: "320.01.0100",
+      riskDurumu: "",
+      missingHesapCategory: "",
+    };
+  });
+  assert.equal(updated, 27);
+  assert.equal(lucaAfter.length, lucaCountBefore);
+  const balanceAfter = lucaAfter.reduce(
+    (s, r) => s + Number(r.borc || 0) - Number(r.alacak || 0),
+    0
+  );
+  assert.equal(balanceAfter, balanceBefore);
+
+  const stillMissing = lucaAfter.filter(
+    (r) => !String(r.hesapKodu || "").trim() || r.riskDurumu === "HESAP_EKSIK"
+  );
+  assert.equal(stillMissing.length, 3); // 2 partner + 1 other
+  assert.ok(stillMissing.some((r) => r.id === partner.rowIds[0]));
+  assert.ok(stillMissing.some((r) => r.id === partner.rowIds[1]));
+  assert.ok(stillMissing.some((r) => r.id === "other-1"));
+  assert.equal(
+    lucaAfter.find((r) => r.id === "other-1").hesapKodu,
+    ""
+  );
+
+  const snapAfter = buildCariResolutionGroups(lucaAfter, {}, {
+    initialCandidateGroups: false,
+  });
+  const partnerAfter = snapAfter.groups.find((g) =>
+    g.analysisKey.includes("partner")
+  );
+  const otherAfter = snapAfter.groups.find((g) =>
+    g.analysisKey.includes("diger")
+  );
+  assert.equal(partnerAfter.count, 2);
+  assert.equal(otherAfter.count, 1);
+  assert.equal(snapAfter.cariMissingCount, 3);
+});
+
+test("100+ satır lazy sayfalama; seçim görünmeyenlerde korunur", () => {
+  const rows = [];
+  for (let i = 0; i < 120; i++) {
+    rows.push({
+      id: `big-${i}`,
+      hesapKodu: "",
+      riskDurumu: "HESAP_EKSIK",
+      transactionType: "GIDEN_HAVALE",
+      cariRequired: true,
+      missingHesapCategory: "Cari bulunamadı",
+      detayAciklama: `GÖND / BUYUK GRUP ${i}`,
+      borc: 5,
+      alacak: 0,
+      analysisKey: "buyuk|CIKIS",
+    });
+  }
+  const snap = buildCariResolutionGroups(rows, {}, {
+    initialCandidateGroups: false,
+  });
+  const g = snap.groups[0];
+  assert.equal(g.transactions.length, 120);
+  assert.equal(CARI_RESOLUTION_ROW_PAGE_SIZE, 25);
+  const page1 = sliceCariRowsForDisplay(g.transactions, CARI_RESOLUTION_ROW_PAGE_SIZE);
+  assert.equal(page1.visible.length, 25);
+  assert.equal(page1.hasMore, true);
+  assert.equal(page1.remaining, 95);
+
+  let selected = createInitialCariRowSelection(g.rowIds);
+  assert.equal(selected.size, 120);
+  selected = toggleCariRowSelection(selected, "big-100");
+  assert.equal(selected.has("big-100"), false);
+  assert.equal(selected.size, 119);
+  // Görünmeyen satır hâlâ seçili
+  assert.equal(selected.has("big-90"), true);
+
+  const page2 = sliceCariRowsForDisplay(
+    g.transactions,
+    CARI_RESOLUTION_ROW_PAGE_SIZE * 2
+  );
+  assert.equal(page2.visible.length, 50);
+  assert.equal(selected.size, 119);
+});
+
+test("row view ve tam seçimde partial bayrağı yok", () => {
+  const row = buildCariResolutionRowView({
+    id: "x",
+    fisTarihi: "2025-02-01",
+    detayAciklama: "GLN / TEST",
+    alacak: 20,
+    borc: 0,
+    transactionType: "GELEN_HAVALE",
+    analysisKey: "t|GIRIS",
+    riskDurumu: "HESAP_EKSIK",
+  });
+  assert.equal(row.directionLabel, "Gelen");
+  const group = {
+    id: "t|GIRIS",
+    rowIds: ["a", "b"],
+    seedRow: { id: "a" },
+    transactions: [
+      { id: "a", learnSeed: { id: "a", detayAciklama: "A" } },
+      { id: "b", learnSeed: { id: "b", detayAciklama: "B" } },
+    ],
+  };
+  const full = buildCariApplyGroupPayload(group, ["a", "b"]);
+  assert.equal(full.isPartialApply, false);
+  assert.equal(full.id, "t|GIRIS");
+  assert.equal(formatCariApplyButtonLabel(0).includes("İşleme"), true);
+  assert.deepEqual([...setAllCariRowSelection(["a", "b"], false)], []);
 });
 
 console.log("\nAll cari missing resolution tests passed.");

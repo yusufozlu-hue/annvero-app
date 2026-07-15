@@ -704,6 +704,9 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
         dateFrom: sortedDates[0] || "",
         dateTo: sortedDates[sortedDates.length - 1] || "",
         rowIds: g.rows.map((r) => r.id).filter(Boolean),
+        transactions: g.rows.map((r) =>
+          buildCariResolutionRowView(r, fullContext)
+        ),
         seedRow: g.rows[0],
         foreignVendor,
         status: "remaining",
@@ -774,6 +777,23 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
         dateFrom: sortedDates[0] || "",
         dateTo: sortedDates[sortedDates.length - 1] || "",
         rowIds: g.rows.map((r) => r.rowId).filter(Boolean),
+        transactions: g.rows.map((item) =>
+          buildCariResolutionRowView(
+            {
+              id: item.rowId,
+              fisTarihi: item.dates || "",
+              detayAciklama: item.description || "",
+              borc: item.amount,
+              alacak: 0,
+              direction: item.direction || g.direction || "",
+              transactionType: "VIRMAN_ADAY",
+              analysisKey: g.analysisKey,
+              missingHesapCategory: VIRMAN_CANDIDATE_LABEL,
+              riskDurumu: "HESAP_EKSIK",
+            },
+            fullContext
+          )
+        ),
         foreignVendor: false,
         status: "remaining",
         virmanCandidate: true,
@@ -924,3 +944,138 @@ export function shouldApplyCariResolutionAsyncResult({
 export const CARI_RESOLUTION_MODAL_MAX_WIDTH_PX = 1500;
 export const CARI_RESOLUTION_MODAL_WIDTH_CSS =
   "w-[min(96vw,1500px)] max-w-[1500px] h-[min(92vh,920px)] max-h-[92vh]";
+
+/** Büyük gruplarda ilk render satır sayısı */
+export const CARI_RESOLUTION_ROW_PAGE_SIZE = 25;
+
+export function directionLabelForCari(direction = "") {
+  const d = String(direction || "").toUpperCase();
+  if (d === "GIRIS" || d === "GELEN" || d === "ALACAK") return "Gelen";
+  if (d === "CIKIS" || d === "GIDEN" || d === "BORC") return "Giden";
+  return "—";
+}
+
+/**
+ * Grup kartı listesi için hafif satır görünümü (teknik JSON yok).
+ */
+export function buildCariResolutionRowView(row = {}, context = {}) {
+  const direction =
+    resolveLucaRowBankDirection(row, context) ||
+    String(row.direction || "").trim();
+  const desc = rowDescription(row);
+  const amount = rowAmount(row);
+  const statusLabel =
+    String(row.missingHesapCategory || "").trim() ||
+    (row.riskDurumu === "HESAP_EKSIK" ? "Hesap eksik" : "") ||
+    String(row.kontrolNotu || row.uyari || "")
+      .split("|")[0]
+      .trim()
+      .slice(0, 80) ||
+    "—";
+  const suggestedAccount = String(
+    row.hesapKodu || row.accountCode || ""
+  ).trim();
+
+  return {
+    id: String(row.id || ""),
+    date: rowDate(row),
+    description: desc,
+    direction,
+    directionLabel: directionLabelForCari(direction),
+    amount,
+    transactionType: String(row.transactionType || "—"),
+    statusLabel,
+    bankName: String(
+      row.bankaAdi || row.bankName || row.bank || row.kaynakAdi || ""
+    ).trim(),
+    analysisKey: String(row.analysisKey || ""),
+    suggestedAccount,
+    statusOrSuggestion: suggestedAccount
+      ? `Öneri: ${suggestedAccount}`
+      : statusLabel,
+    learnSeed: {
+      id: row.id,
+      analysisKey: row.analysisKey || "",
+      direction,
+      detayAciklama: desc,
+      fisAciklama: row.fisAciklama || "",
+      transactionType: row.transactionType || "",
+      belgeTuru: row.belgeTuru || "",
+      borc: row.borc,
+      alacak: row.alacak,
+      fisTarihi: rowDate(row),
+    },
+  };
+}
+
+export function createInitialCariRowSelection(rowIds = []) {
+  return new Set((rowIds || []).filter(Boolean).map(String));
+}
+
+export function toggleCariRowSelection(selectedSet, rowId) {
+  const next = new Set(selectedSet instanceof Set ? selectedSet : []);
+  const id = String(rowId || "");
+  if (!id) return next;
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+export function setAllCariRowSelection(rowIds = [], selected = true) {
+  if (!selected) return new Set();
+  return createInitialCariRowSelection(rowIds);
+}
+
+export function sliceCariRowsForDisplay(
+  rows = [],
+  visibleCount = CARI_RESOLUTION_ROW_PAGE_SIZE
+) {
+  const total = Array.isArray(rows) ? rows.length : 0;
+  const n = Math.max(
+    0,
+    Number(visibleCount) || CARI_RESOLUTION_ROW_PAGE_SIZE
+  );
+  return {
+    visible: (rows || []).slice(0, n),
+    hasMore: total > n,
+    remaining: Math.max(0, total - n),
+    total,
+  };
+}
+
+/**
+ * page.jsx group.rowIds ile çalışır; kısmi uygulamada orijinal id’yi resolved
+ * işaretletmemek için id’yi geçici kısmi anahtara çevirir.
+ */
+export function buildCariApplyGroupPayload(group, selectedRowIds = []) {
+  const allIds = (group?.rowIds || []).map(String).filter(Boolean);
+  const selectedWanted = new Set(
+    (selectedRowIds || []).map(String).filter(Boolean)
+  );
+  const selected = allIds.filter((id) => selectedWanted.has(id));
+  const applyAll = selected.length > 0 && selected.length >= allIds.length;
+  const firstId = selected[0];
+  const tx = (group?.transactions || []).find(
+    (t) => String(t.id) === String(firstId)
+  );
+  const seedRow = tx?.learnSeed
+    ? { ...(group.seedRow || {}), ...tx.learnSeed }
+    : group.seedRow;
+
+  return {
+    ...group,
+    rowIds: selected,
+    count: selected.length,
+    seedRow,
+    id: applyAll ? group.id : `${group.id}::__partial__`,
+    applySelectedCount: selected.length,
+    applyTotalCount: allIds.length,
+    isPartialApply: Boolean(selected.length && !applyAll),
+  };
+}
+
+export function formatCariApplyButtonLabel(selectedCount = 0) {
+  const n = Number(selectedCount) || 0;
+  if (n <= 0) return "Seçilen Hesabı İşleme Uygula";
+  return `Seçilen Hesabı ${n} İşleme Uygula`;
+}
