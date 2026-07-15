@@ -20,6 +20,7 @@ import {
   scheduleAfterPaint,
   shouldIgnoreCariResolutionOpen,
   shouldApplyCariResolutionAsyncResult,
+  isActiveCompanyOwnCariAccount,
   CARI_RESOLUTION_FILTERS,
   CARI_RESOLUTION_INITIAL_CANDIDATE_GROUPS,
   CARI_RESOLUTION_MODAL_MAX_WIDTH_PX,
@@ -622,6 +623,154 @@ test("modal width constants", () => {
   assert.ok(CARI_RESOLUTION_MODAL_WIDTH_CSS.includes("1500px"));
   assert.ok(CARI_RESOLUTION_MODAL_WIDTH_CSS.includes("96vw"));
   assert.ok(CARI_RESOLUTION_MODAL_WIDTH_CSS.includes("92vh"));
+});
+
+test("title + masked statement IBAN → virman adayı, cari grupta yok, 120/320 yok", () => {
+  const company = mareCompany();
+  const ctx = {
+    selectedCompany: company,
+    selectedBank: "VAKIFBANK",
+    companyPlans: [
+      {
+        accountCode: "320.01.D0003",
+        accountName: "DE MARE RESORT OTEL AS",
+        isActive: true,
+      },
+      {
+        accountCode: "320.01.001",
+        accountName: "DIS TEDARIKCI LTD",
+        isActive: true,
+      },
+    ],
+  };
+  const row = cariLikeRow({
+    id: "mask1",
+    detayAciklama:
+      "GÖND. HVL / MARE RESORT OTEL AS TR33 0001 5001 58** **** **00 01",
+    analysisKey: "mare-mask|CIKIS",
+  });
+  const snap = buildCariResolutionGroups([row], ctx, {
+    initialCandidateGroups: "all",
+  });
+  assert.equal(snap.groupCount, 0);
+  assert.equal(snap.cariMissingCount, 0);
+  assert.ok(snap.virmanCandidateCount >= 1);
+  assert.equal(snap.virmanCandidateGroups.length, 1);
+  const vg = snap.virmanCandidateGroups[0];
+  assert.equal(vg.virmanCandidate, true);
+  assert.equal((vg.candidates || []).length, 0);
+  assert.equal(vg.suggestedAccount || "", "");
+  const remaining = filterCariResolutionGroups(snap.groups, {
+    filter: CARI_RESOLUTION_FILTERS.REMAINING,
+  });
+  assert.equal(remaining.length, 0);
+  const allNormal = filterCariResolutionGroups(snap.groups, {
+    filter: CARI_RESOLUTION_FILTERS.ALL,
+  });
+  assert.equal(allNormal.length, 0);
+});
+
+test("aktif firmanın kendi 320 hesabı aday / tüm plan / fuzzy'de yok", () => {
+  const company = {
+    ...mareCompany(),
+    id: "co-mare",
+    taxNumber: "1234567890",
+  };
+  const plan = [
+    {
+      accountCode: "320.01.D0003",
+      accountName: "DE MARE RESORT OTEL AS",
+      isActive: true,
+    },
+    {
+      accountCode: "320.01.0099",
+      accountName: "MARE RESORT OTEL TEDARIK LTD",
+      isActive: true,
+    },
+    {
+      accountCode: "320.01.001",
+      accountName: "BASKA TEDARIKCI AS",
+      isActive: true,
+    },
+  ];
+  assert.equal(
+    isActiveCompanyOwnCariAccount(
+      { code: "320.01.D0003", name: "DE MARE RESORT OTEL AS" },
+      company
+    ),
+    true
+  );
+  assert.equal(
+    isActiveCompanyOwnCariAccount(
+      { code: "320.01.0099", name: "MARE RESORT OTEL TEDARIK LTD" },
+      company
+    ),
+    false
+  );
+
+  const top = searchCariResolutionCandidates(plan, {
+    direction: "CIKIS",
+    description: "GÖND. HVL / MARE RESORT OTEL AS fatura bedeli",
+    limit: 5,
+    selectedCompany: company,
+  });
+  assert.ok(
+    !top.candidates.some((c) => c.code.includes("320.01.D0003")),
+    "own 320 not in top 5"
+  );
+  assert.ok(top.ownCompanyFiltered >= 1);
+
+  const allPlan = searchCariResolutionCandidates(plan, {
+    query: "MARE",
+    direction: "CIKIS",
+    description: "MARE",
+    limit: 25,
+    searchAll: true,
+    selectedCompany: company,
+  });
+  assert.ok(
+    !allPlan.allCandidates.some((c) => c.code.includes("320.01.D0003")),
+    "own 320 not in all-plan search"
+  );
+  assert.ok(
+    allPlan.allCandidates.some((c) => c.code.includes("320.01.0099")),
+    "similar third party kept"
+  );
+});
+
+test("yalnız aktif firma ünvanı → otomatik virman adayı değil", () => {
+  const company = mareCompany();
+  const ctx = { selectedCompany: company, selectedBank: "VAKIFBANK" };
+  const row = cariLikeRow({
+    detayAciklama: "GÖND. HVL / MARE RESORT OTEL AS fatura bedeli",
+    analysisKey: "title-only|CIKIS",
+  });
+  const v = evaluateOwnAccountVirmanTransfer(row, ctx);
+  assert.equal(v.isVirmanCandidate, false);
+  assert.equal(isCariMissingRow(row, ctx), true);
+  const snap = buildCariResolutionGroups([row], ctx, {
+    initialCandidateGroups: false,
+  });
+  assert.equal(snap.groupCount, 1);
+  assert.equal(snap.virmanCandidateCount, 0);
+});
+
+test("virman adayı grup: hydrate aday üretmez", () => {
+  const group = {
+    id: "virman-aday:x",
+    virmanCandidate: true,
+    direction: "CIKIS",
+    samples: ["maskeli"],
+    foreignVendor: false,
+  };
+  const hydrated = hydrateCariResolutionGroupCandidates(
+    group,
+    [{ accountCode: "320.01.D0003", accountName: "DE MARE", isActive: true }],
+    { limit: 5, selectedCompany: mareCompany() }
+  );
+  assert.equal(hydrated.candidatesReady, true);
+  assert.deepEqual(hydrated.candidates, []);
+  assert.equal(hydrated.suggestedAccount, "");
 });
 
 console.log("\nAll cari missing resolution tests passed.");

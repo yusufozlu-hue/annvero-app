@@ -107,9 +107,12 @@ function GroupCard({
   group,
   companyPlans,
   planCache,
+  selectedCompany = null,
   isResolved,
   onApply,
   applyingId,
+  onRetry,
+  showServiceMeta = false,
 }) {
   const cardRef = useRef(null);
   const [hydratedGroup, setHydratedGroup] = useState(group);
@@ -124,6 +127,10 @@ function GroupCard({
 
   const ensureCandidates = () => {
     if (hydrateRequested.current || group.candidatesReady) return;
+    if (group.virmanCandidate) {
+      hydrateRequested.current = true;
+      return;
+    }
     hydrateRequested.current = true;
     setHydrating(true);
     // UI’yı bloke etmeden bir tick sonra
@@ -131,6 +138,7 @@ function GroupCard({
       const next = hydrateCariResolutionGroupCandidates(group, companyPlans, {
         planCache,
         limit: 5,
+        selectedCompany,
       });
       setHydratedGroup(next);
       setSelectedCode((prev) => prev || next.suggestedAccount || "");
@@ -140,7 +148,9 @@ function GroupCard({
   };
 
   useEffect(() => {
-    if (isResolved || group.candidatesReady) return undefined;
+    if (isResolved || group.candidatesReady || group.virmanCandidate) {
+      return undefined;
+    }
     const node = cardRef.current;
     if (!node || typeof IntersectionObserver !== "function") {
       ensureCandidates();
@@ -158,13 +168,17 @@ function GroupCard({
     obs.observe(node);
     return () => obs.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/visibility hydrate once per group id
-  }, [group.id, group.candidatesReady, isResolved]);
+  }, [group.id, group.candidatesReady, group.virmanCandidate, isResolved]);
 
   const liveSearch = useMemo(() => {
+    if (group.virmanCandidate || hydratedGroup.virmanCandidate) {
+      return { candidates: [], vendorMessage: VIRMAN_CANDIDATE_LABEL_UI };
+    }
     if (!expandedSearch && !query) {
       return {
         candidates: hydratedGroup.candidates || [],
         vendorMessage: hydratedGroup.vendorMessage || "",
+        ownCompanyFiltered: hydratedGroup.ownCompanyFiltered || 0,
       };
     }
     return searchCariResolutionCandidates(companyPlans, {
@@ -176,14 +190,17 @@ function GroupCard({
       foreignVendor: hydratedGroup.foreignVendor,
       searchAll,
       planCache,
+      selectedCompany,
     });
   }, [
     companyPlans,
     expandedSearch,
+    group.virmanCandidate,
     hydratedGroup,
     planCache,
     query,
     searchAll,
+    selectedCompany,
   ]);
 
   const isVirmanCandidateCard = Boolean(
@@ -204,7 +221,8 @@ function GroupCard({
     (!hydratedGroup.candidatesReady &&
       !expandedSearch &&
       !query &&
-      !isResolved);
+      !isResolved &&
+      !isVirmanCandidateCard);
 
   return (
     <article
@@ -224,6 +242,11 @@ function GroupCard({
             <span className="rounded-md border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
               {hydratedGroup.directionLabel}
             </span>
+            {isVirmanCandidateCard ? (
+              <span className="rounded-md border border-amber-700/50 bg-amber-950/40 px-2 py-0.5 text-[11px] text-amber-100">
+                Virman adayı
+              </span>
+            ) : null}
             {hydratedGroup.foreignVendor ? (
               <span className="rounded-md border border-violet-700/50 bg-violet-950/40 px-2 py-0.5 text-[11px] text-violet-100">
                 Yabancı satıcı
@@ -233,11 +256,11 @@ function GroupCard({
               <span className="rounded-md border border-emerald-700/50 bg-emerald-950/40 px-2 py-0.5 text-[11px] text-emerald-100">
                 Çözüldü
               </span>
-            ) : (
+            ) : !isVirmanCandidateCard ? (
               <span className="rounded-md border border-rose-700/40 bg-rose-950/30 px-2 py-0.5 text-[11px] text-rose-100">
                 Kalan
               </span>
-            )}
+            ) : null}
           </div>
           <p className="mt-1 text-sm text-slate-300">
             {hydratedGroup.count} işlem · Toplam{" "}
@@ -258,25 +281,46 @@ function GroupCard({
               </li>
             ))}
           </ul>
-          <p className="mt-2 break-words text-xs text-slate-500">
-            Güven: {hydratedGroup.confidenceLabel}
-            {hydratedGroup.suggestedAccount
-              ? ` · Öneri: ${hydratedGroup.suggestedAccount}`
-              : ""}
-          </p>
+          {!isVirmanCandidateCard ? (
+            <p className="mt-2 break-words text-xs text-slate-500">
+              Güven: {hydratedGroup.confidenceLabel}
+              {hydratedGroup.suggestedAccount
+                ? ` · Öneri: ${hydratedGroup.suggestedAccount}`
+                : ""}
+            </p>
+          ) : null}
         </div>
       </div>
 
       {!isResolved && isVirmanCandidateCard ? (
-        <div className="mt-4 rounded-xl border border-amber-700/40 bg-amber-950/25 px-4 py-3 text-sm text-amber-50">
-          <p className="font-semibold">
-            Virman adayı — karşı banka hesabı tanımlanmalı
-          </p>
-          <p className="mt-1 text-xs leading-relaxed text-amber-100/85">
-            Aktif firmanın 120/320 cari hesabı burada uygulanmaz. Firma kartına
-            karşı banka hesabını (IBAN + Luca 102) ekleyip ekstreyi yeniden
-            işlediğinizde 102↔102 kesin virman çözülür.
-          </p>
+        <div className="mt-4 space-y-3">
+          <div className="rounded-xl border border-amber-700/40 bg-amber-950/25 px-4 py-3 text-sm text-amber-50">
+            <p className="font-semibold">
+              Virman adayı — karşı banka hesabı tanımlanmalı
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-amber-100/85">
+              Aktif firmanın 120/320 cari hesabı burada uygulanmaz. Firma kartına
+              karşı banka hesabını (IBAN + Luca 102) ekleyip ekstreyi yeniden
+              işlediğinizde 102↔102 kesin virman çözülür.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <a
+              href="/muhasebe/firma-yonetimi?tab=banks"
+              className="inline-flex items-center justify-center rounded-xl border border-sky-600/50 bg-sky-950/40 px-4 py-2.5 text-sm font-semibold text-sky-100 transition hover:bg-sky-900/50"
+            >
+              Firma kartına git
+            </a>
+            {typeof onRetry === "function" ? (
+              <button
+                type="button"
+                onClick={() => onRetry()}
+                className="inline-flex items-center justify-center rounded-xl border border-amber-700/50 bg-amber-950/30 px-4 py-2.5 text-sm font-semibold text-amber-50 transition hover:bg-amber-900/40"
+              >
+                Hesap tanımlandıktan sonra yeniden analiz et
+              </button>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -320,6 +364,12 @@ function GroupCard({
               }
               loadingCandidates={showCandidateLoading}
             />
+            {showServiceMeta &&
+            Number(liveSearch.ownCompanyFiltered || 0) > 0 ? (
+              <p className="mt-2 text-[11px] text-slate-500">
+                Aktif firma hesabı filtrelendi: {liveSearch.ownCompanyFiltered}
+              </p>
+            ) : null}
           </div>
 
           <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-slate-800/80 bg-slate-950/60 p-3 sm:p-4">
@@ -368,6 +418,9 @@ function GroupCard({
   );
 }
 
+const VIRMAN_CANDIDATE_LABEL_UI =
+  "Virman adayı — karşı banka hesabı tanımlanmalı";
+
 /**
  * Eksik Hesap Çözüm Merkezi — cari grup çözümü V1 (modal panel).
  */
@@ -376,6 +429,7 @@ export default function CariMissingResolutionCenter({
   onClose,
   snapshot,
   companyPlans = [],
+  selectedCompany: selectedCompanyProp = null,
   resolvedGroupIds,
   onApplyGroup,
   applyingId = null,
@@ -393,6 +447,7 @@ export default function CariMissingResolutionCenter({
     () => snapshot?.virmanCandidateGroups || [],
     [snapshot?.virmanCandidateGroups]
   );
+  const selectedCompany = selectedCompanyProp || snapshot?.selectedCompany || null;
   const planCache = useMemo(
     () => snapshot?.planCache || createCariResolutionPlanCache(companyPlans),
     [snapshot?.planCache, companyPlans]
@@ -426,7 +481,7 @@ export default function CariMissingResolutionCenter({
       filter,
       query,
       resolvedIds: resolvedSet,
-    });
+    }).filter((g) => !g.virmanCandidate);
   }, [groups, virmanCandidateGroups, filter, query, resolvedSet]);
 
   useEffect(() => {
@@ -493,7 +548,7 @@ export default function CariMissingResolutionCenter({
             </button>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2">
               <p className="text-[11px] uppercase tracking-wide text-slate-500">
                 Toplam eksik
@@ -516,6 +571,14 @@ export default function CariMissingResolutionCenter({
               </p>
               <p className="text-lg font-semibold text-white">
                 {metric(snapshot?.groupCount)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-amber-800/40 bg-amber-950/20 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-amber-200/70">
+                Virman adayı
+              </p>
+              <p className="text-lg font-semibold text-amber-100">
+                {metric(snapshot?.virmanCandidateCount)}
               </p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2">
@@ -624,9 +687,12 @@ export default function CariMissingResolutionCenter({
                 group={group}
                 companyPlans={companyPlans}
                 planCache={planCache}
+                selectedCompany={selectedCompany}
                 isResolved={resolvedSet.has(group.id)}
                 onApply={onApplyGroup}
                 applyingId={applyingId}
+                onRetry={onRetry}
+                showServiceMeta={showServiceMeta}
               />
             ))
           )}

@@ -277,4 +277,18 @@ test("9) yalnız unvan yetersiz", () => {
   assert.equal(v.isVirmanCandidate, false);
 });
 
+test("10) maskeli IBAN (**) + unvan, nolu olmadan → virman adayı", () => {
+  const company = mareCompany();
+  const v = evaluateOwnAccountVirmanTransfer(
+    {
+      detayAciklama:
+        "GÖND. HVL / MARE RESORT OTEL AS TR33 0001 5001 58** **** **00 01",
+    },
+    { selectedCompany: company, selectedBank: "VAKIFBANK" }
+  );
+  assert.equal(v.isVirmanCandidate, true);
+  assert.equal(v.isOwnVirman, false);
+  assert.ok(!v.suggested102 || !String(v.suggested102).startsWith("320"));
+});
+
 console.log("\nAll bank internal transfer tests passed.");

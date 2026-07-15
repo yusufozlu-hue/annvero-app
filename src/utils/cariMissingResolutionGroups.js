@@ -7,6 +7,7 @@ import {
   buildCariMatchIndex,
   resolveCariAccountMatch,
   normalizeCariName,
+  normalizeCariNameCore,
   CARI_MATCH_REASON,
 } from "@/src/utils/cariAccountMatcher";
 import {
@@ -32,9 +33,11 @@ import {
   evaluateOwnAccountVirmanTransfer,
   isOwnAccountVirmanTransfer,
   isVirmanCandidateTransfer,
+  classifyVirmanForCariCenter,
   BANK_INTERNAL_TRANSFER,
   VIRMAN_CANDIDATE_LABEL,
 } from "@/src/utils/bankInternalTransfer";
+import { getCompanyDisplayName } from "@/src/utils/companies";
 
 export {
   extractIbansFromText,
@@ -42,6 +45,7 @@ export {
   evaluateOwnAccountVirmanTransfer,
   isOwnAccountVirmanTransfer,
   isVirmanCandidateTransfer,
+  classifyVirmanForCariCenter,
   BANK_INTERNAL_TRANSFER,
   VIRMAN_CANDIDATE_LABEL,
 };
@@ -86,11 +90,85 @@ export function isForeignVendorDescription(text = "") {
   return FOREIGN_VENDOR_RE.test(normalizeParserText(text));
 }
 
-/** Personel / vergi / finans (+ kesin kendi hesap virman) satırlarını cari çözüm grubundan çıkar */
+function digitsOnlyLoose(value = "") {
+  return String(value || "").replace(/\D/g, "");
+}
+
+/**
+ * Aktif firmanın kendi cari kartı (120/320) — aday listesine hiç girmez.
+ * Yalnız güçlü kimlik: VKN/vergi, exact unvan core, isOwnCompany.
+ * Benzer isimli üçüncü taraf (ekstra ayırt edici token) dışlanmaz.
+ */
+export function isActiveCompanyOwnCariAccount(candidate = {}, selectedCompany = null) {
+  if (!selectedCompany || !candidate) return false;
+  if (candidate.isOwnCompany === true) return true;
+
+  const companyId = String(selectedCompany.id || selectedCompany.companyId || "");
+  const candCompanyId = String(
+    candidate.companyId || candidate.firmaId || candidate.ownerCompanyId || ""
+  );
+  if (companyId && candCompanyId && companyId === candCompanyId) return true;
+
+  const companyTax = digitsOnlyLoose(
+    selectedCompany.taxNumber ||
+      selectedCompany.vkn ||
+      selectedCompany.vergiNo ||
+      selectedCompany.vergiNumarasi ||
+      ""
+  );
+  const candTax = digitsOnlyLoose(
+    candidate.taxNumber || candidate.vkn || candidate.vergiNo || ""
+  );
+  if (companyTax.length >= 10 && candTax === companyTax) return true;
+
+  const companyCore = normalizeCariNameCore(
+    getCompanyDisplayName(selectedCompany)
+  );
+  if (!companyCore || companyCore.length < 8) return false;
+
+  const rawName = String(
+    candidate.name ||
+      candidate.matchedName ||
+      candidate.accountName ||
+      candidate.hesapAdi ||
+      ""
+  ).trim();
+  if (!rawName) return false;
+  const nameCore = normalizeCariNameCore(rawName);
+  const stripped = nameCore
+    .replace(/^(DE|ALICI|SATICI|MUSTERI|CARI)\s+/i, "")
+    .trim();
+
+  if (nameCore === companyCore || stripped === companyCore) return true;
+
+  const companyTokens = companyCore.split(/\s+/).filter((t) => t.length >= 3);
+  if (companyTokens.length < 2) return false;
+  if (!companyTokens.every((t) => stripped.includes(t) || nameCore.includes(t))) {
+    return false;
+  }
+  // Şirket tokenlarının tamamı var; ekstra ayırt edici token var mı?
+  const ALLOWED_EXTRA = new Set([
+    "DE",
+    "AS",
+    "A",
+    "S",
+    "TICARET",
+    "LIMITED",
+    "LTD",
+    "SIRKETI",
+    "ANONIM",
+  ]);
+  const extra = stripped
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !companyTokens.includes(t));
+  return extra.every((t) => ALLOWED_EXTRA.has(t));
+}
+
+/** Personel / vergi / finans (+ kesin/aday virman) satırlarını cari çözüm grubundan çıkar */
 export function isExcludedFromCariResolution(
   row = {},
   context = {},
-  { skipOwnVirman = false } = {}
+  { skipOwnVirman = false, skipVirmanCandidate = false } = {}
 ) {
   const type = String(row.transactionType || "");
   if (PERSONEL_REQUIRED_TYPES.has(type)) return true;
@@ -108,13 +186,12 @@ export function isExcludedFromCariResolution(
   ) {
     return true;
   }
-  // Virman adayları normal cari listesinde yok — ayrı kova
-  if (
-    cat === MISSING_HESAP_CATEGORY.VIRMAN_ADAY ||
-    isVirmanCandidateTransfer(row, context)
-  ) {
-    return true;
-  }
+  if (cat === MISSING_HESAP_CATEGORY.VIRMAN_ADAY) return true;
+
+  const virmanBucket = classifyVirmanForCariCenter(row, context).bucket;
+  if (!skipOwnVirman && virmanBucket === "definite") return true;
+  if (!skipVirmanCandidate && virmanBucket === "candidate") return true;
+
   const desc = normalizeParserText(rowDescription(row));
   if (
     /\b(MAAS|MAAŞ|BORDRO|MAAS AVANS|PERSONEL AVANS)\b/i.test(desc) &&
@@ -124,7 +201,6 @@ export function isExcludedFromCariResolution(
       return type.includes("MAAS") || type.includes("PERSONEL");
     }
   }
-  if (!skipOwnVirman && isOwnAccountVirmanTransfer(row, context)) return true;
   return false;
 }
 
@@ -255,6 +331,8 @@ export function searchCariResolutionCandidates(
     foreignVendor = false,
     searchAll = false,
     planCache = null,
+    selectedCompany = null,
+    filterStats = null,
   } = {}
 ) {
   const prefixes = preferredCariPrefixesForDirection(direction);
@@ -270,6 +348,7 @@ export function searchCariResolutionCandidates(
 
   const ranked = [];
   const seen = new Set();
+  let ownCompanyFiltered = 0;
 
   const pushCand = (cand) => {
     const code = compactCode(cand.code);
@@ -277,6 +356,22 @@ export function searchCariResolutionCandidates(
     if (foreignVendor && isExpenseAccountCode(code)) return;
     if (!searchAll && !accountMatchesPrefixes(code, prefixes)) return;
     if (!isAccountAllowedForDirection(code, direction)) return;
+    if (
+      isActiveCompanyOwnCariAccount(
+        {
+          code,
+          name: cand.name || cand.matchedName,
+          taxNumber: cand.taxNumber,
+          vkn: cand.vkn,
+          companyId: cand.companyId,
+          isOwnCompany: cand.isOwnCompany,
+        },
+        selectedCompany
+      )
+    ) {
+      ownCompanyFiltered += 1;
+      return;
+    }
     seen.add(code);
     ranked.push({
       code,
@@ -320,6 +415,11 @@ export function searchCariResolutionCandidates(
     if (ranked.length >= Math.max(limit, 40)) break;
   }
 
+  if (filterStats && typeof filterStats === "object") {
+    filterStats.ownCompanyFiltered =
+      (filterStats.ownCompanyFiltered || 0) + ownCompanyFiltered;
+  }
+
   return {
     extractedParty: match?.extractedParty || "",
     hasVergiNo: Boolean(match?.hasVergiNo),
@@ -328,6 +428,7 @@ export function searchCariResolutionCandidates(
     allCandidates: ranked,
     foreignVendor,
     preferredPrefixes: prefixes,
+    ownCompanyFiltered,
     vendorMessage: foreignVendor
       ? ranked.some((c) => accountMatchesPrefixes(c.code, ["320"]))
         ? ""
@@ -336,6 +437,7 @@ export function searchCariResolutionCandidates(
     _stats: {
       indexBuilds: cache.indexBuildCount || 0,
       planNormalizes: cache.planNormalizeCount || 0,
+      ownCompanyFiltered,
     },
   };
 }
@@ -402,6 +504,7 @@ function applySearchToGroupBase(base, search) {
     confidenceLabel,
     matchReason: top?.matchReason || "",
     candidatesReady: true,
+    ownCompanyFiltered: Number(search.ownCompanyFiltered || 0),
   };
 }
 
@@ -412,9 +515,21 @@ function applySearchToGroupBase(base, search) {
 export function hydrateCariResolutionGroupCandidates(
   group,
   companyPlans = [],
-  { planCache = null, limit = 5 } = {}
+  { planCache = null, limit = 5, selectedCompany = null } = {}
 ) {
   if (!group) return group;
+  if (group.virmanCandidate) {
+    return {
+      ...group,
+      candidates: [],
+      suggestedAccount: "",
+      suggestedName: "",
+      confidence: 0,
+      confidenceLabel: "Banka hesabı tanımla",
+      vendorMessage: VIRMAN_CANDIDATE_LABEL,
+      candidatesReady: true,
+    };
+  }
   const sample = group.samples?.[0] || "";
   const search = searchCariResolutionCandidates(companyPlans, {
     direction: group.direction,
@@ -423,6 +538,7 @@ export function hydrateCariResolutionGroupCandidates(
     foreignVendor: group.foreignVendor,
     searchAll: false,
     planCache,
+    selectedCompany: selectedCompany || group.selectedCompany || null,
   });
   return applySearchToGroupBase(group, search);
 }
@@ -435,6 +551,48 @@ export function hydrateCariResolutionGroupCandidates(
  *   İlk N grubun adaylarını peşinen üret. false → hiç; 'all' → hepsi.
  * @param {boolean} options.collectStats ölçüm için sayaç
  */
+function pushRowIntoCariGroupMap(groups, row, fullContext) {
+  const desc = rowDescription(row);
+  const direction = resolveLucaRowBankDirection(row, fullContext) || "";
+  const key =
+    row.analysisKey ||
+    normalizeBankAnalysisKey(desc, direction) ||
+    `unknown|${direction || "NA"}`;
+  if (!groups.has(key)) {
+    groups.set(key, {
+      analysisKey: key,
+      direction,
+      rows: [],
+      samples: [],
+      dates: [],
+    });
+  }
+  const g = groups.get(key);
+  if (g.direction && direction && g.direction !== direction) {
+    const splitKey = `${key}__${direction}`;
+    if (!groups.has(splitKey)) {
+      groups.set(splitKey, {
+        analysisKey: splitKey,
+        direction,
+        rows: [],
+        samples: [],
+        dates: [],
+      });
+    }
+    const sg = groups.get(splitKey);
+    sg.rows.push(row);
+    if (sg.samples.length < 3) sg.samples.push(desc.slice(0, 160));
+    const d = rowDate(row);
+    if (d) sg.dates.push(d);
+    return;
+  }
+  if (!g.direction && direction) g.direction = direction;
+  g.rows.push(row);
+  if (g.samples.length < 3) g.samples.push(desc.slice(0, 160));
+  const d = rowDate(row);
+  if (d) g.dates.push(d);
+}
+
 export function buildCariResolutionGroups(rows = [], context = {}, options = {}) {
   const {
     initialCandidateGroups = CARI_RESOLUTION_INITIAL_CANDIDATE_GROUPS,
@@ -448,88 +606,58 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       context.selectedBank
     );
   const fullContext = { ...context, ownAccountContext };
+  const selectedCompany = context.selectedCompany || null;
 
   const groupStart = collectStats ? performance.now() : 0;
 
-  // Virman adayları (kesin 102↔102 olmayan soft sinyaller)
+  const divertedVirman = [];
   const virmanCandidates = [];
+  const groups = new Map();
+  let unresolvedCount = 0;
+  let totalMissing = 0;
+
   for (const row of rows || []) {
     if (!isMissingHesapRow(row)) continue;
-    if (isOwnAccountVirmanTransfer(row, fullContext)) continue;
-    if (!isVirmanCandidateTransfer(row, fullContext)) continue;
-    const verdict = evaluateOwnAccountVirmanTransfer(row, fullContext);
-    virmanCandidates.push({
-      rowId: row.id,
-      analysisKey: row.analysisKey || "",
-      reasons: verdict.reasons || [],
-      suggested102: verdict.suggested102 || "",
-      label: VIRMAN_CANDIDATE_LABEL,
-      description: rowDescription(row).slice(0, 160),
-      direction: resolveLucaRowBankDirection(row, fullContext) || "",
-      amount: rowAmount(row),
-    });
-  }
+    totalMissing += 1;
 
-  // Kesin virman (complete) — cari listesinde yok
-  const divertedVirman = [];
-  for (const row of rows || []) {
-    if (!isCariMissingRow(row, fullContext, { skipOwnVirman: true })) continue;
-    if (!isOwnAccountVirmanTransfer(row, fullContext)) continue;
-    divertedVirman.push({
-      rowId: row.id,
-      analysisKey: row.analysisKey || "",
-      reasons: ["definite_102_pair"],
-      suggested102: "",
-      label: "Firma kendi hesabı / virman",
-    });
-  }
+    const virman = classifyVirmanForCariCenter(row, fullContext);
 
-  const unresolved = (rows || []).filter((row) =>
-    isCariMissingRow(row, fullContext)
-  );
-  const groups = new Map();
-
-  for (const row of unresolved) {
-    const desc = rowDescription(row);
-    const direction = resolveLucaRowBankDirection(row, fullContext) || "";
-    const key =
-      row.analysisKey ||
-      normalizeBankAnalysisKey(desc, direction) ||
-      `unknown|${direction || "NA"}`;
-    if (!groups.has(key)) {
-      groups.set(key, {
-        analysisKey: key,
-        direction,
-        rows: [],
-        samples: [],
-        dates: [],
+    // 1) Kesin virman — cari akışına hiç girme
+    if (virman.bucket === "definite") {
+      const verdict = evaluateOwnAccountVirmanTransfer(row, fullContext);
+      divertedVirman.push({
+        rowId: row.id,
+        analysisKey: row.analysisKey || "",
+        reasons: verdict.reasons?.length
+          ? verdict.reasons
+          : ["definite_102_pair"],
+        suggested102: verdict.suggested102 || "",
+        label: virman.label || "Firma kendi hesabı / virman",
       });
-    }
-    const g = groups.get(key);
-    // Güvenlik: gelen/giden karışmasın
-    if (g.direction && direction && g.direction !== direction) {
-      const splitKey = `${key}__${direction}`;
-      if (!groups.has(splitKey)) {
-        groups.set(splitKey, {
-          analysisKey: splitKey,
-          direction,
-          rows: [],
-          samples: [],
-          dates: [],
-        });
-      }
-      const sg = groups.get(splitKey);
-      sg.rows.push(row);
-      if (sg.samples.length < 3) sg.samples.push(desc.slice(0, 160));
-      const d = rowDate(row);
-      if (d) sg.dates.push(d);
       continue;
     }
-    if (!g.direction && direction) g.direction = direction;
-    g.rows.push(row);
-    if (g.samples.length < 3) g.samples.push(desc.slice(0, 160));
-    const d = rowDate(row);
-    if (d) g.dates.push(d);
+
+    // 2) Virman adayı — cari aday / 120-320 üretme
+    if (virman.bucket === "candidate") {
+      const verdict = evaluateOwnAccountVirmanTransfer(row, fullContext);
+      virmanCandidates.push({
+        rowId: row.id,
+        analysisKey: row.analysisKey || "",
+        reasons: verdict.reasons || [],
+        suggested102: verdict.suggested102 || "",
+        label: VIRMAN_CANDIDATE_LABEL,
+        description: rowDescription(row).slice(0, 160),
+        direction: resolveLucaRowBankDirection(row, fullContext) || "",
+        amount: rowAmount(row),
+        dates: rowDate(row),
+      });
+      continue;
+    }
+
+    // 3) Normal cari grubu
+    if (!isCariMissingRow(row, fullContext)) continue;
+    unresolvedCount += 1;
+    pushRowIntoCariGroupMap(groups, row, fullContext);
   }
 
   const groupingMs = collectStats ? performance.now() - groupStart : 0;
@@ -548,6 +676,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
   let candidateMs = 0;
   let candidateHydrations = 0;
   let planScansDuringCandidates = 0;
+  let ownCompanyFilteredTotal = 0;
 
   const ranked = [...groups.values()]
     .map((g) => {
@@ -588,12 +717,13 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       const enriched = hydrateCariResolutionGroupCandidates(base, companyPlans, {
         planCache,
         limit: 5,
+        selectedCompany,
       });
       if (collectStats) {
         candidateMs += performance.now() - t0;
         candidateHydrations += 1;
-        // Her hydrate: match + (en fazla) bir plan pool taraması; index yeniden kurulmaz
         planScansDuringCandidates += 1;
+        ownCompanyFilteredTotal += Number(enriched.ownCompanyFiltered || 0);
       }
       return enriched;
     });
@@ -601,11 +731,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
   const divertedGroupKeys = new Set(
     divertedVirman.map((d) => d.analysisKey).filter(Boolean)
   );
-  const candidateGroupKeys = new Set(
-    virmanCandidates.map((d) => d.analysisKey).filter(Boolean)
-  );
 
-  // Virman adayı grupları — 120/320 aday yok; banka hesabı tanımlama mesajı
   const candidateGroupMap = new Map();
   for (const item of virmanCandidates) {
     const key = item.analysisKey || `virman-aday|${item.rowId}`;
@@ -615,6 +741,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
         direction: item.direction || "",
         rows: [],
         samples: [],
+        dates: [],
         totalAmount: 0,
       });
     }
@@ -623,48 +750,53 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     if (g.samples.length < 3 && item.description) {
       g.samples.push(item.description);
     }
+    if (item.dates) g.dates.push(item.dates);
     g.totalAmount += Number(item.amount) || 0;
   }
   const virmanCandidateGroups = [...candidateGroupMap.values()]
-    .map((g) => ({
-      id: `virman-aday:${g.analysisKey}`,
-      analysisKey: g.analysisKey,
-      partyName:
-        normalizeCariName(g.samples[0] || "").slice(0, 80) || "Virman adayı",
-      direction: g.direction || "",
-      directionLabel:
-        g.direction === "GIRIS" || g.direction === "GELEN"
-          ? "Gelen"
-          : g.direction === "CIKIS" || g.direction === "GIDEN"
-            ? "Giden"
-            : "—",
-      count: g.rows.length,
-      totalAmount: Math.round(g.totalAmount * 100) / 100,
-      samples: g.samples,
-      dateFrom: "",
-      dateTo: "",
-      rowIds: g.rows.map((r) => r.rowId).filter(Boolean),
-      foreignVendor: false,
-      status: "remaining",
-      virmanCandidate: true,
-      vendorMessage: VIRMAN_CANDIDATE_LABEL,
-      preferredPrefixes: ["102"],
-      candidates: [],
-      suggestedAccount: "",
-      suggestedName: "",
-      confidence: 0,
-      confidenceLabel: "Banka hesabı tanımla",
-      matchReason: "",
-      candidatesReady: true,
-    }))
+    .map((g) => {
+      const sortedDates = [...g.dates].filter(Boolean).sort();
+      return {
+        id: `virman-aday:${g.analysisKey}`,
+        analysisKey: g.analysisKey,
+        partyName:
+          normalizeCariName(g.samples[0] || "").slice(0, 80) || "Virman adayı",
+        direction: g.direction || "",
+        directionLabel:
+          g.direction === "GIRIS" || g.direction === "GELEN"
+            ? "Gelen"
+            : g.direction === "CIKIS" || g.direction === "GIDEN"
+              ? "Giden"
+              : "—",
+        count: g.rows.length,
+        totalAmount: Math.round(g.totalAmount * 100) / 100,
+        samples: g.samples,
+        dateFrom: sortedDates[0] || "",
+        dateTo: sortedDates[sortedDates.length - 1] || "",
+        rowIds: g.rows.map((r) => r.rowId).filter(Boolean),
+        foreignVendor: false,
+        status: "remaining",
+        virmanCandidate: true,
+        vendorMessage: VIRMAN_CANDIDATE_LABEL,
+        preferredPrefixes: ["102"],
+        candidates: [],
+        suggestedAccount: "",
+        suggestedName: "",
+        confidence: 0,
+        confidenceLabel: "Banka hesabı tanımla",
+        matchReason: "",
+        candidatesReady: true,
+      };
+    })
     .sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount);
 
   const result = {
-    totalMissing: (rows || []).filter(isMissingHesapRow).length,
-    cariMissingCount: unresolved.length,
+    totalMissing,
+    cariMissingCount: unresolvedCount,
     groupCount: ranked.length,
     groups: ranked,
     planCache,
+    selectedCompany,
     virmanDivertedCount: divertedVirman.length,
     virmanDivertedGroupCount: divertedGroupKeys.size,
     virmanDivertedWith102Count: divertedVirman.filter((d) =>
@@ -688,10 +820,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       indexBuilds: planCache.indexBuildCount || 0,
       planNormalizeCount: planCache.planNormalizeCount || 0,
       planScansDuringCandidates,
-      /**
-       * Eski davranış: her grup için index yeniden → groupCount index build.
-       * Yeni: 1 index + sadece hydrate edilen grup kadar aday araması.
-       */
+      ownCompanyFiltered: ownCompanyFilteredTotal,
       legacyWouldHaveRebuiltIndex: ranked.length,
     };
   }

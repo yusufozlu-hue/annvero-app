@@ -267,7 +267,7 @@ function resolveOwnAccountContext(context = {}) {
   return null;
 }
 
-function descriptionHasCompanyTitle(descNorm, ownCtx) {
+function descriptionHasCompanyTitle(descNorm, ownCtx, { soft = false } = {}) {
   const core = String(ownCtx?.companyNameCore || "").trim();
   if (core.length < 5) return false;
   const hay = String(descNorm || "");
@@ -276,22 +276,61 @@ function descriptionHasCompanyTitle(descNorm, ownCtx) {
   if (hayCore.includes(core)) return true;
   const tokens = core.split(/\s+/).filter((t) => t.length >= 3);
   if (tokens.length < 2) return false;
-  return tokens.every((t) => hayCore.includes(t) || hay.includes(t));
+  if (tokens.every((t) => hayCore.includes(t) || hay.includes(t))) return true;
+  // Maskeli hesap anlatımında kısmi unvan (ekstre kırpması / ANON… kısaltması)
+  if (soft) {
+    const strong = tokens.filter((t) => t.length >= 4);
+    const hits = strong.filter((t) => hayCore.includes(t) || hay.includes(t));
+    return hits.length >= 2;
+  }
+  return false;
 }
 
 /**
- * Maskeli ekstre IBAN (TR82 0001 5001 58** **** **84 49) — kesin değil.
+ * Maskeli ekstre IBAN (TR82 0001 5001 58** **** **84 49) veya
+ * baş/son parça + “nolu/hesabından” anlatımı — kesin değil.
  */
 export function hasMaskedStatementIbanInText(evidenceRaw, ownCtx) {
   if (!ownCtx) return false;
   const ignore = buildStatementAccountIgnoreSets(ownCtx);
   const descDigits = digitsOnly(evidenceRaw);
+  const text = String(evidenceRaw || "");
+  const hasNarration = /nolu|hesab(i|ı|ından|indan|ına|ina)\b/i.test(text);
+  const hasMaskMarker = /\*{2,}/.test(text) || /x{2,}/i.test(text);
+
   for (const iban of ignore.ignoreIbans || []) {
     const d = digitsOnly(iban);
     if (d.length < 16) continue;
     const head = d.slice(0, 10);
     const tail = d.slice(-4);
     if (descDigits.includes(head) && descDigits.includes(tail)) return true;
+    // Maskeli ekstre (TR82 0001 5001 58** …) veya nolu anlatımı + baş parça
+    if ((hasMaskMarker || hasNarration) && descDigits.includes(head)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Unvan + ekstre hesabı anlatımı → virman adayı sinyali (unvan tek başına yetmez).
+ */
+export function hasOwnAccountTransferCandidateSignal(evidenceRaw, ownCtx) {
+  if (!ownCtx) return false;
+  const titleHit = descriptionHasCompanyTitle(
+    normalizeCariName(evidenceRaw),
+    ownCtx,
+    { soft: true }
+  );
+  if (!titleHit) return false;
+  if (hasMaskedStatementIbanInText(evidenceRaw, ownCtx)) return true;
+  const ignore = buildStatementAccountIgnoreSets(ownCtx);
+  if (
+    extractIbansFromText(evidenceRaw).some((iban) =>
+      ignore.ignoreIbans?.has(iban)
+    )
+  ) {
+    return true;
   }
   return false;
 }
@@ -371,19 +410,18 @@ export function evaluateOwnAccountVirmanTransfer(row = {}, context = {}) {
   const titleHit = ownCtx
     ? descriptionHasCompanyTitle(descNorm, ownCtx)
     : false;
+  const titleHitSoft = ownCtx
+    ? descriptionHasCompanyTitle(descNorm, ownCtx, { soft: true })
+    : false;
   const virmanKeyword = OWN_VIRMAN_KEYWORD_RE.test(evidenceRaw);
   const typeIsVirman = isVirmanTypeLocal(type) || type === BANK_INTERNAL_TRANSFER;
 
   const counter = findDefiniteCounterOwnBank(evidenceRaw, ownCtx);
-  const maskedStatement =
-    hasMaskedStatementIbanInText(evidenceRaw, ownCtx) ||
-    (() => {
-      // Açıklamada tam ekstre IBAN’ı da maskeli/statement sayılır
-      const ignore = buildStatementAccountIgnoreSets(ownCtx);
-      return extractIbansFromText(evidenceRaw).some((iban) =>
-        ignore.ignoreIbans?.has(iban)
-      );
-    })();
+  const ownAccountNarration = hasOwnAccountTransferCandidateSignal(
+    evidenceRaw,
+    ownCtx
+  );
+  const maskedStatement = ownAccountNarration;
 
   const reasons = [];
   let matchedBank = counter.bank || null;
@@ -429,8 +467,8 @@ export function evaluateOwnAccountVirmanTransfer(row = {}, context = {}) {
     };
   }
 
-  // Maskeli ekstre IBAN + unvan → yalnız aday (kesin değil)
-  if (maskedStatement && titleHit) {
+  // Unvan + ekstre hesabı/maskeli IBAN anlatımı → yalnız aday
+  if (maskedStatement && (titleHit || titleHitSoft)) {
     return {
       ...emptyVerdict({
         status: VIRMAN_STATUS.CANDIDATE,
@@ -443,7 +481,7 @@ export function evaluateOwnAccountVirmanTransfer(row = {}, context = {}) {
 
   // Yetersiz: yalnız unvan, müşteri no, ekstre IBAN alanı, “Mare” vb.
   return emptyVerdict({
-    reasons: titleHit ? ["title_only_insufficient"] : [],
+    reasons: titleHit || titleHitSoft ? ["title_only_insufficient"] : [],
   });
 }
 
@@ -642,7 +680,11 @@ export function isOwnAccountVirmanTransfer(row = {}, context = {}) {
 
 export function isVirmanCandidateTransfer(row = {}, context = {}) {
   if (row.virmanCandidate === true) return true;
-  if (String(row.kontrolNotu || "").includes("Virman adayı")) return true;
+  const note = `${row.kontrolNotu || ""} ${row.uyari || ""} ${row.warning || ""}`;
+  if (/Virman adayı/i.test(note)) return true;
+  if (String(row.missingHesapCategory || "").includes("Virman adayı")) {
+    return true;
+  }
   const v = evaluateOwnAccountVirmanTransfer(row, context);
   if (v.isVirmanCandidate) return true;
   const pair = resolveVirman102Pair({
@@ -653,4 +695,17 @@ export function isVirmanCandidateTransfer(row = {}, context = {}) {
     row,
   });
   return Boolean(pair.isVirmanCandidate && !pair.complete);
+}
+
+/**
+ * Cari merkez yönlendirme: definite | candidate | none
+ */
+export function classifyVirmanForCariCenter(row = {}, context = {}) {
+  if (isOwnAccountVirmanTransfer(row, context)) {
+    return { bucket: "definite", label: "Firma kendi hesabı / virman" };
+  }
+  if (isVirmanCandidateTransfer(row, context)) {
+    return { bucket: "candidate", label: VIRMAN_CANDIDATE_LABEL };
+  }
+  return { bucket: "none", label: "" };
 }
