@@ -1,7 +1,11 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { getSafeNextPath } from "@/src/utils/authRedirect";
+import {
+  ANNVERO_RETURN_TO_COOKIE,
+  getReturnToCookieOptions,
+  getSafeNextPath,
+} from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
 import {
   buildLoginEventContextFromRequest,
@@ -12,11 +16,29 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function resolvePublicOrigin(request) {
+  const requestUrl = new URL(request.url);
+  const host =
+    request.headers.get("x-forwarded-host") ||
+    request.headers.get("host") ||
+    requestUrl.host;
+  const proto =
+    request.headers.get("x-forwarded-proto") ||
+    (requestUrl.protocol === "https:" ? "https" : "http");
+
+  if (!host || host.includes("localhost") || host.includes("127.0.0.1")) {
+    if (process.env.NODE_ENV === "production") {
+      return "https://www.annvero.com";
+    }
+  }
+
+  return `${proto}://${host}`.replace(/\/$/, "");
+}
+
 export async function GET(request) {
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
-  const next = getSafeNextPath(requestUrl.searchParams.get("next"), "/dashboard");
-  const origin = requestUrl.origin;
+  const origin = resolvePublicOrigin(request);
 
   if (!code) {
     return NextResponse.redirect(`${origin}/login?error=auth_callback_missing_code`);
@@ -28,6 +50,12 @@ export async function GET(request) {
   }
 
   const cookieStore = await cookies();
+  const fromCookie = cookieStore.get(ANNVERO_RETURN_TO_COOKIE)?.value;
+  const next = getSafeNextPath(
+    fromCookie || requestUrl.searchParams.get("next"),
+    "/dashboard"
+  );
+
   const supabase = createServerClient(config.supabaseUrl, config.anonKey, {
     cookies: {
       getAll() {
@@ -67,5 +95,11 @@ export async function GET(request) {
     // fallback: oturum oluştu, profil senkronu sonraki istekte tamamlanır
   }
 
-  return NextResponse.redirect(`${origin}${next}`);
+  const response = NextResponse.redirect(`${origin}${next}`);
+  response.cookies.set(
+    ANNVERO_RETURN_TO_COOKIE,
+    "",
+    getReturnToCookieOptions({ clear: true })
+  );
+  return response;
 }

@@ -126,15 +126,40 @@ export async function syncAnnveroUserMetadata(authUserId = "", profile = {}) {
   return { ok: !error, error };
 }
 
+function isLocalHostUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "0.0.0.0" ||
+      host === "[::1]"
+    );
+  } catch {
+    return /localhost|127\.0\.0\.1/i.test(String(value || ""));
+  }
+}
+
 function getSiteUrl(redirectTo = "") {
-  if (redirectTo) return redirectTo.replace(/\/$/, "");
+  const productionFallback = "https://www.annvero.com";
+  const isProd = process.env.NODE_ENV === "production";
+
+  if (redirectTo) {
+    const cleaned = redirectTo.replace(/\/$/, "");
+    if (isProd && isLocalHostUrl(cleaned)) return productionFallback;
+    return cleaned;
+  }
   if (process.env.NEXT_PUBLIC_SITE_URL) {
-    return process.env.NEXT_PUBLIC_SITE_URL.replace(/\/$/, "");
+    const cleaned = process.env.NEXT_PUBLIC_SITE_URL.replace(/\/$/, "");
+    if (isProd && isLocalHostUrl(cleaned)) return productionFallback;
+    return cleaned;
   }
   if (process.env.VERCEL_URL) {
     const url = process.env.VERCEL_URL;
     return url.startsWith("http") ? url.replace(/\/$/, "") : `https://${url}`;
   }
+  // Production'da asla localhost'a düşme.
+  if (isProd) return productionFallback;
   return "http://localhost:3000";
 }
 
@@ -155,7 +180,7 @@ export async function inviteAuthUser({
   }
 
   const siteUrl = getSiteUrl(redirectTo);
-  const callbackUrl = `${siteUrl}/auth/callback?next=${encodeURIComponent("/dashboard")}`;
+  const callbackUrl = `${siteUrl}/auth/callback`;
 
   const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, {
     redirectTo: callbackUrl,
@@ -176,7 +201,7 @@ export async function sendPasswordRecoveryEmail(email = "", redirectTo = "") {
   }
 
   const siteUrl = getSiteUrl(redirectTo);
-  const callbackUrl = `${siteUrl}/auth/callback?next=${encodeURIComponent("/login")}`;
+  const callbackUrl = `${siteUrl}/auth/callback`;
 
   const { data, error } = await supabase.auth.admin.generateLink({
     type: "recovery",

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import { clearClientAuthStorage } from "@/src/lib/supabase/client";
 import { useAdminAccess } from "@/src/hooks/useAdminAccess";
 
 const actionButtonClass =
@@ -47,8 +48,17 @@ export default function AuthUserBar({
     setIsSigningOut(true);
 
     try {
-      await supabase.auth.signOut();
-      router.push("/login");
+      await supabase.auth.signOut({ scope: "global" });
+      clearClientAuthStorage();
+      try {
+        await fetch("/api/auth/return-to", {
+          method: "DELETE",
+          credentials: "include",
+        });
+      } catch {
+        // cookie temizliği best-effort
+      }
+      router.replace("/login");
       router.refresh();
     } finally {
       setIsSigningOut(false);

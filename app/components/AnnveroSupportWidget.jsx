@@ -71,6 +71,8 @@ function ChevronIcon({ open }) {
 export default function AnnveroSupportWidget() {
   const pathname = usePathname();
   const hideOnDataWorkbench =
+    pathname === "/login" ||
+    pathname?.startsWith("/login?") ||
     pathname?.startsWith("/muhasebe/banka-ekstresi") ||
     pathname?.startsWith("/muhasebe/fis-donusturme");
 

@@ -7,10 +7,7 @@ import { buildLoginUrl } from "@/src/utils/authRedirect";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 
 /**
- * Modül düzeyinde oturum önbelleği.
- * AuthGate soft remount olsa bile tekrar tam ekran AuthLoadingScreen
- * göstermemek için; güvenlik zayıflatılmaz — getSession ve
- * onAuthStateChange arka planda doğrular, gerçek oturum düşüşünde yönlendirir.
+ * Modül düzeyinde oturum önbelleği — soft remount'ta tam ekran loading yok.
  */
 let cachedAuthStatus = /** @type {"loading"|"authenticated"|"unauthenticated"} */ (
   "loading"
@@ -31,7 +28,6 @@ export default function AuthGate({ children }) {
     };
 
     if (!supabase) {
-      // Senkron setState-in-effect kuralını aşmak için mikro görev.
       queueMicrotask(() => applyStatus("unauthenticated"));
       return () => {
         isMounted = false;
@@ -57,10 +53,28 @@ export default function AuthGate({ children }) {
   useEffect(() => {
     if (status !== "unauthenticated") return;
 
-    router.replace(buildLoginUrl(pathname));
+    let cancelled = false;
+    (async () => {
+      try {
+        await fetch("/api/auth/return-to", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: pathname }),
+        });
+      } catch {
+        // Cookie yazılamasa da temiz /login'e git
+      }
+      if (!cancelled) {
+        router.replace(buildLoginUrl());
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [status, pathname, router]);
 
-  // Tam ekran loading yalnız gerçekten bilinmeyen ilk açılışta.
   if (status === "loading") {
     return <AuthLoadingScreen />;
   }
