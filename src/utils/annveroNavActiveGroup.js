@@ -39,6 +39,23 @@ export function findBestActiveGroup(groups, pathname) {
   return bestGroup;
 }
 
+/**
+ * Aktif ana grubu (sabit/pinlenecek) diğer gruplardan ayırır.
+ * - activeGroup: üstte sabit gösterilecek aktif ana grup (yoksa null).
+ * - otherGroups: kaydırılabilir alanda gösterilecek gruplar; orijinal
+ *   göreli sıralarını korur ve aktif grubu İÇERMEZ (tekrar gösterilmez).
+ * Toplam grup sayısı korunur: activeGroup + otherGroups = tüm gruplar.
+ */
+export function partitionNavGroupsByActive(groups, pathname) {
+  const list = Array.isArray(groups) ? groups : [];
+  const active = findBestActiveGroup(list, pathname);
+  const activeTitle = active?.title || "";
+  const otherGroups = activeTitle
+    ? list.filter((g) => g.title !== activeTitle)
+    : list;
+  return { activeGroup: active || null, otherGroups };
+}
+
 export function isMenuItemActive(href, pathname) {
   const current = normalizeMenuPath(pathname);
   const target = normalizeMenuPath(href);

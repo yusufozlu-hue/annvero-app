@@ -90,7 +90,7 @@ export const N8N_MAX_RETRY = 3;
 export const N8N_CRITICAL_FLOWS = new Set(["risk-daily", "bank-parser"]);
 
 export const N8N_FLOW_MODULE_ROUTES = {
-  "mail-to-pool": "/ai-ofis-asistani?view=pool",
+  "mail-to-pool": "/evrak-havuzu",
   "bank-parser": "/muhasebe/banka-ekstresi",
   "declaration-distribution": "/muhasebe/beyanname-tahakkuk",
   "risk-daily": "/muhasebe/risk-denetim-merkezi",

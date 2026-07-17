@@ -5,7 +5,6 @@ import AnnveroDataTable from "@/src/components/AnnveroDataTable";
 import {
   AI_OFIS_DOCUMENT_STATUS,
   AI_OFIS_DOCUMENT_TYPES,
-  AI_OFIS_SOURCES,
   AI_OFIS_WORKFLOW_STATUS,
   AI_OFIS_WORKFLOW_STATUS_LIST,
 } from "@/src/config/aiOfisAsistaniDefaults";
@@ -37,7 +36,7 @@ function AiBadge({ confidence }) {
   );
 }
 
-function DocumentTimeline({ doc, history = [] }) {
+export function DocumentTimeline({ doc, history = [] }) {
   const events = useMemo(() => {
     const base = [
       {
@@ -78,7 +77,7 @@ function DocumentTimeline({ doc, history = [] }) {
   );
 }
 
-function DocumentCard({ doc, companies, assignees, onUpdate, onRoute, onPreview, history }) {
+export function DocumentCard({ doc, companies, assignees = [], onUpdate, onRoute, onPreview, history }) {
   return (
     <article className="rounded-2xl border border-gray-800 bg-gray-900 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -307,7 +306,7 @@ export default function EvrakPoolPanel({
   const [previewDoc, setPreviewDoc] = useState(null);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
-  const assignees = useMemo(() => loadCachedUsers(), [documents]);
+  const assignees = useMemo(() => loadCachedUsers(), []);
 
   const tableColumns = useMemo(
     () => [

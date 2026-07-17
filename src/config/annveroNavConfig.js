@@ -61,30 +61,34 @@ export const ANNVERO_NAV_GROUPS = [
   },
   {
     title: "AI Ofis Asistanı",
+    href: "/ai-ofis-asistani",
     items: [
-      { label: "AI Sınıflandırma", href: "/ai-ofis-asistani?view=classification" },
-      { label: "Firma Eşleştirme", href: "/ai-ofis-asistani?view=matching" },
-      { label: "Görevler", href: "/ai-ofis-asistani?view=tasks" },
-      { label: "Hatırlatmalar", href: "/ai-ofis-asistani?view=reminders" },
-      { label: "İşlem Geçmişi", href: "/ai-ofis-asistani?view=history" },
+      { label: "AI Sınıflandırma", href: "/ai-ofis-asistani/siniflandirma" },
+      { label: "Firma Eşleştirme", href: "/ai-ofis-asistani/firma-eslestirme" },
+      { label: "Görevler", href: "/ai-ofis-asistani/gorevler" },
+      { label: "Hatırlatmalar", href: "/ai-ofis-asistani/hatirlatmalar" },
+      { label: "İşlem Geçmişi", href: "/ai-ofis-asistani/islem-gecmisi" },
     ],
   },
   {
     title: "Evrak Havuzu",
+    href: "/evrak-havuzu",
     items: [
-      { label: "Evrak Havuzu", href: "/ai-ofis-asistani?view=pool" },
-      { label: "Mail Gelen Kutusu", href: "/ai-ofis-asistani?view=mail" },
+      { label: "Evrak Havuzu", href: "/evrak-havuzu" },
+      { label: "Mail Gelen Kutusu", href: "/evrak-havuzu/mail" },
     ],
   },
   {
     title: "Otomasyon Merkezi",
+    href: "/otomasyon",
     items: [
-      { label: "Akışlar", href: "/otomasyon?view=flows" },
-      { label: "Görev Kuyruğu", href: "/otomasyon?view=queue" },
-      { label: "Sistem Logları", href: "/otomasyon?view=logs" },
-      { label: "Hata Yönetimi", href: "/otomasyon?view=errors" },
-      { label: "Zamanlanmış İşlemler", href: "/otomasyon?view=schedules" },
-      { label: "Entegrasyonlar", href: "/otomasyon?view=integrations" },
+      { label: "Akışlar", href: "/otomasyon" },
+      { label: "Tetikleyiciler", href: "/otomasyon/tetikleyiciler" },
+      { label: "Görev Kuyruğu", href: "/otomasyon/kuyruk" },
+      { label: "Sistem Logları", href: "/otomasyon/loglar" },
+      { label: "Hata Yönetimi", href: "/otomasyon/hatalar" },
+      { label: "Zamanlanmış İşlemler", href: "/otomasyon/zamanlanmis" },
+      { label: "Entegrasyonlar", href: "/otomasyon/entegrasyonlar" },
     ],
   },
   {
@@ -96,6 +100,9 @@ export const ANNVERO_NAV_GROUPS = [
     ],
   },
   {
+    // Kural: Tüm hesaplama araçları "Araçlar Merkezi" sayfasındaki kartlardan
+    // açılır. Sidebar'da yalnızca aşağıdaki iki giriş bulunur; yeni bir
+    // hesaplama aracı eklendiğinde OTOMATİK olarak buraya eklenmez.
     title: "Hesaplama Araçları",
     items: [
       { label: "Araçlar Merkezi", href: "/platform/hesaplama-araclari" },
@@ -109,7 +116,7 @@ export const ANNVERO_NAV_GROUPS = [
       { label: "Parametreler", href: "/admin/parametre-yonetimi", roles: ["admin"] },
       { label: "Mevzuat Hap Notları", href: "/admin/mevzuat-hap-notlari", roles: ["admin"] },
       { label: "Firma Yönetimi", href: "/muhasebe/firma-yonetimi", roles: ["admin", "partner"] },
-      { label: "Entegrasyonlar", href: "/otomasyon?view=integrations", roles: ["admin", "partner", "mudur", "muhasebe_personeli"] },
+      { label: "Entegrasyonlar", href: "/otomasyon/entegrasyonlar", roles: ["admin", "partner", "mudur", "muhasebe_personeli"] },
       { label: "Kullanıcılar & Roller", href: "/admin/kullanicilar-roller", roles: ["admin", "partner"] },
       {
         label: "CORE Test Merkezi",

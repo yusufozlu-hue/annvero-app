@@ -77,8 +77,8 @@ export const AI_OFIS_MODULE_ROUTES = {
   "Personel belgesi": { label: "İK / Personel Merkezi", href: "/ik-personel" },
   "Ticaret sicil evrakı": { label: "Ticaret Sicil Merkezi", href: "/ticaret-sicil" },
   "E-defter dosyası": { label: "E-Defter Kontrol Merkezi", href: "/muhasebe/e-defter-kontrol" },
-  Sözleşme: { label: "Evrak Arşivi", href: "/ai-ofis-asistani?view=pool&status=Arşivlendi" },
-  Diğer: { label: "Evrak Havuzu", href: "/ai-ofis-asistani?view=pool" },
+  Sözleşme: { label: "Evrak Arşivi", href: "/evrak-havuzu?status=Arşivlendi" },
+  Diğer: { label: "Evrak Havuzu", href: "/evrak-havuzu" },
 };
 
 export const AI_OFIS_TASK_TYPES = [

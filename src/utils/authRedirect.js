@@ -6,6 +6,7 @@ const ALLOWED_PREFIXES = [
   "/sistem-loglari",
   "/otomasyon",
   "/ai-ofis-asistani",
+  "/evrak-havuzu",
   "/ik-personel",
   "/platform",
   "/hesaplama-araclari",

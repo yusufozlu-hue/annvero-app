@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   findBestActiveGroup,
   isMenuItemActive,
+  partitionNavGroupsByActive,
 } from "../src/utils/annveroNavActiveGroup.js";
 import {
   createNavPrefetchController,
@@ -157,5 +158,86 @@ assert.equal(
     ?.title,
   "Beyanname Merkezi"
 );
+
+// Kullanıcı istegi: her route için aktif grup dogru bulunmali.
+// Alt menüsü olmayan ana menü öğesi (Dashboard) da bulunmali.
+assert.equal(
+  findBestActiveGroup(ANNVERO_NAV_GROUPS, "/dashboard")?.title,
+  "Dashboard"
+);
+assert.equal(
+  findBestActiveGroup(ANNVERO_NAV_GROUPS, "/otomasyon/tetikleyiciler")?.title,
+  "Otomasyon Merkezi"
+);
+assert.equal(
+  findBestActiveGroup(ANNVERO_NAV_GROUPS, "/ai-ofis-asistani/siniflandirma")
+    ?.title,
+  "AI Ofis Asistanı"
+);
+assert.equal(
+  findBestActiveGroup(ANNVERO_NAV_GROUPS, "/evrak-havuzu/mail")?.title,
+  "Evrak Havuzu"
+);
+assert.equal(
+  findBestActiveGroup(ANNVERO_NAV_GROUPS, "/muhasebe/adat-hesaplama")?.title,
+  "Finansal Analiz Merkezi"
+);
+// Gerçek platform route'u — public /hesaplama-araclari ile karistirilmamali.
+assert.equal(
+  findBestActiveGroup(ANNVERO_NAV_GROUPS, "/platform/hesaplama-araclari")
+    ?.title,
+  "Hesaplama Araçları"
+);
+assert.equal(
+  findBestActiveGroup(
+    ANNVERO_NAV_GROUPS,
+    "/platform/hesaplama-araclari/maas-hesaplama"
+  )?.title,
+  "Hesaplama Araçları"
+);
+// Dashboard alt menüsü olmadigi için isMenuItemActive dogrudan eslesir.
+assert.equal(isMenuItemActive("/dashboard", "/dashboard"), true);
+
+// --- Sabit (pinlenmiş) aktif grup + kaydırılabilir diğerleri kabul testleri ---
+const baseTitles = ANNVERO_NAV_GROUPS.map((g) => g.title);
+
+function assertPartition(pathname, expectedActive) {
+  const { activeGroup, otherGroups } = partitionNavGroupsByActive(
+    ANNVERO_NAV_GROUPS,
+    pathname
+  );
+  // 1) Aktif grup üstte sabit alana pinlenir.
+  assert.equal(activeGroup?.title, expectedActive, `active@${pathname}`);
+  // 2) Toplam grup sayısı korunur (pin + digerleri = tümü).
+  assert.equal(
+    1 + otherGroups.length,
+    ANNVERO_NAV_GROUPS.length,
+    `count@${pathname}`
+  );
+  // 3) Aktif grup, kaydirilabilir listede TEKRAR gosterilmez.
+  assert.ok(
+    !otherGroups.some((g) => g.title === expectedActive),
+    `no-dup@${pathname}`
+  );
+  // 4) Digerleri orijinal goreli sirasini korur.
+  const restOriginal = baseTitles.filter((t) => t !== expectedActive);
+  assert.deepEqual(
+    otherGroups.map((g) => g.title),
+    restOriginal,
+    `rest-order@${pathname}`
+  );
+  // 5) Ayni baslik iki kez gorunmez (pin + digerleri birlikte).
+  const allTitles = [activeGroup.title, ...otherGroups.map((g) => g.title)];
+  assert.equal(new Set(allTitles).size, allTitles.length, `unique@${pathname}`);
+}
+
+assertPartition("/platform/hesaplama-araclari", "Hesaplama Araçları");
+assertPartition(
+  "/platform/hesaplama-araclari/maas-hesaplama",
+  "Hesaplama Araçları"
+);
+assertPartition("/muhasebe/adat-hesaplama", "Finansal Analiz Merkezi");
+assertPartition("/otomasyon/tetikleyiciler", "Otomasyon Merkezi");
+assertPartition("/dashboard", "Dashboard");
 
 console.log("PASS annvero-nav-active-group + prefetch contention");

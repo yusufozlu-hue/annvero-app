@@ -16,6 +16,7 @@ import {
   findBestActiveGroup,
   isMenuItemActive,
   normalizeMenuPath,
+  partitionNavGroupsByActive,
 } from "@/src/utils/annveroNavActiveGroup";
 import {
   createNavPrefetchController,
@@ -78,6 +79,65 @@ function navLinkClass({ active, pending }) {
     return "bg-[var(--annvero-hover)] font-medium text-[var(--annvero-text)] before:bg-[var(--annvero-accent)] opacity-90";
   }
   return "text-[var(--annvero-shell-muted)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)] before:bg-[var(--annvero-border)] group-hover/item:before:bg-[var(--annvero-accent)]";
+}
+
+function NavSubItem({
+  group,
+  item,
+  pathname,
+  pendingHref,
+  onNavIntent,
+  onWarmHref,
+  onNavPrime,
+}) {
+  const itemActive = isMenuItemActive(item.href, pathname);
+  const pending = normalizeMenuPath(pendingHref) === normalizeMenuPath(item.href);
+  return (
+    <Link
+      href={item.href}
+      prefetch={true}
+      onClick={(e) => onNavIntent?.(e, item.href)}
+      onPointerDown={() => onNavPrime?.(item.href)}
+      onMouseEnter={() => onWarmHref?.(item.href)}
+      onFocus={() => onWarmHref?.(item.href)}
+      title={`${group.title} · ${item.label}`}
+      className={`group/item relative flex items-center justify-between rounded-lg py-2 pl-8 pr-3 text-[13px] transition-colors duration-100 ${navLinkClass(
+        { active: itemActive, pending }
+      )} before:absolute before:left-3 before:top-1/2 before:h-1.5 before:w-1.5 before:-translate-y-1/2 before:rounded-full before:content-['']`}
+    >
+      <span>{item.label}</span>
+      {pending && !itemActive ? (
+        <span className="text-[10px] font-medium text-[var(--annvero-accent)]">
+          …
+        </span>
+      ) : null}
+    </Link>
+  );
+}
+
+// Operasyon Paneli başlığının hemen altında SABİT kalan aktif ana modül
+// başlığı. Yalnız başlık pinlenir (alt menüler kaydırılabilir alandadır).
+// ÖNEMLİ: Bu bir <Link> DEĞİL, salt bir <button>'dır. Aynı (aktif) route'a
+// tekrar navigasyon/prefetch yapmaz; yalnızca kaydırılabilir nav alanını
+// en üste döndürür (onScrollTop). Böylece self-referential prefetch/navigation
+// döngüsü (sürekli yükleniyor) oluşmaz.
+function PinnedActiveHeader({ group, collapsed, onScrollTop }) {
+  return (
+    <button
+      type="button"
+      onClick={onScrollTop}
+      title={group.title}
+      aria-label={`${group.title} · alt menüleri göster`}
+      className="group flex w-full items-center gap-3 rounded-xl bg-[var(--annvero-active)] px-2.5 py-2.5 text-left text-[var(--annvero-text)] shadow-sm ring-1 ring-[var(--annvero-accent)]/35"
+    >
+      <MenuIcon title={group.title} />
+      {!collapsed ? (
+        <span className="flex-1 text-[15px] font-bold tracking-tight">
+          {group.title}
+        </span>
+      ) : null}
+    </button>
+  );
 }
 
 function SidebarGroup({
@@ -178,32 +238,18 @@ function SidebarGroup({
       </div>
       {open && !collapsed ? (
         <div className="mb-2 space-y-0.5 border-b border-[var(--annvero-shell-separator)] pb-2 pl-2">
-          {group.items.map((item) => {
-            const itemActive = isMenuItemActive(item.href, pathname);
-            const pending =
-              normalizeMenuPath(pendingHref) === normalizeMenuPath(item.href);
-            return (
-              <Link
-                key={`${group.title}-${item.label}`}
-                href={item.href}
-                prefetch={true}
-                onClick={(e) => onNavIntent?.(e, item.href)}
-                onPointerDown={() => onNavPrime?.(item.href)}
-                onMouseEnter={() => onWarmHref?.(item.href)}
-                onFocus={() => onWarmHref?.(item.href)}
-                className={`group/item relative flex items-center justify-between rounded-lg py-2 pl-8 pr-3 text-[13px] transition-colors duration-100 ${navLinkClass(
-                  { active: itemActive, pending }
-                )} before:absolute before:left-3 before:top-1/2 before:h-1.5 before:w-1.5 before:-translate-y-1/2 before:rounded-full before:content-['']`}
-              >
-                <span>{item.label}</span>
-                {pending && !itemActive ? (
-                  <span className="text-[10px] font-medium text-[var(--annvero-accent)]">
-                    …
-                  </span>
-                ) : null}
-              </Link>
-            );
-          })}
+          {group.items.map((item) => (
+            <NavSubItem
+              key={`${group.title}-${item.label}`}
+              group={group}
+              item={item}
+              pathname={pathname}
+              pendingHref={pendingHref}
+              onNavIntent={onNavIntent}
+              onWarmHref={onWarmHref}
+              onNavPrime={onNavPrime}
+            />
+          ))}
         </div>
       ) : null}
     </div>
@@ -220,20 +266,30 @@ export default function AnnveroSidebar({
   const router = useRouter();
   const { role, isManagementUser, isAdmin, isPartner } = useUserRole();
   const [openMenu, setOpenMenu] = useState("");
+  const [autoOpenedGroup, setAutoOpenedGroup] = useState("");
   const [pendingHref, setPendingHref] = useState("");
   const [, startTransition] = useTransition();
   const prefetchRef = useRef(null);
+  const navRef = useRef(null);
   const routerRef = useRef(router);
-  routerRef.current = router;
 
   const isDev = isDevelopmentEnvironment();
 
-  if (!prefetchRef.current) {
-    prefetchRef.current = createNavPrefetchController({
-      prefetchFn: (href) => routerRef.current.prefetch(href),
-      isDev,
-    });
-  }
+  // Router referansını render sırasında ref'e yazmadan güncel tut.
+  useEffect(() => {
+    routerRef.current = router;
+  }, [router]);
+
+  // Prefetch controller'ı istemcide bir kez, render dışında (effect içinde) oluştur.
+  // Bağımlı effect'lerden önce tanımlandığı için ilk commit'te önce çalışır.
+  useEffect(() => {
+    if (prefetchRef.current == null) {
+      prefetchRef.current = createNavPrefetchController({
+        prefetchFn: (href) => routerRef.current?.prefetch(href),
+        isDev,
+      });
+    }
+  }, [isDev]);
 
   const coreTestVisible = canAccessCoreTestCenter({
     isDevelopment: isDev,
@@ -259,27 +315,50 @@ export default function AnnveroSidebar({
     }).filter(Boolean);
   }, [role, coreTestVisible, isDev]);
 
-  const activeGroupTitle = useMemo(() => {
-    const group = findBestActiveGroup(visibleNavGroups, pathname);
-    return group?.items?.length ? group.title : "";
-  }, [pathname, visibleNavGroups]);
+  // Aktif ana grubu (üstte sabit) diğer gruplardan (kaydırılabilir) ayır.
+  const { activeGroup, otherGroups } = useMemo(
+    () => partitionNavGroupsByActive(visibleNavGroups, pathname),
+    [visibleNavGroups, pathname]
+  );
+  // Alt menülü grubun otomatik açılması / başlık vurgusu için (yalnız items'lı gruplar).
+  const activeGroupTitle = activeGroup?.items?.length ? activeGroup.title : "";
+  // Aktif ana grup (alt menülü veya menüsüz) — üstte sabit alana pinlenir.
+  const activeTitle = activeGroup?.title || "";
+
+  // Aktif route'un grubunu otomatik aç. Effect yerine render sırasında
+  // "önceki değeri hatırla" desenini kullanır; böylece set-state-in-effect
+  // oluşmaz ve grup yalnızca aktif grup değiştiğinde bir kez açılır
+  // (kullanıcının elle açıp kapatması korunur).
+  if (activeTitle && activeTitle !== autoOpenedGroup) {
+    setAutoOpenedGroup(activeTitle);
+    // Alt menülü aktif grup açılır; alt menüsüz grupta (activeGroupTitle === "")
+    // tüm gruplar kapanır (yalnız aktif grup açık kalsın).
+    setOpenMenu(activeGroupTitle);
+  }
+
+  // Hedefe ulaşıldığında bekleyen (pending) durumu render sırasında temizle;
+  // completeNavigation gibi harici yan etki effect içinde kalır.
+  if (
+    pendingHref &&
+    normalizeMenuPath(pathname) === normalizeMenuPath(pendingHref)
+  ) {
+    setPendingHref("");
+  }
 
   useEffect(() => {
     prefetchRef.current?.setActivePath(pathname);
-    if (activeGroupTitle) {
-      setOpenMenu(activeGroupTitle);
-    }
-    if (pendingHref) {
-      const matched =
-        normalizeMenuPath(pathname) === normalizeMenuPath(pendingHref);
-      if (matched) {
-        setPendingHref("");
-        prefetchRef.current?.completeNavigation(pathname);
-      }
-    } else if (prefetchRef.current?.isNavigationPending) {
-      prefetchRef.current.completeNavigation(pathname);
-    }
-  }, [pathname, activeGroupTitle, pendingHref]);
+    // Controller içindeki navigation-pending durumunu senkronla. completeNavigation
+    // kendi içinde navigationPending + hedef eşleşmesini kontrol eder (güvenli/no-op).
+    prefetchRef.current?.completeNavigation(pathname);
+  }, [pathname]);
+
+  // Route (veya aktif grup) değişince kaydırılabilir nav alanını YALNIZCA bir
+  // kez en üste getir; böylece aktif modülün alt menüleri görünür olur.
+  // Yalnız sidebar nav kaydırılır; ana sayfanın scroll'una dokunulmaz.
+  useEffect(() => {
+    const nav = navRef.current;
+    if (nav) nav.scrollTop = 0;
+  }, [pathname, activeTitle]);
 
   // Açık grup ısıt — navigasyon sırasında yasak
   useEffect(() => {
@@ -318,6 +397,13 @@ export default function AnnveroSidebar({
       }
     };
   }, [visibleNavGroups, pathname, isDev]);
+
+  // Sabit aktif başlığa tıklanınca YALNIZCA kaydırılabilir nav alanını en üste
+  // getir; böylece aktif modülün alt menüleri tekrar görünür. Navigasyon yok,
+  // ana sayfa etkilenmez.
+  const scrollNavToTop = () => {
+    navRef.current?.scrollTo({ top: 0 });
+  };
 
   const onWarmHref = (href) => {
     if (prefetchRef.current?.isNavigationPending) return;
@@ -392,8 +478,40 @@ export default function AnnveroSidebar({
           </div>
         </div>
 
-        <nav className="sidebar-premium-nav flex-1 overflow-y-auto px-2 py-3">
-          {visibleNavGroups.map((group, index) => (
+        {/* Yalnız aktif ana modül BAŞLIĞI sabit; alt menüler kaydırılabilir
+            alandadır. Ölçeklenebilir: alt menü sayısı artsa da sabit alan
+            büyümez. Scroll edilse bile başlık kaybolmaz. */}
+        {activeGroup ? (
+          <div className="shrink-0 border-b border-[var(--annvero-shell-separator)] px-2 pt-3 pb-2">
+            <PinnedActiveHeader
+              group={activeGroup}
+              collapsed={collapsed}
+              onScrollTop={scrollNavToTop}
+            />
+          </div>
+        ) : null}
+
+        {/* Tek kaydırma alanı: önce aktif modülün alt menüleri, ardından
+            ayırıcı ve diğer ana modüller. Aktif modül burada tekrar
+            gösterilmez; diğerleri orijinal göreli sıralarını korur. */}
+        <nav ref={navRef} className="sidebar-premium-nav min-h-0 flex-1 overflow-y-auto px-2 py-3">
+          {!collapsed && activeGroup?.items?.length ? (
+            <div className="mb-2 space-y-0.5 border-b border-[var(--annvero-shell-separator)] pb-2 pl-2">
+              {activeGroup.items.map((item) => (
+                <NavSubItem
+                  key={`${activeGroup.title}-${item.label}`}
+                  group={activeGroup}
+                  item={item}
+                  pathname={pathname}
+                  pendingHref={pendingHref}
+                  onNavIntent={onNavIntent}
+                  onWarmHref={onWarmHref}
+                  onNavPrime={onNavPrime}
+                />
+              ))}
+            </div>
+          ) : null}
+          {otherGroups.map((group, index) => (
             <SidebarGroup
               key={group.title}
               group={group}
