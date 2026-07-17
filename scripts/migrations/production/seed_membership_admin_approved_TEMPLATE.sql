@@ -1,0 +1,83 @@
+-- ANNVERO PRODUCTION — ADMIN ONAYLI membership/profil seed SABLONU
+-- ===========================================================================
+-- !!! BU BIR SABLONDUR — GERCEK KULLANICI/FIRMA ATAMASI ICERMEZ. !!!
+-- ===========================================================================
+-- Ne zaman: forward_only_drive_rbac_production.sql UYGULANDIKTAN hemen sonra,
+--           kod deploy'undan ONCE (ayni bakim penceresinde).
+-- Nasil:    Supabase SQL Editor (service_role) ile calistirin.
+--
+-- NEDEN GEREKLI:
+--   Migration yalnizca YAPIYI kurar. Production'da profil/membership YOKTUR; bu nedenle
+--   migration biter bitmez TUM kullanicilar DB-RLS'de fail-closed (sifir firma) olur.
+--   Bu seed, admin'in ACIKCA onayladigi profilleri ve firma uyeliklerini yazar.
+--
+-- GUVENLIK KURALLARI (ZORUNLU):
+--   1) user_metadata / app_metadata company_ids OTOMATIK GUVENILIR KABUL EDILMEZ.
+--      Her role ve her firma atamasini admin TEK TEK dogrular.
+--   2) admin/partner rolleri OTOMATIK TAHMIN EDILMEZ; elle belirlenir.
+--   3) Placeholder'lari (BURAYA_...) gercek degerlerle degistirmeden CALISTIRMAYIN.
+--   4) auth_user_id = ilgili auth.users.id (report_production_users_membership_readonly.sql ciktisi).
+--   5) Bu dosya repoya GERCEK KIMLIK/UUID ile commit EDILMEZ.
+--
+-- NOT (runtime): 023 fonksiyonlari auth.uid() = auth_user_id kullanir. profileService
+--   login'de profiles.id yazar; bu seed auth_user_id'yi ACIKCA doldurdugu icin seed'lenen
+--   kullanicilar sorunsuz calisir. (Seed'lenmemis YENI kullanicilar icin auth_user_id
+--   doldurma app follow-up'i gerekir — bkz. rapor.)
+-- ===========================================================================
+
+BEGIN;
+
+-- ---------------------------------------------------------------------------
+-- 1) ADMIN / PARTNER profilleri (firma membership GEREKMEZ — rol kisa devresi).
+--    Her satiri admin dogrular. companyIds = [] birak (admin/partner tum firmalar).
+-- ---------------------------------------------------------------------------
+-- ORNEK (yorumda — gercek degerlerle acin):
+-- insert into public.annvero_user_profiles
+--   (id, auth_user_id, email, display_name, role, permissions, company_ids, is_active)
+-- values
+--   ('BURAYA_AUTH_USER_UUID', 'BURAYA_AUTH_USER_UUID', 'BURAYA_ADMIN_EMAIL',
+--    'BURAYA_AD_SOYAD', 'admin', '[]'::jsonb, '[]'::jsonb, true)
+-- on conflict (email) do update set
+--   id = excluded.id,
+--   auth_user_id = excluded.auth_user_id,
+--   role = excluded.role,           -- admin onayli rol
+--   is_active = excluded.is_active,
+--   updated_at = now();
+
+-- ---------------------------------------------------------------------------
+-- 2) NORMAL (regular) kullanici profilleri.
+--    role: admin/partner DISI (or. 'mudur', 'muhasebe_personeli' ...). Admin belirler.
+-- ---------------------------------------------------------------------------
+-- insert into public.annvero_user_profiles
+--   (id, auth_user_id, email, display_name, role, permissions, company_ids, is_active)
+-- values
+--   ('BURAYA_AUTH_USER_UUID', 'BURAYA_AUTH_USER_UUID', 'BURAYA_EMAIL',
+--    'BURAYA_AD_SOYAD', 'BURAYA_ROL', '[]'::jsonb, '[]'::jsonb, true)
+-- on conflict (email) do update set
+--   id = excluded.id,
+--   auth_user_id = excluded.auth_user_id,
+--   role = excluded.role,
+--   is_active = excluded.is_active,
+--   updated_at = now();
+
+-- ---------------------------------------------------------------------------
+-- 3) NORMAL kullanicilar icin ADMIN ONAYLI firma uyeligi (membership).
+--    Atomik RPC kullanilir: gecersiz firma ID'sinde TUM cagri rollback olur.
+--    target_company_ids = admin'in ACIKCA dogruladigi firma ID listesi (companies.id).
+--    (admin/partner icin RPC CAGIRMAYIN — rol kisa devresi zaten tum firmalari verir.)
+-- ---------------------------------------------------------------------------
+-- select public.annvero_sync_company_membership(
+--   'BURAYA_AUTH_USER_UUID'::uuid,
+--   array['BURAYA_FIRMA_ID_1','BURAYA_FIRMA_ID_2']::text[],
+--   'BURAYA_ACTOR_ADMIN_UUID'::uuid
+-- );
+
+-- ---------------------------------------------------------------------------
+-- 4) Dogrulama (opsiyonel, ayni transaction icinde):
+--    - Profiller: select id, auth_user_id, email, role, is_active from public.annvero_user_profiles;
+--    - Membership: select user_id, company_id, is_active from public.annvero_company_members order by user_id;
+-- ---------------------------------------------------------------------------
+
+-- Placeholder kaldiysa COMMIT ETMEYIN. Tum satirlar dogrulandiysa:
+COMMIT;
+-- Sorun varsa: ROLLBACK;

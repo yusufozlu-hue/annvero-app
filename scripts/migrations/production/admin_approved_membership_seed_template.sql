@@ -1,0 +1,122 @@
+-- ANNVERO PRODUCTION — Admin ONAYLI profil + membership seed SABLONU (TASLAK)
+-- ===========================================================================
+-- BU DOSYA OLDUGU GIBI CALISTIRILAMAZ / CALISTIRILMAMALIDIR.
+-- Tum yazma ifadeleri BILEREK YORUM (comment) halindedir. Gercek kullanici ve
+-- firma atamalari YOKTUR. Admin, her satiri ELLE dogrulayip acmalidir.
+--
+-- UYGULAMA SIRASINDAKI YERI:
+--   preflight -> report_production_users_membership_readonly (admin inceler)
+--   -> forward_only_drive_rbac_production (atomik migration) -> [BU SABLON: admin onayli seed]
+--   -> verify_drive_rbac_production
+--
+-- NEDEN GEREKLI:
+--   023 sonrasi firma erisiminin TEK kaynagi annvero_company_members'tir. Migration
+--   bu tabloyu BOS olusturur. Bu yuzden normal (admin/partner disi) kullanicilar,
+--   admin onayli seed yapilana kadar SIFIR firma gorur (fail-closed, kasitli).
+--
+-- KESIN GUVENLIK KURALLARI:
+--   1) admin/partner rolu OTOMATIK ATANMAZ. Rolu admin ELLE ve bilinçli belirler.
+--   2) user_metadata.company_ids OTOMATIK GUVENILIR KABUL EDILMEZ / KOPYALANMAZ.
+--      report ciktisi yalniz KARAR DESTEGIDIR; her firma atamasi elle onaylanir.
+--   3) Membership yalniz atomik SECURITY DEFINER RPC ile yapilir
+--      (annvero_sync_company_membership); dogrudan INSERT onerilmez.
+--   4) Gecersiz company_id -> companies FK ihlali -> RPC exception -> rollback.
+--   5) Bu dosya SECRET icermez. Placeholder'lar <...> ile isaretlidir.
+-- ===========================================================================
+
+-- ===========================================================================
+-- NOT (ADMIN PROFIL KARARI — bu sablonda TEKRAR ETMEYIN):
+--   Acikca onaylanan admin profili
+--     email=yusufozlu@gmail.com,
+--     auth_user_id=a46284eb-2ee3-4be0-a33e-a166d25261a4, role=admin, is_active=true
+--   forward-only pakete (scripts/migrations/production/forward_only_drive_rbac_production.sql
+--   icindeki "admin-approved profile" seed blogu) ZATEN alinmistir ve atomik transaction'da
+--   023'ten SONRA calisir.
+--
+--   Bu kullanici icin annvero_company_members GEREKMEZ: admin/partner rolu
+--   annvero_can_access_company() icinde kisa devre yapar ve TUM firmalara erisim verir.
+--   Bu yuzden bu sablonda o admin icin ikinci bir calisan seed EKLENMEZ. Asagidaki
+--   bloklar yalniz DIGER (normal) kullanicilarin membership'i icin sablondur.
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- ADIM 0 (READ-ONLY dogrulama): hedef auth kullanicisi ve firma id'lerini bul.
+--   Bu SELECT'ler guvenle calistirilabilir; hicbir sey degistirmez.
+-- ---------------------------------------------------------------------------
+
+-- 0a) Hedef kullanicinin auth.uid degerini e-posta ile bul:
+-- select id as auth_user_id, email, last_sign_in_at
+-- from auth.users
+-- where lower(email) = lower('<KULLANICI_EPOSTA>');
+
+-- 0b) Atanacak firma id'lerinin GERCEKTEN var oldugunu dogrula (bos donerse gecersiz):
+--     NOT: companies kolon adi company_name (snake_case). deleted_at yalniz 015
+--     uygulandiysa vardir; gerekiyorsa "and deleted_at is null" eklenebilir.
+-- select id, company_name
+-- from public.companies
+-- where id in ('<COMPANY_ID_1>', '<COMPANY_ID_2>');
+
+-- ---------------------------------------------------------------------------
+-- ADIM 1 (opsiyonel): profil satiri yoksa GUVENLI profil olusturma.
+--   NOT: Uygulama, kullanici ilk login oldugunda profili kendisi olusturur
+--   (profileService.js). Bu blok yalniz, login beklemeden onceden profil gerekiyorsa
+--   ve admin bilinçli karar verdiyse kullanilir.
+--
+--   GUVENLIK: role VARSAYILAN 'muhasebe_personeli' birakilir. admin/partner BURADA
+--   ATANMAZ. auth_user_id, auth.users.id ile ACIKCA eslenir (tahmin yok).
+--   company_ids kolonu (legacy) BOS birakilir; yetki kaynagi 023'te membership'tir.
+-- ---------------------------------------------------------------------------
+
+-- BEGIN;
+--
+-- insert into public.annvero_user_profiles
+--   (id, email, display_name, role, permissions, company_ids, is_active, auth_user_id)
+-- select
+--   u.id::text,                         -- profiles.id = auth uuid (uygulama davranisi)
+--   lower(u.email),
+--   '<GORUNEN_AD>',
+--   'muhasebe_personeli',               -- ADMIN/PARTNER OTOMATIK ATANMAZ
+--   '["view"]'::jsonb,                  -- en dar varsayilan; admin genisletir
+--   '[]'::jsonb,                        -- legacy alan; yetki kaynagi membership'tir
+--   true,
+--   u.id                                -- auth_user_id ACIK eslesme
+-- from auth.users u
+-- where lower(u.email) = lower('<KULLANICI_EPOSTA>')
+-- on conflict (id) do nothing;          -- mevcut profili EZMEZ (veri korunur)
+--
+-- COMMIT;
+
+-- ---------------------------------------------------------------------------
+-- ADIM 2: ADMIN ONAYLI membership seed (atomik RPC).
+--   Her cagri, verilen kullaniciyi YALNIZ listedeki firmalara uye yapar;
+--   listede olmayan mevcut uyelikleri pasive ceker (erisim daraltma). Gecersiz
+--   company_id -> rollback. Cagri service_role baglantisiyla yapilmalidir
+--   (Supabase SQL Editor service_role baglaminda calisir).
+--
+--   <ACTOR_ADMIN_AUTH_UID>: islemi yapan admin'in auth.uid degeri (denetim izi).
+--   Her satiri ELLE doldurun ve yorumdan cikarin. Toplu/otomatik doldurma YASAK.
+-- ---------------------------------------------------------------------------
+
+-- BEGIN;
+--
+-- -- Ornek (SABLON — gercek deger degildir):
+-- -- select public.annvero_sync_company_membership(
+-- --   '<KULLANICI_AUTH_UID>'::uuid,
+-- --   array['<COMPANY_ID_1>', '<COMPANY_ID_2>']::text[],
+-- --   '<ACTOR_ADMIN_AUTH_UID>'::uuid
+-- -- );
+--
+-- COMMIT;
+
+-- ---------------------------------------------------------------------------
+-- ADIM 3 (READ-ONLY): seed sonrasi dogrulama (tablolar OLUSTUKTAN sonra guvenli).
+-- ---------------------------------------------------------------------------
+
+-- select
+--   p.email, p.role, p.is_active,
+--   coalesce(array_agg(m.company_id order by m.company_id)
+--            filter (where m.is_active), array[]::text[]) as active_membership_company_ids
+-- from public.annvero_user_profiles p
+-- left join public.annvero_company_members m on m.user_id = p.auth_user_id
+-- where lower(p.email) = lower('<KULLANICI_EPOSTA>')
+-- group by p.email, p.role, p.is_active;

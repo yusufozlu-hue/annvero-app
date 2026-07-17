@@ -417,6 +417,11 @@ begin
   execute 'drop policy if exists "learning_memory_select_authenticated" on public.learning_memory';
   execute 'drop policy if exists "learning_memory_insert_authenticated" on public.learning_memory';
   execute 'drop policy if exists "learning_memory_update_authenticated" on public.learning_memory';
+  -- Legacy production public policy'leri (varsa) temizle
+  execute 'drop policy if exists "allow learning memory delete" on public.learning_memory';
+  execute 'drop policy if exists "allow learning memory insert" on public.learning_memory';
+  execute 'drop policy if exists "allow learning memory read" on public.learning_memory';
+  execute 'drop policy if exists "allow learning memory update" on public.learning_memory';
 
   execute 'alter table public.learning_memory enable row level security';
 

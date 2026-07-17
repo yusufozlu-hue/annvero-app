@@ -12,6 +12,7 @@ import {
   syncAnnveroUserMetadata,
   upsertProfile,
 } from "@/src/lib/auth/profileService";
+import { syncCompanyMembership } from "@/src/lib/auth/companyMembership";
 import { ANNVERO_ROLE_LABELS, ANNVERO_ROLES } from "@/src/config/annveroRoles";
 import {
   mapProfileRow,
@@ -143,8 +144,32 @@ export async function POST(request) {
     return NextResponse.json({ error: saved.error.message }, { status: 500 });
   }
 
+  let membershipSynced = false;
+  let membershipPending = false;
+
   if (saved.profile?.id && !String(saved.profile.id).startsWith("pending-")) {
     await syncAnnveroUserMetadata(saved.profile.id, saved.profile);
+    // DB doğruluk kaynağı: firma üyeliğini (023) admin'in verdiği companyIds ile ATOMİK eşitle.
+    // Başarısızsa işlemi başarılı SAYMA: sanitize edilmiş hata ile 500 dön.
+    try {
+      await syncCompanyMembership(saved.profile.id, saved.profile.companyIds, user?.id);
+      membershipSynced = true;
+    } catch (membershipError) {
+      return NextResponse.json(
+        {
+          error: membershipError.message || "Firma erişimi güncellenemedi.",
+          code: membershipError.code || null,
+          membershipSynced: false,
+          user: saved.profile,
+          warning:
+            "Kullanıcı kaydedildi ancak firma erişimi atanamadı; kullanıcı şu anda hiçbir firmaya erişemiyor.",
+        },
+        { status: 500 }
+      );
+    }
+  } else if (saved.profile?.id) {
+    // Pending kullanıcı: gerçek auth kullanıcısı yok; membership davet kabulünde atanacak.
+    membershipPending = true;
   }
 
   return NextResponse.json({
@@ -152,11 +177,13 @@ export async function POST(request) {
     createdBy: user.email,
     invited,
     inviteError: inviteError?.message || null,
+    membershipSynced,
+    membershipPending,
   });
 }
 
 export async function PUT(request) {
-  const { error, role: callerRole } = await requireManagementUser();
+  const { user, error, role: callerRole } = await requireManagementUser();
   if (error === "unauthenticated") {
     return NextResponse.json({ error: "Oturum gerekli." }, { status: 401 });
   }
@@ -214,14 +241,39 @@ export async function PUT(request) {
     return NextResponse.json({ error: saved.error.message }, { status: 500 });
   }
 
+  let membershipSynced = false;
+  let membershipPending = false;
+
   if (saved.profile?.id && !String(saved.profile.id).startsWith("pending-")) {
     await syncAnnveroUserMetadata(saved.profile.id, saved.profile);
+    // DB doğruluk kaynağı: firma üyeliğini (023) admin'in verdiği companyIds ile ATOMİK eşitle.
+    // RPC atomik olduğundan başarısızlıkta ESKİ membership korunur; işlemi başarısız say.
+    try {
+      await syncCompanyMembership(saved.profile.id, saved.profile.companyIds, user?.id);
+      membershipSynced = true;
+    } catch (membershipError) {
+      return NextResponse.json(
+        {
+          error: membershipError.message || "Firma erişimi güncellenemedi.",
+          code: membershipError.code || null,
+          membershipSynced: false,
+          user: saved.profile,
+          warning:
+            "Profil güncellendi ancak firma erişimi güncellenemedi; önceki firma erişimi korundu.",
+        },
+        { status: 500 }
+      );
+    }
+  } else if (saved.profile?.id) {
+    membershipPending = true;
   }
 
   return NextResponse.json({
     user: saved.profile,
     recoverySent,
     recoveryError: recoveryError?.message || null,
+    membershipSynced,
+    membershipPending,
   });
 }
 

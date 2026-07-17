@@ -1,4 +1,5 @@
 import { normalizeContacts } from "@/src/utils/companyContacts";
+import { emptyCloudStorageBinding } from "@/src/utils/cloudStorage/types";
 
 export const emptyCompany = {
   id: "",
@@ -70,6 +71,9 @@ export const emptyCompany = {
     useCash100Account: true,
     useFxSeparate102Accounts: true,
   },
+
+  /** Bulut Depolama — yalnız non-secret bağ (token yok) */
+  cloudStorage: emptyCloudStorageBinding(),
 };
 
 function newId() {
@@ -279,6 +283,19 @@ export function normalizeCompany(c) {
       advanceAccountCode: employee.advanceAccountCode || "196",
       isActive: employee.isActive ?? true,
     })),
+
+    cloudStorage: (() => {
+      const raw = {
+        ...emptyCloudStorageBinding(),
+        ...(source.cloudStorage || {}),
+      };
+      delete raw.accessToken;
+      delete raw.refreshToken;
+      delete raw.refresh_token;
+      delete raw.access_token;
+      delete raw.token_reference;
+      return raw;
+    })(),
   };
 }
 

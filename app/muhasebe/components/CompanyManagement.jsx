@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
@@ -48,6 +48,15 @@ const CompanyAccountingMappingsPanel = dynamic(
     ssr: false,
     loading: () => (
       <p className="px-1 py-6 text-sm text-slate-500">Muhasebe eşlemeleri hazırlanıyor…</p>
+    ),
+  }
+);
+const CloudStorageCompanyPanel = dynamic(
+  () => import("./CloudStorageCompanyPanel"),
+  {
+    ssr: false,
+    loading: () => (
+      <p className="px-1 py-6 text-sm text-slate-500">Bulut depolama hazırlanıyor…</p>
     ),
   }
 );
@@ -104,6 +113,7 @@ export default function CompanyManagement() {
     const validTabs = new Set([
       "general",
       "gib",
+      "cloudStorage",
       "banks",
       "accountingMaps",
       "documents",
@@ -208,6 +218,50 @@ export default function CompanyManagement() {
       cancelled = true;
     };
   }, [workspace?.isLoading, workspaceCompanies, localCompanies, fetchedDone]);
+
+  // OAuth callback dönüşü: ?companyId=...&tab=cloudStorage geldiğinde ilgili firmayı
+  // ve Bulut Depolama sekmesini bir kez otomatik seç. Normal kullanımı bozmaz:
+  // yalnız companyId query parametresi ve eşleşen firma varsa çalışır.
+  const callbackAppliedRef = useRef(false);
+  useEffect(() => {
+    if (callbackAppliedRef.current) return undefined;
+    if (typeof window === "undefined") return undefined;
+    if (!isLoaded || !companies.length) return undefined;
+
+    const params = new URLSearchParams(window.location.search);
+    const requestedCompanyId = params.get("companyId");
+    if (!requestedCompanyId) return undefined;
+
+    const found = companies.find((c) => c.id === requestedCompanyId);
+    if (!found) return undefined;
+
+    callbackAppliedRef.current = true;
+    const requestedTab = params.get("tab");
+
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      setSelectedId(found.id);
+      setCompany(normalizeCompany(found));
+      if (requestedTab === "cloudStorage") {
+        setActiveTab("cloudStorage");
+      }
+
+      // Tek seferlik: refresh/geri gezinmede tekrar tetiklenmesin diye query'yi temizle.
+      params.delete("companyId");
+      params.delete("tab");
+      const cleaned = params.toString();
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${cleaned ? `?${cleaned}` : ""}`
+      );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoaded, companies]);
 
   const openNewCompanyModal = () => {
     setNewCompanyDraft({
@@ -1036,6 +1090,7 @@ export default function CompanyManagement() {
   const tabs = [
     ["general", "Genel Bilgiler"],
     ["gib", "GİB e-Tebligat"],
+    ["cloudStorage", "Bulut Depolama"],
     ["banks", "Banka & Kredi Kartları"],
     ["accountingMaps", "Muhasebe Politikaları / Hesap Eşlemeleri"],
 
@@ -1426,6 +1481,14 @@ export default function CompanyManagement() {
               <GibCredentialsSection
                 companyId={company.id}
                 companyName={company.companyName}
+                onNotify={showToast}
+              />
+            )}
+
+            {activeTab === "cloudStorage" && (
+              <CloudStorageCompanyPanel
+                company={company}
+                setCompany={setCompany}
                 onNotify={showToast}
               />
             )}
