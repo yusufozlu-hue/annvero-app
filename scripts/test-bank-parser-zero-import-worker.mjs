@@ -182,7 +182,7 @@ console.log("OK — classic worker + result protocol");
 
 section("3) Page: single XLSX + sheetRows to worker / fallback");
 const pageSource = readFileSync(
-  path.join(root, "app/muhasebe/banka-ekstresi/page.jsx"),
+  path.join(root, "app/(annvero)/muhasebe/banka-ekstresi/page.jsx"),
   "utf8"
 );
 assert.match(pageSource, /sheetRows/);

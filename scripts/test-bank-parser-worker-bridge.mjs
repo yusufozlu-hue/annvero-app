@@ -19,7 +19,7 @@ const workerPath = path.join(root, "src/workers/bankParser.worker.js");
 assert.equal(existsSync(workerPath), true, "src/workers/bankParser.worker.js exists");
 const oldPath = path.join(
   root,
-  "app/muhasebe/banka-ekstresi/bankParser.worker.js"
+  "app/(annvero)/muhasebe/banka-ekstresi/bankParser.worker.js"
 );
 assert.equal(existsSync(oldPath), false, "old app/ worker path removed");
 console.log("OK — worker under src/workers");
@@ -37,7 +37,7 @@ console.log("OK — bankExcel URL pattern");
 
 section("3) page uses PARSER_WORKER_URLS.bankExcel");
 const pageSource = readFileSync(
-  path.join(root, "app/muhasebe/banka-ekstresi/page.jsx"),
+  path.join(root, "app/(annvero)/muhasebe/banka-ekstresi/page.jsx"),
   "utf8"
 );
 assert.match(pageSource, /PARSER_WORKER_URLS/);

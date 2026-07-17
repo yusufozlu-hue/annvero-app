@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AuthUserBar from "@/src/components/AuthUserBar";
 import { ANNVERO_THEME_KEY } from "@/src/config/annveroNavConfig";
-import { useCompanyList } from "@/app/muhasebe/hooks/useCompanyList";
+import { useCompanyList } from "@/app/(annvero)/muhasebe/hooks/useCompanyList";
 import {
   loadFavoriteCompanyIds,
   loadRecentCompanyIds,
