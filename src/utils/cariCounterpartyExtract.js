@@ -69,7 +69,12 @@ const BARE_CARI_MAINS = new Set([
 ]);
 
 function compactCode(value = "") {
-  return normalizeParserText(value).replace(/\s+/g, "");
+  // Hesap kodlarında nokta korunmalı (120.01 ≠ 12001); metin normalize etme.
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/İ/g, "I")
+    .replace(/\s+/g, "");
 }
 
 function localNormalizeCariName(value) {

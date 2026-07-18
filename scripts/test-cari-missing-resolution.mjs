@@ -396,7 +396,7 @@ test("statement own IBAN alone is not virman", () => {
   assert.equal(v.isVirmanCandidate, false);
 });
 
-test("description statement IBAN + unvan → virman adayı (kesin değil)", () => {
+test("description statement IBAN + unvan → virman adayı değil (ekstre IBAN yetersiz)", () => {
   const company = mareCompany();
   const ctx = {
     selectedCompany: company,
@@ -405,13 +405,11 @@ test("description statement IBAN + unvan → virman adayı (kesin değil)", () =
   };
   const row = cariLikeRow({
     detayAciklama: `GÖND / MARE RESORT OTEL ${MARE_OWN_IBAN}`,
-    virmanCandidate: true,
-    kontrolNotu: "Virman adayı — karşı banka hesabı tanımlanmalı",
   });
   const v = evaluateOwnAccountVirmanTransfer(row, ctx);
   assert.equal(isOwnAccountVirmanTransfer(row, ctx), false);
-  assert.equal(v.isVirmanCandidate, true);
-  assert.equal(isCariMissingRow(row, ctx), false);
+  assert.equal(v.isVirmanCandidate, false);
+  assert.equal(isCariMissingRow(row, ctx), true);
 });
 
 test("same-name customer with foreign IBAN not excluded", () => {
@@ -633,7 +631,7 @@ test("modal width constants", () => {
   assert.ok(CARI_RESOLUTION_MODAL_WIDTH_CSS.includes("92vh"));
 });
 
-test("title + masked statement IBAN → virman adayı, cari grupta yok, 120/320 yok", () => {
+test("title + masked statement IBAN → virman adayı değil, cari grupta yetersiz karşı taraf", () => {
   const company = mareCompany();
   const ctx = {
     selectedCompany: company,
@@ -657,25 +655,19 @@ test("title + masked statement IBAN → virman adayı, cari grupta yok, 120/320 
       "GÖND. HVL / MARE RESORT OTEL AS TR33 0001 5001 58** **** **00 01",
     analysisKey: "mare-mask|CIKIS",
   });
+  const v = evaluateOwnAccountVirmanTransfer(row, ctx);
+  assert.equal(v.isVirmanCandidate, false);
   const snap = buildCariResolutionGroups([row], ctx, {
     initialCandidateGroups: "all",
   });
-  assert.equal(snap.groupCount, 0);
-  assert.equal(snap.cariMissingCount, 0);
-  assert.ok(snap.virmanCandidateCount >= 1);
-  assert.equal(snap.virmanCandidateGroups.length, 1);
-  const vg = snap.virmanCandidateGroups[0];
-  assert.equal(vg.virmanCandidate, true);
-  assert.equal((vg.candidates || []).length, 0);
-  assert.equal(vg.suggestedAccount || "", "");
-  const remaining = filterCariResolutionGroups(snap.groups, {
-    filter: CARI_RESOLUTION_FILTERS.REMAINING,
-  });
-  assert.equal(remaining.length, 0);
-  const allNormal = filterCariResolutionGroups(snap.groups, {
-    filter: CARI_RESOLUTION_FILTERS.ALL,
-  });
-  assert.equal(allNormal.length, 0);
+  assert.equal(snap.virmanCandidateCount, 0);
+  assert.equal(snap.virmanCandidateGroups.length, 0);
+  assert.equal(snap.groupCount, 1);
+  assert.equal(snap.cariMissingCount, 1);
+  const g = snap.groups[0];
+  assert.equal(g.virmanCandidate || false, false);
+  assert.notEqual(g.suggestedAccount || "", "120");
+  assert.notEqual(g.suggestedAccount || "", "320");
 });
 
 test("aktif firmanın kendi 320 hesabı aday / tüm plan / fuzzy'de yok", () => {

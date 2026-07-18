@@ -604,10 +604,12 @@ function buildBankLucaLine({
     hafizaEslesme: String(movement.warning || "").includes(MEMORY_MATCH_LABEL),
     _movementId: movement.id,
     sourceMovementId: movement.id,
+    sourceRowId: movement.sourceRowId || movement.id || "",
     sourceRowIndex:
       sourceRowIndex ??
       context.sourceRowIndex ??
       movement.sourceRowIndex ??
+      movement.excelRowNumber ??
       null,
     lineRole: role,
     creationSource: context.creationSource || "bank_double_entry",

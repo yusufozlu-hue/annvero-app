@@ -13,6 +13,7 @@ import {
   buildCariNotFoundWarning,
   resolveCariAccountMatch,
 } from "@/src/utils/cariAccountMatcher";
+import { buildOwnCompanyIdentity } from "@/src/utils/cariCounterpartyExtract";
 import {
   resolveBankTransactionType,
   isPersonelRequiredForType,
@@ -51,7 +52,6 @@ import {
 import {
   buildCreditCardPaymentDescription,
   resolveCreditCardPayment,
-  isCreditCardPaymentDescription,
   CREDIT_CARD_CLASSIFICATION,
   CREDIT_CARD_MISSING_LABEL,
 } from "@/src/utils/creditCardAccountResolver";
@@ -344,10 +344,6 @@ function formatMemoryDescription(memory, description, direction) {
     .replaceAll("{aciklama}", description);
 }
 
-function isCreditCardPaymentText(description) {
-  return isCreditCardPaymentDescription(description);
-}
-
 function accountExistsInPlan(companyPlans, accountCode, planCodeSet = null) {
   return accountExistsInCompanyPlan(companyPlans, accountCode, planCodeSet);
 }
@@ -382,7 +378,8 @@ function applyCariResolution(
   planCodeSet = null,
   cariIndex = null,
   analysisStats = null,
-  memorySources = {}
+  memorySources = {},
+  selectedCompany = null
 ) {
   // Cari gereken türde gider hesabı (770 vb.) tutma — cari ara
   if (isExpenseOrIncomeGlAccount(counterAccountCode)) {
@@ -409,6 +406,10 @@ function applyCariResolution(
     ruleAciklama,
     cariIndex,
     stats: analysisStats,
+    direction: memorySources.direction || "",
+    ownIdentity: buildOwnCompanyIdentity(
+      selectedCompany || memorySources.selectedCompany || null
+    ),
     ...memorySources,
   });
 
@@ -1192,6 +1193,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
           analysisKey,
           direction,
           transactionType,
+          selectedCompany,
           analysisKeyMemory:
             analysisKeyMemory && isLikelyCariGlAccount(analysisKeyMemory.accountCode)
               ? analysisKeyMemory
@@ -1210,7 +1212,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
             ibanHistoryMemory && isLikelyCariGlAccount(ibanHistoryMemory.accountCode)
               ? ibanHistoryMemory
               : null,
-        }
+        },
+        selectedCompany
       );
       addTiming("cariResolutionMs", cariStarted);
 
@@ -1345,8 +1348,15 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   const hgsOgsEnhancement = enhanceHgsOgsLucaDescription(description, lucaDescription);
   lucaDescription = hgsOgsEnhancement.lucaDescription;
 
+  const sourceRowId = String(
+    rawRow.sourceRowId || rawRow._sourceRowId || ""
+  ).trim();
+  const movementId = sourceRowId || crypto.randomUUID();
+
   return {
-    id: crypto.randomUUID(),
+    id: movementId,
+    sourceRowId: sourceRowId || movementId,
+    excelRowNumber: rawRow.excelRowNumber || null,
     date,
     description,
     amount,

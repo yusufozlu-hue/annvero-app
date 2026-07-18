@@ -6,10 +6,7 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import PreviewErrorBoundary from "../components/PreviewErrorBoundary";
 import {
-  applySuggestionToMovement,
-  buildLearningMemoryAccountUpdate,
   parseSuggestionsFromWarning,
-  resolveSuggestionTargetField,
 } from "@/src/utils/accountPlanSuggestions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import {
@@ -24,14 +21,10 @@ import {
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
   countCompanyRules,
-  countPendingLucaRowsForCompany,
   findCompanyBankAccount,
-  formatDateTime,
   getAccountPlanForCompany,
-  getAccountPlanUploadedAt,
   getCompanyBankLucaCode,
   getCompanyRules,
-  getCompanyRulesUpdatedAt,
   loadAccountPlansFromStorage,
   loadRuleEngineFromStorage,
   normalizeCompanyRecord,
@@ -78,7 +71,6 @@ import {
   fetchLearningMemoryForCompany,
   createLearningMemoryRecord,
   recordLearningMemoryUsage,
-  updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
 import { queueUnrecognizedTransactions } from "@/src/utils/transactionMemoryApi";
 import {
@@ -98,7 +90,7 @@ import {
   BANK_PARSER_DEBUG_STORAGE_KEY,
   canStartFullPipeline,
   deriveAutoMatchedMovements,
-  formatDurationMs,
+  deriveUnresolvedMovements,
   getPipelinePhaseLabel,
   getPipelinePhaseTitle,
   isBankParserServiceModeVisible,
@@ -339,7 +331,6 @@ export default function BankParserWorkbench() {
   const [previewSearch, setPreviewSearch] = useState("");
   const [previewQuickFilter, setPreviewQuickFilter] = useState("all");
   const [toast, setToast] = useState(null);
-  const [applyingSuggestionRowId, setApplyingSuggestionRowId] = useState(null);
   const [isSavingPreviewEdit, setIsSavingPreviewEdit] = useState(false);
   const [exportValidation, setExportValidation] = useState(null);
   const [missingHesapReport, setMissingHesapReport] = useState(null);
@@ -347,7 +338,7 @@ export default function BankParserWorkbench() {
   const [cariGroupReport, setCariGroupReport] = useState(null);
   const [cariDecisionReport, setCariDecisionReport] = useState(null);
   const [memoryDecisionReport, setMemoryDecisionReport] = useState(null);
-  const [selectedRuleGroupKey, setSelectedRuleGroupKey] = useState("");
+  const [, setSelectedRuleGroupKey] = useState("");
   const [standardLucaRows, setStandardLucaRows] = useState([]);
   const [totalLucaCount, setTotalLucaCount] = useState(0);
   const [lucaPage, setLucaPage] = useState(0);
@@ -394,7 +385,7 @@ export default function BankParserWorkbench() {
   });
   const [elapsedSec, setElapsedSec] = useState(0);
   /** Servis UI: Luca önizleme; normal kullanıcı Çözüm Merkezi kullanır */
-  const [showUserLucaReview, setShowUserLucaReview] = useState(false);
+  const [, setShowUserLucaReview] = useState(false);
   const [showCariResolutionCenter, setShowCariResolutionCenter] =
     useState(false);
   const [cariResolutionSnapshot, setCariResolutionSnapshot] = useState(null);
@@ -659,21 +650,6 @@ export default function BankParserWorkbench() {
     [selectedCompany]
   );
 
-  const lastPlanUploadedAt = useMemo(
-    () => formatDateTime(getAccountPlanUploadedAt(accountPlans, selectedCompanyId)),
-    [accountPlans, selectedCompanyId]
-  );
-
-  const lastRuleUpdatedAt = useMemo(
-    () => formatDateTime(getCompanyRulesUpdatedAt(ruleEngine, selectedCompanyId)),
-    [ruleEngine, selectedCompanyId]
-  );
-
-  const pendingRowCount = useMemo(
-    () => countPendingLucaRowsForCompany(selectedCompanyId),
-    [selectedCompanyId, accountPlans, movementRows]
-  );
-
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), 3000);
@@ -897,47 +873,6 @@ export default function BankParserWorkbench() {
       detail: "",
     }));
     setPipelineError(null);
-  };
-
-  const handleApplyAccountSuggestion = async (row, suggestion) => {
-    const updatedRow = applySuggestionToMovement(
-      row,
-      suggestion,
-      selectedCompany?.bankAccounts || []
-    );
-
-    setMovementRows((prev) =>
-      prev.map((item) => (item.id === row.id ? slimMovementForUi(updatedRow) : item))
-    );
-    movementsRef.current = movementsRef.current.map((item) =>
-      item.id === row.id ? updatedRow : item
-    );
-
-    if (!row.matchedMemoryId) return;
-
-    setApplyingSuggestionRowId(row.id);
-
-    const targetField = resolveSuggestionTargetField(row, suggestion);
-    const memoryFields = buildLearningMemoryAccountUpdate(
-      row,
-      targetField,
-      suggestion
-    );
-
-    const ok = await updateLearningMemoryRecord(row.matchedMemoryId, memoryFields);
-
-    setApplyingSuggestionRowId(null);
-
-    if (ok) {
-      showToast("Hafıza güncellendi", "success");
-      setLearningMemory((prev) =>
-        prev.map((record) =>
-          record.id === row.matchedMemoryId ? { ...record, ...memoryFields } : record
-        )
-      );
-    } else {
-      showToast("Hafıza güncellenemedi", "error");
-    }
   };
 
   const saveAdvancedPreviewEdit = async (editingRowId, draftRow) => {
@@ -1230,7 +1165,18 @@ export default function BankParserWorkbench() {
         ? {
             ...prev,
             missingCount: report.missingCount,
-            autoMatchedCount: deriveAutoMatchedMovements(report.readyCount),
+            missingLucaRowCount: report.missingLucaRowCount ?? report.missingCount,
+            uniqueUnresolvedMovements: report.uniqueUnresolvedMovements,
+            uniqueMatchedMovements: report.uniqueMatchedMovements,
+            autoMatchedCount: deriveAutoMatchedMovements(report.readyCount, {
+              uniqueMatchedMovements: report.uniqueMatchedMovements,
+            }),
+            unresolvedMovementCount: deriveUnresolvedMovements(report.missingCount, {
+              uniqueUnresolvedMovements: report.uniqueUnresolvedMovements,
+            }),
+            unrecognizedCount: deriveUnresolvedMovements(report.missingCount, {
+              uniqueUnresolvedMovements: report.uniqueUnresolvedMovements,
+            }),
           }
         : prev
     );
@@ -2461,7 +2407,15 @@ export default function BankParserWorkbench() {
     assertPipelineSignal(signal, isRunActive, runId);
     return {
       missingCount: missingReport.missingCount || 0,
-      unrecognizedCount: unrecognizedCountRef.current || 0,
+      missingLucaRowCount:
+        (missingReport.missingLucaRowCount ?? missingReport.missingCount) || 0,
+      uniqueUnresolvedMovements: missingReport.uniqueUnresolvedMovements || 0,
+      uniqueMatchedMovements: missingReport.uniqueMatchedMovements || 0,
+      uniqueTotalMovements: missingReport.uniqueTotalMovements || 0,
+      unrecognizedCount:
+        (missingReport.uniqueUnresolvedMovements ??
+          unrecognizedCountRef.current) ||
+        0,
       readyCount: missingReport.readyCount || 0,
       totalRows: missingReport.totalRows || rows.length,
       durationMs: Math.round(performance.now() - t0),
@@ -2854,9 +2808,15 @@ export default function BankParserWorkbench() {
           movementCount: movementsRef.current.length,
           lucaRowCount: lucaRef.current.length,
           missingCount: validation.missingCount,
-          unrecognizedCount: validation.unrecognizedCount,
+          missingLucaRowCount: validation.missingLucaRowCount,
+          uniqueUnresolvedMovements: validation.uniqueUnresolvedMovements,
+          uniqueMatchedMovements: validation.uniqueMatchedMovements,
+          unrecognizedCount:
+            validation.uniqueUnresolvedMovements ?? validation.unrecognizedCount,
           readyCount: validation.readyCount,
-          autoMatchedCount: deriveAutoMatchedMovements(validation.readyCount),
+          autoMatchedCount: deriveAutoMatchedMovements(validation.readyCount, {
+            uniqueMatchedMovements: validation.uniqueMatchedMovements,
+          }),
           totalDurationMs,
           stageDurations,
           parseMode: stageDurations.parseMode || null,
@@ -4328,36 +4288,6 @@ export default function BankParserWorkbench() {
   );
 }
 
-function SkeletonBlock({ className = "" }) {
-  return (
-    <div
-      className={`animate-pulse rounded-xl bg-slate-800/50 ${className}`}
-      aria-hidden="true"
-    />
-  );
-}
-
-function CompanySelectSkeleton() {
-  return null;
-}
-
-function CompanySummarySkeleton() {
-  return (
-    <div className="mb-6 space-y-3" aria-busy="true" aria-label="Firma bilgileri yükleniyor">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <SkeletonBlock key={index} className="h-24" />
-        ))}
-      </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, index) => (
-          <SkeletonBlock key={index} className="h-20" />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function CoreSummaryCard({ label, value, tone = "default" }) {
   const toneClass =
     tone === "emerald"
@@ -4403,17 +4333,6 @@ function getMovementWarningClass(warning) {
   }
 
   return "";
-}
-
-function InfoStat({ label, value }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-xs uppercase tracking-wide text-gray-500">{label}</div>
-      <div className="mt-1 truncate text-sm font-semibold text-gray-100">
-        {value}
-      </div>
-    </div>
-  );
 }
 
 function ControlStat({

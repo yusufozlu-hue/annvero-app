@@ -13,6 +13,7 @@ import {
 import {
   buildOwnCompanyIdentity,
   extractCounterpartyParty,
+  isOwnCompanyPartyName,
   isSelectableCariLeafAccount,
   sortCariDisplayDates,
   buildCariParentCodeSet,
@@ -636,14 +637,23 @@ function applySearchToGroupBase(base, search) {
             ? "Düşük"
             : "Aday yok";
   const party =
-    search.extractedParty ||
-    base.partyName ||
-    normalizeCariName(base.samples?.[0] || "").slice(0, 80) ||
-    "Karşı taraf";
+    search.extractedParty &&
+    !isOwnCompanyPartyName(
+      search.extractedParty,
+      buildOwnCompanyIdentity(base.selectedCompany || null)
+    )
+      ? search.extractedParty
+      : base.partyUnresolved
+        ? base.partyName
+        : search.extractedParty ||
+          base.partyName ||
+          "Karşı taraf bilgisi yetersiz";
 
   return {
     ...base,
     partyName: party,
+    partyUnresolved:
+      party === "Karşı taraf bilgisi yetersiz" || base.partyUnresolved,
     vendorMessage: search.vendorMessage,
     preferredPrefixes: search.preferredPrefixes,
     candidates: leafCandidates.length ? leafCandidates : search.candidates,
@@ -849,19 +859,25 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       const foreignVendor = isForeignVendorDescription(sample);
       const totalAmount = g.rows.reduce((sum, r) => sum + rowAmount(r), 0);
       const sortedDates = sortCariDisplayDates(g.dates);
-      const partyFallback =
+      const ownIdentity = buildOwnCompanyIdentity(selectedCompany);
+      let partyFallback =
         extractCounterpartyParty({
           description: sample,
           direction: g.direction || "",
-          ownIdentity: buildOwnCompanyIdentity(selectedCompany),
-        }) ||
-        normalizeCariName(sample).slice(0, 80) ||
-        "Karşı taraf";
+          ownIdentity,
+        }) || "";
+      if (
+        !partyFallback ||
+        isOwnCompanyPartyName(partyFallback, ownIdentity)
+      ) {
+        partyFallback = "Karşı taraf bilgisi yetersiz";
+      }
 
       return {
         id: g.analysisKey,
         analysisKey: g.analysisKey,
         partyName: partyFallback,
+        partyUnresolved: partyFallback === "Karşı taraf bilgisi yetersiz",
         direction: g.direction || "",
         directionLabel:
           g.direction === "GIRIS" || g.direction === "GELEN"

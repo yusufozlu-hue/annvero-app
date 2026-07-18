@@ -489,16 +489,12 @@ export function evaluateOwnAccountVirmanTransfer(row = {}, context = {}) {
     };
   }
 
-  // Unvan + ekstre hesabı/maskeli IBAN anlatımı → yalnız aday
+  // Yalnız unvan + maskeli ekstre IBAN anlatımı → virman DEĞİL.
+  // İkinci kendi banka hesabı (counter.hit) veya açık virman kelimesi gerekir.
   if (maskedStatement && (titleHit || titleHitSoft)) {
-    return {
-      ...emptyVerdict({
-        status: VIRMAN_STATUS.CANDIDATE,
-        isVirmanCandidate: true,
-        reasons: ["masked_statement_iban_and_title"],
-        label: VIRMAN_CANDIDATE_LABEL,
-      }),
-    };
+    return emptyVerdict({
+      reasons: ["title_and_masked_insufficient_for_virman"],
+    });
   }
 
   // Yetersiz: yalnız unvan, müşteri no, ekstre IBAN alanı, “Mare” vb.

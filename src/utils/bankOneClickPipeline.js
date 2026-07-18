@@ -231,11 +231,33 @@ export function buildMissingAccountsHint(missingCount) {
   return `${n} satırda hesap bilgisi eksik. Tam dosyayı indirmeden önce inceleyebilir veya eksik satırlar hariç çıktı oluşturabilirsiniz.`;
 }
 
-/** Hazır Luca satırlarından hareket tahmini — uydurma değil, readyCount’tan türetilir */
-export function deriveAutoMatchedMovements(readyLucaCount) {
+/**
+ * Otomatik eşleşen hareket sayısı.
+ * Tercihen uniqueMatchedMovements; yoksa ready Luca / 2 tahmini.
+ */
+export function deriveAutoMatchedMovements(readyLucaCount, options = {}) {
+  if (
+    options.uniqueMatchedMovements != null &&
+    Number.isFinite(Number(options.uniqueMatchedMovements))
+  ) {
+    return Math.max(0, Number(options.uniqueMatchedMovements));
+  }
   const ready = Number(readyLucaCount);
   if (!Number.isFinite(ready) || ready < 0) return null;
   return Math.max(0, Math.round(ready / 2));
+}
+
+/** Tanınmayan / unresolved benzersiz hareket */
+export function deriveUnresolvedMovements(missingLucaCount, options = {}) {
+  if (
+    options.uniqueUnresolvedMovements != null &&
+    Number.isFinite(Number(options.uniqueUnresolvedMovements))
+  ) {
+    return Math.max(0, Number(options.uniqueUnresolvedMovements));
+  }
+  const missing = Number(missingLucaCount);
+  if (!Number.isFinite(missing) || missing < 0) return null;
+  return Math.max(0, Math.round(missing / 2));
 }
 
 export const BANK_PARSER_DEBUG_STORAGE_KEY = "ANNVERO_BANK_DEBUG";

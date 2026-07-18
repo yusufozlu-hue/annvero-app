@@ -402,7 +402,10 @@ export function analyzeMissingHesapRows(rows = []) {
   return {
     totalRows: rows.length,
     missingCount: missing.length,
+    /** Luca satırı birimi — UI'da "Eksik Luca satırı" diye etiketle */
+    missingLucaRowCount: missing.length,
     readyCount: rows.length - missing.length,
+    ...buildUniqueMovementMissingStats(rows, missing),
     categories,
     missingRows: missing,
     personelSubtypeCounts,
@@ -426,6 +429,58 @@ export function analyzeMissingHesapRows(rows = []) {
       return isCariForbiddenForType(type);
     }).length,
   };
+}
+
+/**
+ * Aynı hareket birden fazla eksik Luca satırında görünse bile tek sayılır.
+ * Invariant: uniqueMatchedMovements + uniqueUnresolvedMovements === movementCount (biliniyorsa)
+ */
+export function buildUniqueMovementMissingStats(allRows = [], missingRows = null) {
+  const missing = missingRows || (allRows || []).filter(isMissingHesapRow);
+  const missingMovementIds = new Set();
+  for (const row of missing) {
+    missingMovementIds.add(resolveMovementIdentity(row));
+  }
+
+  const allMovementIds = new Set();
+  for (const row of allRows || []) {
+    allMovementIds.add(resolveMovementIdentity(row));
+  }
+
+  const uniqueUnresolvedMovements = missingMovementIds.size;
+  const uniqueTotalMovements = allMovementIds.size;
+  const uniqueMatchedMovements = Math.max(
+    0,
+    uniqueTotalMovements - uniqueUnresolvedMovements
+  );
+
+  return {
+    uniqueUnresolvedMovements,
+    uniqueMatchedMovements,
+    uniqueTotalMovements,
+    movementMatchInvariantOk:
+      uniqueMatchedMovements + uniqueUnresolvedMovements === uniqueTotalMovements,
+  };
+}
+
+function resolveMovementIdentity(row = {}) {
+  const sourceRowId = String(row.sourceRowId || row.rawRow?.sourceRowId || "").trim();
+  if (sourceRowId) return `sr:${sourceRowId}`;
+
+  const mid =
+    row.sourceMovementId ||
+    row._movementId ||
+    row.movementId ||
+    row.sourceId ||
+    "";
+  if (mid) return `m:${mid}`;
+  // FisNo + tarih + tutar fallback (çift bacak aynı kimlik) — son çare
+  const fis = String(row.fisNo || row.belgeNo || "").trim();
+  const date = String(row.fisTarihi || row.evrakTarihi || row.date || "").trim();
+  const amount =
+    Number(row.borc || 0) || Number(row.alacak || 0) || Number(row.tutar || 0) || 0;
+  if (fis || date) return `f:${fis}|${date}|${amount}`;
+  return `r:${row.id || Math.random()}`;
 }
 
 export function buildMissingHesapSummaryText(report) {

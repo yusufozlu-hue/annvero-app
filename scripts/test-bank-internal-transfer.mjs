@@ -79,11 +79,11 @@ test("1) ekstre IBAN her satırda olsa bile virman kanıtı sayılmaz", () => {
   assert.equal(det.isVirmanCandidate, false);
 });
 
-test("2) maskeli IBAN + unvan → yalnız virman adayı", () => {
+test("2) maskeli IBAN + unvan → virman adayı değil", () => {
   const company = mareCompany();
   const det = detectAndClassifyBankInternalTransfer({
     description:
-      "Sedat / TR33 0001 5001 58** **** **00 01 nolu MARE RESORT OTEL AS hesabından TR11 0006 4000 0001 1112 2233 44",
+      "Sedat / TR33 0001 5001 58** **** **00 01 nolu MARE RESORT OTEL AS hesabı",
     direction: "CIKIS",
     transactionType: "GIDEN_HAVALE",
     selectedCompany: company,
@@ -91,8 +91,7 @@ test("2) maskeli IBAN + unvan → yalnız virman adayı", () => {
     bankAccountCode: "102.01.001",
   });
   assert.equal(det.shouldReclassify, false);
-  assert.equal(det.isVirmanCandidate, true);
-  assert.equal(det.pair.status, VIRMAN_STATUS.CANDIDATE);
+  assert.equal(det.isVirmanCandidate, false);
 });
 
 test("3) tam karşı IBAN + company.bankAccounts → kesin virman 102↔102", () => {
@@ -277,7 +276,7 @@ test("9) yalnız unvan yetersiz", () => {
   assert.equal(v.isVirmanCandidate, false);
 });
 
-test("10) maskeli IBAN (**) + unvan, nolu olmadan → virman adayı", () => {
+test("10) maskeli IBAN (**) + unvan, nolu olmadan → virman adayı değil", () => {
   const company = mareCompany();
   const v = evaluateOwnAccountVirmanTransfer(
     {
@@ -286,7 +285,7 @@ test("10) maskeli IBAN (**) + unvan, nolu olmadan → virman adayı", () => {
     },
     { selectedCompany: company, selectedBank: "VAKIFBANK" }
   );
-  assert.equal(v.isVirmanCandidate, true);
+  assert.equal(v.isVirmanCandidate, false);
   assert.equal(v.isOwnVirman, false);
   assert.ok(!v.suggested102 || !String(v.suggested102).startsWith("320"));
 });

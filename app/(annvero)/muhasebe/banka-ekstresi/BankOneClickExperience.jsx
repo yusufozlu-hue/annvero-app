@@ -277,12 +277,21 @@ export function BankPipelineResultCard({
     { label: "Hareket", value: result.movementCount },
     { label: "Luca satırı", value: result.lucaRowCount },
     {
-      label: "Otomatik eşleşen",
+      label: "Otomatik eşleşen (hareket)",
       value:
         result.autoMatchedCount != null ? result.autoMatchedCount : "—",
     },
-    { label: "Eksik hesap", value: result.missingCount },
-    { label: "Tanınmayan işlem", value: result.unrecognizedCount },
+    {
+      label: "Eksik Luca satırı",
+      value: result.missingLucaRowCount ?? result.missingCount,
+    },
+    {
+      label: "Tanınmayan hareket",
+      value:
+        result.uniqueUnresolvedMovements ??
+        result.unresolvedMovementCount ??
+        result.unrecognizedCount,
+    },
   ];
   if (showServiceMeta) {
     stats.push({
