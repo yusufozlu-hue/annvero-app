@@ -10,6 +10,11 @@ import {
   normalizeCariName,
   normalizeCariNameCore,
 } from "@/src/utils/cariAccountMatcher";
+import {
+  buildOwnCompanyIdentity,
+  extractTransferCounterparty,
+  isOwnCompanyPartyName,
+} from "@/src/utils/cariCounterpartyExtract";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import { resolve102BankAccount } from "@/src/utils/companyCenter";
 import { normalizeParserText } from "@/src/utils/textNormalize";
@@ -240,6 +245,7 @@ export function createOwnAccountVirmanContext(
   }
 
   return {
+    company,
     companyName,
     companyNameNorm,
     companyNameCore,
@@ -415,6 +421,22 @@ export function evaluateOwnAccountVirmanTransfer(row = {}, context = {}) {
     : false;
   const virmanKeyword = OWN_VIRMAN_KEYWORD_RE.test(evidenceRaw);
   const typeIsVirman = isVirmanTypeLocal(type) || type === BANK_INTERNAL_TRANSFER;
+
+  // Dış cari havale: “X hesabından Y hesabına” ve Y (veya X) kendi firma değil → virman değil
+  const ownIdentity = buildOwnCompanyIdentity(context.selectedCompany || ownCtx?.company || null);
+  if (!ownIdentity.cores.length && ownCtx?.companyNameCore) {
+    ownIdentity.cores.push(ownCtx.companyNameCore);
+  }
+  const externalParty = extractTransferCounterparty(
+    evidenceRaw,
+    row.direction || context.direction || "",
+    ownIdentity
+  );
+  if (externalParty && !isOwnCompanyPartyName(externalParty, ownIdentity)) {
+    return emptyVerdict({
+      reasons: ["external_counterparty_transfer"],
+    });
+  }
 
   const counter = findDefiniteCounterOwnBank(evidenceRaw, ownCtx);
   const ownAccountNarration = hasOwnAccountTransferCandidateSignal(

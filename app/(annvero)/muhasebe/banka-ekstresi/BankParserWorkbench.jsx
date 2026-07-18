@@ -403,6 +403,7 @@ export default function BankParserWorkbench() {
   const [resolvedCariGroupIds, setResolvedCariGroupIds] = useState(
     () => new Set()
   );
+  const [resolvedCariGroups, setResolvedCariGroups] = useState([]);
   const [applyingCariGroupId, setApplyingCariGroupId] = useState(null);
   const [lastCariApplyMessage, setLastCariApplyMessage] = useState("");
   const cariResolutionCancelRef = useRef(null);
@@ -1347,6 +1348,7 @@ export default function BankParserWorkbench() {
   const handleApplyCariResolutionGroup = ({
     group,
     accountCode,
+    accountName = "",
     learn = false,
   } = {}) => {
     const code = String(accountCode || "").trim();
@@ -1445,6 +1447,19 @@ export default function BankParserWorkbench() {
         const next = new Set(prev);
         next.add(group.id);
         return next;
+      });
+      setResolvedCariGroups((prev) => {
+        const without = prev.filter((g) => g.id !== group.id);
+        return [
+          ...without,
+          {
+            ...group,
+            status: "resolved",
+            suggestedAccount: code,
+            suggestedName: String(accountName || ""),
+            isResolved: true,
+          },
+        ];
       });
       setLastCariApplyMessage(
         `${updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik hesap sayısı ${beforeMissing}’ten ${report.missingCount}’e düştü.`
@@ -1942,6 +1957,7 @@ export default function BankParserWorkbench() {
     setCariResolutionLoading(false);
     setCariResolutionError("");
     setResolvedCariGroupIds(new Set());
+    setResolvedCariGroups([]);
     setApplyingCariGroupId(null);
     setLastCariApplyMessage("");
     if (cariResolutionCancelRef.current) {
@@ -4146,6 +4162,7 @@ export default function BankParserWorkbench() {
             snapshot={cariResolutionSnapshot}
             companyPlans={companyPlans}
             resolvedGroupIds={resolvedCariGroupIds}
+            resolvedGroups={resolvedCariGroups}
             onApplyGroup={handleApplyCariResolutionGroup}
             applyingId={applyingCariGroupId}
             lastApplyMessage={lastCariApplyMessage}

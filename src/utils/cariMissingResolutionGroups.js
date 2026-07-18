@@ -11,6 +11,13 @@ import {
   CARI_MATCH_REASON,
 } from "@/src/utils/cariAccountMatcher";
 import {
+  buildOwnCompanyIdentity,
+  extractCounterpartyParty,
+  isSelectableCariLeafAccount,
+  sortCariDisplayDates,
+  buildCariParentCodeSet,
+} from "@/src/utils/cariCounterpartyExtract";
+import {
   CARI_NOT_REQUIRED_TYPES,
   CARI_REQUIRED_TYPES,
   PERSONEL_REQUIRED_TYPES,
@@ -460,15 +467,21 @@ export function searchCariResolutionCandidates(
     description,
     lucaDescription: description,
     cariIndex: cache.cariIndex,
+    direction,
+    ownIdentity: buildOwnCompanyIdentity(selectedCompany),
   });
 
   const ranked = [];
   const seen = new Set();
   let ownCompanyFiltered = 0;
+  const parentCodes =
+    cache.cariIndex?.parentCodes ||
+    buildCariParentCodeSet((cache.planRows || []).map((r) => r.code));
 
   const pushCand = (cand) => {
     const code = compactCode(cand.code);
     if (!code || seen.has(code)) return;
+    if (!isSelectableCariLeafAccount(code, parentCodes)) return;
     if (foreignVendor && isExpenseAccountCode(code)) return;
     if (!searchAll && !accountMatchesPrefixes(code, prefixes)) return;
     if (!isAccountAllowedForDirection(code, direction)) return;
@@ -495,6 +508,7 @@ export function searchCariResolutionCandidates(
       confidence: Number(cand.confidence || 0),
       matchReason: cand.matchReason || CARI_MATCH_REASON.NONE,
       reasonLabel: formatMatchReason(cand.matchReason, cand.confidence),
+      isLeaf: true,
     });
   };
 
@@ -540,6 +554,7 @@ export function searchCariResolutionCandidates(
     extractedParty: match?.extractedParty || "",
     hasVergiNo: Boolean(match?.hasVergiNo),
     hasIban: Boolean(match?.hasIban),
+    duplicateAccounts: Boolean(match?.duplicateAccounts),
     candidates: ranked.slice(0, limit),
     allCandidates: ranked,
     foreignVendor,
@@ -549,7 +564,9 @@ export function searchCariResolutionCandidates(
       ? ranked.some((c) => accountMatchesPrefixes(c.code, ["320"]))
         ? ""
         : "Satıcı cari hesabı bulunamadı"
-      : "",
+      : match?.duplicateAccounts
+        ? "Mükerrer cari hesap bulundu — kullanıcı seçimi gerekli"
+        : "",
     _stats: {
       indexBuilds: cache.indexBuildCount || 0,
       planNormalizes: cache.planNormalizeCount || 0,
@@ -592,16 +609,32 @@ function emptyCandidateFields(foreignVendor, direction) {
 }
 
 function applySearchToGroupBase(base, search) {
-  const top = search.candidates[0] || null;
-  const confidence = Number(top?.confidence || 0);
+  const duplicateAccounts = Boolean(search.duplicateAccounts);
+  const leafCandidates = (search.candidates || []).filter((c) =>
+    isSelectableCariLeafAccount(c.code)
+  );
+  const safeTop =
+    !duplicateAccounts &&
+    leafCandidates.length === 1 &&
+    Number(leafCandidates[0].confidence || 0) >= 80 &&
+    leafCandidates[0].matchReason !== CARI_MATCH_REASON.TOKEN_WEAK
+      ? leafCandidates[0]
+      : null;
+  // Öneri listesinde göster ama otomatik seçme (mükerrer / zayıf / ana hesap)
+  const displayTop = leafCandidates[0] || null;
+  const confidence = Number(
+    safeTop?.confidence || (duplicateAccounts ? 90 : displayTop?.confidence) || 0
+  );
   const confidenceLabel =
-    confidence >= 80
-      ? "Yüksek (onay gerekli)"
-      : confidence >= 50
-        ? "Orta"
-        : confidence > 0
-          ? "Düşük"
-          : "Aday yok";
+    duplicateAccounts
+      ? "Mükerrer — seçim gerekli"
+      : confidence >= 80
+        ? "Yüksek (onay gerekli)"
+        : confidence >= 50
+          ? "Orta"
+          : confidence > 0
+            ? "Düşük"
+            : "Aday yok";
   const party =
     search.extractedParty ||
     base.partyName ||
@@ -613,14 +646,16 @@ function applySearchToGroupBase(base, search) {
     partyName: party,
     vendorMessage: search.vendorMessage,
     preferredPrefixes: search.preferredPrefixes,
-    candidates: search.candidates,
-    suggestedAccount: top?.code || "",
-    suggestedName: top?.name || "",
+    candidates: leafCandidates.length ? leafCandidates : search.candidates,
+    suggestedAccount: safeTop?.code || "",
+    suggestedName: safeTop?.name || "",
     confidence,
     confidenceLabel,
-    matchReason: top?.matchReason || "",
+    matchReason: safeTop?.matchReason || displayTop?.matchReason || "",
     candidatesReady: true,
     ownCompanyFiltered: Number(search.ownCompanyFiltered || 0),
+    duplicateAccounts,
+    learnAllowedDefault: Boolean(safeTop),
   };
 }
 
@@ -813,9 +848,15 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       const sample = g.samples[0] || rowDescription(g.rows[0]) || "";
       const foreignVendor = isForeignVendorDescription(sample);
       const totalAmount = g.rows.reduce((sum, r) => sum + rowAmount(r), 0);
-      const sortedDates = [...g.dates].filter(Boolean).sort();
+      const sortedDates = sortCariDisplayDates(g.dates);
       const partyFallback =
-        normalizeCariName(sample).slice(0, 80) || "Karşı taraf";
+        extractCounterpartyParty({
+          description: sample,
+          direction: g.direction || "",
+          ownIdentity: buildOwnCompanyIdentity(selectedCompany),
+        }) ||
+        normalizeCariName(sample).slice(0, 80) ||
+        "Karşı taraf";
 
       return {
         id: g.analysisKey,
@@ -888,7 +929,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
   }
   const virmanCandidateGroups = [...candidateGroupMap.values()]
     .map((g) => {
-      const sortedDates = [...g.dates].filter(Boolean).sort();
+      const sortedDates = sortCariDisplayDates(g.dates);
       return {
         id: `virman-aday:${g.analysisKey}`,
         analysisKey: g.analysisKey,
@@ -1024,7 +1065,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
   const creditCardGroups = [...ccGroupMap.values()]
     .map((g) => {
       const totalAmount = g.rows.reduce((sum, r) => sum + rowAmount(r), 0);
-      const sortedDates = [...g.dates].filter(Boolean).sort();
+      const sortedDates = sortCariDisplayDates(g.dates);
       const resolved = g.resolved || {};
       const periodKey = g.periodKey || "belirsiz";
       const periodLabel =
@@ -1415,4 +1456,35 @@ export function formatCariApplyButtonLabel(selectedCount = 0) {
   const n = Number(selectedCount) || 0;
   if (n <= 0) return "Seçilen Hesabı İşleme Uygula";
   return `Seçilen Hesabı ${n} İşleme Uygula`;
+}
+
+/** Otomatik öğrenme checkbox varsayılanı — güvenli koşullarda bile opt-in. */
+export function shouldDefaultCariAutoLearn({
+  confidence = 0,
+  accountCode = "",
+  duplicateAccounts = false,
+  partyName = "",
+  parentCodes = null,
+} = {}) {
+  if (duplicateAccounts) return false;
+  if (!accountCode || !isSelectableCariLeafAccount(accountCode, parentCodes)) {
+    return false;
+  }
+  if (Number(confidence) < 80) return false;
+  if (!String(partyName || "").trim()) return false;
+  return false; // kullanıcı açıkça işaretlesin
+}
+
+export function canEnableCariAutoLearn({
+  confidence = 0,
+  accountCode = "",
+  duplicateAccounts = false,
+  parentCodes = null,
+} = {}) {
+  if (duplicateAccounts) return false;
+  if (!accountCode || !isSelectableCariLeafAccount(accountCode, parentCodes)) {
+    return false;
+  }
+  if (Number(confidence) < 80) return false;
+  return true;
 }

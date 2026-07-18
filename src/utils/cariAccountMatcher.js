@@ -7,6 +7,12 @@ import {
   isLikelyCariGlAccount,
   isExpenseOrIncomeGlAccount,
 } from "@/src/utils/bankTransactionType";
+import {
+  buildCariParentCodeSet,
+  extractCounterpartyParty,
+  isOwnCompanyPartyName,
+  isSelectableCariLeafAccount,
+} from "@/src/utils/cariCounterpartyExtract";
 
 const COMPANY_SUFFIX_TOKENS = new Set([
   "AS",
@@ -68,6 +74,24 @@ export const CARI_GENERIC_TOKENS = new Set([
   "GROUP",
   "COMPANY",
   "CO",
+  "ODEME",
+  "ODEMELER",
+  "ODEMESI",
+  "ON",
+  "BEDEL",
+  "BEDELI",
+  "SISTEM",
+  "SISTEMLERI",
+  "POS",
+  "HAVALE",
+  "EFT",
+  "FAST",
+  "HESAP",
+  "HESABINDAN",
+  "HESABINA",
+  "YATIRIM",
+  "GAYRIMENKUL",
+  "GELISTIRME",
 ]);
 
 const HAVALE_PREFIX_RE =
@@ -195,18 +219,28 @@ function distinctiveTokens(nameCore = "") {
  */
 export function buildCariMatchIndex(companyPlans = []) {
   const accounts = getCariAccountsFromPlan(companyPlans);
+  const parentCodes = buildCariParentCodeSet(accounts.map((item) => item.code));
   const byNormalizedName = new Map();
   const byNormalizedCore = new Map();
+  /** @type {Map<string, typeof accounts>} */
+  const byNormalizedCoreMulti = new Map();
   const byVergiNo = new Map();
   const byIban = new Map();
   const byToken = new Map();
   const byAlias = new Map();
 
   for (const item of accounts) {
+    const selectable = isSelectableCariLeafAccount(item.code, parentCodes);
+    const enriched = { ...item, isLeaf: selectable, isParentAccount: !selectable };
+
     const full = normalizeCariName(item.name);
     const core = normalizeCariNameCore(item.name);
-    if (full) byNormalizedName.set(full, item);
-    if (core) byNormalizedCore.set(core, item);
+    if (full && selectable) byNormalizedName.set(full, enriched);
+    if (core && selectable) {
+      byNormalizedCore.set(core, enriched);
+      if (!byNormalizedCoreMulti.has(core)) byNormalizedCoreMulti.set(core, []);
+      byNormalizedCoreMulti.get(core).push(enriched);
+    }
 
     const vergi =
       item.account?.vergiNo ||
@@ -215,16 +249,18 @@ export function buildCariMatchIndex(companyPlans = []) {
       item.account?.tckn ||
       "";
     const vergiKey = String(vergi).replace(/\D/g, "");
-    if (vergiKey.length >= 10) byVergiNo.set(vergiKey, item);
+    if (vergiKey.length >= 10 && selectable) byVergiNo.set(vergiKey, enriched);
 
     const ibanRaw =
       item.account?.iban || item.account?.IBAN || item.account?.ibanNo || "";
     const ibanKey = normalizeParserText(ibanRaw).replace(/\s+/g, "");
-    if (ibanKey.length >= 15) byIban.set(ibanKey, item);
+    if (ibanKey.length >= 15 && selectable) byIban.set(ibanKey, enriched);
 
-    for (const token of distinctiveTokens(core)) {
-      if (!byToken.has(token)) byToken.set(token, []);
-      byToken.get(token).push(item);
+    if (selectable) {
+      for (const token of distinctiveTokens(core)) {
+        if (!byToken.has(token)) byToken.set(token, []);
+        byToken.get(token).push(enriched);
+      }
     }
 
     const aliases = [
@@ -232,17 +268,23 @@ export function buildCariMatchIndex(companyPlans = []) {
       ...(item.account?.bankAliases || []),
     ];
     for (const alias of aliases) {
-      const aliasKey = normalizeCariNameCore(alias);
-      if (aliasKey) byAlias.set(aliasKey, item);
       const aliasFull = normalizeCariName(alias);
-      if (aliasFull) byAlias.set(aliasFull, item);
+      const aliasCore = normalizeCariNameCore(alias);
+      if (aliasFull && selectable) byAlias.set(aliasFull, enriched);
+      if (aliasCore && selectable) byAlias.set(aliasCore, enriched);
     }
   }
 
   return {
-    accounts,
+    accounts: accounts.map((item) => ({
+      ...item,
+      isLeaf: isSelectableCariLeafAccount(item.code, parentCodes),
+      isParentAccount: !isSelectableCariLeafAccount(item.code, parentCodes),
+    })),
+    parentCodes,
     byNormalizedName,
     byNormalizedCore,
+    byNormalizedCoreMulti,
     byVergiNo,
     byIban,
     byToken,
@@ -296,15 +338,18 @@ function isLikelyReferenceToken(token) {
 
 /**
  * Açıklamadan cari aday unvanları üretir.
- * GLN. HVL / … ve konaklama gürültüsünü ayıklar.
+ * Havale kalıbı + konaklama gürültüsü ayıklanır; kendi firma unvanı elenir.
  */
-function extractCariNamesFromDescription(description) {
+function extractCariNamesFromDescription(description, options = {}) {
   const raw = String(description || "");
   const names = [];
+  const ownIdentity = options.ownIdentity || null;
+  const direction = options.direction || "";
 
   const pushPart = (part) => {
-    const cleaned = normalizeCariName(stripHavalePrefix(part));
+    const cleaned = normalizeCariName(part);
     if (!cleaned || cleaned.length < 3) return;
+    if (ownIdentity && isOwnCompanyPartyName(cleaned, ownIdentity)) return;
     names.push(cleaned);
 
     const core = normalizeCariNameCore(cleaned);
@@ -313,49 +358,27 @@ function extractCariNamesFromDescription(description) {
 
     if (distinctive.length >= 2) {
       names.push(distinctive.slice(0, 2).join(" "));
-      // Kaydıran ikililer (MUT MARE vb.)
       for (let i = 0; i < distinctive.length - 1; i += 1) {
         names.push(`${distinctive[i]} ${distinctive[i + 1]}`);
       }
     }
     if (distinctive.length >= 3) {
       names.push(distinctive.slice(0, 3).join(" "));
-      for (let i = 0; i < distinctive.length - 2; i += 1) {
-        names.push(distinctive.slice(i, i + 3).join(" "));
-      }
       names.push(distinctive.join(" "));
     }
-
-    // Genel kelimeleri düşürülmüş çekirdek
     if (distinctive.length && distinctive.length < tokens.length) {
       names.push(distinctive.join(" "));
     }
   };
 
-  pushPart(extractNameFromStructuredText(raw));
+  const primary = extractCounterpartyParty({
+    description: raw,
+    direction,
+    ownIdentity,
+  });
+  if (primary) pushPart(primary);
 
-  if (raw.includes("/")) {
-    pushPart(raw.split("/").pop());
-  }
-
-  if (raw.includes("-")) {
-    pushPart(raw.split("-").pop());
-  }
-
-  const words = normalizeParserText(stripHavalePrefix(raw))
-    .split(" ")
-    .filter(Boolean);
-  const meaningfulWords = words.filter((word) => !isLikelyReferenceToken(word));
-
-  if (meaningfulWords.length >= 2) {
-    pushPart(meaningfulWords.slice(0, 2).join(" "));
-    pushPart(meaningfulWords.slice(-2).join(" "));
-  }
-  if (meaningfulWords.length >= 3) {
-    pushPart(meaningfulWords.slice(0, 3).join(" "));
-  }
-  pushPart(meaningfulWords.filter(isUsableMatchToken).join(" "));
-
+  // Kısa kod / birleşik yazım adayları (BİLETDÜK vb.) ayrıca short-code’dan gelir
   return [...new Set(names.map(normalizeCariName).filter(Boolean))];
 }
 
@@ -390,14 +413,18 @@ function resolveShortCodeCandidates(description) {
 export function buildCariSearchCandidates(sources = {}) {
   const { description = "", lucaDescription = "", ruleAciklama = "" } = sources;
   const candidates = new Set();
+  const extractOpts = {
+    ownIdentity: sources.ownIdentity || null,
+    direction: sources.direction || "",
+  };
 
-  for (const name of extractCariNamesFromDescription(description)) {
+  for (const name of extractCariNamesFromDescription(description, extractOpts)) {
     candidates.add(name);
   }
-  for (const name of extractCariNamesFromDescription(lucaDescription)) {
+  for (const name of extractCariNamesFromDescription(lucaDescription, extractOpts)) {
     candidates.add(name);
   }
-  for (const name of extractCariNamesFromDescription(ruleAciklama)) {
+  for (const name of extractCariNamesFromDescription(ruleAciklama, extractOpts)) {
     candidates.add(name);
   }
   for (const name of resolveShortCodeCandidates(description)) {
@@ -484,17 +511,18 @@ function scoreCariMatchConfidence(accountName, candidateName) {
     return { confidence: conf, reason: CARI_MATCH_REASON.TOKEN_STRONG };
   }
 
-  // Tek ayırt edici token: yalnızca öneri (otomatik değil)
+  // Tek ayırt edici token: yalnız çok düşük öneri; otomatik asla
   if (overlap.length === 1) {
     const token = overlap[0];
-    if (token.length < 5) {
+    if (token.length < 6 || isGenericToken(token)) {
       return { confidence: 0, reason: CARI_MATCH_REASON.NONE };
     }
-    if (candidateDistinct.length === 1 && accountWords.length > 3) {
-      return { confidence: 45, reason: CARI_MATCH_REASON.TOKEN_WEAK };
+    // Adayda birden fazla ayırt edici token varken tek örtüşme yetersiz
+    if (candidateDistinct.length >= 2) {
+      return { confidence: 0, reason: CARI_MATCH_REASON.NONE };
     }
     return {
-      confidence: Math.min(72, 55 + token.length),
+      confidence: Math.min(40, 28 + Math.min(token.length, 8)),
       reason: CARI_MATCH_REASON.TOKEN_WEAK,
     };
   }
@@ -502,10 +530,15 @@ function scoreCariMatchConfidence(accountName, candidateName) {
   return { confidence: 0, reason: CARI_MATCH_REASON.NONE };
 }
 
-function rankCariAccounts(cariAccounts, candidates) {
+function rankCariAccounts(cariAccounts, candidates, parentCodes = null) {
   const ranked = [];
 
   for (const item of cariAccounts) {
+    if (parentCodes && !isSelectableCariLeafAccount(item.code, parentCodes)) {
+      continue;
+    }
+    if (item.isParentAccount === true || item.isLeaf === false) continue;
+
     let bestConfidence = 0;
     let bestCandidate = "";
     let bestReason = CARI_MATCH_REASON.NONE;
@@ -587,7 +620,7 @@ export function buildCariNotFoundWarning(suggestions = []) {
     .join(", ")}`;
 }
 
-function emptyMatchResult(suggestions = []) {
+function emptyMatchResult(suggestions = [], extra = {}) {
   return {
     code: "",
     matchedName: "",
@@ -599,6 +632,8 @@ function emptyMatchResult(suggestions = []) {
     extractedParty: "",
     hasVergiNo: false,
     hasIban: false,
+    duplicateAccounts: false,
+    ...extra,
   };
 }
 
@@ -632,6 +667,9 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
   const index =
     sources.cariIndex ||
     (companyPlans?.length ? buildCariMatchIndex(companyPlans) : null);
+  const parentCodes = index?.parentCodes || buildCariParentCodeSet(
+    (index?.accounts || []).map((a) => a.code)
+  );
 
   const haystack = [
     sources.description,
@@ -644,9 +682,18 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
   const vergiList = extractVergiNoFromText(haystack);
   const iban = extractIbanFromText(haystack);
   const extractedParty =
-    extractNameFromStructuredText(sources.lucaDescription || sources.description || "") ||
+    extractCounterpartyParty({
+      description: sources.lucaDescription || sources.description || "",
+      direction: sources.direction || "",
+      ownIdentity: sources.ownIdentity || null,
+    }) ||
     candidates[0] ||
     "";
+
+  const rejectParentHit = (hit) => {
+    if (!hit?.code) return true;
+    return !isSelectableCariLeafAccount(hit.code, parentCodes);
+  };
 
   // Mapper önceden çözülmüş firma hafızası kayıtları
   const preMemoryHits = [
@@ -671,37 +718,40 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
       vergiList,
       iban
     );
-    if (hit) {
+    if (hit && !rejectParentHit(hit)) {
       bumpCariStat(stats, item.stat);
       bumpCariStat(stats, "cariFromFirmaMemory");
       bumpCariStat(stats, "cariExactHit");
-      return hit;
+      return { ...hit, duplicateAccounts: false };
     }
   }
 
   // Exact IBAN (plan)
   if (iban && index?.byIban?.get(iban)) {
     const hit = index.byIban.get(iban);
-    bumpCariStat(stats, "cariExactHit");
-    bumpCariStat(stats, "cariFromIban");
-    return {
-      code: hit.code,
-      matchedName: hit.name,
-      note: "Cari hesap eşleşti",
-      confidence: 100,
-      matchReason: CARI_MATCH_REASON.IBAN,
-      autoApplied: true,
-      suggestions: [],
-      extractedParty,
-      hasVergiNo: vergiList.length > 0,
-      hasIban: true,
-    };
+    if (!rejectParentHit(hit)) {
+      bumpCariStat(stats, "cariExactHit");
+      bumpCariStat(stats, "cariFromIban");
+      return {
+        code: hit.code,
+        matchedName: hit.name,
+        note: "Cari hesap eşleşti",
+        confidence: 100,
+        matchReason: CARI_MATCH_REASON.IBAN,
+        autoApplied: true,
+        suggestions: [],
+        extractedParty,
+        hasVergiNo: vergiList.length > 0,
+        hasIban: true,
+        duplicateAccounts: false,
+      };
+    }
   }
 
-  // 3) Exact Vergi No
+  // Exact Vergi No
   for (const vergi of vergiList) {
     const hit = index?.byVergiNo?.get(vergi);
-    if (hit) {
+    if (hit && !rejectParentHit(hit)) {
       bumpCariStat(stats, "cariExactHit");
       bumpCariStat(stats, "cariFromVergiNo");
       return {
@@ -715,20 +765,49 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
         extractedParty,
         hasVergiNo: true,
         hasIban: Boolean(iban),
+        duplicateAccounts: false,
       };
     }
   }
 
-  // 4–5) Tam unvan / alias
+  // Tam unvan / alias — mükerrer core varsa otomatik seçme
   const sortedCandidates = [...candidates].sort(
     (a, b) =>
       normalizeCariNameCore(b).replace(/\s+/g, "").length -
       normalizeCariNameCore(a).replace(/\s+/g, "").length
   );
 
-  const haystackNorm = normalizeParserText(haystack);
-  const hotelContext =
-    /\b(KONAKLAMA|RESORT|OTEL|REZERVASYON|GECELIK|MUSTERI)\b/.test(haystackNorm);
+  for (const candidate of sortedCandidates) {
+    const core = normalizeCariNameCore(candidate);
+    if (core.replace(/\s+/g, "").length < 5 && distinctiveTokens(core).length < 2) {
+      continue;
+    }
+    const multi = (index?.byNormalizedCoreMulti?.get(core) || []).filter(
+      (item) => !rejectParentHit(item)
+    );
+    if (multi.length > 1) {
+      bumpCariStat(stats, "cariUnresolved");
+      return emptyMatchResult(
+        multi.map((item) =>
+          toSuggestionPayload({
+            ...item,
+            confidence: 90,
+            matchReason: CARI_MATCH_REASON.UNVAN,
+            matchedCandidate: candidate,
+          })
+        ),
+        {
+          extractedParty: extractedParty || candidate,
+          hasVergiNo: vergiList.length > 0,
+          hasIban: Boolean(iban),
+          duplicateAccounts: true,
+          confidence: 90,
+          matchReason: CARI_MATCH_REASON.UNVAN,
+          note: "Mükerrer cari hesap bulundu",
+        }
+      );
+    }
+  }
 
   const exactHits = [];
   for (const candidate of sortedCandidates) {
@@ -740,7 +819,7 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
 
     const byName =
       index?.byNormalizedName?.get(full) || index?.byNormalizedCore?.get(core) || null;
-    if (byName) {
+    if (byName && !rejectParentHit(byName)) {
       exactHits.push({
         hit: byName,
         candidate,
@@ -752,7 +831,7 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     }
 
     const byAlias = index?.byAlias?.get(core) || index?.byAlias?.get(full) || null;
-    if (byAlias) {
+    if (byAlias && !rejectParentHit(byAlias)) {
       exactHits.push({
         hit: byAlias,
         candidate,
@@ -765,19 +844,6 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
 
   if (exactHits.length) {
     exactHits.sort((a, b) => {
-      if (hotelContext) {
-        const aBiz = /\b(OTEL|RESORT|TURIZM|KONAKLAMA)\b/.test(
-          normalizeParserText(a.hit.name)
-        )
-          ? 1
-          : 0;
-        const bBiz = /\b(OTEL|RESORT|TURIZM|KONAKLAMA)\b/.test(
-          normalizeParserText(b.hit.name)
-        )
-          ? 1
-          : 0;
-        if (bBiz !== aBiz) return bBiz - aBiz;
-      }
       if (b.span !== a.span) return b.span - a.span;
       return b.confidence - a.confidence;
     });
@@ -799,23 +865,26 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
       extractedParty,
       hasVergiNo: vergiList.length > 0,
       hasIban: Boolean(iban),
+      duplicateAccounts: false,
     };
   }
 
-  // 6) Güçlü token
+  // Güçlü token
   const tokenCandidates = new Set();
   if (index?.byToken) {
     for (const candidate of sortedCandidates) {
       for (const token of distinctiveTokens(candidate)) {
         for (const item of index.byToken.get(token) || []) {
-          tokenCandidates.add(item);
+          if (!rejectParentHit(item)) tokenCandidates.add(item);
         }
       }
     }
   }
 
   const pool =
-    tokenCandidates.size > 0 ? [...tokenCandidates] : index?.accounts || [];
+    tokenCandidates.size > 0
+      ? [...tokenCandidates]
+      : (index?.accounts || []).filter((item) => !rejectParentHit(item));
 
   if (stats && tokenCandidates.size > 0) {
     stats.cariTokenScan = (stats.cariTokenScan || 0) + 1;
@@ -823,11 +892,15 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
       (stats.cariFuzzyCandidateCount || 0) + pool.length;
   }
 
-  const ranked = rankCariAccounts(pool, sortedCandidates);
+  const ranked = rankCariAccounts(pool, sortedCandidates, parentCodes);
   const best = ranked[0];
   const suggestions = ranked.slice(0, 3).map(toSuggestionPayload);
 
-  if (best && best.confidence >= CARI_AUTO_APPLY_MIN_CONFIDENCE) {
+  if (
+    best &&
+    best.confidence >= CARI_AUTO_APPLY_MIN_CONFIDENCE &&
+    best.matchReason !== CARI_MATCH_REASON.TOKEN_WEAK
+  ) {
     bumpCariStat(stats, "cariTokenScan");
     bumpCariStat(stats, "cariFromToken");
     return {
@@ -841,10 +914,10 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
       extractedParty,
       hasVergiNo: vergiList.length > 0,
       hasIban: Boolean(iban),
+      duplicateAccounts: false,
     };
   }
 
-  // 7) Öğrenilmiş açıklama (mapper ön-çözümü)
   if (sources.learnedDescriptionMemory) {
     const hit = memoryHitToResult(
       sources.learnedDescriptionMemory,
@@ -853,18 +926,17 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
       vergiList,
       iban
     );
-    if (hit) {
+    if (hit && !rejectParentHit(hit)) {
       hit.confidence = Math.min(
         98,
         Number(sources.learnedDescriptionConfidence || 90)
       );
       bumpCariStat(stats, "cariFromLearnedDescription");
       bumpCariStat(stats, "cariFromFirmaMemory");
-      return hit;
+      return { ...hit, duplicateAccounts: false };
     }
   }
 
-  // 8) Aynı IBAN geçmişi
   if (sources.ibanHistoryMemory) {
     const hit = memoryHitToResult(
       sources.ibanHistoryMemory,
@@ -873,10 +945,10 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
       vergiList,
       iban
     );
-    if (hit) {
+    if (hit && !rejectParentHit(hit)) {
       bumpCariStat(stats, "cariFromIbanHistory");
       bumpCariStat(stats, "cariFromFirmaMemory");
-      return hit;
+      return { ...hit, duplicateAccounts: false };
     }
   }
 
@@ -893,6 +965,7 @@ export function resolveCariAccountMatch(companyPlans, sources = {}) {
     extractedParty,
     hasVergiNo: vergiList.length > 0,
     hasIban: Boolean(iban),
+    duplicateAccounts: false,
   };
 }
 

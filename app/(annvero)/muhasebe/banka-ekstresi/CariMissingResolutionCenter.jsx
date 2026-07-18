@@ -16,7 +16,9 @@ import {
   setAllCariRowSelection,
   buildCariApplyGroupPayload,
   formatCariApplyButtonLabel,
+  canEnableCariAutoLearn,
 } from "@/src/utils/cariMissingResolutionGroups";
+import { isSelectableCariLeafAccount } from "@/src/utils/cariCounterpartyExtract";
 import { isCreditCardAccountCode } from "@/src/utils/creditCardAccountResolver";
 import dynamic from "next/dynamic";
 
@@ -137,7 +139,7 @@ function GroupCard({
   const [hydrating, setHydrating] = useState(false);
   const [selectedCode, setSelectedCode] = useState(group.suggestedAccount || "");
   const [selectedName, setSelectedName] = useState(group.suggestedName || "");
-  const [learnNext, setLearnNext] = useState(true);
+  const [learnNext, setLearnNext] = useState(false);
   const [searchAll, setSearchAll] = useState(false);
   const [query, setQuery] = useState("");
   const [expandedSearch, setExpandedSearch] = useState(false);
@@ -180,8 +182,9 @@ function GroupCard({
         selectedCompany,
       });
       setHydratedGroup(next);
-      setSelectedCode((prev) => prev || next.suggestedAccount || "");
-      setSelectedName((prev) => prev || next.suggestedName || "");
+      setSelectedCode(next.suggestedAccount || "");
+      setSelectedName(next.suggestedName || "");
+      setLearnNext(false);
       setHydrating(false);
     }, 0);
   };
@@ -262,6 +265,18 @@ function GroupCard({
     selectedCompany,
   ]);
 
+  // Arama sonucu değişince listede olmayan eski seçimi temizle
+  useEffect(() => {
+    if (!query && !expandedSearch) return;
+    const list = liveSearch.candidates || [];
+    if (!selectedCode) return;
+    if (!list.some((c) => c.code === selectedCode)) {
+      setSelectedCode("");
+      setSelectedName("");
+      setLearnNext(false);
+    }
+  }, [query, expandedSearch, liveSearch.candidates, selectedCode]);
+
   const isVirmanCandidateCard = Boolean(
     group.virmanCandidate || hydratedGroup.virmanCandidate
   );
@@ -276,6 +291,7 @@ function GroupCard({
     !isVirmanCandidateCard &&
     !isTaxObligationCard &&
     Boolean(selectedCode) &&
+    isSelectableCariLeafAccount(selectedCode) &&
     selectedApplyCount > 0 &&
     !isResolved &&
     (isCreditCardCard
@@ -284,6 +300,12 @@ function GroupCard({
         !(
           hydratedGroup.foreignVendor && isExpenseAccountCode(selectedCode)
         ));
+
+  const learnEnabled = canEnableCariAutoLearn({
+    confidence: hydratedGroup.confidence,
+    accountCode: selectedCode,
+    duplicateAccounts: hydratedGroup.duplicateAccounts,
+  });
 
   const showCandidateLoading =
     hydrating ||
@@ -329,6 +351,11 @@ function GroupCard({
             {hydratedGroup.foreignVendor ? (
               <span className="rounded-md border border-violet-700/50 bg-violet-950/40 px-2 py-0.5 text-[11px] text-violet-100">
                 Yabancı satıcı
+              </span>
+            ) : null}
+            {hydratedGroup.duplicateAccounts ? (
+              <span className="rounded-md border border-amber-700/50 bg-amber-950/40 px-2 py-0.5 text-[11px] text-amber-100">
+                Mükerrer cari
               </span>
             ) : null}
             {isResolved ? (
@@ -534,12 +561,21 @@ function GroupCard({
               onSelect={(code, name) => {
                 setSelectedCode(code);
                 setSelectedName(name || "");
+                setLearnNext(false);
               }}
               vendorMessage={
                 liveSearch.vendorMessage || hydratedGroup.vendorMessage
               }
               loadingCandidates={showCandidateLoading}
             />
+            {hydratedGroup.duplicateAccounts ||
+            liveSearch.duplicateAccounts ? (
+              <p className="mt-2 rounded-lg border border-amber-800/50 bg-amber-950/30 px-2.5 py-2 text-[11px] text-amber-100">
+                Mükerrer cari hesap bulundu. Aynı normalize unvana birden fazla
+                hesap var — otomatik seçim yapılmaz; doğru leaf hesabı siz
+                seçin.
+              </p>
+            ) : null}
             {showServiceMeta &&
             Number(liveSearch.ownCompanyFiltered || 0) > 0 ? (
               <p className="mt-2 text-[11px] text-slate-500">
@@ -558,15 +594,31 @@ function GroupCard({
                 </span>
               ) : null}
             </p>
-            <label className="mt-1 flex items-center gap-2 text-xs text-slate-300">
+            <label
+              className={`mt-1 flex items-center gap-2 text-xs ${
+                learnEnabled ? "text-slate-300" : "text-slate-500"
+              }`}
+            >
               <input
                 type="checkbox"
-                checked={learnNext}
+                checked={learnNext && learnEnabled}
+                disabled={!learnEnabled}
                 onChange={(e) => setLearnNext(e.target.checked)}
                 className="rounded border-slate-600"
               />
               Sonraki işlemlerde otomatik tanı
             </label>
+            {learnNext && learnEnabled ? (
+              <p className="text-[11px] text-slate-500">
+                Bu dosyada ~{selectedApplyCount} satır · kalıp:{" "}
+                {hydratedGroup.partyName || "—"} · kapsam:{" "}
+                {hydratedGroup.directionLabel || "—"} / aktif firma
+              </p>
+            ) : (
+              <p className="text-[11px] text-slate-500">
+                Düşük/orta güven, mükerrer veya genel hesapta öğrenme kapalıdır.
+              </p>
+            )}
             <button
               type="button"
               disabled={!canApply || applyingId === hydratedGroup.id}
@@ -578,7 +630,7 @@ function GroupCard({
                   ),
                   accountCode: selectedCode,
                   accountName: selectedName,
-                  learn: learnNext,
+                  learn: Boolean(learnNext && learnEnabled),
                 })
               }
               className="mt-1 w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
@@ -620,6 +672,7 @@ export default function CariMissingResolutionCenter({
   companyPlans = [],
   selectedCompany: selectedCompanyProp = null,
   resolvedGroupIds,
+  resolvedGroups: resolvedGroupsProp = [],
   onApplyGroup,
   applyingId = null,
   lastApplyMessage = "",
@@ -632,6 +685,13 @@ export default function CariMissingResolutionCenter({
   const [query, setQuery] = useState("");
 
   const groups = useMemo(() => snapshot?.groups || [], [snapshot?.groups]);
+  const resolvedGroups = useMemo(
+    () =>
+      resolvedGroupsProp?.length
+        ? resolvedGroupsProp
+        : snapshot?.resolvedGroups || [],
+    [resolvedGroupsProp, snapshot?.resolvedGroups]
+  );
   const virmanCandidateGroups = useMemo(
     () => snapshot?.virmanCandidateGroups || [],
     [snapshot?.virmanCandidateGroups]
@@ -661,12 +721,19 @@ export default function CariMissingResolutionCenter({
     () => groups.filter((g) => !resolvedSet.has(g.id)).length,
     [groups, resolvedSet]
   );
-  const resolvedCount = useMemo(
-    () => groups.filter((g) => resolvedSet.has(g.id)).length,
-    [groups, resolvedSet]
-  );
+  const resolvedCount = useMemo(() => {
+    if (resolvedGroups.length) return resolvedGroups.length;
+    return resolvedSet.size;
+  }, [resolvedGroups, resolvedSet]);
 
   const visible = useMemo(() => {
+    if (filter === CARI_RESOLUTION_FILTERS.RESOLVED) {
+      return filterCariResolutionGroups(resolvedGroups, {
+        filter: CARI_RESOLUTION_FILTERS.ALL,
+        query,
+        resolvedIds: new Set(resolvedGroups.map((g) => g.id)),
+      });
+    }
     if (filter === CARI_RESOLUTION_FILTERS.VIRMAN_CANDIDATES) {
       return filterCariResolutionGroups(virmanCandidateGroups, {
         filter: CARI_RESOLUTION_FILTERS.ALL,
@@ -698,6 +765,7 @@ export default function CariMissingResolutionCenter({
     );
   }, [
     groups,
+    resolvedGroups,
     virmanCandidateGroups,
     creditCardGroups,
     taxObligationGroups,
@@ -928,7 +996,11 @@ export default function CariMissingResolutionCenter({
                 companyPlans={companyPlans}
                 planCache={planCache}
                 selectedCompany={selectedCompany}
-                isResolved={resolvedSet.has(group.id)}
+                isResolved={
+                  resolvedSet.has(group.id) ||
+                  group.status === "resolved" ||
+                  filter === CARI_RESOLUTION_FILTERS.RESOLVED
+                }
                 onApply={onApplyGroup}
                 applyingId={applyingId}
                 onRetry={onRetry}

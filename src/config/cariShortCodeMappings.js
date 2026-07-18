@@ -5,6 +5,14 @@
  */
 export const CARI_SHORT_CODE_MAPPINGS = [
   {
+    keys: ["BILETDUK", "BILET DUK", "BILET DUKKANI", "BILETDUKKANI"],
+    names: [
+      "BILET DUKKANI TURIZM AS",
+      "BILET DUKKANI TURIZM A S",
+      "BILET DUKKANI",
+    ],
+  },
+  {
     keys: ["BATUHAN BULUT", "BATUHAN"],
     names: ["BATUHAN BULUT"],
   },
