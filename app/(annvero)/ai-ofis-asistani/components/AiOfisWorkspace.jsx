@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
 import CompanySelectOptions from "@/app/(annvero)/muhasebe/components/CompanySelectOptions";
 import { useCompanyList } from "@/app/(annvero)/muhasebe/hooks/useCompanyList";
+import AnnveroDateInput from "@/src/components/AnnveroDateInput";
 import {
   AI_OFIS_DOCUMENT_STATUS,
   AI_OFIS_DOCUMENT_TYPES,
@@ -421,11 +422,21 @@ export default function AiOfisWorkspace({ view, module = "ai" }) {
               </label>
               <label className="block text-sm">
                 <span className="mb-1 block text-xs text-slate-400">Başlangıç</span>
-                <input type="date" className={inputClassName} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+                <AnnveroDateInput
+                  className={inputClassName}
+                  value={dateFrom}
+                  onChange={setDateFrom}
+                  aria-label="Başlangıç"
+                />
               </label>
               <label className="block text-sm">
                 <span className="mb-1 block text-xs text-slate-400">Bitiş</span>
-                <input type="date" className={inputClassName} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+                <AnnveroDateInput
+                  className={inputClassName}
+                  value={dateTo}
+                  onChange={setDateTo}
+                  aria-label="Bitiş"
+                />
               </label>
               <label className="block text-sm">
                 <span className="mb-1 block text-xs text-slate-400">İlgili Modül</span>

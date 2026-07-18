@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { clearClientAuthStorage } from "@/src/lib/supabase/client";
 import { useAdminAccess } from "@/src/hooks/useAdminAccess";
+import { useUserRole } from "@/src/hooks/useUserRole";
+import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
 
 const actionButtonClass =
   "rounded-lg border border-gray-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60";
@@ -19,27 +21,23 @@ export default function AuthUserBar({
 }) {
   const router = useRouter();
   const { isAdmin } = useAdminAccess();
-  const [email, setEmail] = useState("");
+  const { email: roleEmail } = useUserRole();
+  const [sessionEmail, setSessionEmail] = useState("");
   const [isSigningOut, setIsSigningOut] = useState(false);
 
   useEffect(() => {
     const supabase = getSupabaseClient();
     if (!supabase) return;
-
-    supabase.auth.getUser().then(({ data }) => {
-      setEmail(data.user?.email || "");
+    let cancelled = false;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!cancelled) setSessionEmail(data.session?.user?.email || "");
     });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setEmail(session?.user?.email || "");
-    });
-
     return () => {
-      subscription.unsubscribe();
+      cancelled = true;
     };
   }, []);
+
+  const email = roleEmail || sessionEmail;
 
   const handleSignOut = async () => {
     const supabase = getSupabaseClient();
@@ -50,6 +48,7 @@ export default function AuthUserBar({
     try {
       await supabase.auth.signOut({ scope: "global" });
       clearClientAuthStorage();
+      clearClientSessionCaches();
       try {
         await fetch("/api/auth/return-to", {
           method: "DELETE",

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import AnnveroDataTable from "@/src/components/AnnveroDataTable";
+import AnnveroDateInput from "@/src/components/AnnveroDateInput";
 import { useCompanyList } from "@/app/(annvero)/muhasebe/hooks/useCompanyList";
 import {
   annveroBtnPrimary,
@@ -241,11 +242,21 @@ export default function SistemLoglariPage() {
         </label>
         <label className="block">
           <span className="mb-1 block text-xs text-slate-400">Başlangıç</span>
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className={annveroInputClass} />
+          <AnnveroDateInput
+            value={dateFrom}
+            onChange={setDateFrom}
+            className={annveroInputClass}
+            aria-label="Başlangıç"
+          />
         </label>
         <label className="block">
           <span className="mb-1 block text-xs text-slate-400">Bitiş</span>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className={annveroInputClass} />
+          <AnnveroDateInput
+            value={dateTo}
+            onChange={setDateTo}
+            className={annveroInputClass}
+            aria-label="Bitiş"
+          />
         </label>
       </section>
 

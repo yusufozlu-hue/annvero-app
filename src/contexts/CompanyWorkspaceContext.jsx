@@ -16,7 +16,6 @@ import {
 import { useUserRole } from "@/src/hooks/useUserRole";
 import { pushRecentCompanyId } from "@/src/utils/companyPreferences";
 import {
-  COMPANIES_SESSION_STORAGE_KEY,
   fetchCompanies,
   getCompanyDisplayName,
   readSessionCompanies,
@@ -32,10 +31,14 @@ function readStoredCompanyId() {
 }
 
 export function CompanyWorkspaceProvider({ children }) {
-  const { canAccessCompany, loading: roleLoading } = useUserRole();
-  const [companies, setCompanies] = useState(() => readSessionCompanies());
-  const [selectedCompanyId, setSelectedCompanyIdState] = useState(readStoredCompanyId);
-  const [isLoading, setIsLoading] = useState(() => readSessionCompanies().length === 0);
+  const {
+    canAccessCompany,
+    loading: roleLoading,
+    authenticated,
+  } = useUserRole();
+  const [companies, setCompanies] = useState([]);
+  const [selectedCompanyId, setSelectedCompanyIdState] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
   const lastRefreshAtRef = useRef(0);
   const COMPANY_REFRESH_TTL_MS = 60_000;
 
@@ -91,7 +94,37 @@ export function CompanyWorkspaceProvider({ children }) {
   }, [companies.length, persistCompanyId]);
 
   useEffect(() => {
-    refreshCompanies();
+    let cancelled = false;
+
+    const boot = () => {
+      if (cancelled) return;
+      if (!authenticated) {
+        setCompanies([]);
+        setSelectedCompanyIdState("");
+        setIsLoading(false);
+        lastRefreshAtRef.current = 0;
+        return;
+      }
+
+      const seeded = readSessionCompanies();
+      if (seeded.length > 0) {
+        setCompanies(seeded);
+        setSelectedCompanyIdState(readStoredCompanyId());
+        setIsLoading(false);
+      } else {
+        setIsLoading(true);
+      }
+
+      void refreshCompanies({ force: true });
+    };
+
+    queueMicrotask(boot);
+
+    if (!authenticated) {
+      return () => {
+        cancelled = true;
+      };
+    }
 
     const handleRefresh = () => refreshCompanies({ force: true });
     const handleVisibility = () => {
@@ -107,11 +140,12 @@ export function CompanyWorkspaceProvider({ children }) {
     window.addEventListener("annvero:refresh-modules", handleRefresh);
 
     return () => {
+      cancelled = true;
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener(ANNVERO_COMPANY_CHANGED_EVENT, handleCompanyChanged);
       window.removeEventListener("annvero:refresh-modules", handleRefresh);
     };
-  }, [refreshCompanies]);
+  }, [authenticated, refreshCompanies]);
 
   const accessibleCompanies = useMemo(
     () => companies.filter((company) => canAccessCompany(company.id)),
@@ -119,16 +153,20 @@ export function CompanyWorkspaceProvider({ children }) {
   );
 
   useEffect(() => {
-    if (roleLoading || !accessibleCompanies.length) return;
-    if (selectedCompanyId && canAccessCompany(selectedCompanyId)) return;
-    const firstAccessible = accessibleCompanies[0]?.id || "";
-    if (firstAccessible && firstAccessible !== selectedCompanyId) {
-      setSelectedCompanyId(firstAccessible);
-    } else if (!firstAccessible && selectedCompanyId) {
-      setSelectedCompanyId("");
-    }
+    if (roleLoading || !authenticated) return;
+
+    queueMicrotask(() => {
+      if (selectedCompanyId && canAccessCompany(selectedCompanyId)) return;
+      const firstAccessible = accessibleCompanies[0]?.id || "";
+      if (firstAccessible && firstAccessible !== selectedCompanyId) {
+        setSelectedCompanyId(firstAccessible);
+      } else if (!firstAccessible && selectedCompanyId) {
+        setSelectedCompanyId("");
+      }
+    });
   }, [
     accessibleCompanies,
+    authenticated,
     canAccessCompany,
     roleLoading,
     selectedCompanyId,

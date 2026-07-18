@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   ANNVERO_ROLE_STORAGE_KEY,
   canAccessRoute,
@@ -9,7 +16,12 @@ import {
 } from "@/src/config/annveroRoles";
 import { createUserAccess } from "@/src/lib/auth/userAccess";
 import { canAccessCompany as checkCompanyAccess } from "@/src/lib/auth/permissions";
-import { invalidateAuthMeCache, fetchAuthMe } from "@/src/lib/auth/authMeClient";
+import {
+  invalidateAuthMeCache,
+  fetchAuthMe,
+  peekAuthMeCache,
+} from "@/src/lib/auth/authMeClient";
+import { emitAuthInvalid } from "@/src/components/authGateCache";
 import { upsertCachedUser } from "@/src/utils/annveroUserStore";
 
 const STALE_ACCESS_KEYS = [
@@ -18,6 +30,8 @@ const STALE_ACCESS_KEYS = [
   "annvero_missing_company_access",
   "annvero_access_warning_v1",
 ];
+
+const UserRoleContext = createContext(null);
 
 function clearStaleAccessFlags() {
   if (typeof window === "undefined") return;
@@ -31,22 +45,30 @@ function clearStaleAccessFlags() {
   }
 }
 
-export function useUserRole() {
-  const [profile, setProfile] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [authenticated, setAuthenticated] = useState(false);
-  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
+function useUserRoleState() {
+  const cached = typeof window !== "undefined" ? peekAuthMeCache() : null;
+  const [profile, setProfile] = useState(() => cached?.data?.profile || null);
+  const [loading, setLoading] = useState(() => !cached?.data?.authenticated);
+  const [authenticated, setAuthenticated] = useState(() =>
+    Boolean(cached?.data?.authenticated)
+  );
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(() =>
+    Boolean(cached?.data?.isPlatformAdmin || cached?.data?.isAdmin)
+  );
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [usingFallback, setUsingFallback] = useState(false);
   const [needsInvite, setNeedsInvite] = useState(false);
   const [apiShowAccessWarning, setApiShowAccessWarning] = useState(false);
   const [accountActive, setAccountActive] = useState(true);
+  const [email, setEmail] = useState(() => cached?.data?.email || "");
 
   const loadProfile = useCallback(async (options = {}) => {
-    setLoading(true);
+    const force = Boolean(options.force);
+    const existing = !force ? peekAuthMeCache() : null;
+    if (!existing) setLoading(true);
     clearStaleAccessFlags();
     try {
-      const { response, data } = await fetchAuthMe({ force: Boolean(options.force) });
+      const { response, data } = await fetchAuthMe({ force });
 
       if (!data.authenticated) {
         setAuthenticated(false);
@@ -57,6 +79,9 @@ export function useUserRole() {
         setNeedsInvite(false);
         setApiShowAccessWarning(false);
         setAccountActive(true);
+        setEmail("");
+        invalidateAuthMeCache();
+        emitAuthInvalid();
         return;
       }
 
@@ -67,6 +92,7 @@ export function useUserRole() {
         setNeedsInvite(false);
         setApiShowAccessWarning(false);
         setAccountActive(false);
+        setEmail(data.email || "");
         return;
       }
 
@@ -80,14 +106,22 @@ export function useUserRole() {
         role === "partner";
 
       setAuthenticated(true);
-      setIsPlatformAdmin(Boolean(data.isPlatformAdmin ?? data.isAdmin) || role === "admin");
+      setIsPlatformAdmin(
+        Boolean(data.isPlatformAdmin ?? data.isAdmin) || role === "admin"
+      );
       setSchemaMissing(Boolean(data.schemaMissing));
-      setUsingFallback(Boolean(data.usingFallback && (data.schemaMissing || data.adminUnavailable)));
+      setUsingFallback(
+        Boolean(
+          data.usingFallback && (data.schemaMissing || data.adminUnavailable)
+        )
+      );
       setNeedsInvite(elevated ? false : Boolean(data.needsInvite));
-      // Banner sadece API'nin kesin showAccessWarning alanı; eski flag'ler yok sayılır
-      setApiShowAccessWarning(elevated ? false : data.showAccessWarning === true);
+      setApiShowAccessWarning(
+        elevated ? false : data.showAccessWarning === true
+      );
       setAccountActive(true);
       setProfile(nextProfile);
+      setEmail(data.email || nextProfile?.email || "");
 
       if (nextProfile?.role && typeof window !== "undefined") {
         localStorage.setItem(ANNVERO_ROLE_STORAGE_KEY, nextProfile.role);
@@ -98,34 +132,32 @@ export function useUserRole() {
         console.info("[auth/me debug]", data.debug);
       }
     } catch {
-      // Ağ hatası: banner gösterme
       clearStaleAccessFlags();
-      if (typeof window !== "undefined") {
-        const storedRole = localStorage.getItem(ANNVERO_ROLE_STORAGE_KEY) || "";
-        setProfile({
-          role: storedRole || "muhasebe_personeli",
-          companyIds: [],
-          permissions: [],
-          source: "fallback",
-        });
-        setUsingFallback(true);
-        setSchemaMissing(false);
-        setAuthenticated(true);
-        setApiShowAccessWarning(false);
-      }
+      // Ağ hatasında localStorage rolünden sahte oturum üretme.
+      setAuthenticated(false);
+      setProfile(null);
+      setIsPlatformAdmin(false);
+      setUsingFallback(false);
+      setApiShowAccessWarning(false);
+      setEmail("");
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadProfile();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void loadProfile();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [loadProfile]);
 
   const access = useMemo(() => createUserAccess(profile || {}), [profile]);
   const role = access.role;
 
-  // Tek kaynak: API showAccessWarning === true VE client access de true; admin asla false
   const showAccessWarning =
     apiShowAccessWarning === true && access.showAccessWarning === true;
 
@@ -138,6 +170,7 @@ export function useUserRole() {
   return {
     role,
     profile,
+    email,
     permissions: access.permissions,
     companyIds: access.companyIds,
     modules: access.modules,
@@ -160,9 +193,26 @@ export function useUserRole() {
     canAccessRoute: (pathname) => canAccessRoute(role, pathname),
     canSeeNavGroup: (groupTitle) => canSeeNavGroup(role, groupTitle),
     canSeeNavItem: (item) => canSeeNavItem(role, item),
-    canAccessCompany: (companyId) => checkCompanyAccess(role, companyId, access.companyIds),
+    canAccessCompany: (companyId) =>
+      checkCompanyAccess(role, companyId, access.companyIds),
     canAccessModule: access.canAccessModule,
     hasPermission: access.hasPermission,
     isActive: accountActive && access.isActive,
   };
+}
+
+export function UserRoleProvider({ children }) {
+  const value = useUserRoleState();
+  return (
+    <UserRoleContext.Provider value={value}>{children}</UserRoleContext.Provider>
+  );
+}
+
+/** Ortak rol/profil — UserRoleProvider içinde tek /api/auth/me paylaşılır. */
+export function useUserRole() {
+  const ctx = useContext(UserRoleContext);
+  if (!ctx) {
+    throw new Error("useUserRole must be used within UserRoleProvider");
+  }
+  return ctx;
 }

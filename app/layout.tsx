@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import AnnveroSupportWidget from "./components/AnnveroSupportWidget";
+import DeferredSupportWidget from "./components/DeferredSupportWidget";
 import PwaRegister from "./components/PwaRegister";
 import "./globals.css";
 
@@ -66,7 +66,7 @@ export default function RootLayout({
       </head>
       <body className="flex min-h-full min-w-0 flex-col overflow-x-hidden bg-[var(--annvero-bg)] text-[var(--annvero-text)]">
         {children}
-        <AnnveroSupportWidget />
+        <DeferredSupportWidget />
         <PwaRegister />
       </body>
     </html>

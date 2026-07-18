@@ -259,14 +259,13 @@ export async function GET() {
     });
   }
 
-  try {
-    await touchLastLogin(user, finalProfile);
-  } catch (error) {
+  // last_login yanıtı bloke etmesin
+  void touchLastLogin(user, finalProfile).catch((error) => {
     logProfileIssue("last_login güncellenemedi", {
       email: user.email,
       error: error?.message || String(error),
     });
-  }
+  });
 
   const platformAdmin =
     isOwnerEmail(user.email) ||

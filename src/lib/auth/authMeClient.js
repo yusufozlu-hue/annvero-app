@@ -15,6 +15,13 @@ export function invalidateAuthMeCache() {
   inFlight = null;
 }
 
+/** Senkron önbellek okuma — loading flicker'ını önlemek için. */
+export function peekAuthMeCache() {
+  if (!cache) return null;
+  if (Date.now() - cacheAt >= DEFAULT_TTL_MS) return null;
+  return cache;
+}
+
 /**
  * @param {{ force?: boolean, ttlMs?: number }} options
  * @returns {Promise<{ response: Response, data: object }>}
@@ -34,8 +41,14 @@ export async function fetchAuthMe({ force = false, ttlMs = DEFAULT_TTL_MS } = {}
     .then(async (response) => {
       const data = await response.json().catch(() => ({}));
       const result = { response, data };
-      cache = result;
-      cacheAt = Date.now();
+      if (data?.authenticated) {
+        cache = result;
+        cacheAt = Date.now();
+      } else {
+        // Önceki kullanıcının profil cache'ini taşıma
+        cache = null;
+        cacheAt = 0;
+      }
       return result;
     })
     .finally(() => {

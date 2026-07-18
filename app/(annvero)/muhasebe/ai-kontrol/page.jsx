@@ -5,6 +5,7 @@ import * as XLSX from "xlsx";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import { useCompanyList } from "../hooks/useCompanyList";
+import AnnveroDateInput from "@/src/components/AnnveroDateInput";
 import {
   loadPendingLucaRows,
   savePendingLucaRows,
@@ -340,21 +341,21 @@ export default function AiKontrolPage() {
 
         <label className="block">
           <span className="mb-1 block text-sm text-gray-400">Başlangıç Tarihi</span>
-          <input
-            type="date"
+          <AnnveroDateInput
             value={dateFrom}
-            onChange={(event) => setDateFrom(event.target.value)}
+            onChange={setDateFrom}
             className={inputClassName}
+            aria-label="Başlangıç Tarihi"
           />
         </label>
 
         <label className="block">
           <span className="mb-1 block text-sm text-gray-400">Bitiş Tarihi</span>
-          <input
-            type="date"
+          <AnnveroDateInput
             value={dateTo}
-            onChange={(event) => setDateTo(event.target.value)}
+            onChange={setDateTo}
             className={inputClassName}
+            aria-label="Bitiş Tarihi"
           />
         </label>
       </div>

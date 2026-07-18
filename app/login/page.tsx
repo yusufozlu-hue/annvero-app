@@ -16,6 +16,7 @@ import {
   getSupabaseBrowserClient,
   setRememberMePreference,
 } from "@/src/lib/supabase/client";
+import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
 import {
   ANNVERO_REMEMBER_ME_KEY,
   getSafeNextPath,
@@ -280,6 +281,7 @@ export default function LoginPage() {
     try {
       setRememberMePreference(rememberMe);
       clearClientAuthStorage();
+      clearClientSessionCaches();
       const supabase = getSupabaseBrowserClient({ rememberMe });
       if (!supabase) {
         setIsConfigMissing(true);

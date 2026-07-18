@@ -24,6 +24,7 @@ import {
   validateIkPersonelImport,
 } from "@/src/utils/ikPersonelEngine";
 import { persistCompaniesToLocalStorage } from "@/src/utils/companies";
+import AnnveroDateInput from "@/src/components/AnnveroDateInput";
 
 const inputClassName =
   "w-full rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-violet-500/60 focus:ring-2 focus:ring-violet-500/20";
@@ -51,7 +52,7 @@ export default function IkPersonelPage() {
     useCompanyList();
 
   const [movements, setMovements] = useState(() => loadIkMovements());
-  const [leaves, setLeaves] = useState(() => loadIkLeaves());
+  const [leaves] = useState(() => loadIkLeaves());
   const [activeFilter, setActiveFilter] = useState("Tümü");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -219,20 +220,22 @@ export default function IkPersonelPage() {
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-xs text-slate-400">İşe Giriş Başlangıç</span>
-            <input
-              type="date"
+            <AnnveroDateInput
+              id="ik-hire-date-from"
+              aria-label="İşe Giriş Başlangıç"
               className={inputClassName}
               value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
+              onChange={setDateFrom}
             />
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-xs text-slate-400">İşe Giriş Bitiş</span>
-            <input
-              type="date"
+            <AnnveroDateInput
+              id="ik-hire-date-to"
+              aria-label="İşe Giriş Bitiş"
               className={inputClassName}
               value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
+              onChange={setDateTo}
             />
           </label>
           <label className="block text-sm">

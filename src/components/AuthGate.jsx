@@ -3,76 +3,122 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import AuthLoadingScreen from "@/src/components/AuthLoadingScreen";
+import {
+  ANNVERO_AUTH_INVALID_EVENT,
+  getCachedAuthStatus,
+  setCachedAuthStatus,
+} from "@/src/components/authGateCache";
+import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
 import { buildLoginUrl } from "@/src/utils/authRedirect";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 
-/**
- * Modül düzeyinde oturum önbelleği — soft remount'ta tam ekran loading yok.
- */
-let cachedAuthStatus = /** @type {"loading"|"authenticated"|"unauthenticated"} */ (
-  "loading"
-);
+const SESSION_CHECK_TIMEOUT_MS = 2500;
+const REVERIFY_TIMEOUT_MS = 4000;
 
-export default function AuthGate({ children }) {
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("auth_session_timeout")), ms);
+    }),
+  ]);
+}
+
+/**
+ * hasAuthCookie yalnız ilk paint ipucudur — yetki kaynağı değildir.
+ * getSession timeout sonrası getUser ile yeniden doğrulanır; başarısızsa /login.
+ */
+export default function AuthGate({ children, hasAuthCookie = false }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [status, setStatus] = useState(cachedAuthStatus);
+  const [status, setStatus] = useState(() => {
+    const cached = getCachedAuthStatus();
+    if (cached !== "loading") return cached;
+    if (hasAuthCookie) return "authenticated";
+    return "loading";
+  });
 
   useEffect(() => {
     let isMounted = true;
     const supabase = getSupabaseClient();
 
     const applyStatus = (next) => {
-      cachedAuthStatus = next;
+      setCachedAuthStatus(next);
       if (isMounted) setStatus(next);
     };
 
+    const markUnauthenticated = () => {
+      clearClientSessionCaches();
+      applyStatus("unauthenticated");
+    };
+
     if (!supabase) {
-      queueMicrotask(() => applyStatus("unauthenticated"));
+      queueMicrotask(() => markUnauthenticated());
       return () => {
         isMounted = false;
       };
     }
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      applyStatus(session ? "authenticated" : "unauthenticated");
-    });
+    const verifySession = async () => {
+      try {
+        const { data } = await withTimeout(
+          supabase.auth.getSession(),
+          SESSION_CHECK_TIMEOUT_MS
+        );
+        if (!isMounted) return;
+        if (data.session) {
+          applyStatus("authenticated");
+          return;
+        }
+        markUnauthenticated();
+      } catch {
+        try {
+          const { data } = await withTimeout(
+            supabase.auth.getUser(),
+            REVERIFY_TIMEOUT_MS
+          );
+          if (!isMounted) return;
+          if (data.user) {
+            applyStatus("authenticated");
+            return;
+          }
+        } catch {
+          // fall through
+        }
+        if (isMounted) markUnauthenticated();
+      }
+    };
+
+    void verifySession();
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      applyStatus(session ? "authenticated" : "unauthenticated");
+      if (session) applyStatus("authenticated");
+      else markUnauthenticated();
     });
+
+    const onAuthInvalid = () => markUnauthenticated();
+    window.addEventListener(ANNVERO_AUTH_INVALID_EVENT, onAuthInvalid);
 
     return () => {
       isMounted = false;
       subscription.unsubscribe();
+      window.removeEventListener(ANNVERO_AUTH_INVALID_EVENT, onAuthInvalid);
     };
-  }, []);
+  }, [hasAuthCookie]);
 
   useEffect(() => {
     if (status !== "unauthenticated") return;
 
-    let cancelled = false;
-    (async () => {
-      try {
-        await fetch("/api/auth/return-to", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: pathname }),
-        });
-      } catch {
-        // Cookie yazılamasa da temiz /login'e git
-      }
-      if (!cancelled) {
-        router.replace(buildLoginUrl());
-      }
-    })();
+    void fetch("/api/auth/return-to", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: pathname }),
+    }).catch(() => {});
 
-    return () => {
-      cancelled = true;
-    };
+    router.replace(buildLoginUrl());
   }, [status, pathname, router]);
 
   if (status === "loading") {

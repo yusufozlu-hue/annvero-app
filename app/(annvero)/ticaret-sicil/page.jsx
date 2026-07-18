@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
 import CompanySelectOptions from "@/app/(annvero)/muhasebe/components/CompanySelectOptions";
 import { useCompanyList } from "@/app/(annvero)/muhasebe/hooks/useCompanyList";
+import AnnveroDateInput from "@/src/components/AnnveroDateInput";
 import {
   TICARET_SICIL_DOCUMENT_TEMPLATES,
   TICARET_SICIL_OPERATION_STATUS,
@@ -239,20 +240,20 @@ export default function TicaretSicilPage() {
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-xs text-slate-400">Başlangıç</span>
-            <input
-              type="date"
+            <AnnveroDateInput
               className={inputClassName}
               value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
+              onChange={setDateFrom}
+              aria-label="Başlangıç"
             />
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-xs text-slate-400">Bitiş</span>
-            <input
-              type="date"
+            <AnnveroDateInput
               className={inputClassName}
               value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
+              onChange={setDateTo}
+              aria-label="Bitiş"
             />
           </label>
         </div>

@@ -89,7 +89,8 @@ export function sortCompaniesForDisplay(companies) {
   return groupCompaniesForDisplay(companies).allCompanies;
 }
 
-function readRawCompaniesFromStorage() {
+/** Yerel legacy firma listesi — oturum/API yerine yetki için kullanılmaz. */
+export function readLegacyCompaniesFromStorage() {
   if (typeof window === "undefined") return [];
 
   for (const key of COMPANY_STORAGE_KEYS) {
@@ -99,7 +100,7 @@ function readRawCompaniesFromStorage() {
     try {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) {
-        return parsed;
+        return sortCompaniesForDisplay(parsed);
       }
     } catch {
       continue;
@@ -116,6 +117,12 @@ const COMPANIES_FETCH_CACHE_MS = 60_000;
 export function invalidateCompaniesCache() {
   companiesFetchCache = null;
   companiesFetchCacheAt = 0;
+}
+
+/** Çıkış / kullanıcı değişimi — bellek + session firma önbelleği. */
+export function clearCompaniesClientCache() {
+  invalidateCompaniesCache();
+  clearSessionCompanies();
 }
 
 export function readSessionCompanies() {
@@ -170,10 +177,18 @@ export async function fetchCompanies(options = {}) {
 
   if (!supabase) {
     console.error("Supabase istemcisi yapılandırılmamış.");
-    return sortCompaniesForDisplay(readRawCompaniesFromStorage());
+    return [];
   }
 
   try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) {
+      clearCompaniesClientCache();
+      return [];
+    }
+
     const { data, error } = await supabase
       .from("companies")
       .select("id, company_name, data, created_at")
@@ -192,7 +207,8 @@ export async function fetchCompanies(options = {}) {
     return companiesFetchCache;
   } catch (error) {
     console.error("Firma listesi Supabase'den alınamadı:", error);
-    return sortCompaniesForDisplay(readRawCompaniesFromStorage());
+    // Oturumsuz / hatalı durumda başka kullanıcının localStorage listesini sızdırma
+    return [];
   }
 }
 
