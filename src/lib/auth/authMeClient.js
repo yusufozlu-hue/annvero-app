@@ -1,6 +1,5 @@
 /**
- * /api/auth/me istemci önbelleği — Güvenlik Faz 2 performans.
- * Shell + sidebar + company list aynı oturumda tekrar tekrar çağırmasın.
+ * /api/auth/me istemci önbelleği — tek in-flight, unauthenticated cache yok.
  */
 
 const DEFAULT_TTL_MS = 45_000;
@@ -27,14 +26,18 @@ export function peekAuthMeCache() {
  * @returns {Promise<{ response: Response, data: object }>}
  */
 export async function fetchAuthMe({ force = false, ttlMs = DEFAULT_TTL_MS } = {}) {
-  const now = Date.now();
+  if (inFlight) {
+    return inFlight;
+  }
 
+  const now = Date.now();
   if (!force && cache && now - cacheAt < ttlMs) {
     return cache;
   }
 
-  if (!force && inFlight) {
-    return inFlight;
+  if (force) {
+    cache = null;
+    cacheAt = 0;
   }
 
   inFlight = fetch("/api/auth/me", { cache: "no-store", credentials: "include" })
@@ -45,7 +48,6 @@ export async function fetchAuthMe({ force = false, ttlMs = DEFAULT_TTL_MS } = {}
         cache = result;
         cacheAt = Date.now();
       } else {
-        // Önceki kullanıcının profil cache'ini taşıma
         cache = null;
         cacheAt = 0;
       }

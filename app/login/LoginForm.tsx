@@ -328,37 +328,31 @@ export default function LoginForm() {
         return;
       }
 
+      // Kritik yol: return-to → yönlendir. me / login-event bekletmez.
+      const loginEventBody = JSON.stringify({
+        source: "password_login",
+        event_type: "login",
+      });
       try {
-        const meResponse = await fetch("/api/auth/me", {
-          cache: "no-store",
-          credentials: "include",
-        });
-        const meData = await meResponse.json();
-
-        if (meData.active === false || meResponse.status === 403) {
-          setError("Hesabınız pasif durumda. Yöneticinize başvurun.");
-          await supabase.auth.signOut();
-          clearClientAuthStorage();
-          setIsLoading(false);
-          submitLock.current = false;
-          return;
+        if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+          navigator.sendBeacon(
+            "/api/auth/login-event",
+            new Blob([loginEventBody], { type: "application/json" })
+          );
+        } else {
+          void fetch("/api/auth/login-event", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: loginEventBody,
+            keepalive: true,
+          });
         }
-
-        void fetch("/api/auth/login-event", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            source: "password_login",
-            event_type: "login",
-          }),
-        });
       } catch {
-        // profil kontrolü başarısız olsa bile oturum varsa devam
+        // fire-and-forget
       }
 
       const redirectTarget = await consumeReturnToPath();
-      router.refresh();
       router.push(redirectTarget);
     } catch (caughtError) {
       logLoginError(caughtError);

@@ -34,7 +34,7 @@ function logProfileIssue(message, detail = {}, companyId = "") {
   }
 }
 
-function withDebug(payload, user, profile) {
+function withAccessFields(payload, user, profile) {
   const debug = buildAccessDebugPayload(user, profile, {
     isAdmin: payload.isAdmin || payload.isPlatformAdmin,
   });
@@ -49,19 +49,6 @@ function withDebug(payload, user, profile) {
     companyIds: debug.companyIds,
     showAccessWarning: debug.showAccessWarning,
     warningReason: debug.warningReason,
-    // Geçici debug bloğu (UI/Network incelemesi için)
-    debug: {
-      email: debug.email,
-      role: debug.role,
-      isAdmin: debug.isAdmin,
-      isPartner: debug.isPartner,
-      isPlatformAdmin: debug.isPlatformAdmin,
-      companyIds: debug.companyIds,
-      showAccessWarning: debug.showAccessWarning,
-      warningReason: debug.warningReason,
-      profileSource: profile?.source || null,
-      bootstrapOwner: isOwnerEmail(user?.email),
-    },
   };
 }
 
@@ -130,7 +117,7 @@ export async function GET() {
     }
 
     return NextResponse.json(
-      withDebug(
+      withAccessFields(
         {
           authenticated: true,
           email: user.email,
@@ -190,7 +177,7 @@ export async function GET() {
       }
 
       return NextResponse.json(
-        withDebug(
+        withAccessFields(
           {
             authenticated: true,
             email: user.email,
@@ -273,7 +260,7 @@ export async function GET() {
     finalProfile.role === "admin";
 
   return NextResponse.json(
-    withDebug(
+    withAccessFields(
       {
         authenticated: true,
         email: user.email,

@@ -4,10 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import BuildVersionBadge from "@/app/components/BuildVersionBadge";
-import {
-  ANNVERO_NAV_GROUPS,
-  ANNVERO_NAV_IDLE_PREFETCH_PRIORITY,
-} from "@/src/config/annveroNavConfig";
+import { ANNVERO_NAV_GROUPS } from "@/src/config/annveroNavConfig";
 import { canSeeNavGroup, canSeeNavItem } from "@/src/config/annveroRoles";
 import { canAccessCoreTestCenter, isDevelopmentEnvironment } from "@/src/lib/dev/coreTestCenterAccess";
 import { useUserRole } from "@/src/hooks/useUserRole";
@@ -18,12 +15,10 @@ import {
   normalizeMenuPath,
   partitionNavGroupsByActive,
 } from "@/src/utils/annveroNavActiveGroup";
-import {
-  createNavPrefetchController,
-  listNavHrefs,
-  resolveIdlePrefetchOrder,
-  DEV_IDLE_PREFETCH_LIMIT,
-} from "@/src/utils/annveroNavPrefetch";
+import { createNavPrefetchController } from "@/src/utils/annveroNavPrefetch";
+
+/** Hover/focus intent: tek route prefetch (ms). */
+const HOVER_PREFETCH_DELAY_MS = 140;
 
 const ICON_MAP = {
   Dashboard: "M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z",
@@ -40,10 +35,6 @@ const ICON_MAP = {
   "Hesaplama Araçları": "M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2 4h2v2H9V7Zm4 0h2v2h-2V7ZM9 11h2v2H9v-2Zm4 0h2v2h-2v-2ZM9 15h2v2H9v-2Zm4 0h2v2h-2v-2Z",
   "Sistem Yönetimi": "M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm8.7 4a7.1 7.1 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7.3 7.3 0 0 0-1.7-1L16 2h-4l-.5 2.9a7.3 7.3 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.1 7.1 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.3 7.3 0 0 0 1.7 1L12 22h4l.5-2.9a7.3 7.3 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6a7.1 7.1 0 0 0 .1-1Z",
 };
-
-function groupHrefs(group) {
-  return listNavHrefs(group ? [group] : []);
-}
 
 function MenuIcon({ title }) {
   const path = ICON_MAP[title] || "M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0";
@@ -95,7 +86,7 @@ function NavSubItem({
   return (
     <Link
       href={item.href}
-      prefetch={true}
+      prefetch={false}
       onClick={(e) => onNavIntent?.(e, item.href)}
       onPointerDown={() => onNavPrime?.(item.href)}
       onMouseEnter={() => onWarmHref?.(item.href)}
@@ -149,7 +140,6 @@ function SidebarGroup({
   showDivider,
   onToggleOnly,
   onNavIntent,
-  onWarmGroup,
   onWarmHref,
   onNavPrime,
   collapsed,
@@ -172,7 +162,7 @@ function SidebarGroup({
       <div className={showDivider ? "border-t border-[var(--annvero-shell-separator)] pt-2" : ""}>
         <Link
           href={href}
-          prefetch={true}
+          prefetch={false}
           onClick={(e) => onNavIntent?.(e, href)}
           onPointerDown={() => onNavPrime?.(href)}
           onMouseEnter={() => onWarmHref?.(href)}
@@ -196,20 +186,18 @@ function SidebarGroup({
   return (
     <div
       className={showDivider ? "border-t border-[var(--annvero-shell-separator)] pt-2" : ""}
-      onMouseEnter={() => onWarmGroup?.(group)}
-      onFocusCapture={() => onWarmGroup?.(group)}
     >
       <div
         className={`group mb-1 flex w-full items-center gap-1 rounded-xl px-1 py-1 transition-colors duration-150 ${headerClass}`}
       >
         <Link
           href={landingHref}
-          prefetch={true}
+          prefetch={false}
           title={group.title}
           onClick={(e) => onNavIntent?.(e, landingHref)}
           onPointerDown={() => onNavPrime?.(landingHref)}
-          onMouseEnter={() => onWarmGroup?.(group)}
-          onFocus={() => onWarmGroup?.(group)}
+          onMouseEnter={() => onWarmHref?.(landingHref)}
+          onFocus={() => onWarmHref?.(landingHref)}
           className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1.5 py-1.5"
         >
           <MenuIcon title={group.title} />
@@ -225,7 +213,6 @@ function SidebarGroup({
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              onWarmGroup?.(group);
               onToggleOnly?.(group.title);
             }}
             aria-label={open ? `${group.title} menüsünü kapat` : `${group.title} menüsünü aç`}
@@ -270,6 +257,7 @@ export default function AnnveroSidebar({
   const [pendingHref, setPendingHref] = useState("");
   const [, startTransition] = useTransition();
   const prefetchRef = useRef(null);
+  const hoverPrefetchTimerRef = useRef(null);
   const navRef = useRef(null);
   const routerRef = useRef(router);
 
@@ -280,8 +268,7 @@ export default function AnnveroSidebar({
     routerRef.current = router;
   }, [router]);
 
-  // Prefetch controller'ı istemcide bir kez, render dışında (effect içinde) oluştur.
-  // Bağımlı effect'lerden önce tanımlandığı için ilk commit'te önce çalışır.
+  // Prefetch controller — yalnız hover/focus/click intent; idle toplu yükleme yok.
   useEffect(() => {
     if (prefetchRef.current == null) {
       prefetchRef.current = createNavPrefetchController({
@@ -289,6 +276,12 @@ export default function AnnveroSidebar({
         isDev,
       });
     }
+    return () => {
+      if (hoverPrefetchTimerRef.current != null) {
+        clearTimeout(hoverPrefetchTimerRef.current);
+        hoverPrefetchTimerRef.current = null;
+      }
+    };
   }, [isDev]);
 
   const coreTestVisible = canAccessCoreTestCenter({
@@ -360,44 +353,6 @@ export default function AnnveroSidebar({
     if (nav) nav.scrollTop = 0;
   }, [pathname, activeTitle]);
 
-  // Açık grup ısıt — navigasyon sırasında yasak
-  useEffect(() => {
-    if (prefetchRef.current?.isNavigationPending) return;
-    const group = visibleNavGroups.find((g) => g.title === openMenu);
-    if (!group) return;
-    prefetchRef.current?.enqueueMany(groupHrefs(group), { front: true });
-  }, [openMenu, visibleNavGroups]);
-
-  // Idle: dev'de en fazla 2–3 öncelikli route; prod'da config listesi
-  useEffect(() => {
-    let cancelled = false;
-    const run = () => {
-      if (cancelled) return;
-      if (prefetchRef.current?.isNavigationPending) return;
-      const ordered = resolveIdlePrefetchOrder(
-        ANNVERO_NAV_IDLE_PREFETCH_PRIORITY,
-        visibleNavGroups,
-        {
-          maxItems: isDev ? DEV_IDLE_PREFETCH_LIMIT : Number.POSITIVE_INFINITY,
-          excludePath: pathname,
-        }
-      );
-      prefetchRef.current?.enqueueMany(ordered, { front: false });
-    };
-    const idleId =
-      typeof window !== "undefined" && "requestIdleCallback" in window
-        ? window.requestIdleCallback(run, { timeout: 2800 })
-        : window.setTimeout(run, 700);
-    return () => {
-      cancelled = true;
-      if (typeof window !== "undefined" && "cancelIdleCallback" in window) {
-        window.cancelIdleCallback(idleId);
-      } else {
-        window.clearTimeout(idleId);
-      }
-    };
-  }, [visibleNavGroups, pathname, isDev]);
-
   // Sabit aktif başlığa tıklanınca YALNIZCA kaydırılabilir nav alanını en üste
   // getir; böylece aktif modülün alt menüleri tekrar görünür. Navigasyon yok,
   // ana sayfa etkilenmez.
@@ -406,13 +361,22 @@ export default function AnnveroSidebar({
   };
 
   const onWarmHref = (href) => {
+    if (typeof window === "undefined") return;
+    // Mobilde hover prefetch yok — dokunuşta beginNavigation yeter.
+    if (window.matchMedia("(hover: none)").matches) return;
     if (prefetchRef.current?.isNavigationPending) return;
-    prefetchRef.current?.enqueue(href, { front: true });
-  };
+    const target = normalizeMenuPath(href);
+    const current = normalizeMenuPath(pathname);
+    if (!target || target === current) return;
 
-  const onWarmGroup = (group) => {
-    if (prefetchRef.current?.isNavigationPending) return;
-    prefetchRef.current?.enqueueMany(groupHrefs(group), { front: true });
+    if (hoverPrefetchTimerRef.current != null) {
+      clearTimeout(hoverPrefetchTimerRef.current);
+    }
+    hoverPrefetchTimerRef.current = setTimeout(() => {
+      hoverPrefetchTimerRef.current = null;
+      if (prefetchRef.current?.isNavigationPending) return;
+      prefetchRef.current?.enqueue(href, { front: true });
+    }, HOVER_PREFETCH_DELAY_MS);
   };
 
   const onNavPrime = (href) => {
@@ -525,7 +489,6 @@ export default function AnnveroSidebar({
                 setOpenMenu((current) => (current === title ? "" : title))
               }
               onNavIntent={onNavIntent}
-              onWarmGroup={onWarmGroup}
               onWarmHref={onWarmHref}
               onNavPrime={onNavPrime}
             />

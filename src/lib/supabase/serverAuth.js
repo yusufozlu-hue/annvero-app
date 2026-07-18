@@ -1,16 +1,17 @@
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
 import { isManagementUser, isPlatformAdmin, getAnnveroRoleFromUser } from "@/src/lib/auth/admin";
 import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
-import {
-  getServerSupabaseAdmin,
-  getServerSupabaseAdminGuardResponse,
-} from "@/src/lib/supabase/serverAdmin";
 import { fetchProfileByEmail } from "@/src/lib/auth/profileService";
-import { USER_PROFILES_TABLE } from "@/src/lib/supabase/userProfilesSchema";
 
-export async function getServerSupabaseUser() {
+/**
+ * Request başına tek getUser — React cache() ile RSC/API içinde tekilleştirilir.
+ * getClaims: JWKS boş (simetrik JWT) projelerde Auth sunucusuna düşer; körlemesine
+ * değiştirilmedi. Asimetrik JWT opt-in sonrası ayrı doğrulama ile geçilebilir.
+ */
+export const getServerSupabaseUser = cache(async () => {
   const config = getSupabaseConfig();
   if (!config) return { supabase: null, user: null };
 
@@ -32,7 +33,7 @@ export async function getServerSupabaseUser() {
   } = await supabase.auth.getUser();
 
   return { supabase, user };
-}
+});
 
 export async function requireAdminUser() {
   const { supabase, user } = await getServerSupabaseUser();

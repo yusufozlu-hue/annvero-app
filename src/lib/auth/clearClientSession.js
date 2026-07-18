@@ -16,6 +16,7 @@ import {
   clearCompaniesClientCache,
   COMPANIES_SESSION_STORAGE_KEY,
 } from "@/src/utils/companies";
+import { invalidateTransactionMemoryCache } from "@/src/utils/transactionMemoryApi";
 
 const CLIENT_AUTH_STORAGE_KEYS = [
   ANNVERO_ROLE_STORAGE_KEY,
@@ -30,6 +31,7 @@ export function clearClientSessionCaches() {
   invalidateAuthMeCache();
   resetAuthGateCache();
   clearCompaniesClientCache();
+  invalidateTransactionMemoryCache();
 
   if (typeof window === "undefined") return;
 

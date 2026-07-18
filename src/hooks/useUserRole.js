@@ -127,10 +127,6 @@ function useUserRoleState() {
         localStorage.setItem(ANNVERO_ROLE_STORAGE_KEY, nextProfile.role);
       }
       if (nextProfile) upsertCachedUser(nextProfile);
-
-      if (typeof window !== "undefined" && data.debug) {
-        console.info("[auth/me debug]", data.debug);
-      }
     } catch {
       clearStaleAccessFlags();
       // Ağ hatasında localStorage rolünden sahte oturum üretme.

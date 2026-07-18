@@ -10,7 +10,6 @@ function readRememberPreference(): boolean {
   if (typeof window === "undefined") return true;
   try {
     const raw = window.localStorage.getItem(ANNVERO_REMEMBER_ME_KEY);
-    // Anahtar yoksa mevcut oturumları bozmamak için kalıcı kabul et.
     if (raw == null) return true;
     return raw === "1";
   } catch {
@@ -25,7 +24,9 @@ export function setRememberMePreference(remember: boolean) {
   } catch {
     // ignore
   }
-  if (browserClientRemember !== remember) {
+  // Tercih değişince yalnız kendi referansımızı sıfırla; yeni client
+  // bir sonraki getSupabaseBrowserClient çağrısında isSingleton ile tek kalır.
+  if (browserClientRemember !== null && browserClientRemember !== remember) {
     browserClient = null;
     browserClientRemember = null;
   }
@@ -37,12 +38,8 @@ export function resetSupabaseBrowserClient() {
 }
 
 /**
- * "Beni hatırla" açık: kalıcı auth cookie (maxAge).
- * Kapalı: session cookie (tarayıcı kapanınca düşer).
- *
- * Not: @supabase/ssr createBrowserClient cookie storage kullanır;
- * auth.storage override edilmez. isSingleton:false ile tercih değişiminde
- * istemci yeniden oluşturulur.
+ * Tek tarayıcı GoTrueClient — isSingleton:true ile Multiple GoTrueClient uyarısı önlenir.
+ * "Beni hatırla" cookie maxAge tercihini ilk oluşturmada uygular.
  */
 export function getSupabaseBrowserClient(options?: {
   rememberMe?: boolean;
@@ -66,8 +63,9 @@ export function getSupabaseBrowserClient(options?: {
     return browserClient;
   }
 
+  // isSingleton:true → @supabase/ssr modül önbelleği; ikinci create aynı örneği döner.
   browserClient = createBrowserClient(config.supabaseUrl, config.anonKey, {
-    isSingleton: false,
+    isSingleton: true,
     cookieOptions: remember
       ? {
           path: "/",
@@ -113,7 +111,7 @@ function clearDocumentAuthCookies() {
   }
 }
 
-/** Çıkışta hem storage hem document auth cookie temizliği. */
+/** Çıkışta storage temizliği; singleton referansı sıfırlanır (sonraki sayfa yüklemesinde tek client). */
 export function clearClientAuthStorage() {
   if (typeof window === "undefined") return;
   try {

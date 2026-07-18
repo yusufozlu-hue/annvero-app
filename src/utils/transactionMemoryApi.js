@@ -1,4 +1,12 @@
 let pendingCountCache = { key: "", at: 0, count: 0 };
+/** @type {Map<string, Promise<number>>} */
+const pendingCountInFlight = new Map();
+/** @type {Map<string, Promise<unknown[]>>} */
+const listInFlight = new Map();
+
+function listCacheKey(options = {}) {
+  return `${options.companyId || "all"}:${options.status || "default"}`;
+}
 
 export async function fetchPendingTransactionCount(companyId = "", options = {}) {
   const cacheKey = `${companyId || "all"}:pending`;
@@ -13,47 +21,72 @@ export async function fetchPendingTransactionCount(companyId = "", options = {})
     return pendingCountCache.count;
   }
 
+  if (!options.force && pendingCountInFlight.has(cacheKey)) {
+    return pendingCountInFlight.get(cacheKey);
+  }
+
   const params = new URLSearchParams({ status: "pending" });
   if (companyId) params.set("companyId", companyId);
 
-  const response = await fetch(`/api/transaction-memory?${params}`, {
-    cache: "no-store",
-    credentials: "include",
+  const request = (async () => {
+    const response = await fetch(`/api/transaction-memory?${params}`, {
+      cache: "no-store",
+      credentials: "include",
+    });
+
+    if (!response.ok) {
+      return pendingCountCache.key === cacheKey ? pendingCountCache.count : 0;
+    }
+
+    const body = await response.json();
+    const count = Array.isArray(body.data) ? body.data.length : 0;
+    pendingCountCache = { key: cacheKey, at: Date.now(), count };
+    return count;
+  })().finally(() => {
+    pendingCountInFlight.delete(cacheKey);
   });
 
-  if (!response.ok) {
-    return pendingCountCache.key === cacheKey ? pendingCountCache.count : 0;
-  }
-
-  const body = await response.json();
-  const count = Array.isArray(body.data) ? body.data.length : 0;
-  pendingCountCache = { key: cacheKey, at: now, count };
-  return count;
+  pendingCountInFlight.set(cacheKey, request);
+  return request;
 }
 
 export function invalidateTransactionMemoryCache() {
   pendingCountCache = { key: "", at: 0, count: 0 };
+  pendingCountInFlight.clear();
+  listInFlight.clear();
 }
 
 export async function fetchUnrecognizedTransactions(options = {}) {
+  const cacheKey = listCacheKey(options);
+  if (!options.force && listInFlight.has(cacheKey)) {
+    return listInFlight.get(cacheKey);
+  }
+
   const params = new URLSearchParams();
 
   if (options.companyId) params.set("companyId", options.companyId);
   if (options.status) params.set("status", options.status);
 
   const query = params.toString();
-  const response = await fetch(
-    query ? `/api/transaction-memory?${query}` : "/api/transaction-memory",
-    { cache: "no-store" }
-  );
+  const request = (async () => {
+    const response = await fetch(
+      query ? `/api/transaction-memory?${query}` : "/api/transaction-memory",
+      { cache: "no-store", credentials: "include" }
+    );
 
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || "Tanınmayan işlemler yüklenemedi.");
-  }
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || "Tanınmayan işlemler yüklenemedi.");
+    }
 
-  const body = await response.json();
-  return body.data || [];
+    const body = await response.json();
+    return body.data || [];
+  })().finally(() => {
+    listInFlight.delete(cacheKey);
+  });
+
+  listInFlight.set(cacheKey, request);
+  return request;
 }
 
 export async function queueUnrecognizedTransactions(items = []) {
@@ -68,6 +101,7 @@ export async function queueUnrecognizedTransactions(items = []) {
     throw new Error(body.error || "Tanınmayan işlemler kuyruğa alınamadı.");
   }
 
+  invalidateTransactionMemoryCache();
   return body;
 }
 
@@ -83,6 +117,7 @@ export async function learnUnrecognizedTransaction(id, draft = {}) {
     throw new Error(body.error || "İşlem öğrenilemedi.");
   }
 
+  invalidateTransactionMemoryCache();
   return body;
 }
 
@@ -98,6 +133,7 @@ export async function dismissUnrecognizedTransaction(id) {
     throw new Error(body.error || "İşlem güncellenemedi.");
   }
 
+  invalidateTransactionMemoryCache();
   return body;
 }
 
@@ -113,5 +149,6 @@ export async function updateUnrecognizedTransactionDraft(id, fields = {}) {
     throw new Error(body.error || "İşlem güncellenemedi.");
   }
 
+  invalidateTransactionMemoryCache();
   return body;
 }

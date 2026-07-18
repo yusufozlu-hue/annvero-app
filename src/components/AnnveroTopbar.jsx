@@ -23,7 +23,7 @@ function sortCompaniesTr(list, getLabel) {
   );
 }
 
-export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }) {
+export default function AnnveroTopbar({ onMenuToggle }) {
   const {
     companies,
     selectedCompanyId,
@@ -35,9 +35,20 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
 
   const [companySearch, setCompanySearch] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [favoriteIds, setFavoriteIds] = useState([]);
-  const [recentIds, setRecentIds] = useState([]);
-  const [theme, setTheme] = useState("dark");
+  const [favoriteIds, setFavoriteIds] = useState(() =>
+    typeof window !== "undefined" ? loadFavoriteCompanyIds() : []
+  );
+  const [recentIds, setRecentIds] = useState(() =>
+    typeof window !== "undefined" ? loadRecentCompanyIds() : []
+  );
+  const [theme, setTheme] = useState(() => {
+    if (typeof window === "undefined") return "dark";
+    try {
+      return localStorage.getItem(ANNVERO_THEME_KEY) || "dark";
+    } catch {
+      return "dark";
+    }
+  });
   const [notificationCount, setNotificationCount] = useState(0);
   const [highlightIndex, setHighlightIndex] = useState(-1);
 
@@ -46,30 +57,56 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
   const listRef = useRef(null);
 
   useEffect(() => {
-    setFavoriteIds(loadFavoriteCompanyIds());
-    setRecentIds(loadRecentCompanyIds());
-    const savedTheme = localStorage.getItem(ANNVERO_THEME_KEY) || "dark";
-    setTheme(savedTheme);
-    document.documentElement.dataset.annveroTheme = savedTheme;
+    document.documentElement.dataset.annveroTheme = theme;
+  }, [theme]);
+
+  const closeDropdown = useCallback(() => {
+    setDropdownOpen(false);
+    setCompanySearch("");
+    setHighlightIndex(-1);
+  }, []);
+
+  const openDropdown = useCallback(() => {
+    setDropdownOpen(true);
   }, []);
 
   useEffect(() => {
     let active = true;
+    let idleId = null;
+    let interval = null;
 
-    async function loadNotifications() {
-      try {
-        const pendingCount = await fetchPendingTransactionCount(selectedCompanyId || "");
-        if (active) setNotificationCount(pendingCount);
-      } catch {
-        if (active) setNotificationCount(0);
+    function scheduleLoad() {
+      const run = () => {
+        if (!active) return;
+        void (async () => {
+          try {
+            const pendingCount = await fetchPendingTransactionCount(selectedCompanyId || "");
+            if (active) setNotificationCount(pendingCount);
+          } catch {
+            if (active) setNotificationCount(0);
+          }
+        })();
+      };
+
+      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+        idleId = window.requestIdleCallback(run, { timeout: 2500 });
+      } else {
+        idleId = window.setTimeout(run, 400);
       }
+      interval = setInterval(run, 60000);
     }
 
-    loadNotifications();
-    const interval = setInterval(loadNotifications, 60000);
+    scheduleLoad();
     return () => {
       active = false;
-      clearInterval(interval);
+      if (idleId != null) {
+        if (typeof window !== "undefined" && "cancelIdleCallback" in window) {
+          window.cancelIdleCallback(idleId);
+        } else {
+          window.clearTimeout(idleId);
+        }
+      }
+      if (interval) clearInterval(interval);
     };
   }, [selectedCompanyId]);
 
@@ -78,13 +115,13 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
 
     function handlePointerOutside(event) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        setDropdownOpen(false);
+        closeDropdown();
       }
     }
 
     function handleEscape(event) {
       if (event.key === "Escape") {
-        setDropdownOpen(false);
+        closeDropdown();
       }
     }
 
@@ -94,14 +131,10 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
       document.removeEventListener("mousedown", handlePointerOutside);
       document.removeEventListener("keydown", handleEscape);
     };
-  }, [dropdownOpen]);
+  }, [dropdownOpen, closeDropdown]);
 
   useEffect(() => {
-    if (!dropdownOpen) {
-      setCompanySearch("");
-      setHighlightIndex(-1);
-      return;
-    }
+    if (!dropdownOpen) return;
 
     const frame = window.requestAnimationFrame(() => {
       searchInputRef.current?.focus();
@@ -192,12 +225,10 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
     (id) => {
       setSelectedCompanyId(id);
       setRecentIds(loadRecentCompanyIds());
-      setDropdownOpen(false);
-      setCompanySearch("");
-      setHighlightIndex(-1);
+      closeDropdown();
       window.dispatchEvent(new Event("annvero:refresh-modules"));
     },
-    [setSelectedCompanyId]
+    [setSelectedCompanyId, closeDropdown]
   );
 
   const toggleFavorite = useCallback((event, companyId) => {
@@ -264,7 +295,10 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
         <div className="relative min-w-0 flex-1" ref={dropdownRef}>
           <button
             type="button"
-            onClick={() => setDropdownOpen((v) => !v)}
+            onClick={() => {
+              if (dropdownOpen) closeDropdown();
+              else openDropdown();
+            }}
             aria-haspopup="listbox"
             aria-expanded={dropdownOpen}
             className="flex w-full max-w-[520px] items-center gap-2.5 rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] px-3 py-2 text-left transition hover:border-[var(--annvero-accent)]"
@@ -292,7 +326,7 @@ export default function AnnveroTopbar({ onMenuToggle, sidebarCollapsed = false }
                 className="fixed inset-0 z-40 sm:hidden"
                 style={{ background: "var(--annvero-overlay)" }}
                 aria-hidden="true"
-                onClick={() => setDropdownOpen(false)}
+                onClick={closeDropdown}
               />
 
               <div
