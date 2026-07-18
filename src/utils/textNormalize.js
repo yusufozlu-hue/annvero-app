@@ -83,13 +83,13 @@ export function normalizeBankAnalysisKey(description, direction = "") {
   }
 
   // Etiketli kimlik: "1849228780 sorgu no'lu" ve "sorgu no 1849228780"
-  // NO LU / NOLU, NO'dan önce gelmeli (yoksa NO eşleşir, LU kalır)
+  // NO LU / NOLU / NUMARALI, NO'dan önce gelmeli (yoksa NO eşleşir, LU kalır)
   text = text.replace(
-    /\b\d{4,}\s+(SORGU|REFERANS|REF|ISLEM|DEKONT|BATCH|PROVIZYON|SIRA|HAREKET|FIS)\s*(NO LU|NOLU|NUMARASI|NUMARA|NO)?\b/g,
+    /\b\d{4,}\s+(SORGU|REFERANS|REF|ISLEM|DEKONT|BATCH|PROVIZYON|SIRA|HAREKET|FIS)\s*(NO LU|NOLU|NUMARALI|NUMARASI|NUMARA|NO)?\b/g,
     " "
   );
   text = text.replace(
-    /\b(SORGU|REFERANS|REF|ISLEM|DEKONT|BATCH|PROVIZYON|SIRA|HAREKET|FIS)\s*(NO LU|NOLU|NUMARASI|NUMARA|NO)?\s*\d{4,}\b/g,
+    /\b(SORGU|REFERANS|REF|ISLEM|DEKONT|BATCH|PROVIZYON|SIRA|HAREKET|FIS)\s*(NO LU|NOLU|NUMARALI|NUMARASI|NUMARA|NO)?\s*\d{4,}\b/g,
     " "
   );
 
@@ -112,9 +112,10 @@ export function normalizeBankAnalysisKey(description, direction = "") {
 
   // Artık anlamsız kalan etiket artıkları (ISLEM hariç — ISLEMLERI bozulmasın)
   text = text.replace(
-    /\b(SORGU|REFERANS|REF|DEKONT|BATCH|PROVIZYON|SIRA)\s*(NO LU|NOLU|NUMARASI|NUMARA|NO)?\b/g,
+    /\b(SORGU|REFERANS|REF|DEKONT|BATCH|PROVIZYON|SIRA)\s*(NO LU|NOLU|NUMARALI|NUMARASI|NUMARA|NO)?\b/g,
     " "
   );
+  text = text.replace(/\b(NO LU|NOLU|NUMARALI)\b/g, " ");
 
   text = text.replace(/\s+/g, " ").trim();
 

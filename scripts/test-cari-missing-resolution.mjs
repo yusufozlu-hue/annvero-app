@@ -753,6 +753,100 @@ test("yalnız aktif firma ünvanı → otomatik virman adayı değil", () => {
   });
   assert.equal(snap.groupCount, 1);
   assert.equal(snap.virmanCandidateCount, 0);
+  assert.equal(snap.groups[0].partyUnresolved, true);
+  assert.equal(snap.groups[0].partyName, "Karşı taraf tespit edilemedi");
+  assert.ok(!/MARE RESORT/i.test(snap.groups[0].partyName));
+});
+
+test("kendi firma unvanı (companyName) sahte MARE grubu oluşturmaz", () => {
+  const company = {
+    id: "co-mare",
+    companyName: "MARE RESORT TURIZM VE OTELCILIK TICARET AS",
+  };
+  const rows = Array.from({ length: 3 }, (_, i) =>
+    cariLikeRow({
+      id: `own${i}`,
+      detayAciklama: `TARIHLI SORGU NO LU MARE RESORT TURIZM VE OTELCILIK TICARET AS HESABI ${i}`,
+      analysisKey: `nolu-mare-${i}|CIKIS`,
+      transactionType: "GIDEN_HAVALE",
+      borc: 100,
+      alacak: 0,
+    })
+  );
+  const snap = buildCariResolutionGroups(rows, {
+    selectedCompany: company,
+    selectedBank: "VAKIFBANK",
+    companyPlans: [
+      {
+        accountCode: "320.01.D0003",
+        accountName: "DE MARE RESORT OTEL AS",
+        isActive: true,
+      },
+    ],
+  }, { initialCandidateGroups: "all" });
+  assert.equal(snap.groupCount, 1);
+  assert.equal(snap.groups[0].count, 3);
+  assert.equal(snap.groups[0].partyName, "Karşı taraf tespit edilemedi");
+  assert.equal(snap.groups[0].partyUnresolved, true);
+  assert.equal(snap.groups[0].suggestedAccount || "", "");
+  assert.equal(snap.groups[0].learnAllowedDefault || false, false);
+});
+
+test("BİLET unique exact leaf → Seçilen hesap dolu (plan_search doldurmaz)", () => {
+  const company = mareCompany();
+  const plan = [
+    { accountCode: "120", accountName: "ALICILAR", isActive: true },
+    { accountCode: "120.01", accountName: "YURTICI", isActive: true },
+    {
+      accountCode: "120.01.B0019",
+      accountName: "BİLETDÜKKANI TURİZM A.Ş.",
+      isActive: true,
+    },
+    {
+      accountCode: "120.10.B0001",
+      accountName: "BİLET DÜKKANI TURİZM A.Ş.",
+      isActive: true,
+    },
+    {
+      accountCode: "120.10.X0099",
+      accountName: "DIGER MUSTERI AS",
+      isActive: true,
+    },
+  ];
+  const desc =
+    "TURKIYE CUMHURIYETI ZIRAAT BANKASI AS 90001 SORGU NUMARALI BILETDUK";
+  const search = searchCariResolutionCandidates(plan, {
+    description: desc,
+    direction: "GIRIS",
+    limit: 5,
+    selectedCompany: company,
+  });
+  assert.equal(search.duplicateAccounts, false);
+  assert.ok(
+    search.candidates.some((c) => c.code === "120.10.B0001" && c.confidence >= 95)
+  );
+  assert.ok(
+    !search.candidates.some((c) => c.matchReason === "plan_search"),
+    "boş sorguda plan_search unique unvanı bozmasın"
+  );
+
+  const row = cariLikeRow({
+    id: "bilet1",
+    detayAciklama: desc,
+    analysisKey: "biletduk-ziraat|GIRIS",
+    transactionType: "GELEN_HAVALE",
+    borc: 0,
+    alacak: 250,
+  });
+  const snap = buildCariResolutionGroups(
+    [row],
+    { selectedCompany: company, selectedBank: "VAKIFBANK", companyPlans: plan },
+    { initialCandidateGroups: "all" }
+  );
+  const g = snap.groups[0];
+  assert.equal(g.suggestedAccount, "120.10.B0001");
+  assert.ok(/B[İI]LET/i.test(g.suggestedName || ""));
+  assert.ok(Number(g.confidence) >= 95);
 });
 
 test("virman adayı grup: hydrate aday üretmez", () => {

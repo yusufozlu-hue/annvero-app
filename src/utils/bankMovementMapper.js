@@ -13,7 +13,7 @@ import {
   buildCariNotFoundWarning,
   resolveCariAccountMatch,
 } from "@/src/utils/cariAccountMatcher";
-import { buildOwnCompanyIdentity } from "@/src/utils/cariCounterpartyExtract";
+import { buildOwnCompanyIdentity, isOwnOnlyOrMissingCounterparty } from "@/src/utils/cariCounterpartyExtract";
 import {
   resolveBankTransactionType,
   isPersonelRequiredForType,
@@ -400,16 +400,36 @@ function applyCariResolution(
       (analysisStats.cariRequiredAttempts || 0) + 1;
   }
 
+  const companyForOwn =
+    selectedCompany || memorySources.selectedCompany || null;
+  const direction = memorySources.direction || "";
+  const descForOwn = String(lucaDescription || description || "").trim();
+  if (
+    companyForOwn &&
+    isOwnOnlyOrMissingCounterparty(descForOwn, direction, companyForOwn)
+  ) {
+    if (analysisStats) {
+      analysisStats.cariOwnOnlySkipped =
+        (analysisStats.cariOwnOnlySkipped || 0) + 1;
+      analysisStats.cariUnresolved = (analysisStats.cariUnresolved || 0) + 1;
+    }
+    appendWarning(warnings, "Karşı taraf tespit edilemedi");
+    return {
+      counterAccountCode: "",
+      cariSuggestions: [],
+      cariMatchConfidence: 0,
+      cariMatchReason: "own-only-or-missing-party",
+    };
+  }
+
   const result = resolveCariAccountMatch(companyPlans, {
     description,
     lucaDescription,
     ruleAciklama,
     cariIndex,
     stats: analysisStats,
-    direction: memorySources.direction || "",
-    ownIdentity: buildOwnCompanyIdentity(
-      selectedCompany || memorySources.selectedCompany || null
-    ),
+    direction,
+    ownIdentity: buildOwnCompanyIdentity(companyForOwn),
     ...memorySources,
   });
 

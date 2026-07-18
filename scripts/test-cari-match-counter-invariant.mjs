@@ -15,6 +15,7 @@ import {
 import {
   resolveCariAccountMatch,
   buildCariMatchIndex,
+  CARI_MATCH_REASON,
 } from "@/src/utils/cariAccountMatcher.js";
 import { buildOwnCompanyIdentity } from "@/src/utils/cariCounterpartyExtract.js";
 import {
@@ -109,6 +110,63 @@ test("çift eksik bacak: movement identity ile tekilleşir", () => {
   );
   assert.equal(stats.uniqueUnresolvedMovements, 1);
   assert.ok(isMissingHesapRow(missing[0]));
+});
+
+test("BİLET unique exact leaf — hafızasız otomatik (yeniden yükleme)", () => {
+  const plan = [
+    { accountCode: "120", accountName: "ALICILAR", isActive: true },
+    { accountCode: "120.01", accountName: "ALICILAR YURTICI", isActive: true },
+    {
+      accountCode: "120.01.B0019",
+      accountName: "BİLETDÜKKANI TURİZM A.Ş.",
+      isActive: true,
+    },
+    {
+      accountCode: "120.10.B0001",
+      accountName: "BİLET DÜKKANI TURİZM A.Ş.",
+      isActive: true,
+    },
+  ];
+  const index = buildCariMatchIndex(plan);
+  const match = resolveCariAccountMatch(plan, {
+    description:
+      "TURKIYE CUMHURIYETI ZIRAAT BANKASI AS 90001 SORGU NUMARALI BILETDUK",
+    direction: "GIRIS",
+    ownIdentity: buildOwnCompanyIdentity({
+      companyName: "MARE RESORT TURIZM VE OTELCILIK TICARET AS",
+    }),
+    cariIndex: index,
+  });
+  assert.equal(match.code, "120.10.B0001");
+  assert.equal(match.autoApplied, true);
+  assert.equal(match.duplicateAccounts, false);
+  assert.equal(match.matchReason, CARI_MATCH_REASON.UNVAN);
+});
+
+test("mükerrer BİLET leaf — otomatik seçim yok", () => {
+  const plan = [
+    { accountCode: "120", accountName: "ALICILAR", isActive: true },
+    {
+      accountCode: "120.01.B0019",
+      accountName: "BİLET DÜKKANI TURİZM A.Ş.",
+      isActive: true,
+    },
+    {
+      accountCode: "120.10.B0001",
+      accountName: "BİLET DÜKKANI TURİZM A.Ş.",
+      isActive: true,
+    },
+  ];
+  const index = buildCariMatchIndex(plan);
+  const match = resolveCariAccountMatch(plan, {
+    description: "GLN HVL / BILETDUK TAHSILAT",
+    direction: "GIRIS",
+    ownIdentity: buildOwnCompanyIdentity({ name: "Mare Resort" }),
+    cariIndex: index,
+  });
+  assert.equal(match.code, "");
+  assert.equal(match.duplicateAccounts, true);
+  assert.ok((match.suggestions || []).length >= 2);
 });
 
 test("BİLET hafızası leaf’i parent’a düşmeden uygular", () => {

@@ -4,6 +4,7 @@
  */
 
 import { normalizeParserText } from "@/src/utils/textNormalize.js";
+import { getCompanyDisplayName } from "@/src/utils/companies.js";
 
 const COMPANY_SUFFIX_TOKENS = new Set([
   "AS",
@@ -55,6 +56,8 @@ const NOISE_PHRASES = [
   /\bGIRIS\b/g,
   /\bGELEN\b/g,
   /\bGIDEN\b/g,
+  /\bSORGU\s*(NO\s*LU|NOLU|NUMARALI|NUMARASI|NUMARA|NO)?\b/g,
+  /\b(NO\s*LU|NOLU|NUMARALI)\b/g,
 ];
 
 const BARE_CARI_MAINS = new Set([
@@ -113,6 +116,8 @@ export function buildOwnCompanyIdentity(selectedCompany = null) {
   }
 
   const titles = [
+    getCompanyDisplayName(selectedCompany),
+    selectedCompany.companyName,
     selectedCompany.name,
     selectedCompany.unvan,
     selectedCompany.title,
@@ -175,6 +180,32 @@ export function isOwnCompanyPartyName(name = "", ownIdentity = null) {
     if (ownTokens.length < 2) return false;
     return ownTokens.every((t) => core.includes(t));
   });
+}
+
+/**
+ * Dış karşı taraf yok; açıklama yalnız aktif firma unvanına indirgeniyor.
+ * Bu durumda cari otomatik öneri / öğrenme yapılmamalı.
+ */
+export function isOwnOnlyOrMissingCounterparty(
+  description = "",
+  direction = "",
+  selectedCompanyOrIdentity = null
+) {
+  const ownIdentity =
+    selectedCompanyOrIdentity?.cores
+      ? selectedCompanyOrIdentity
+      : buildOwnCompanyIdentity(selectedCompanyOrIdentity);
+  if (!ownIdentity?.cores?.length) return false;
+  const party =
+    extractCounterpartyParty({
+      description,
+      direction,
+      ownIdentity,
+    }) || "";
+  if (!party) {
+    return isOwnCompanyPartyName(description, ownIdentity);
+  }
+  return isOwnCompanyPartyName(party, ownIdentity);
 }
 
 export function stripTransactionalNoise(text = "") {

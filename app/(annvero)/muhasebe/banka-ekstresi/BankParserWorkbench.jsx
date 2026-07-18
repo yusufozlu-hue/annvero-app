@@ -55,6 +55,7 @@ import {
   buildExportWarningConfirmMessage,
   analyzeMissingHesapRows,
   buildMissingHesapSummaryText,
+  buildSafeCariMatchDiagSummary,
   getRowAnalysisKey,
 } from "@/src/utils/previewExportValidation";
 import { groupUnresolvedRuleRows } from "@/src/utils/bankSmartSuggestions";
@@ -63,6 +64,8 @@ import {
   formatCariDecisionReportText,
   groupUnresolvedCariRows,
 } from "@/src/utils/cariAccountMatcher";
+import { isSelectableCariLeafAccount } from "@/src/utils/cariCounterpartyExtract";
+import { getBuildInfo } from "@/src/lib/buildInfo";
 import {
   buildBankStandardLucaLearningMemoryPayload,
   mapLearningMemoryRecordToItem,
@@ -2405,6 +2408,37 @@ export default function BankParserWorkbench() {
     const missingReport = analyzeMissingHesapRows(rows);
     setMissingHesapReport(missingReport);
     assertPipelineSignal(signal, isRunActive, runId);
+
+    try {
+      const companyId = String(selectedCompanyId || "");
+      const memoryRecords = loadAccountMemoryV2Records() || [];
+      const accountMemoryActiveCount = memoryRecords.filter(
+        (r) =>
+          r?.isActive !== false &&
+          String(r.companyId || r.firmaId || "") === companyId
+      ).length;
+      const planLeafCount = (companyPlans || []).filter((p) =>
+        isSelectableCariLeafAccount(p.accountCode || p.hesapKodu || "")
+      ).length;
+      const diag = buildSafeCariMatchDiagSummary({
+        missingReport,
+        movementCount: Number(missingReport.uniqueTotalMovements || 0),
+        lucaRowCount: rows.length,
+        companyId,
+        learningMemoryCount: (learningMemory || []).length,
+        accountMemoryActiveCount,
+        planRowCount: (companyPlans || []).length,
+        planLeafCount,
+        buildCommit: getBuildInfo().commit,
+      });
+      if (typeof window !== "undefined") {
+        window.__ANNVERO_CARI_DIAG__ = diag;
+        console.info("[ANNVERO][CARI-DIAG]", diag);
+      }
+    } catch {
+      /* teşhis asla pipeline’ı bozmasın */
+    }
+
     return {
       missingCount: missingReport.missingCount || 0,
       missingLucaRowCount:

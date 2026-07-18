@@ -14,6 +14,7 @@ import {
   buildOwnCompanyIdentity,
   extractCounterpartyParty,
   isOwnCompanyPartyName,
+  isOwnOnlyOrMissingCounterparty,
   isSelectableCariLeafAccount,
   sortCariDisplayDates,
   buildCariParentCodeSet,
@@ -87,6 +88,29 @@ export const CARI_RESOLUTION_FILTERS = {
 
 /** İlk açılışta peşinen aday üretilecek grup sayısı */
 export const CARI_RESOLUTION_INITIAL_CANDIDATE_GROUPS = 30;
+
+/** Karşı taraf çıkarılamayan / yalnız kendi firma unvanı */
+export const PARTY_UNRESOLVED_LABEL = "Karşı taraf tespit edilemedi";
+
+const STRONG_CARI_AUTO_REASONS = new Set([
+  CARI_MATCH_REASON.UNVAN,
+  CARI_MATCH_REASON.ALIAS,
+  CARI_MATCH_REASON.IBAN,
+  CARI_MATCH_REASON.VERGI_NO,
+  CARI_MATCH_REASON.FIRMA_HAFIZA,
+  CARI_MATCH_REASON.ANALYSIS_KEY,
+  CARI_MATCH_REASON.LEARNED_DESCRIPTION,
+  CARI_MATCH_REASON.IBAN_HISTORY,
+]);
+
+function isStrongCariAutoReason(reason = "") {
+  const r = String(reason || "");
+  if (STRONG_CARI_AUTO_REASONS.has(r)) return true;
+  if (r.includes("unvan") || r.includes("alias") || r.includes("IBAN")) return true;
+  if (r.includes("vergi") || r.includes("hafiza") || r.includes("memory")) return true;
+  if (r.includes("analysisKey") || r.includes("öğrenilmiş")) return true;
+  return false;
+}
 
 function compactCode(value = "") {
   return String(value || "")
@@ -531,19 +555,25 @@ export function searchCariResolutionCandidates(
     ? cache.planRows
     : cache.planRows.filter((row) => accountMatchesPrefixes(row.code, prefixes));
 
-  for (const row of pool) {
-    if (q) {
-      if (!row.haystack.includes(q) && !row.code.includes(qCode)) {
-        continue;
+  // Boş sorguda plan_search doldurma: güçlü tekil unvan/IBAN adayını bozmasın.
+  // Kullanıcı yazınca veya hiç güçlü aday yoksa plan taraması yapılır.
+  const shouldPadPlanSearch = Boolean(q) || ranked.length === 0;
+
+  if (shouldPadPlanSearch) {
+    for (const row of pool) {
+      if (q) {
+        if (!row.haystack.includes(q) && !row.code.includes(qCode)) {
+          continue;
+        }
       }
+      pushCand({
+        code: row.code,
+        name: row.name,
+        confidence: q ? 40 : 20,
+        matchReason: "plan_search",
+      });
+      if (ranked.length >= Math.max(limit, 40)) break;
     }
-    pushCand({
-      code: row.code,
-      name: row.name,
-      confidence: q ? 40 : 20,
-      matchReason: "plan_search",
-    });
-    if (ranked.length >= Math.max(limit, 40)) break;
   }
 
   if (filterStats && typeof filterStats === "object") {
@@ -614,12 +644,24 @@ function applySearchToGroupBase(base, search) {
   const leafCandidates = (search.candidates || []).filter((c) =>
     isSelectableCariLeafAccount(c.code)
   );
+  // Güvenli otomatik: yalnızca güçlü exact (unvan/IBAN/VKN/hafıza) leaf'ler.
+  // plan_search dolgusu ve zayıf token tekil sayılmaz; mükerrer leaf → asla.
+  const strongLeafCandidates = leafCandidates.filter(
+    (c) =>
+      Number(c.confidence || 0) >= 80 &&
+      c.matchReason !== CARI_MATCH_REASON.TOKEN_WEAK &&
+      c.matchReason !== "plan_search" &&
+      isStrongCariAutoReason(c.matchReason)
+  );
+  const uniqueStrongCodes = new Set(
+    strongLeafCandidates.map((c) => compactCode(c.code)).filter(Boolean)
+  );
   const safeTop =
     !duplicateAccounts &&
-    leafCandidates.length === 1 &&
-    Number(leafCandidates[0].confidence || 0) >= 80 &&
-    leafCandidates[0].matchReason !== CARI_MATCH_REASON.TOKEN_WEAK
-      ? leafCandidates[0]
+    !base.partyUnresolved &&
+    uniqueStrongCodes.size === 1 &&
+    strongLeafCandidates.length >= 1
+      ? strongLeafCandidates[0]
       : null;
   // Öneri listesinde göster ama otomatik seçme (mükerrer / zayıf / ana hesap)
   const displayTop = leafCandidates[0] || null;
@@ -647,13 +689,15 @@ function applySearchToGroupBase(base, search) {
         ? base.partyName
         : search.extractedParty ||
           base.partyName ||
-          "Karşı taraf bilgisi yetersiz";
+          PARTY_UNRESOLVED_LABEL;
 
   return {
     ...base,
     partyName: party,
     partyUnresolved:
-      party === "Karşı taraf bilgisi yetersiz" || base.partyUnresolved,
+      party === PARTY_UNRESOLVED_LABEL ||
+      party === "Karşı taraf bilgisi yetersiz" ||
+      base.partyUnresolved,
     vendorMessage: search.vendorMessage,
     preferredPrefixes: search.preferredPrefixes,
     candidates: leafCandidates.length ? leafCandidates : search.candidates,
@@ -665,7 +709,7 @@ function applySearchToGroupBase(base, search) {
     candidatesReady: true,
     ownCompanyFiltered: Number(search.ownCompanyFiltered || 0),
     duplicateAccounts,
-    learnAllowedDefault: Boolean(safeTop),
+    learnAllowedDefault: Boolean(safeTop) && !base.partyUnresolved,
   };
 }
 
@@ -691,6 +735,21 @@ export function hydrateCariResolutionGroupCandidates(
       candidatesReady: true,
     };
   }
+  if (group.partyUnresolved) {
+    return {
+      ...group,
+      partyName: PARTY_UNRESOLVED_LABEL,
+      partyUnresolved: true,
+      candidates: [],
+      suggestedAccount: "",
+      suggestedName: "",
+      confidence: 0,
+      confidenceLabel: PARTY_UNRESOLVED_LABEL,
+      matchReason: "",
+      candidatesReady: true,
+      learnAllowedDefault: false,
+    };
+  }
   const sample = group.samples?.[0] || "";
   const search = searchCariResolutionCandidates(companyPlans, {
     direction: group.direction,
@@ -712,10 +771,11 @@ export function hydrateCariResolutionGroupCandidates(
  *   İlk N grubun adaylarını peşinen üret. false → hiç; 'all' → hepsi.
  * @param {boolean} options.collectStats ölçüm için sayaç
  */
-function pushRowIntoCariGroupMap(groups, row, fullContext) {
+function pushRowIntoCariGroupMap(groups, row, fullContext, options = {}) {
   const desc = rowDescription(row);
   const direction = resolveLucaRowBankDirection(row, fullContext) || "";
   const key =
+    options.forceKey ||
     row.analysisKey ||
     normalizeBankAnalysisKey(desc, direction) ||
     `unknown|${direction || "NA"}`;
@@ -726,6 +786,7 @@ function pushRowIntoCariGroupMap(groups, row, fullContext) {
       rows: [],
       samples: [],
       dates: [],
+      partyUnresolvedForced: Boolean(options.partyUnresolved),
     });
   }
   const g = groups.get(key);
@@ -738,6 +799,7 @@ function pushRowIntoCariGroupMap(groups, row, fullContext) {
         rows: [],
         samples: [],
         dates: [],
+        partyUnresolvedForced: Boolean(options.partyUnresolved),
       });
     }
     const sg = groups.get(splitKey);
@@ -748,6 +810,7 @@ function pushRowIntoCariGroupMap(groups, row, fullContext) {
     return;
   }
   if (!g.direction && direction) g.direction = direction;
+  if (options.partyUnresolved) g.partyUnresolvedForced = true;
   g.rows.push(row);
   if (g.samples.length < 3) g.samples.push(desc.slice(0, 160));
   const d = rowDate(row);
@@ -832,6 +895,16 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     // 4) Normal cari grubu
     if (!isCariMissingRow(row, fullContext)) continue;
     unresolvedCount += 1;
+    const direction = resolveLucaRowBankDirection(row, fullContext) || "";
+    const desc = rowDescription(row);
+    if (isOwnOnlyOrMissingCounterparty(desc, direction, selectedCompany)) {
+      // Kendi unvanı / dış taraf yok → sahte MARE grubu yok; tespit edilemedi sınıfı
+      pushRowIntoCariGroupMap(groups, row, fullContext, {
+        forceKey: `${PARTY_UNRESOLVED_LABEL}|${direction || "NA"}`,
+        partyUnresolved: true,
+      });
+      continue;
+    }
     pushRowIntoCariGroupMap(groups, row, fullContext);
   }
 
@@ -867,17 +940,19 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
           ownIdentity,
         }) || "";
       if (
+        g.partyUnresolvedForced ||
         !partyFallback ||
         isOwnCompanyPartyName(partyFallback, ownIdentity)
       ) {
-        partyFallback = "Karşı taraf bilgisi yetersiz";
+        partyFallback = PARTY_UNRESOLVED_LABEL;
       }
 
       return {
         id: g.analysisKey,
         analysisKey: g.analysisKey,
         partyName: partyFallback,
-        partyUnresolved: partyFallback === "Karşı taraf bilgisi yetersiz",
+        partyUnresolved: partyFallback === PARTY_UNRESOLVED_LABEL,
+        selectedCompany,
         direction: g.direction || "",
         directionLabel:
           g.direction === "GIRIS" || g.direction === "GELEN"
@@ -903,6 +978,17 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     .sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount)
     .map((base, index) => {
       if (index >= hydrateCount) return base;
+      if (base.partyUnresolved) {
+        return {
+          ...base,
+          ...emptyCandidateFields(base.foreignVendor, base.direction),
+          partyName: PARTY_UNRESOLVED_LABEL,
+          partyUnresolved: true,
+          candidatesReady: true,
+          confidenceLabel: PARTY_UNRESOLVED_LABEL,
+          learnAllowedDefault: false,
+        };
+      }
       const t0 = collectStats ? performance.now() : 0;
       const enriched = hydrateCariResolutionGroupCandidates(base, companyPlans, {
         planCache,

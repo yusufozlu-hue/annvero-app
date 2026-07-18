@@ -234,6 +234,29 @@ test("H: Tarih aralığı eski → yeni", () => {
   assert.ok(parseCariDisplayDate("31.07.2025") < parseCariDisplayDate("29.08.2025"));
 });
 
+test("I: companyName ile own identity — NOLU MARE kendi unvanı", () => {
+  const company = {
+    id: "firma-mare",
+    companyName: "MARE RESORT TURIZM VE OTELCILIK TICARET AS",
+  };
+  const own = buildOwnCompanyIdentity(company);
+  assert.ok(own.cores.some((c) => c.includes("MARE") && c.includes("RESORT")));
+  assert.equal(
+    isOwnCompanyPartyName(
+      "NOLU MARE RESORT TURIZM VE OTELCILIK TICARET AS",
+      own
+    ),
+    true
+  );
+  const party = extractCounterpartyParty({
+    description:
+      "TARIHLI SORGU NO LU MARE RESORT TURIZM VE OTELCILIK TICARET AS HESABI",
+    direction: "CIKIS",
+    ownIdentity: own,
+  });
+  assert.equal(party, "");
+});
+
 test("I: Tenant — başka firma unvanı own identity sayılmaz", () => {
   const other = buildOwnCompanyIdentity({
     id: "other",

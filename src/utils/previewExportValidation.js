@@ -463,6 +463,58 @@ export function buildUniqueMovementMissingStats(allRows = [], missingRows = null
   };
 }
 
+/**
+ * Yerel ↔ canlı unresolved farkı için PII’siz teşhis özeti.
+ * Açıklama / unvan / IBAN içermez — yalnız sayaç + kimlik hash’leri.
+ */
+export function buildSafeCariMatchDiagSummary({
+  missingReport = null,
+  movementCount = 0,
+  lucaRowCount = 0,
+  companyId = "",
+  learningMemoryCount = 0,
+  accountMemoryActiveCount = 0,
+  planRowCount = 0,
+  planLeafCount = 0,
+  buildCommit = "",
+} = {}) {
+  const uniqueUnresolved = Number(missingReport?.uniqueUnresolvedMovements || 0);
+  const uniqueMatched = Number(missingReport?.uniqueMatchedMovements || 0);
+  const uniqueTotal = Number(
+    missingReport?.uniqueTotalMovements ||
+      uniqueMatched + uniqueUnresolved ||
+      0
+  );
+  // companyId ham değeri asla yazılmaz — yalnız uzunluk + basit checksum
+  let companyIdFingerprint = "";
+  if (companyId) {
+    const raw = String(companyId);
+    let sum = 0;
+    for (let i = 0; i < raw.length; i += 1) sum = (sum + raw.charCodeAt(i) * (i + 1)) % 9973;
+    companyIdFingerprint = `len${raw.length}:c${sum}`;
+  }
+
+  return {
+    buildCommit: String(buildCommit || "").slice(0, 12),
+    companyIdHash: companyIdFingerprint,
+    movementCount: Number(movementCount || 0),
+    lucaRowCount: Number(lucaRowCount || 0),
+    uniqueMatchedMovements: uniqueMatched,
+    uniqueUnresolvedMovements: uniqueUnresolved,
+    uniqueTotalMovements: uniqueTotal,
+    missingLucaRowCount: Number(
+      missingReport?.missingLucaRowCount ?? missingReport?.missingCount ?? 0
+    ),
+    invariantOk: uniqueMatched + uniqueUnresolved === uniqueTotal,
+    learningMemoryCount: Number(learningMemoryCount || 0),
+    accountMemoryActiveCount: Number(accountMemoryActiveCount || 0),
+    planRowCount: Number(planRowCount || 0),
+    planLeafCount: Number(planLeafCount || 0),
+    deltaHint:
+      "Yerel ve canlıda aynı dosyayı yükleyip window.__ANNVERO_CARI_DIAG__ çıktılarını karşılaştırın. sourceRowId listesi için ayrı güvenli export kullanın.",
+  };
+}
+
 function resolveMovementIdentity(row = {}) {
   const sourceRowId = String(row.sourceRowId || row.rawRow?.sourceRowId || "").trim();
   if (sourceRowId) return `sr:${sourceRowId}`;
