@@ -12,6 +12,7 @@ import { matchSafeSystemBankRule } from "@/src/utils/bankSmartSuggestions";
 import {
   buildCariNotFoundWarning,
   resolveCariAccountMatch,
+  CARI_MATCH_REASON,
 } from "@/src/utils/cariAccountMatcher";
 import { buildOwnCompanyIdentity, isOwnOnlyOrMissingCounterparty } from "@/src/utils/cariCounterpartyExtract";
 import {
@@ -404,22 +405,25 @@ function applyCariResolution(
     selectedCompany || memorySources.selectedCompany || null;
   const direction = memorySources.direction || "";
   const descForOwn = String(lucaDescription || description || "").trim();
-  if (
+  const ownOnly = Boolean(
     companyForOwn &&
-    isOwnOnlyOrMissingCounterparty(descForOwn, direction, companyForOwn)
-  ) {
-    if (analysisStats) {
-      analysisStats.cariOwnOnlySkipped =
-        (analysisStats.cariOwnOnlySkipped || 0) + 1;
-      analysisStats.cariUnresolved = (analysisStats.cariUnresolved || 0) + 1;
-    }
-    appendWarning(warnings, "Karşı taraf tespit edilemedi");
-    return {
-      counterAccountCode: "",
-      cariSuggestions: [],
-      cariMatchConfidence: 0,
-      cariMatchReason: "own-only-or-missing-party",
-    };
+      isOwnOnlyOrMissingCounterparty(descForOwn, direction, companyForOwn)
+  );
+  // Own-only: matcher çalışır (kısa kod / IBAN / VKN), ama hafıza ile
+  // sahte cari öğrenmesi uygulanmaz. Erken return YOK — BİLET vb. kısa kodlar bozulmasın.
+  const memoryForMatch = ownOnly
+    ? {
+        ...memorySources,
+        analysisKeyMemory: null,
+        firmaMemoryRecord: null,
+        learnedDescriptionMemory: null,
+        ibanHistoryMemory: null,
+      }
+    : memorySources;
+
+  if (ownOnly && analysisStats) {
+    analysisStats.cariOwnOnlySkipped =
+      (analysisStats.cariOwnOnlySkipped || 0) + 1;
   }
 
   const result = resolveCariAccountMatch(companyPlans, {
@@ -430,8 +434,29 @@ function applyCariResolution(
     stats: analysisStats,
     direction,
     ownIdentity: buildOwnCompanyIdentity(companyForOwn),
-    ...memorySources,
+    ...memoryForMatch,
   });
+
+  // Tamamen kendi unvanına indirgenen satırda unvan/token ile otomatik cari yok
+  if (
+    ownOnly &&
+    result?.code &&
+    (result.matchReason === CARI_MATCH_REASON.UNVAN ||
+      result.matchReason === CARI_MATCH_REASON.ALIAS ||
+      result.matchReason === CARI_MATCH_REASON.TOKEN_STRONG ||
+      result.matchReason === CARI_MATCH_REASON.TOKEN_WEAK)
+  ) {
+    if (analysisStats) {
+      analysisStats.cariUnresolved = (analysisStats.cariUnresolved || 0) + 1;
+    }
+    appendWarning(warnings, "Karşı taraf tespit edilemedi");
+    return {
+      counterAccountCode: "",
+      cariSuggestions: [],
+      cariMatchConfidence: 0,
+      cariMatchReason: "own-only-or-missing-party",
+    };
+  }
 
   removeWarningsMatching(
     warnings,

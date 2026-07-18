@@ -182,9 +182,118 @@ export function isOwnCompanyPartyName(name = "", ownIdentity = null) {
   });
 }
 
+const OWN_STRIP_SERVICE_NOISE = new Set([
+  "FATURA",
+  "BEDELI",
+  "BEDEL",
+  "ODEME",
+  "ODEMESI",
+  "UCRETI",
+  "UCRET",
+  "TAHSILAT",
+  "HESABI",
+  "HESAP",
+  "TUTAR",
+  "ISLEM",
+  "TARIHLI",
+  "SORGU",
+  "REFERANS",
+  "REF",
+  "DEKONT",
+  "BATCH",
+  "PROVIZYON",
+  "SIRA",
+  "HAREKET",
+  "FIS",
+  "NUMARALI",
+  "NUMARASI",
+  "NUMARA",
+  "NOLU",
+  "NO",
+  "LU",
+  "GOND",
+  "GONDEREN",
+  "GLN",
+  "HVL",
+  "EFT",
+  "FAST",
+  "HAVALE",
+  "YAPILMISTIR",
+]);
+
+function escapeRegExp(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
- * Dış karşı taraf yok; açıklama yalnız aktif firma unvanına indirgeniyor.
- * Bu durumda cari otomatik öneri / öğrenme yapılmamalı.
+ * Aktif firma unvan / IBAN parçalarını açıklamadan temizler.
+ * Mal-hizmet veya üçüncü taraf ifadelerini bilerek silmez.
+ */
+export function stripOwnCompanyIdentityFromText(
+  description = "",
+  ownIdentity = null
+) {
+  let norm = normalizeParserText(description);
+  if (!norm || !ownIdentity) return norm;
+
+  for (const iban of ownIdentity.ibans || []) {
+    const compact = String(iban || "").replace(/\s+/g, "");
+    if (compact.length < 15) continue;
+    const spaced = escapeRegExp(compact).replace(/(.{1})/g, "$1\\s*");
+    norm = norm.replace(new RegExp(spaced, "g"), " ");
+  }
+
+  const phrases = [
+    ...(ownIdentity.titles || []),
+    ...(ownIdentity.cores || []),
+  ]
+    .map((t) => localNormalizeCariName(String(t || "")))
+    .filter((t) => t.replace(/\s+/g, "").length >= 6)
+    .sort(
+      (a, b) =>
+        b.replace(/\s+/g, "").length - a.replace(/\s+/g, "").length
+    );
+
+  for (const phrase of phrases) {
+    const pattern = phrase
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(escapeRegExp)
+      .join("\\s+");
+    if (!pattern) continue;
+    norm = norm.replace(new RegExp(`\\b${pattern}\\b`, "g"), " ");
+  }
+
+  return norm.replace(/\s+/g, " ").trim();
+}
+
+function descriptionHasCariShortCodeSignal(description = "") {
+  const text = normalizeParserText(description);
+  if (!text) return false;
+  // Lazy import cycle yok — kısa kod anahtarları burada hafif kontrol
+  const keys = [
+    "BILETDUK",
+    "BILET DUK",
+    "BILETDUKKANI",
+    "TTLKOM",
+    "TTNET",
+    "TURKCELL",
+    "VODAFONE",
+    "AYDEM",
+    "BEDAS",
+  ];
+  return keys.some((key) => {
+    const k = normalizeParserText(key);
+    if (!k) return false;
+    if (k.includes(" ")) return text.includes(k);
+    return text.split(" ").some((w) => w === k || w.startsWith(k));
+  });
+}
+
+/**
+ * Dış karşı taraf yok: kendi unvan/IBAN çıkarıldıktan sonra ayırt edici
+ * üçüncü taraf veya kısa kod kalmıyor.
+ * Açıklamada kendi unvan geçmesi tek başına true yapmaz.
  */
 export function isOwnOnlyOrMissingCounterparty(
   description = "",
@@ -196,16 +305,39 @@ export function isOwnOnlyOrMissingCounterparty(
       ? selectedCompanyOrIdentity
       : buildOwnCompanyIdentity(selectedCompanyOrIdentity);
   if (!ownIdentity?.cores?.length) return false;
+
+  if (descriptionHasCariShortCodeSignal(description)) return false;
+
   const party =
     extractCounterpartyParty({
       description,
       direction,
       ownIdentity,
     }) || "";
-  if (!party) {
-    return isOwnCompanyPartyName(description, ownIdentity);
+  if (party && !isOwnCompanyPartyName(party, ownIdentity)) {
+    return false;
   }
-  return isOwnCompanyPartyName(party, ownIdentity);
+
+  const stripped = stripOwnCompanyIdentityFromText(description, ownIdentity);
+  // Analysis-key tarzı meta artıkları da düş (SORGU/NOLU/TARIHLI vb.)
+  let cleaned = stripped;
+  cleaned = cleaned.replace(/\bTARIHLI\b/g, " ");
+  cleaned = cleaned.replace(
+    /\b(SORGU|REFERANS|REF|DEKONT|BATCH|PROVIZYON|SIRA)\s*(NO LU|NOLU|NUMARALI|NUMARASI|NUMARA|NO)?\b/g,
+    " "
+  );
+  cleaned = cleaned.replace(/\b(NO LU|NOLU|NUMARALI)\b/g, " ");
+  cleaned = cleaned.replace(/\b\d{4,}\b/g, " ");
+  const remainder = stripTransactionalNoise(cleaned);
+  const core = localNormalizeCariNameCore(remainder);
+  if (!core) return true;
+
+  const distinctive = core
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((t) => t.length >= 3 && !OWN_STRIP_SERVICE_NOISE.has(t));
+
+  return distinctive.length === 0;
 }
 
 export function stripTransactionalNoise(text = "") {

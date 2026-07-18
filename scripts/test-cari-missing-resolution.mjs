@@ -766,8 +766,9 @@ test("kendi firma unvanı (companyName) sahte MARE grubu oluşturmaz", () => {
   const rows = Array.from({ length: 3 }, (_, i) =>
     cariLikeRow({
       id: `own${i}`,
+      sourceRowId: `vakif|s|${100 + i}`,
       detayAciklama: `TARIHLI SORGU NO LU MARE RESORT TURIZM VE OTELCILIK TICARET AS HESABI ${i}`,
-      analysisKey: `nolu-mare-${i}|CIKIS`,
+      analysisKey: `nolu-mare-shared|CIKIS`,
       transactionType: "GIDEN_HAVALE",
       borc: 100,
       alacak: 0,
@@ -784,12 +785,51 @@ test("kendi firma unvanı (companyName) sahte MARE grubu oluşturmaz", () => {
       },
     ],
   }, { initialCandidateGroups: "all" });
-  assert.equal(snap.groupCount, 1);
-  assert.equal(snap.groups[0].count, 3);
-  assert.equal(snap.groups[0].partyName, "Karşı taraf tespit edilemedi");
-  assert.equal(snap.groups[0].partyUnresolved, true);
-  assert.equal(snap.groups[0].suggestedAccount || "", "");
-  assert.equal(snap.groups[0].learnAllowedDefault || false, false);
+  // Aynı analysisKey olsa bile tek generic yığın yok
+  assert.equal(snap.groupCount, 3);
+  assert.ok(snap.groups.every((g) => g.partyUnresolved));
+  assert.ok(
+    snap.groups.every((g) => g.partyName === "Karşı taraf tespit edilemedi")
+  );
+  assert.ok(snap.groups.every((g) => !(g.suggestedAccount || "")));
+});
+
+test("own unvan + gerçek karşı taraf (AVUKATLIK) tek generic yığına girmez", () => {
+  const company = {
+    id: "co-mare",
+    companyName: "MARE RESORT TURIZM VE OTELCILIK TICARET AS",
+  };
+  const rows = [
+    cariLikeRow({
+      id: "a1",
+      sourceRowId: "vakif|s|1",
+      detayAciklama:
+        "TARIHLI SORGU NO LU MARE RESORT TURIZM VE OTELCILIK TICARET AS HESABI AVUKATLIK UCRETI",
+      analysisKey: "avukatlik|CIKIS",
+      transactionType: "GIDEN_HAVALE",
+      borc: 100,
+      alacak: 0,
+    }),
+    cariLikeRow({
+      id: "a2",
+      sourceRowId: "vakif|s|2",
+      detayAciklama:
+        "TARIHLI SORGU NO LU MARE RESORT TURIZM VE OTELCILIK TICARET AS HESABI DANISMANLIK BEDELI",
+      analysisKey: "danismanlik|CIKIS",
+      transactionType: "GIDEN_HAVALE",
+      borc: 200,
+      alacak: 0,
+    }),
+  ];
+  const snap = buildCariResolutionGroups(
+    rows,
+    { selectedCompany: company, selectedBank: "VAKIFBANK", companyPlans: [] },
+    { initialCandidateGroups: false }
+  );
+  assert.equal(snap.groupCount, 2);
+  assert.ok(
+    snap.groups.every((g) => String(g.analysisKey || "").includes("party-unresolved") || g.partyUnresolved || g.count === 1)
+  );
 });
 
 test("BİLET unique exact leaf → Seçilen hesap dolu (plan_search doldurmaz)", () => {

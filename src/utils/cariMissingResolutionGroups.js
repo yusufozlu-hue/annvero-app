@@ -18,6 +18,7 @@ import {
   isSelectableCariLeafAccount,
   sortCariDisplayDates,
   buildCariParentCodeSet,
+  stripOwnCompanyIdentityFromText,
 } from "@/src/utils/cariCounterpartyExtract";
 import {
   CARI_NOT_REQUIRED_TYPES,
@@ -897,10 +898,29 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     unresolvedCount += 1;
     const direction = resolveLucaRowBankDirection(row, fullContext) || "";
     const desc = rowDescription(row);
-    if (isOwnOnlyOrMissingCounterparty(desc, direction, selectedCompany)) {
-      // Kendi unvanı / dış taraf yok → sahte MARE grubu yok; tespit edilemedi sınıfı
+    const ownIdentity = buildOwnCompanyIdentity(selectedCompany);
+    const extractedParty =
+      extractCounterpartyParty({
+        description: desc,
+        direction,
+        ownIdentity,
+      }) || "";
+    const partyMissingOrOwn =
+      !extractedParty ||
+      isOwnCompanyPartyName(extractedParty, ownIdentity) ||
+      isOwnOnlyOrMissingCounterparty(desc, direction, selectedCompany);
+
+    if (partyMissingOrOwn) {
+      // Tek generic yığın yok — her hareket ayrı güvenli anahtar
+      const movementKey =
+        String(row.sourceRowId || row.sourceMovementId || row.id || "").trim() ||
+        normalizeBankAnalysisKey(
+          stripOwnCompanyIdentityFromText(desc, ownIdentity) || desc,
+          direction
+        ) ||
+        `party-unresolved|${direction || "NA"}|${unresolvedCount}`;
       pushRowIntoCariGroupMap(groups, row, fullContext, {
-        forceKey: `${PARTY_UNRESOLVED_LABEL}|${direction || "NA"}`,
+        forceKey: `party-unresolved|${direction || "NA"}|${movementKey}`,
         partyUnresolved: true,
       });
       continue;

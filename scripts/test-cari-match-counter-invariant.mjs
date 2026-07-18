@@ -18,6 +18,7 @@ import {
   CARI_MATCH_REASON,
 } from "@/src/utils/cariAccountMatcher.js";
 import { buildOwnCompanyIdentity } from "@/src/utils/cariCounterpartyExtract.js";
+import { mapParsedRowToStandardMovement } from "@/src/utils/bankMovementMapper.js";
 import {
   evaluateOwnAccountVirmanTransfer,
   createOwnAccountVirmanContext,
@@ -110,6 +111,59 @@ test("çift eksik bacak: movement identity ile tekilleşir", () => {
   );
   assert.equal(stats.uniqueUnresolvedMovements, 1);
   assert.ok(isMissingHesapRow(missing[0]));
+});
+
+test("BİLET unique exact leaf — pipeline/mapper resolved (Uygula şart değil)", () => {
+  const plan = [
+    { accountCode: "102.01.001", accountName: "VAKIFBANK", isActive: true },
+    { accountCode: "120", accountName: "ALICILAR", isActive: true },
+    { accountCode: "120.01", accountName: "ALICILAR YURTICI", isActive: true },
+    {
+      accountCode: "120.01.B0019",
+      accountName: "BİLETDÜKKANI TURİZM A.Ş.",
+      isActive: true,
+    },
+    {
+      accountCode: "120.10.B0001",
+      accountName: "BİLET DÜKKANI TURİZM A.Ş.",
+      isActive: true,
+    },
+  ];
+  const index = buildCariMatchIndex(plan);
+  const company = {
+    id: "firma-mare",
+    companyName: "MARE RESORT TURIZM VE OTELCILIK TICARET AS",
+    bankAccounts: [
+      {
+        iban: "TR110001000000000000000001",
+        lucaAccountCode: "102.01.001",
+        isActive: true,
+      },
+    ],
+  };
+  const desc =
+    "GLN HVL / TURKIYE CUMHURIYETI ZIRAAT BANKASI AS 90001 SORGU NUMARALI BILETDUK";
+  const mapped = mapParsedRowToStandardMovement(
+    {
+      aciklama: desc,
+      tutar: 250,
+      yon: "GIRIS",
+      tarih: "2025-08-01",
+      sourceRowId: "vakif|sheet|42",
+    },
+    {
+      selectedCompany: company,
+      selectedCompanyId: company.id,
+      selectedBank: "VAKIFBANK",
+      companyPlans: plan,
+      cariIndex: index,
+      learningMemory: [],
+      accountMemoryRecords: [],
+    }
+  );
+  assert.equal(mapped.counterAccountCode, "120.10.B0001");
+  assert.equal(mapped.cariRequired, true);
+  assert.ok(mapped.cariMatchReason);
 });
 
 test("BİLET unique exact leaf — hafızasız otomatik (yeniden yükleme)", () => {
