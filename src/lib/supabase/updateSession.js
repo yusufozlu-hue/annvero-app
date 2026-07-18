@@ -30,17 +30,6 @@ function isAdminPath(pathname) {
   return pathname.startsWith("/admin");
 }
 
-function hasLikelyAuthCookie(request) {
-  return request.cookies
-    .getAll()
-    .some(
-      (cookie) =>
-        cookie.name.startsWith("sb-") ||
-        cookie.name.includes("auth-token") ||
-        cookie.name.includes("supabase")
-    );
-}
-
 async function canAccessAdminArea(user) {
   if (!user) return false;
   if (isPlatformAdmin(user)) return true;
@@ -78,15 +67,6 @@ function setReturnToCookie(response, path) {
   return response;
 }
 
-function clearReturnToCookie(response) {
-  response.cookies.set(
-    ANNVERO_RETURN_TO_COOKIE,
-    "",
-    getReturnToCookieOptions({ clear: true })
-  );
-  return response;
-}
-
 export async function updateSession(request) {
   const config = getSupabaseConfig();
 
@@ -96,9 +76,9 @@ export async function updateSession(request) {
 
   const { pathname, searchParams } = request.nextUrl;
 
-  // Login sayfasında oturum çerezi yoksa Supabase getUser çağrısını atla —
-  // document TTFB'yi şişirmesin; form hemen gelsin.
-  if (pathname === "/login" && !hasLikelyAuthCookie(request)) {
+  // Public /login: asla Supabase getUser / token refresh bekleme.
+  // Oturumlu yönlendirme istemci tarafında; ?next= istemci + return-to API.
+  if (pathname === "/login") {
     const legacyNext = searchParams.get("next");
     if (legacyNext) {
       const cleanUrl = request.nextUrl.clone();
@@ -154,31 +134,6 @@ export async function updateSession(request) {
       supabaseResponse,
       NextResponse.redirect(deniedUrl)
     );
-  }
-
-  if (pathname === "/login") {
-    const legacyNext = searchParams.get("next");
-
-    // Eski ?next= bağlantısı: cookie'ye aktar, adresi temizle.
-    if (legacyNext && !user) {
-      const cleanUrl = request.nextUrl.clone();
-      cleanUrl.pathname = "/login";
-      cleanUrl.search = "";
-      const response = NextResponse.redirect(cleanUrl);
-      setReturnToCookie(response, legacyNext);
-      return withSupabaseCookies(supabaseResponse, response);
-    }
-
-    if (user) {
-      const fromCookie = request.cookies.get(ANNVERO_RETURN_TO_COOKIE)?.value;
-      const target = getSafeNextPath(fromCookie || legacyNext, "/dashboard");
-      const redirectUrl = request.nextUrl.clone();
-      redirectUrl.pathname = target.split("?")[0];
-      redirectUrl.search = "";
-      const response = NextResponse.redirect(redirectUrl);
-      clearReturnToCookie(response);
-      return withSupabaseCookies(supabaseResponse, response);
-    }
   }
 
   return supabaseResponse;

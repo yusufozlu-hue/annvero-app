@@ -81,7 +81,7 @@ test("korumalı API'ler sunucu oturum doğrulaması kullanır (örnekler)", () =
 
 test("çıkış ve giriş client session cache temizler", () => {
   const bar = read("src/components/AuthUserBar.jsx");
-  const login = read("app/login/page.tsx");
+  const login = read("app/login/LoginForm.tsx");
   const clearer = read("src/lib/auth/clearClientSession.js");
   assert.match(bar, /clearClientSessionCaches/);
   assert.match(login, /clearClientSessionCaches/);
@@ -118,6 +118,23 @@ test("fetchCompanies oturumsuz localStorage sızdırmaz", () => {
     src,
     /catch \(error\) \{\s*console\.error\("Firma listesi[\s\S]*readRawCompaniesFromStorage/
   );
+});
+
+test("public /login proxy matcher dışında (getUser yok)", () => {
+  const proxy = read("proxy.ts");
+  assert.doesNotMatch(proxy, /"\/login"/);
+  assert.match(proxy, /\/login bilerek dışarıda|getUser/);
+  const session = read("src/lib/supabase/updateSession.js");
+  assert.match(session, /pathname === "\/login"/);
+  assert.match(session, /asla Supabase getUser/);
+});
+
+test("SW login navigasyonunu bypass eder ve eski cache sürümü yükseltilir", () => {
+  const sw = read("public/sw.js");
+  assert.match(sw, /annvero-pwa-v2/);
+  assert.match(sw, /pathname === "\/login"/);
+  assert.match(sw, /NAV_NETWORK_TIMEOUT_MS/);
+  assert.match(sw, /AbortController/);
 });
 
 test("open redirect hâlâ kapalı", () => {

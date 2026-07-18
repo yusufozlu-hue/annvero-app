@@ -29,7 +29,7 @@ export const config = {
     "/evrak-havuzu/:path*",
     "/ticaret-sicil",
     "/ticaret-sicil/:path*",
-    "/login",
+    // /login bilerek dışarıda: public form getUser / token refresh beklememeli.
     "/auth/callback",
   ],
 };
