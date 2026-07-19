@@ -24,6 +24,8 @@ export const CARI_STAGE_WINDOW_KEY = "__ANNVERO_CARI_STAGE__";
 /** cm:BILETDUK|GIRIS */
 export const CARI_STAGE_TARGET_CANONICAL_FP = "fp:a1e58d49";
 export const CARI_STAGE_MAX_TRACKED = 2;
+/** Movement/Luca üzerindeki PII’siz teşhis token alanı — Excel/export’a yazılmaz */
+export const CARI_STAGE_TRACE_FP_KEY = "_cariStageTraceFp";
 
 /** @type {null | {
  *   hydrate: object,
@@ -99,6 +101,8 @@ function legKey(srFp, legType) {
 }
 
 function rowSrFp(row = {}) {
+  const token = String(row?.[CARI_STAGE_TRACE_FP_KEY] || "").trim();
+  if (token.startsWith("fp:")) return token;
   const raw =
     row.sourceRowId ||
     row.sourceMovementId ||
@@ -106,6 +110,14 @@ function rowSrFp(row = {}) {
     row.id ||
     "";
   return fingerprintSourceRowId(raw);
+}
+
+/** Token’ı movement/luca objesine yapıştır (davranış etkisi yok). */
+export function attachCariStageTraceFp(target = {}, traceFp = "") {
+  const fp = String(traceFp || "").trim();
+  if (!target || !fp.startsWith("fp:")) return target;
+  target[CARI_STAGE_TRACE_FP_KEY] = fp;
+  return target;
 }
 
 /**
@@ -176,6 +188,7 @@ function ensureTracked(srFp) {
 
 /**
  * movement@mapExit — description yalnız canonical eşleşme için; saklanmaz.
+ * @returns {string} PII’siz traceFp (fp:…) veya ""
  */
 export function recordCariStageMovementMapExit({
   sourceRowId = "",
@@ -188,7 +201,7 @@ export function recordCariStageMovementMapExit({
   matchedMemoryId = null,
 } = {}) {
   try {
-    if (!state) return;
+    if (!state) return "";
     if (
       !matchesCariStageTargetCanonical({
         analysisKey,
@@ -196,12 +209,12 @@ export function recordCariStageMovementMapExit({
         direction,
       })
     ) {
-      return;
+      return "";
     }
     const srFp = fingerprintSourceRowId(sourceRowId);
-    if (!srFp) return;
+    if (!srFp) return "";
     const entry = ensureTracked(srFp);
-    if (!entry) return;
+    if (!entry) return "";
 
     const decision = firmDecision || {};
     let rejectReason = String(decision.rejectReason || "").trim();
@@ -218,8 +231,10 @@ export function recordCariStageMovementMapExit({
       }
     }
 
+    const hasCounter = Boolean(String(counterAccountCode || "").trim());
     entry.mapExit = {
       srFp,
+      traceFp: srFp,
       direction: String(direction || "").trim().toUpperCase(),
       transactionType: String(transactionType || "").trim().toUpperCase(),
       analysisKeyFp: fpCode(analysisKey),
@@ -228,29 +243,69 @@ export function recordCariStageMovementMapExit({
       lookupRejectReason: rejectReason,
       counterAccountFp: fpCode(counterAccountCode),
       matchedMemoryIdPresent: Boolean(matchedMemoryId),
+      accountMemoryAutoFilled: false,
+      isMissing: !hasCounter,
+      riskDurumu: "",
     };
     publish();
+    return srFp;
   } catch {
-    /* teşhis pipeline’ı bozmasın */
+    return "";
   }
+}
+
+/**
+ * Unique-memo clone: template token’ını koru; kayıpsa tek BİLET tracked token’a bağla.
+ */
+export function preserveCariStageTraceOnClone(template = {}, cloned = {}) {
+  try {
+    const fromTemplate = String(template?.[CARI_STAGE_TRACE_FP_KEY] || "").trim();
+    if (fromTemplate.startsWith("fp:")) {
+      cloned[CARI_STAGE_TRACE_FP_KEY] = fromTemplate;
+      return fromTemplate;
+    }
+    if (!state?.tracked.size) return "";
+    if (
+      matchesCariStageTargetCanonical({
+        analysisKey: cloned.analysisKey || template.analysisKey || "",
+        description: cloned.description || template.description || "",
+        direction: cloned.direction || template.direction || "",
+      })
+    ) {
+      const only =
+        state.tracked.size === 1 ? state.tracked.keys().next().value : "";
+      if (only) {
+        cloned[CARI_STAGE_TRACE_FP_KEY] = only;
+        return only;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
 }
 
 function collectTrackedLegs(rows = []) {
   if (!state?.tracked.size) return [];
+  const list = Array.isArray(rows) ? rows : [];
   const out = [];
-  for (const row of rows || []) {
+  for (const row of list) {
     const srFp = rowSrFp(row);
     if (!srFp || !state.tracked.has(srFp)) continue;
+    const hasHesap = Boolean(String(row.hesapKodu || "").trim());
     out.push({
       srFp,
+      traceFp: srFp,
       legType: inferLegType(row),
       direction: String(row.direction || "").trim().toUpperCase(),
       analysisKeyFp: fpCode(row.analysisKey),
       hesapFp: fpCode(row.hesapKodu),
       counterAccountFp: fpCode(row.karsiHesapKodu || row.karsiHesap),
+      matchedMemoryIdPresent: Boolean(row.matchedMemoryId),
       accountMemoryAutoFilled: Boolean(row.accountMemoryAutoFilled),
+      isMissing: !hasHesap,
       riskDurumu: String(row.riskDurumu || "").trim(),
-      hasHesap: Boolean(String(row.hesapKodu || "").trim()),
+      hasHesap,
     });
   }
   return out;
@@ -265,11 +320,16 @@ export function recordCariStageLucaBuilt(rows = []) {
       if (!bySr.has(leg.srFp)) bySr.set(leg.srFp, []);
       bySr.get(leg.srFp).push({
         srFp: leg.srFp,
+        traceFp: leg.traceFp,
         legType: leg.legType,
         direction: leg.direction,
         analysisKeyFp: leg.analysisKeyFp,
         hesapFp: leg.hesapFp,
         counterAccountFp: leg.counterAccountFp,
+        matchedMemoryIdPresent: leg.matchedMemoryIdPresent,
+        accountMemoryAutoFilled: leg.accountMemoryAutoFilled,
+        isMissing: leg.isMissing,
+        riskDurumu: leg.riskDurumu,
       });
     }
     for (const [srFp, legs] of bySr) {
@@ -334,10 +394,18 @@ export function finishCariStageAccountMemoryApply(
       if (!bySr.has(srFp)) bySr.set(srFp, []);
       bySr.get(srFp).push({
         srFp,
+        traceFp: srFp,
         legType,
+        direction: String(row.direction || "").trim().toUpperCase(),
+        analysisKeyFp: fpCode(row.analysisKey),
         beforeHesapFp,
         afterHesapFp,
+        hesapFp: afterHesapFp,
+        counterAccountFp: fpCode(row.karsiHesapKodu || row.karsiHesap),
+        matchedMemoryIdPresent: Boolean(row.matchedMemoryId),
         accountMemoryAutoFilled,
+        isMissing: !String(row.hesapKodu || "").trim(),
+        riskDurumu: String(row.riskDurumu || "").trim(),
         rejectReason,
       });
     }
@@ -360,8 +428,16 @@ export function recordCariStageAfterPostSteps(rows = []) {
       if (!bySr.has(leg.srFp)) bySr.set(leg.srFp, []);
       bySr.get(leg.srFp).push({
         srFp: leg.srFp,
+        traceFp: leg.traceFp,
         legType: leg.legType,
+        direction: leg.direction,
+        analysisKeyFp: leg.analysisKeyFp,
         hesapFp: leg.hesapFp,
+        counterAccountFp: leg.counterAccountFp,
+        matchedMemoryIdPresent: leg.matchedMemoryIdPresent,
+        accountMemoryAutoFilled: leg.accountMemoryAutoFilled,
+        isMissing: leg.isMissing,
+        riskDurumu: leg.riskDurumu,
       });
     }
     for (const [srFp, legs] of bySr) {
@@ -380,19 +456,24 @@ export function recordCariStageFinalMissing(rows = []) {
     if (!state?.tracked.size) return;
     const bySr = new Map();
     for (const leg of collectTrackedLegs(rows)) {
-      const isMissing = !leg.hasHesap;
       let missingReasonCode = "OK";
-      if (isMissing) {
+      if (leg.isMissing) {
         missingReasonCode =
           leg.riskDurumu === "HESAP_EKSIK" ? "HESAP_EKSIK" : "EMPTY_HESAP";
       }
       if (!bySr.has(leg.srFp)) bySr.set(leg.srFp, []);
       bySr.get(leg.srFp).push({
         srFp: leg.srFp,
+        traceFp: leg.traceFp,
         legType: leg.legType,
+        direction: leg.direction,
+        analysisKeyFp: leg.analysisKeyFp,
         hesapFp: leg.hesapFp,
-        isMissing,
-        riskDurumu: leg.riskDurumu || "",
+        counterAccountFp: leg.counterAccountFp,
+        matchedMemoryIdPresent: leg.matchedMemoryIdPresent,
+        accountMemoryAutoFilled: leg.accountMemoryAutoFilled,
+        isMissing: leg.isMissing,
+        riskDurumu: leg.riskDurumu,
         missingReasonCode,
       });
     }

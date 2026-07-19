@@ -31,6 +31,7 @@ import {
 import {
   beginCariStageAccountMemoryApply,
   finishCariStageAccountMemoryApply,
+  preserveCariStageTraceOnClone,
   recordCariStageAfterPostSteps,
   recordCariStageLucaBuilt,
 } from "@/src/utils/cariStageTrace";
@@ -612,7 +613,7 @@ function detectMergeRiskLabels(descriptions = []) {
 
 function cloneAnalyzedMovement(template, sourceMovement, index) {
   const raw = sourceMovement?.rawRow || template.rawRow || {};
-  return {
+  const cloned = {
     ...template,
     id: sourceMovement?.id || template.id || `analyzed-${index + 1}`,
     date: formatParserDate(raw?.tarih || raw?.date || sourceMovement?.date || template.date),
@@ -633,6 +634,9 @@ function cloneAnalyzedMovement(template, sourceMovement, index) {
     _parserOnly: false,
     _analysisMemoHit: true,
   };
+  // Teşhis token: unique-memo clone sourceRowId/id kaybında bile aynı BİLET izi
+  preserveCariStageTraceOnClone(template, cloned);
+  return cloned;
 }
 
 /**

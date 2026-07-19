@@ -1404,7 +1404,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   ).trim();
   const movementId = sourceRowId || crypto.randomUUID();
 
-  recordCariStageMovementMapExit({
+  const cariStageTraceFp = recordCariStageMovementMapExit({
     sourceRowId: sourceRowId || movementId,
     description,
     analysisKey:
@@ -1434,6 +1434,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     lucaDescription,
     warning: warnings.join(" | "),
     matchedMemoryId,
+    ...(cariStageTraceFp ? { _cariStageTraceFp: cariStageTraceFp } : {}),
     accountSuggestions,
     accountPlanMissing:
       Object.keys(accountPlanMissing).length > 0 ? accountPlanMissing : null,

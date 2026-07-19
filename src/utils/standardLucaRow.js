@@ -320,6 +320,7 @@ export function finalizeStandardLucaRow(row) {
     ...(row.cariMatchReason ? { cariMatchReason: row.cariMatchReason } : {}),
     ...(row.transactionType ? { transactionType: row.transactionType } : {}),
     ...(row.direction ? { direction: row.direction } : {}),
+    ...(row._cariStageTraceFp ? { _cariStageTraceFp: row._cariStageTraceFp } : {}),
     ...(row.accountingScenario
       ? { accountingScenario: row.accountingScenario }
       : {}),
@@ -620,6 +621,9 @@ function buildBankLucaLine({
       context.analysisKey ||
       movement.analysisKey ||
       "",
+    ...(movement._cariStageTraceFp
+      ? { _cariStageTraceFp: movement._cariStageTraceFp }
+      : {}),
     accountSuggestions: movement.accountSuggestions || [],
     cariSuggestions: movement.cariSuggestions || [],
     cariMatchConfidence: movement.cariMatchConfidence || 0,
