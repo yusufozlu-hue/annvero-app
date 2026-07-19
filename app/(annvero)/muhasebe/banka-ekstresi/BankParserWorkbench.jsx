@@ -53,6 +53,11 @@ import {
   traceAccountMemoryLookup,
 } from "@/src/utils/accountMemoryV2";
 import { runCariResolutionGroupApply } from "@/src/utils/cariResolutionGroupApply";
+import {
+  recordCariStageFinalMissing,
+  recordCariStageHydrate,
+  resetCariStageTrace,
+} from "@/src/utils/cariStageTrace";
 import { normalizeBankAnalysisKey } from "@/src/utils/textNormalize";
 import {
   buildExportWarningConfirmMessage,
@@ -883,6 +888,17 @@ export default function BankParserWorkbench() {
     abortRef.current = controller;
     const runId = pipelineRunIdRef.current + 1;
     pipelineRunIdRef.current = runId;
+    // Stage trace: her yeni kullanıcı işleminde sıfırla (buildPipelineOptions tekrar çağrılsa bile korunur)
+    resetCariStageTrace();
+    const memorySnap = hydrateAccountMemoryForPipeline(selectedCompanyId || "");
+    accountMemorySnapRef.current = memorySnap;
+    recordCariStageHydrate({
+      buildCommit: getBuildInfo().commit,
+      accountMemoryReady: Boolean(memorySnap.ready),
+      activeCount: memorySnap.activeCount || 0,
+      companyId: selectedCompanyId || "",
+      records: memorySnap.records || [],
+    });
     return { runId, signal: controller.signal };
   };
 
@@ -2493,6 +2509,7 @@ export default function BankParserWorkbench() {
       });
       diag.accountMemoryReady = Boolean(memorySnap.ready);
       diag.memoryLookupTraces = memoryLookupTraces;
+      recordCariStageFinalMissing(rows);
       if (typeof window !== "undefined") {
         window.__ANNVERO_CARI_DIAG__ = diag;
         console.info("[ANNVERO][CARI-DIAG]", diag);

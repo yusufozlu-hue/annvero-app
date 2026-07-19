@@ -28,12 +28,17 @@ import {
   buildMemoryDecisionReport,
   createEmptyMemoryTelemetry,
 } from "@/src/utils/accountMemoryV2";
+import {
+  beginCariStageAccountMemoryApply,
+  finishCariStageAccountMemoryApply,
+  recordCariStageAfterPostSteps,
+  recordCariStageLucaBuilt,
+} from "@/src/utils/cariStageTrace";
 import { applySmartBankSuggestionsToRows } from "@/src/utils/bankSmartSuggestions";
 import { applyDeclarationAccrualDistributionToRows } from "@/src/utils/beyannameTahakkukEngine";
 import {
   mapParsedRowsWithCoreFallback,
   isAnnveroCoreEnabled,
-  DEFAULT_CORE_PREVIEW_LIMIT,
   CORE_BATCH_TIMEOUT_MS,
   CORE_TOTAL_BUDGET_MS,
 } from "@/src/utils/bankCoreBridge";
@@ -1159,6 +1164,7 @@ export async function buildLucaRowsFromMovementsAsync(
 
   assertNotAborted(signal);
   let workingRows = ensureStandardLucaRowIds(baseRows);
+  recordCariStageLucaBuilt(workingRows);
   maybeEarlyPreview(workingRows);
 
   // Analiz zaten yapıldıysa learning/kural/CORE tekrarlanmaz
@@ -1192,6 +1198,7 @@ export async function buildLucaRowsFromMovementsAsync(
   assertNotAborted(signal);
   const accountStarted = Date.now();
   const needsAccountFill = workingRows.some((row) => !String(row.hesapKodu || "").trim());
+  beginCariStageAccountMemoryApply(workingRows);
   if (needsAccountFill) {
     const memoryRows = [];
     for (let offset = 0; offset < workingRows.length; offset += size) {
@@ -1206,13 +1213,17 @@ export async function buildLucaRowsFromMovementsAsync(
       await yieldToMain();
     }
     workingRows = memoryRows;
-    if (!alreadyAnalyzed) {
-      workingRows = applySmartBankSuggestionsToRows(workingRows, {
-        companyPlans: options.companyPlans,
-        selectedBank,
-        selectedCompanyId,
-      });
-    }
+  }
+  finishCariStageAccountMemoryApply(workingRows, {
+    companyId: selectedCompanyId,
+    accountMemoryRecords,
+  });
+  if (needsAccountFill && !alreadyAnalyzed) {
+    workingRows = applySmartBankSuggestionsToRows(workingRows, {
+      companyPlans: options.companyPlans,
+      selectedBank,
+      selectedCompanyId,
+    });
   }
   timings.accountMemoryMs = Date.now() - accountStarted;
   await yieldToMain();
@@ -1229,6 +1240,7 @@ export async function buildLucaRowsFromMovementsAsync(
     }
   );
   timings.declarationDistributionMs = Date.now() - declarationStarted;
+  recordCariStageAfterPostSteps(declarationResult.rows || []);
   await yieldToMain();
 
   assertNotAborted(signal);

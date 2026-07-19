@@ -45,6 +45,7 @@ import {
   findAccountMemoryByIban,
   findAccountMemoryMatchInRecords,
 } from "@/src/utils/accountMemoryV1";
+import { recordCariStageMovementMapExit } from "@/src/utils/cariStageTrace";
 import {
   createEmptyMemoryTelemetry,
   resolveAccountMemoryV2Decision,
@@ -561,6 +562,9 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   let accountingScenario = "";
   let scenarioMissingCategory = "";
   let scenarioDecision = null;
+  /** Stage trace — firm memory kararı (davranışa etki yok) */
+  let firmDecisionForTrace = null;
+  let firmAnalysisKeyForTrace = "";
 
   // İşlem türü — cari/personelden ÖNCE
   const typeResolution = resolveBankTransactionType(description, direction, {
@@ -742,6 +746,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       analysisStats.memoryTelemetry = createEmptyMemoryTelemetry();
     }
     const firmMemoryStarted = Date.now();
+    firmAnalysisKeyForTrace = firmAnalysisKey;
     const firmDecision = resolveAccountMemoryV2Decision(
       {
         companyId: selectedCompanyId || selectedCompany?.id || "",
@@ -765,6 +770,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         allowAuto: true,
       }
     );
+    firmDecisionForTrace = firmDecision;
     addTiming("firmMemoryMs", firmMemoryStarted);
 
     let firmMemoryApplied = false;
@@ -1397,6 +1403,19 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     rawRow.sourceRowId || rawRow._sourceRowId || ""
   ).trim();
   const movementId = sourceRowId || crypto.randomUUID();
+
+  recordCariStageMovementMapExit({
+    sourceRowId: sourceRowId || movementId,
+    description,
+    analysisKey:
+      firmAnalysisKeyForTrace ||
+      normalizeBankAnalysisKey(description, direction),
+    direction,
+    transactionType,
+    firmDecision: firmDecisionForTrace,
+    counterAccountCode,
+    matchedMemoryId,
+  });
 
   return {
     id: movementId,
