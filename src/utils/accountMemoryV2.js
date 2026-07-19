@@ -25,6 +25,104 @@ function isLikelyCariGlAccount(code = "") {
   return /^(120|320)(\.|$)/.test(String(code || "").trim());
 }
 
+/** Kullanıcı onaylı öğrenme kaynakları — yalnız bunlar supersede edebilir */
+const USER_APPROVED_MEMORY_SOURCES = new Set([
+  "cari-resolution-center",
+  "group-learn",
+  "row-learn",
+  "user-learn",
+  "similar-learn",
+]);
+
+/**
+ * Güvenli leaf: 120/320 altı seçilebilir cari (parent 120 / 120.01 değil).
+ * Genel last-wins değil; supersede önkoşulu.
+ */
+function isSafeUserApprovedCariLeafAccount(code = "") {
+  const c = String(code || "").trim();
+  if (!isLikelyCariGlAccount(c)) return false;
+  if (/^(120|320)$/.test(c)) return false;
+  const parts = c.split(".").filter(Boolean);
+  // 120.01 / 320.01 tarzı ara parent
+  if (parts.length < 3 && !/[A-Za-z]/.test(c)) return false;
+  return true;
+}
+
+function recordCanonicalKey(record = {}) {
+  return (
+    String(record.canonicalAnalysisKey || "").trim() ||
+    buildCariMemoryCanonicalKey(
+      record.analysisKey || record.normalizedDescription,
+      record.direction
+    )
+  );
+}
+
+function bankScopeCompatible(record, bankId, bankName) {
+  const left = String(record?.bankId || record?.bankName || "")
+    .trim()
+    .toUpperCase();
+  const right = String(bankId || bankName || "")
+    .trim()
+    .toUpperCase();
+  if (!left || !right) return true;
+  return left === right;
+}
+
+/**
+ * Aynı company + bank + direction + cm:* canonical kapsamındaki
+ * diğer aktif kayıtları pasifleştirir. Parent/mükerrer/genel last-wins yok.
+ */
+export function supersedeSameCanonicalScopeRecords(
+  records = [],
+  {
+    keepId = "",
+    companyId = "",
+    direction = "",
+    canonicalAnalysisKey = "",
+    bankId = "",
+    bankName = "",
+    accountCode = "",
+    source = "",
+  } = {}
+) {
+  const src = String(source || "").trim();
+  const canon = String(canonicalAnalysisKey || "").trim();
+  const keep = String(keepId || "").trim();
+  if (!USER_APPROVED_MEMORY_SOURCES.has(src)) {
+    return { records, supersededCount: 0 };
+  }
+  if (!isSafeUserApprovedCariLeafAccount(accountCode)) {
+    return { records, supersededCount: 0 };
+  }
+  // Yalnız kısa-kod canonical (cm:BILETDUK|GIRIS) — serbest metin last-wins değil
+  if (!canon.startsWith("cm:")) {
+    return { records, supersededCount: 0 };
+  }
+  if (!keep || !companyId) {
+    return { records, supersededCount: 0 };
+  }
+
+  let supersededCount = 0;
+  const next = (records || []).map((record) => {
+    if (!record || String(record.id || "") === keep) return record;
+    if (record.isActive === false) return record;
+    if (String(record.companyId || "") !== companyId) return record;
+    if (!directionCompatible(record.direction, direction)) return record;
+    if (!bankScopeCompatible(record, bankId, bankName)) return record;
+    if (recordCanonicalKey(record) !== canon) return record;
+    supersededCount += 1;
+    return {
+      ...normalizeAccountMemoryV2Record(record),
+      isActive: false,
+      supersededBy: keep,
+      supersedeReason: "user_approved_canonical_leaf",
+      updatedAt: nowIso(),
+    };
+  });
+  return { records: next, supersededCount };
+}
+
 /** Karşı taraf kısa kodları — uzun grup adı ile aynı canonical memory key */
 const CARI_MEMORY_SHORT_CODES = [
   "BILETDUK",
@@ -270,6 +368,8 @@ function migrateV1Record(record = {}) {
     createdAt,
     updatedAt: record.updatedAt || createdAt,
     isActive: record.isActive !== false,
+    supersededBy: String(record.supersededBy || "").trim(),
+    supersedeReason: String(record.supersedeReason || "").trim(),
     schemaVersion: 2,
   };
 }
@@ -1198,6 +1298,7 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
   });
 
   const records = loadAccountMemoryV2Records();
+  const source = String(input.source || context.source || "user-learn").trim();
   const existingIndex = records.findIndex((record) => {
     if (record.companyId !== companyId) return false;
     if (record.isActive === false) return false;
@@ -1209,16 +1310,13 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
         })
       );
     }
-    if (
-      canonicalAnalysisKey &&
-      (record.canonicalAnalysisKey === canonicalAnalysisKey ||
-        record.analysisKey === canonicalAnalysisKey)
-    ) {
+    if (canonicalAnalysisKey && recordCanonicalKey(record) === canonicalAnalysisKey) {
       return (
         directionCompatible(record.direction, direction) &&
         transactionTypeCompatible(record.transactionType, transactionType, {
           strict: Boolean(transactionType && record.transactionType),
-        })
+        }) &&
+        bankScopeCompatible(record, bankId, bankName)
       );
     }
     return (
@@ -1228,7 +1326,21 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
     );
   });
 
-  const previous = existingIndex >= 0 ? records[existingIndex] : null;
+  let previous = existingIndex >= 0 ? records[existingIndex] : null;
+  let writeIndex = existingIndex;
+  // Kullanıcı onaylı leaf: yalnız canonical ile bulunan kardeş = çakışan eski kayıt.
+  // Üzerine yazıp correctionRatio şişirmek yerine taze karar yaz; eskiyi supersede et.
+  if (
+    previous &&
+    USER_APPROVED_MEMORY_SOURCES.has(source) &&
+    analysisKey &&
+    String(previous.analysisKey || "").trim() !== analysisKey &&
+    recordCanonicalKey(previous) === canonicalAnalysisKey
+  ) {
+    previous = null;
+    writeIndex = -1;
+  }
+
   const accountChanged =
     previous && String(previous.accountCode || "") !== accountCode;
   const createdAt = previous?.createdAt || nowIso();
@@ -1274,7 +1386,7 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
       : Math.max(90, Number(previous?.confidence || 100)),
     amountMin: input.amountMin ?? previous?.amountMin ?? null,
     amountMax: input.amountMax ?? previous?.amountMax ?? null,
-    source: String(input.source || context.source || "user-learn").trim(),
+    source,
     usageCount: Number(previous?.usageCount || 0) + 1,
     successCount: Number(previous?.successCount || 0) + (accountChanged ? 0 : 1),
     correctionCount: Number(previous?.correctionCount || 0) + (accountChanged ? 1 : 0),
@@ -1282,18 +1394,32 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
     createdAt,
     updatedAt: nowIso(),
     isActive: true,
+    supersededBy: "",
+    supersedeReason: "",
   });
 
-  if (existingIndex >= 0) records[existingIndex] = payload;
+  if (writeIndex >= 0) records[writeIndex] = payload;
   else records.unshift(payload);
 
-  const persisted = persistAccountMemoryV2Records(records);
+  const superseded = supersedeSameCanonicalScopeRecords(records, {
+    keepId: payload.id,
+    companyId,
+    direction,
+    canonicalAnalysisKey,
+    bankId,
+    bankName,
+    accountCode,
+    source,
+  });
+  const nextRecords = superseded.records;
+
+  const persisted = persistAccountMemoryV2Records(nextRecords);
   if (!persisted) return null;
 
   // V1 aynası — eski okuyucular için
   const v1Ok = writeJsonArray(
     V1_STORAGE_KEY,
-    records.map((record) => ({
+    nextRecords.map((record) => ({
       id: record.id,
       companyId: record.companyId,
       bankName: record.bankName,
@@ -1313,11 +1439,16 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
       iban: record.iban,
       lastUsedAt: record.lastUsedAt,
       usageCount: record.usageCount,
+      isActive: record.isActive !== false,
+      supersededBy: record.supersededBy || "",
     }))
   );
   if (!v1Ok) return null;
 
-  return payload;
+  return {
+    ...payload,
+    _supersededCount: superseded.supersededCount,
+  };
 }
 
 export function applyAccountMemoryV2DecisionToMovement(movement, decision) {

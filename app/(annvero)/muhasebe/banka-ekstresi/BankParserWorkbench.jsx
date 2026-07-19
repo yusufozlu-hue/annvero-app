@@ -2494,43 +2494,49 @@ export default function BankParserWorkbench() {
       const companyId = String(selectedCompanyId || "");
       const memorySnap = hydrateAccountMemoryForPipeline(companyId);
       accountMemorySnapRef.current = memorySnap;
-      const memoryRecords = memorySnap.records || [];
       const accountMemoryActiveCount = memorySnap.activeCount || 0;
       const planLeafCount = (companyPlans || []).filter((p) =>
         isSelectableCariLeafAccount(p.accountCode || p.hesapKodu || "")
       ).length;
-      const biletdukTraces = (memoryRecords || [])
+      const unresolvedSamples = (rows || [])
         .filter(
-          (r) =>
-            r?.isActive !== false &&
-            String(r.companyId || "") === companyId &&
-            /BILETDUK|BILET/.test(
-              String(
-                r.canonicalAnalysisKey ||
-                  r.analysisKey ||
-                  r.normalizedDescription ||
-                  ""
-              ).toUpperCase()
+          (row) =>
+            (!String(row.hesapKodu || "").trim() ||
+              row.riskDurumu === "HESAP_EKSIK") &&
+            /BILETDUK|BILET/i.test(
+              `${row.detayAciklama || ""} ${row.fisAciklama || ""} ${row.analysisKey || ""}`
             )
         )
-        .slice(0, 4)
-        .map((record) => {
-          const sampleDesc =
-            record.normalizedDescription ||
-            String(record.analysisKey || "").split("|")[0] ||
-            "";
-          return traceAccountMemoryLookup(
-            {
-              companyId,
-              analysisKey: normalizeBankAnalysisKey(sampleDesc, record.direction),
-              direction: record.direction,
-              transactionType: record.transactionType || "GELEN_HAVALE",
-              normalizedDescription: sampleDesc,
-            },
-            memorySnap.index,
-            { allowAuto: true }
-          );
-        });
+        .slice(0, 4);
+      const biletdukTraces = unresolvedSamples.map((row) => {
+        const sampleDesc = String(
+          row.detayAciklama || row.fisAciklama || row.aciklama || ""
+        ).trim();
+        const direction = String(row.direction || "GIRIS").trim().toUpperCase();
+        return traceAccountMemoryLookup(
+          {
+            companyId,
+            analysisKey:
+              row.analysisKey ||
+              normalizeBankAnalysisKey(sampleDesc, direction),
+            direction,
+            transactionType: row.transactionType || "GELEN_HAVALE",
+            normalizedDescription: sampleDesc,
+          },
+          memorySnap.index,
+          { allowAuto: true }
+        );
+      });
+      // Kayıt self-lookup yanıltıcı; unresolved yoksa pipeline izi boş
+      const memoryLookupTraces =
+        biletdukTraces.length > 0
+          ? biletdukTraces
+          : [
+              {
+                note: "no_unresolved_biletduk_rows_for_pipeline_trace",
+                accountMemoryActiveCount,
+              },
+            ];
       const diag = buildSafeCariMatchDiagSummary({
         missingReport,
         movementCount: Number(missingReport.uniqueTotalMovements || 0),
@@ -2543,7 +2549,7 @@ export default function BankParserWorkbench() {
         buildCommit: getBuildInfo().commit,
       });
       diag.accountMemoryReady = Boolean(memorySnap.ready);
-      diag.memoryLookupTraces = biletdukTraces;
+      diag.memoryLookupTraces = memoryLookupTraces;
       if (typeof window !== "undefined") {
         window.__ANNVERO_CARI_DIAG__ = diag;
         console.info("[ANNVERO][CARI-DIAG]", diag);
