@@ -1,6 +1,8 @@
 import { finalizeStandardLucaRow } from "@/src/utils/standardLucaRow";
 import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
 import { normalizeParserText } from "@/src/utils/textNormalize";
+import { isSelectableCariLeafAccount } from "@/src/utils/cariCounterpartyExtract";
+import { isLikelyCariGlAccount } from "@/src/utils/bankTransactionType";
 
 export const BEYANNAME_TAHAKKUK_STORAGE_KEY = "annvero_beyanname_tahakkuk_v1";
 export const BEYANNAME_ACCOUNT_MAPPING_STORAGE_KEY =
@@ -202,6 +204,66 @@ function getGroupKey(row = {}) {
   return row._movementId || `${row.fisNo}-${row.fisTarihi}-${row.evrakNo}`;
 }
 
+/**
+ * Beyanname “tahakkuk yok” yolunda silinmemesi gereken güvenli leaf cari.
+ * Koruma = (güvenli çözüm işareti) AND (parent olmayan gerçek leaf).
+ * Yalnız 3+ segmentli hesap kodu ASLA yeterli değildir.
+ */
+export function shouldPreserveResolvedCariLeafAgainstDeclarationClear(row = {}) {
+  const code = String(row.hesapKodu || "").trim();
+
+  const hasSafeResolutionMarker = Boolean(
+    row.matchedMemoryId ||
+      row.accountMemoryId ||
+      row.accountMemoryAutoFilled ||
+      (row.manuallyEdited && code)
+  );
+  // Öneri-only / zayıf fuzzy — güvenli çözüm sayılmaz
+  if (
+    row.accountMemorySuggestion &&
+    !row.matchedMemoryId &&
+    !row.accountMemoryId &&
+    !row.accountMemoryAutoFilled &&
+    !row.manuallyEdited
+  ) {
+    return false;
+  }
+  if (!hasSafeResolutionMarker) return false;
+
+  if (!code) return false;
+  if (!isLikelyCariGlAccount(code)) return false;
+  if (!isSelectableCariLeafAccount(code)) return false;
+  // Parent / ara seviye: 120, 120.01, 120.10, 320 — leaf değil
+  const parts = code.split(".").filter(Boolean);
+  if (parts.length < 3) return false;
+
+  return true;
+}
+
+function preserveOrClearUnknownDeclarationCounter(row = {}, type = "") {
+  const note = `${type} tahakkuk kaydı bulunamadı`;
+  if (shouldPreserveResolvedCariLeafAgainstDeclarationClear(row)) {
+    const nextRisk =
+      row.riskDurumu === "HESAP_EKSIK" && String(row.hesapKodu || "").trim()
+        ? ""
+        : row.riskDurumu;
+    return finalizeStandardLucaRow({
+      ...row,
+      hesapKodu: row.hesapKodu,
+      hesapAdi: row.hesapAdi,
+      riskDurumu: nextRisk,
+      kontrolNotu: appendNote(row.kontrolNotu, note),
+    });
+  }
+  return finalizeStandardLucaRow({
+    ...row,
+    hesapKodu: "",
+    hesapAdi: "",
+    riskDurumu: "HESAP_EKSIK",
+    kontrolNotu: appendNote(row.kontrolNotu, note),
+  });
+}
+
 function findMatchingDeclaration(records = [], { companyId, period, type }) {
   return (records || []).find(
     (record) =>
@@ -324,13 +386,7 @@ export function applyDeclarationAccrualDistributionToRows(rows = [], records = [
         ...groupRows.map((row) =>
           isLikelyBankGlAccount(row.hesapKodu)
             ? row
-            : finalizeStandardLucaRow({
-                ...row,
-                hesapKodu: "",
-                hesapAdi: "",
-                riskDurumu: "HESAP_EKSIK",
-                kontrolNotu: appendNote(row.kontrolNotu, `${type} tahakkuk kaydı bulunamadı`),
-              })
+            : preserveOrClearUnknownDeclarationCounter(row, type)
         )
       );
       continue;
