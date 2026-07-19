@@ -43,6 +43,7 @@ import {
   saveAccountMemoryFromEdit,
 } from "@/src/utils/accountMemoryV1";
 import {
+  buildCariMemoryCanonicalKey,
   formatMemoryDecisionReportText,
   findSimilarMemoryTargets,
   loadAccountMemoryV2Records,
@@ -1364,30 +1365,40 @@ export default function BankParserWorkbench() {
       });
 
       let learned = false;
-      if (learn && selectedCompanyId && learnCtx.ok) {
-        const saved = saveAccountMemoryV2Decision(
-          {
-            ...group.seedRow,
-            hesapKodu: code,
-            accountCode: code,
-            analysisKey: learnCtx.analysisKey,
-            direction: learnCtx.direction,
-            transactionType:
-              learnCtx.transactionType || group.seedRow.transactionType || "",
-            belgeTuru: group.seedRow.belgeTuru || "",
-            documentType: group.seedRow.belgeTuru || "",
-            cariId: code,
-            normalizedDescription: learnCtx.description,
-            finalDescriptionTemplate:
-              learnCtx.description ||
-              group.seedRow.detayAciklama ||
-              group.seedRow.fisAciklama ||
-              "",
-            source: "cari-resolution-center",
-          },
-          { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
-        );
-        learned = Boolean(saved);
+      let learnPersistFailed = false;
+      if (learn) {
+        if (!selectedCompanyId || !learnCtx.ok) {
+          learnPersistFailed = true;
+        } else {
+          const saved = saveAccountMemoryV2Decision(
+            {
+              ...group.seedRow,
+              hesapKodu: code,
+              accountCode: code,
+              analysisKey: learnCtx.analysisKey,
+              canonicalAnalysisKey: buildCariMemoryCanonicalKey(
+                learnCtx.analysisKey || learnCtx.description,
+                learnCtx.direction
+              ),
+              direction: learnCtx.direction,
+              transactionType:
+                learnCtx.transactionType || group.seedRow.transactionType || "",
+              belgeTuru: group.seedRow.belgeTuru || "",
+              documentType: group.seedRow.belgeTuru || "",
+              cariId: code,
+              normalizedDescription: learnCtx.description,
+              finalDescriptionTemplate:
+                learnCtx.description ||
+                group.seedRow.detayAciklama ||
+                group.seedRow.fisAciklama ||
+                "",
+              source: "cari-resolution-center",
+            },
+            { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
+          );
+          learned = Boolean(saved);
+          learnPersistFailed = !learned;
+        }
       }
 
       syncLucaPage(lucaPage);
@@ -1414,10 +1425,17 @@ export default function BankParserWorkbench() {
         `${updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik hesap sayısı ${beforeMissing}’ten ${report.missingCount}’e düştü.`
       );
       setCariResolutionSnapshot(snapshot);
-      showToast(
-        `${updated} satıra uygulandı${learned ? " (öğrenildi)" : learn && !learned ? " (öğrenme atlandı)" : ""}`,
-        learned || !learn ? "success" : "error"
-      );
+      if (learnPersistFailed) {
+        showToast(
+          "İşlem uygulandı fakat otomatik tanı kaydedilemedi",
+          "error"
+        );
+      } else {
+        showToast(
+          `${updated} satıra uygulandı${learned ? " (öğrenildi)" : ""}`,
+          "success"
+        );
+      }
     } finally {
       setApplyingCariGroupId(null);
     }
@@ -1599,6 +1617,10 @@ export default function BankParserWorkbench() {
             hesapKodu: code,
             accountCode: code,
             analysisKey: learnCtx.analysisKey,
+            canonicalAnalysisKey: buildCariMemoryCanonicalKey(
+              learnCtx.analysisKey || learnCtx.description,
+              learnCtx.direction
+            ),
             direction: learnCtx.direction,
             transactionType: seedType,
             belgeTuru: row.belgeTuru || "",
@@ -1612,23 +1634,25 @@ export default function BankParserWorkbench() {
           { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
         );
         learned = Boolean(saved);
-        if (!saved) {
-          showToast("Hafıza kaydı oluşturulamadı.", "error");
-        }
       }
     }
-    showToast(
-      `${updated} satıra ${code} uygulandı${
-        learned
-          ? similar
-            ? " (benzer + öğrenildi)"
-            : " (öğrenildi)"
-          : learn && !learned
-            ? " (öğrenme atlandı)"
+    if (learn && !learned) {
+      showToast(
+        "İşlem uygulandı fakat otomatik tanı kaydedilemedi",
+        "error"
+      );
+    } else {
+      showToast(
+        `${updated} satıra ${code} uygulandı${
+          learned
+            ? similar
+              ? " (benzer + öğrenildi)"
+              : " (öğrenildi)"
             : ""
-      }.`,
-      learned || !learn ? "success" : "error"
-    );
+        }.`,
+        "success"
+      );
+    }
   };
 
   const handleApplyHesapToSingleRow = (row, accountCode, { learn = false } = {}) => {
@@ -1680,6 +1704,10 @@ export default function BankParserWorkbench() {
           hesapKodu: code,
           accountCode: code,
           analysisKey: learnCtx.analysisKey,
+          canonicalAnalysisKey: buildCariMemoryCanonicalKey(
+            learnCtx.analysisKey || learnCtx.description,
+            learnCtx.direction
+          ),
           direction: learnCtx.direction,
           transactionType: learnCtx.transactionType || row.transactionType || "",
           belgeTuru: row.belgeTuru || "",
@@ -1693,14 +1721,18 @@ export default function BankParserWorkbench() {
         { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
       );
       learned = Boolean(saved);
-      if (!saved) showToast("Hafıza kaydı oluşturulamadı.", "error");
     }
-    showToast(
-      `1 satıra ${code} uygulandı${
-        learned ? " (öğrenildi)" : learn && !learned ? " (öğrenme atlandı)" : ""
-      }.`,
-      learned || !learn ? "success" : "error"
-    );
+    if (learn && !learned) {
+      showToast(
+        "İşlem uygulandı fakat otomatik tanı kaydedilemedi",
+        "error"
+      );
+    } else {
+      showToast(
+        `1 satıra ${code} uygulandı${learned ? " (öğrenildi)" : ""}.`,
+        "success"
+      );
+    }
   };
 
   const handleGoToLucaProducer = async (event) => {

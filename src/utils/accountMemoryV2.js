@@ -3,7 +3,10 @@
  * analysisKey / parser / Luca üretimini değiştirmez; yalnızca karar uygular.
  */
 
-import { normalizeParserText } from "@/src/utils/textNormalize";
+import {
+  normalizeBankAnalysisKey,
+  normalizeParserText,
+} from "@/src/utils/textNormalize";
 import { finalizeStandardLucaRow } from "@/src/utils/standardLucaRow";
 import {
   BANK_TRANSACTION_TYPE,
@@ -20,6 +23,65 @@ import {
 
 function isLikelyCariGlAccount(code = "") {
   return /^(120|320)(\.|$)/.test(String(code || "").trim());
+}
+
+/** Karşı taraf kısa kodları — uzun grup adı ile aynı canonical memory key */
+const CARI_MEMORY_SHORT_CODES = [
+  "BILETDUK",
+  "BILETDUKKANI",
+  "TTLKOM",
+  "TTNET",
+  "TURKCELL",
+  "VODAFONE",
+  "AYDEM",
+  "BEDAS",
+];
+
+/**
+ * Öğrenme yazma/okuma için kararlı, PII’siz karşı taraf anahtarı.
+ * Parser/eşleştirme kurallarını değiştirmez; yalnız hafıza indeksine eklenir.
+ */
+export function buildCariMemoryCanonicalKey(descriptionOrKey = "", direction = "") {
+  const raw = String(descriptionOrKey || "").trim();
+  let dir = normalizeMemoryDirection(direction);
+  let body = raw;
+  const fromKey = extractDirectionFromAnalysisKey(raw);
+  if (fromKey) {
+    dir = dir || fromKey;
+    const pipe = raw.lastIndexOf("|");
+    body = pipe >= 0 ? raw.slice(0, pipe).trim() : raw;
+  }
+  dir = dir || "NA";
+  const norm = normalizeParserText(body);
+  if (!norm) return `|${dir}`;
+
+  const tokens = norm.split(/\s+/).filter(Boolean);
+  for (const code of CARI_MEMORY_SHORT_CODES) {
+    const c = normalizeParserText(code);
+    if (!c) continue;
+    if (tokens.some((token) => token === c || token.startsWith(c))) {
+      return `cm:${c}|${dir}`;
+    }
+  }
+  if (
+    tokens.includes("BILET") &&
+    tokens.some((token) => token === "DUK" || token.startsWith("DUK"))
+  ) {
+    return `cm:BILETDUK|${dir}`;
+  }
+
+  return normalizeBankAnalysisKey(body, dir);
+}
+
+/** Raporlama için PII içermeyen parmak izi (yazma/okuma karşılaştırması) */
+export function fingerprintCariMemoryKey(key = "") {
+  const text = String(key || "");
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fp:${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 export const ACCOUNT_MEMORY_V2_STORAGE_KEY = "annvero-account-memory-v2";
@@ -97,8 +159,16 @@ function readJsonArray(key) {
 }
 
 function writeJsonArray(key, records) {
-  if (!canUseStorage()) return;
-  window.localStorage.setItem(key, JSON.stringify(records.slice(0, MAX_RECORDS)));
+  if (!canUseStorage()) return false;
+  try {
+    window.localStorage.setItem(
+      key,
+      JSON.stringify(records.slice(0, MAX_RECORDS))
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function inferMemoryDecisionType({
@@ -142,16 +212,23 @@ function migrateV1Record(record = {}) {
     personelId: record.personelId,
   });
   const createdAt = record.createdAt || record.lastUsedAt || nowIso();
+  const analysisKey = String(record.analysisKey || "").trim();
+  const direction = String(record.direction || "").trim().toUpperCase();
+  const normalizedDescription = String(
+    record.normalizedDescription || record.description || ""
+  ).trim();
+  const canonicalAnalysisKey =
+    String(record.canonicalAnalysisKey || "").trim() ||
+    buildCariMemoryCanonicalKey(analysisKey || normalizedDescription, direction);
   return {
     id: record.id || buildRecordId(),
     companyId: String(record.companyId || "").trim(),
     bankId: String(record.bankId || record.bankName || "").trim(),
     bankName: String(record.bankName || "").trim(),
-    analysisKey: String(record.analysisKey || "").trim(),
-    normalizedDescription: String(
-      record.normalizedDescription || record.description || ""
-    ).trim(),
-    direction: String(record.direction || "").trim().toUpperCase(),
+    analysisKey,
+    canonicalAnalysisKey,
+    normalizedDescription,
+    direction,
     transactionType,
     accountingScenario: String(record.accountingScenario || "").trim(),
     iban: normalizeMemoryIban(record.iban || ""),
@@ -228,7 +305,7 @@ export function loadAccountMemoryV2Records() {
 }
 
 export function persistAccountMemoryV2Records(records = []) {
-  writeJsonArray(
+  return writeJsonArray(
     ACCOUNT_MEMORY_V2_STORAGE_KEY,
     records.map(normalizeAccountMemoryV2Record)
   );
@@ -383,8 +460,23 @@ export function buildAccountMemoryV2Index(records = [], companyId = "") {
   };
 
   for (const record of scoped) {
-    push(byAnalysisKey, `${record.analysisKey}|${record.direction}|${record.transactionType}`, record);
-    push(byAnalysisKey, `${record.analysisKey}|${record.direction}|`, record);
+    const canonical =
+      String(record.canonicalAnalysisKey || "").trim() ||
+      buildCariMemoryCanonicalKey(
+        record.analysisKey || record.normalizedDescription,
+        record.direction
+      );
+    const analysisKeys = new Set(
+      [record.analysisKey, canonical].map((k) => String(k || "").trim()).filter(Boolean)
+    );
+    for (const analysisKey of analysisKeys) {
+      push(
+        byAnalysisKey,
+        `${analysisKey}|${record.direction}|${record.transactionType}`,
+        record
+      );
+      push(byAnalysisKey, `${analysisKey}|${record.direction}|`, record);
+    }
     push(byIban, record.iban, record);
     push(byTax, record.taxNumber, record);
     push(
@@ -613,15 +705,11 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
   };
 
   const tryTier = (tier, candidates, confidence) => {
-    const safe = filterSafeCandidates(candidates, baseQuery, {
+    // ANALYSIS_KEY: yön zorunlu; type boş kayıtlar typed sorguyla da eşleşsin.
+    // Her iki tarafta type varsa POS/havale çakışmaları hâlâ elenir (strict:false).
+    const list = filterSafeCandidates(candidates, baseQuery, {
       requireType: tier !== MEMORY_MATCH_TIER.ANALYSIS_KEY,
     });
-    // analysisKey için de yön/type zorunlu
-    const strictSafe =
-      tier === MEMORY_MATCH_TIER.ANALYSIS_KEY
-        ? filterSafeCandidates(candidates, baseQuery, { requireType: true })
-        : safe;
-    const list = strictSafe.length ? strictSafe : [];
     if (!list.length) return null;
 
     const conflict = detectConflict(list);
@@ -699,16 +787,30 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
     });
   };
 
-  if (analysisKey) {
+  const tryAnalysisKeyLookup = (key) => {
+    const k = String(key || "").trim();
+    if (!k) return null;
     const exact =
-      index.byAnalysisKey.get(`${analysisKey}|${direction}|${transactionType}`) ||
-      [];
-    const loose = index.byAnalysisKey.get(`${analysisKey}|${direction}|`) || [];
-    const hit = tryTier(
+      index.byAnalysisKey.get(`${k}|${direction}|${transactionType}`) || [];
+    const loose = index.byAnalysisKey.get(`${k}|${direction}|`) || [];
+    return tryTier(
       MEMORY_MATCH_TIER.ANALYSIS_KEY,
       exact.length ? exact : loose,
       100
     );
+  };
+
+  if (analysisKey) {
+    const hit = tryAnalysisKeyLookup(analysisKey);
+    if (hit) return hit;
+  }
+
+  const canonicalKey = buildCariMemoryCanonicalKey(
+    analysisKey || normalizedDescription,
+    direction
+  );
+  if (canonicalKey && canonicalKey !== analysisKey) {
+    const hit = tryAnalysisKeyLookup(canonicalKey);
     if (hit) return hit;
   }
 
@@ -897,6 +999,9 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
   )
     .trim()
     .toUpperCase();
+  const canonicalAnalysisKey =
+    String(input.canonicalAnalysisKey || "").trim() ||
+    buildCariMemoryCanonicalKey(analysisKey || normalizedDescription, direction);
   const bankName = String(
     context.kaynakAdi || context.bankName || input.bankName || ""
   ).trim();
@@ -914,6 +1019,18 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
     if (record.companyId !== companyId) return false;
     if (record.isActive === false) return false;
     if (analysisKey && record.analysisKey === analysisKey) {
+      return (
+        directionCompatible(record.direction, direction) &&
+        transactionTypeCompatible(record.transactionType, transactionType, {
+          strict: Boolean(transactionType && record.transactionType),
+        })
+      );
+    }
+    if (
+      canonicalAnalysisKey &&
+      (record.canonicalAnalysisKey === canonicalAnalysisKey ||
+        record.analysisKey === canonicalAnalysisKey)
+    ) {
       return (
         directionCompatible(record.direction, direction) &&
         transactionTypeCompatible(record.transactionType, transactionType, {
@@ -939,6 +1056,7 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
     bankId,
     bankName,
     analysisKey,
+    canonicalAnalysisKey,
     normalizedDescription,
     direction,
     transactionType,
@@ -986,9 +1104,11 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
   if (existingIndex >= 0) records[existingIndex] = payload;
   else records.unshift(payload);
 
-  persistAccountMemoryV2Records(records);
+  const persisted = persistAccountMemoryV2Records(records);
+  if (!persisted) return null;
+
   // V1 aynası — eski okuyucular için
-  writeJsonArray(
+  const v1Ok = writeJsonArray(
     V1_STORAGE_KEY,
     records.map((record) => ({
       id: record.id,
@@ -1003,6 +1123,7 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
       documentType: record.documentType,
       belgeTuru: record.documentType,
       analysisKey: record.analysisKey,
+      canonicalAnalysisKey: record.canonicalAnalysisKey,
       direction: record.direction,
       transactionType: record.transactionType,
       descriptionTemplate: record.finalDescriptionTemplate,
@@ -1011,6 +1132,7 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
       usageCount: record.usageCount,
     }))
   );
+  if (!v1Ok) return null;
 
   return payload;
 }
