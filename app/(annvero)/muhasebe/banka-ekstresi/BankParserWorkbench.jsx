@@ -52,6 +52,7 @@ import {
   saveAccountMemoryV2Decision,
   traceAccountMemoryLookup,
 } from "@/src/utils/accountMemoryV2";
+import { runCariResolutionGroupApply } from "@/src/utils/cariResolutionGroupApply";
 import { normalizeBankAnalysisKey } from "@/src/utils/textNormalize";
 import {
   buildExportWarningConfirmMessage,
@@ -1363,87 +1364,24 @@ export default function BankParserWorkbench() {
       return;
     }
 
-    const beforeMissing = analyzeMissingHesapRows(lucaRef.current).missingCount;
-    const targetIds = new Set((group.rowIds || []).filter(Boolean));
-    if (targetIds.size === 0 && group.seedRow?.id) {
-      targetIds.add(group.seedRow.id);
-    }
-
     setApplyingCariGroupId(group.id);
     try {
-      const learnCtx = resolveMemoryLearnContext(group.seedRow);
-      let updated = 0;
-      lucaRef.current = (lucaRef.current || []).map((item) => {
-        if (!targetIds.has(item.id)) return item;
-        const missing =
-          !String(item.hesapKodu || "").trim() ||
-          item.riskDurumu === "HESAP_EKSIK";
-        if (!missing) return item;
-        // Yön koruması
-        const itemDir = resolveMemoryLearnContext(item).direction;
-        if (
-          group.direction &&
-          itemDir &&
-          group.direction !== itemDir
-        ) {
-          return item;
-        }
-        updated += 1;
-        return {
-          ...item,
-          hesapKodu: code,
-          riskDurumu: "",
-          missingHesapCategory: "",
-          kontrolNotu: [
-            String(item.kontrolNotu || "")
-              .replace(/Hesap eşleşmesi bulunamadı/gi, "")
-              .replace(/Kural bulunamadı/gi, "")
-              .replace(/Cari hesap bulunamadı[^.|]*/gi, "")
-              .replace(/\s+\|\s+/g, " | ")
-              .replace(/^\s*\|\s*|\s*\|\s*$/g, "")
-              .trim(),
-            "Çözüm Merkezi: cari gruba uygulandı",
-          ]
-            .filter(Boolean)
-            .join(" | "),
-        };
+      const applyResult = runCariResolutionGroupApply({
+        lucaRows: lucaRef.current || [],
+        group,
+        accountCode: code,
+        learn: Boolean(learn),
+        selectedCompanyId,
+        selectedBank,
+        resolveMemoryLearnContext,
       });
-
-      let learned = false;
-      let learnPersistFailed = false;
-      if (learn) {
-        if (!selectedCompanyId || !learnCtx.ok) {
-          learnPersistFailed = true;
-        } else {
-          const saved = saveAccountMemoryV2Decision(
-            {
-              ...group.seedRow,
-              hesapKodu: code,
-              accountCode: code,
-              analysisKey: learnCtx.analysisKey,
-              canonicalAnalysisKey: buildCariMemoryCanonicalKey(
-                learnCtx.analysisKey || learnCtx.description,
-                learnCtx.direction
-              ),
-              direction: learnCtx.direction,
-              transactionType:
-                learnCtx.transactionType || group.seedRow.transactionType || "",
-              belgeTuru: group.seedRow.belgeTuru || "",
-              documentType: group.seedRow.belgeTuru || "",
-              cariId: code,
-              normalizedDescription: learnCtx.description,
-              finalDescriptionTemplate:
-                learnCtx.description ||
-                group.seedRow.detayAciklama ||
-                group.seedRow.fisAciklama ||
-                "",
-              source: "cari-resolution-center",
-            },
-            { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
-          );
-          learned = Boolean(saved);
-          learnPersistFailed = !learned;
-        }
+      lucaRef.current = applyResult.lucaRows;
+      const updated = applyResult.updated;
+      const learned = Boolean(applyResult.learned);
+      const learnPersistFailed = Boolean(applyResult.learnPersistFailed);
+      const learnSaveTrace = applyResult.learnSaveTrace;
+      if (typeof window !== "undefined" && learn && learnSaveTrace) {
+        window.__ANNVERO_CARI_LEARN_SAVE_TRACE__ = learnSaveTrace;
       }
 
       syncLucaPage(lucaPage);
@@ -1467,19 +1405,24 @@ export default function BankParserWorkbench() {
         ];
       });
       setLastCariApplyMessage(
-        `${updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik hesap sayısı ${beforeMissing}’ten ${report.missingCount}’e düştü.`
+        `${updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik hesap sayısı ${applyResult.beforeMissing}’ten ${report.missingCount}’e düştü.`
       );
       setCariResolutionSnapshot(snapshot);
-      if (learnPersistFailed) {
+      if (learn && learnPersistFailed) {
+        const reason =
+          learnSaveTrace?.immediateReadBack?.rejectReason ||
+          "save_or_readback_failed";
         showToast(
-          "İşlem uygulandı fakat otomatik tanı kaydedilemedi",
+          `Otomatik tanı kaydedilemedi (${reason}). Satırlar bu oturumda güncellendi; yenilemede BİLET tekrar Kalanlar’a düşebilir.`,
           "error"
         );
-      } else {
+      } else if (learn && learned) {
         showToast(
-          `${updated} satıra uygulandı${learned ? " (öğrenildi)" : ""}`,
+          `${updated} satıra uygulandı (öğrenildi; sonraki işlemlerde otomatik)`,
           "success"
         );
+      } else {
+        showToast(`${updated} satıra uygulandı`, "success");
       }
     } finally {
       setApplyingCariGroupId(null);

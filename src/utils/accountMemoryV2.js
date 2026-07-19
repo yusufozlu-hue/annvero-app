@@ -1328,15 +1328,23 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
 
   let previous = existingIndex >= 0 ? records[existingIndex] : null;
   let writeIndex = existingIndex;
-  // Kullanıcı onaylı leaf: yalnız canonical ile bulunan kardeş = çakışan eski kayıt.
-  // Üzerine yazıp correctionRatio şişirmek yerine taze karar yaz; eskiyi supersede et.
+  // Kullanıcı onaylı cm:* leaf: her zaman taze kayıt.
+  // Exact-key upsert eski correctionRatio / çakışan kardeşleri canlıda autoApply=false bırakıyordu.
   if (
+    USER_APPROVED_MEMORY_SOURCES.has(source) &&
+    canonicalAnalysisKey.startsWith("cm:") &&
+    isSafeUserApprovedCariLeafAccount(accountCode)
+  ) {
+    previous = null;
+    writeIndex = -1;
+  } else if (
     previous &&
     USER_APPROVED_MEMORY_SOURCES.has(source) &&
     analysisKey &&
     String(previous.analysisKey || "").trim() !== analysisKey &&
     recordCanonicalKey(previous) === canonicalAnalysisKey
   ) {
+    // Non-cm canonical kardeş: yine taze yaz
     previous = null;
     writeIndex = -1;
   }
@@ -1448,6 +1456,167 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
   return {
     ...payload,
     _supersededCount: superseded.supersededCount,
+  };
+}
+
+/**
+ * Çözüm Merkezi yeşil buton öğrenme zinciri:
+ * save → persist → canonical active count → immediate read-back.
+ * Workbench bunu çağırır; doğrudan save başarı sayılmaz.
+ */
+export function persistCariResolutionLearnWithReadback({
+  seedRow = {},
+  accountCode = "",
+  learnContext = {},
+  companyId = "",
+  bankName = "",
+  source = "cari-resolution-center",
+} = {}) {
+  const code = String(accountCode || "").trim();
+  const firmaId = String(companyId || "").trim();
+  const checkboxTrue = true;
+  const shouldLearn = Boolean(learnContext?.ok && firmaId && code);
+  const emptyTrace = {
+    build: "",
+    checkbox: checkboxTrue,
+    shouldLearn,
+    source,
+    canonicalFp: "",
+    accountFp: fingerprintCariMemoryKey(code),
+    persisted: false,
+    supersededCount: 0,
+    activeCanonicalCountAfterSave: -1,
+    immediateReadBack: { autoApply: false, rejectReason: "not_attempted" },
+  };
+
+  if (!shouldLearn) {
+    return {
+      learnOk: false,
+      persisted: false,
+      supersededCount: 0,
+      activeCanonicalCountAfterSave: 0,
+      saveTrace: {
+        ...emptyTrace,
+        immediateReadBack: {
+          autoApply: false,
+          rejectReason: !firmaId
+            ? "missing_company"
+            : !learnContext?.ok
+              ? "learn_context_invalid"
+              : "missing_account",
+        },
+      },
+    };
+  }
+
+  const direction = String(learnContext.direction || "").trim().toUpperCase();
+  const analysisKey = String(learnContext.analysisKey || "").trim();
+  const description = String(learnContext.description || "").trim();
+  const canonicalAnalysisKey = buildCariMemoryCanonicalKey(
+    analysisKey || description,
+    direction
+  );
+
+  const saved = saveAccountMemoryV2Decision(
+    {
+      ...seedRow,
+      hesapKodu: code,
+      accountCode: code,
+      analysisKey,
+      canonicalAnalysisKey,
+      direction,
+      transactionType:
+        learnContext.transactionType || seedRow.transactionType || "",
+      belgeTuru: seedRow.belgeTuru || "",
+      documentType: seedRow.belgeTuru || "",
+      cariId: code,
+      normalizedDescription: description,
+      finalDescriptionTemplate:
+        description ||
+        seedRow.detayAciklama ||
+        seedRow.fisAciklama ||
+        "",
+      source,
+    },
+    { firmaId, kaynakAdi: bankName }
+  );
+
+  if (!saved) {
+    return {
+      learnOk: false,
+      persisted: false,
+      supersededCount: 0,
+      activeCanonicalCountAfterSave: 0,
+      saveTrace: {
+        ...emptyTrace,
+        canonicalFp: fingerprintCariMemoryKey(canonicalAnalysisKey),
+        immediateReadBack: {
+          autoApply: false,
+          rejectReason: "save_returned_null",
+        },
+      },
+    };
+  }
+
+  const after = loadAccountMemoryV2Records();
+  const activeCanonical = after.filter(
+    (record) =>
+      record.isActive !== false &&
+      String(record.companyId || "") === firmaId &&
+      recordCanonicalKey(record) === canonicalAnalysisKey
+  );
+  const snap = hydrateAccountMemoryForPipeline(firmaId);
+  const readBackDecision = resolveAccountMemoryV2Decision(
+    {
+      companyId: firmaId,
+      analysisKey,
+      direction,
+      transactionType:
+        learnContext.transactionType || seedRow.transactionType || "",
+      normalizedDescription: description,
+    },
+    snap.index,
+    { allowAuto: true }
+  );
+  const readBackTrace = traceAccountMemoryLookup(
+    {
+      companyId: firmaId,
+      analysisKey,
+      direction,
+      transactionType:
+        learnContext.transactionType || seedRow.transactionType || "",
+      normalizedDescription: description,
+    },
+    snap.index,
+    { allowAuto: true }
+  );
+
+  const learnOk =
+    Boolean(readBackDecision.autoApply) &&
+    String(readBackDecision.record?.accountCode || "").trim() === code &&
+    activeCanonical.length === 1;
+
+  return {
+    learnOk,
+    persisted: true,
+    saved,
+    supersededCount: Number(saved._supersededCount || 0),
+    activeCanonicalCountAfterSave: activeCanonical.length,
+    saveTrace: {
+      checkbox: checkboxTrue,
+      shouldLearn: true,
+      source,
+      canonicalFp: fingerprintCariMemoryKey(canonicalAnalysisKey),
+      accountFp: fingerprintCariMemoryKey(code),
+      persisted: true,
+      supersededCount: Number(saved._supersededCount || 0),
+      activeCanonicalCountAfterSave: activeCanonical.length,
+      immediateReadBack: {
+        autoApply: Boolean(readBackDecision.autoApply),
+        rejectReason: readBackTrace.rejectReason || "",
+        mode: readBackDecision.mode || "",
+      },
+    },
   };
 }
 
