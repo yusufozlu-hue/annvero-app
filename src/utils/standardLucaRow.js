@@ -319,6 +319,7 @@ export function finalizeStandardLucaRow(row) {
       : {}),
     ...(row.cariMatchReason ? { cariMatchReason: row.cariMatchReason } : {}),
     ...(row.transactionType ? { transactionType: row.transactionType } : {}),
+    ...(row.direction ? { direction: row.direction } : {}),
     ...(row.accountingScenario
       ? { accountingScenario: row.accountingScenario }
       : {}),
@@ -600,6 +601,8 @@ function buildBankLucaLine({
     detayAciklama,
     borc,
     alacak,
+    // Hareket yönü (GIRIS/CIKIS) — Luca borc/alacak bacağına göre ters çevrilmez
+    direction: movement.direction || "",
     kontrolNotu: movement.warning || "",
     hafizaEslesme: String(movement.warning || "").includes(MEMORY_MATCH_LABEL),
     _movementId: movement.id,

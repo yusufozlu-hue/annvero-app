@@ -1667,17 +1667,18 @@ export function applyAccountMemoryV2RecordsToRows(
   const nextRows = rows.map((row) => {
     if (String(row.hesapKodu || "").trim()) return row;
 
+    // Luca satırlarında direction genelde yok. borc/alacak ile çıkarmak YANLIŞ:
+    // GİRİŞ hareketinin cari bacağı alacaklıdır → CIKIS sanılır, GIRIS hafızası kaçırılır.
+    const direction =
+      normalizeMemoryDirection(row.direction || row.yon || "") ||
+      extractDirectionFromAnalysisKey(row.analysisKey) ||
+      "";
+
     const decision = resolveAccountMemoryV2Decision(
       {
         companyId,
         analysisKey: row.analysisKey,
-        direction:
-          row.direction ||
-          (Number(row.borc || 0) > 0
-            ? "GIRIS"
-            : Number(row.alacak || 0) > 0
-              ? "CIKIS"
-              : ""),
+        direction,
         transactionType: row.transactionType,
         iban: row.iban,
         taxNumber: row.taxNumber || row.vkn,
