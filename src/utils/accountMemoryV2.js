@@ -614,6 +614,153 @@ function detectConflict(candidates = []) {
   };
 }
 
+function dedupeMemoryRecordsById(candidates = []) {
+  const byId = new Map();
+  const withoutId = [];
+  for (const record of candidates || []) {
+    if (!record) continue;
+    const id = String(record.id || "").trim();
+    if (!id) {
+      withoutId.push(record);
+      continue;
+    }
+    const prev = byId.get(id);
+    if (!prev) {
+      byId.set(id, record);
+      continue;
+    }
+    const prevAt = new Date(prev.updatedAt || prev.lastUsedAt || 0).getTime();
+    const nextAt = new Date(record.updatedAt || record.lastUsedAt || 0).getTime();
+    if (nextAt >= prevAt) byId.set(id, record);
+  }
+  return [...byId.values(), ...withoutId];
+}
+
+/**
+ * Çakışmada önce exact analysisKey, sonra tek hesap koduna indir.
+ * Aynı canonical altında farklı hesaplar hâlâ conflict kalır.
+ */
+function narrowConflictCandidates(
+  candidates = [],
+  { analysisKey = "", canonicalKey = "" } = {}
+) {
+  const unique = dedupeMemoryRecordsById(candidates);
+  if (!detectConflict(unique)) return { list: unique, conflict: null };
+
+  const key = String(analysisKey || "").trim();
+  if (key) {
+    const exact = unique.filter((record) => record.analysisKey === key);
+    if (exact.length && !detectConflict(exact)) {
+      return { list: exact, conflict: null };
+    }
+  }
+
+  const canon = String(canonicalKey || "").trim();
+  if (canon) {
+    const byCanon = unique.filter((record) => {
+      const recordCanon =
+        String(record.canonicalAnalysisKey || "").trim() ||
+        buildCariMemoryCanonicalKey(
+          record.analysisKey || record.normalizedDescription,
+          record.direction
+        );
+      return recordCanon === canon;
+    });
+    if (byCanon.length && !detectConflict(byCanon)) {
+      return { list: byCanon, conflict: null };
+    }
+    if (key) {
+      const exactCanon = byCanon.filter((record) => record.analysisKey === key);
+      if (exactCanon.length && !detectConflict(exactCanon)) {
+        return { list: exactCanon, conflict: null };
+      }
+    }
+  }
+
+  return { list: unique, conflict: detectConflict(unique) };
+}
+
+/** Pipeline gate: localStorage senkron hydrate; stale React state kullanılmaz. */
+export function hydrateAccountMemoryForPipeline(companyId = "") {
+  const records = loadAccountMemoryV2Records();
+  const scopedCompanyId = String(companyId || "").trim();
+  const index = buildAccountMemoryV2Index(records, scopedCompanyId);
+  const activeCount = (index.scoped || []).filter(
+    (record) => record.isActive !== false
+  ).length;
+  return {
+    ready: true,
+    records,
+    index,
+    companyId: scopedCompanyId,
+    activeCount,
+    loadedAt: Date.now(),
+  };
+}
+
+/**
+ * PII’siz lookup izi — yazma/okuma fingerprint + reject reason.
+ */
+export function traceAccountMemoryLookup(query = {}, indexOrRecords, options = {}) {
+  const decision = resolveAccountMemoryV2Decision(query, indexOrRecords, options);
+  const direction = String(query.direction || "").trim().toUpperCase();
+  const analysisKey = String(query.analysisKey || "").trim();
+  const canonicalKey = buildCariMemoryCanonicalKey(
+    analysisKey || query.normalizedDescription || query.description || "",
+    direction
+  );
+  const companyId = String(query.companyId || query.firmaId || "").trim();
+  let rejectReason = "";
+  if (decision.mode === "auto") rejectReason = "";
+  else if (decision.mode === "conflict") {
+    rejectReason = decision.message || "conflict_multiple_account_codes";
+  } else if (decision.mode === "suggest") {
+    rejectReason =
+      decision.message ||
+      (decision.autoApply === false ? "suggest_not_auto_eligible" : "suggest");
+  } else if (decision.mode === "none") {
+    rejectReason = "no_matching_memory_record";
+  } else {
+    rejectReason = `mode_${decision.mode || "unknown"}`;
+  }
+  if (
+    !rejectReason &&
+    decision.record &&
+    !decision.autoApply &&
+    !isMemoryRecordAutoEligible(decision.record)
+  ) {
+    rejectReason = "record_not_auto_eligible";
+  }
+
+  return {
+    companyScopeFp: fingerprintCariMemoryKey(companyId || "NO_COMPANY"),
+    storedCanonicalFp: decision.record
+      ? fingerprintCariMemoryKey(
+          decision.record.canonicalAnalysisKey ||
+            buildCariMemoryCanonicalKey(
+              decision.record.analysisKey ||
+                decision.record.normalizedDescription,
+              decision.record.direction
+            )
+        )
+      : "",
+    queryAnalysisFp: fingerprintCariMemoryKey(analysisKey),
+    queryCanonicalFp: fingerprintCariMemoryKey(canonicalKey),
+    direction,
+    transactionType: String(query.transactionType || "").trim().toUpperCase(),
+    mode: decision.mode,
+    autoApply: Boolean(decision.autoApply),
+    tier: decision.tier || "",
+    rejectReason,
+    accountCodeFp: decision.record
+      ? fingerprintCariMemoryKey(decision.record.accountCode || "")
+      : "",
+    candidateCount: Array.isArray(decision.candidates)
+      ? decision.candidates.length
+      : 0,
+  };
+}
+
 function pickBestRecord(candidates = []) {
   if (!candidates.length) return null;
   return [...candidates].sort((a, b) => {
@@ -701,19 +848,49 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
     if (telemetry) {
       telemetry.memoryApplyMs = (telemetry.memoryApplyMs || 0) + (Date.now() - started);
     }
+    if (payload.rejectReason == null) {
+      if (payload.mode === "auto") payload.rejectReason = "";
+      else if (payload.mode === "conflict") {
+        payload.rejectReason =
+          payload.message || "conflict_multiple_account_codes";
+      } else if (payload.mode === "suggest") {
+        payload.rejectReason =
+          payload.message || "suggest_not_auto_eligible";
+      } else if (payload.mode === "none") {
+        payload.rejectReason = "no_matching_memory_record";
+      } else {
+        payload.rejectReason = `mode_${payload.mode || "unknown"}`;
+      }
+    }
     return payload;
   };
 
+  const queryCanonicalKey = buildCariMemoryCanonicalKey(
+    analysisKey || normalizedDescription,
+    direction
+  );
+
   const tryTier = (tier, candidates, confidence) => {
     // ANALYSIS_KEY: yön zorunlu; type boş kayıtlar typed sorguyla da eşleşsin.
-    // Her iki tarafta type varsa POS/havale çakışmaları hâlâ elenir (strict:false).
-    const list = filterSafeCandidates(candidates, baseQuery, {
+    const filtered = filterSafeCandidates(candidates, baseQuery, {
       requireType: tier !== MEMORY_MATCH_TIER.ANALYSIS_KEY,
     });
+    if (!filtered.length) return null;
+
+    const narrowed =
+      tier === MEMORY_MATCH_TIER.ANALYSIS_KEY
+        ? narrowConflictCandidates(filtered, {
+            analysisKey,
+            canonicalKey: queryCanonicalKey,
+          })
+        : {
+            list: dedupeMemoryRecordsById(filtered),
+            conflict: detectConflict(dedupeMemoryRecordsById(filtered)),
+          };
+    const list = narrowed.list;
     if (!list.length) return null;
 
-    const conflict = detectConflict(list);
-    if (conflict) {
+    if (narrowed.conflict) {
       if (telemetry) telemetry.conflicts = (telemetry.conflicts || 0) + 1;
       return finish({
         mode: "conflict",
@@ -721,10 +898,11 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
         confidence: 0,
         autoApply: false,
         record: null,
-        candidates: conflict.candidates,
-        accountCodes: conflict.accountCodes,
+        candidates: narrowed.conflict.candidates,
+        accountCodes: narrowed.conflict.accountCodes,
         message:
           "Aynı analiz anahtarı için birden fazla aktif hafıza kararı var. Otomatik uygulanmadı.",
+        rejectReason: "conflict_multiple_account_codes",
       });
     }
 
@@ -747,13 +925,15 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
         candidates: list,
         message:
           "Hafızadaki cari kararı bu işlem türü için otomatik uygulanmadı (çek/kasa/POS/finans).",
+        rejectReason: "cari_forbidden_for_transaction_type",
       });
     }
 
+    const eligible = isMemoryRecordAutoEligible(record);
     const autoApply =
       options.allowAuto !== false &&
       confidence >= MEMORY_AUTO_APPLY_MIN_CONFIDENCE &&
-      isMemoryRecordAutoEligible(record);
+      eligible;
 
     if (telemetry) {
       const key =
@@ -784,6 +964,13 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
       autoApply,
       record,
       candidates: list,
+      rejectReason: autoApply
+        ? ""
+        : !eligible
+          ? "record_not_auto_eligible"
+          : options.allowAuto === false
+            ? "allow_auto_disabled"
+            : "confidence_below_auto_threshold",
     });
   };
 
@@ -805,12 +992,8 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
     if (hit) return hit;
   }
 
-  const canonicalKey = buildCariMemoryCanonicalKey(
-    analysisKey || normalizedDescription,
-    direction
-  );
-  if (canonicalKey && canonicalKey !== analysisKey) {
-    const hit = tryAnalysisKeyLookup(canonicalKey);
+  if (queryCanonicalKey && queryCanonicalKey !== analysisKey) {
+    const hit = tryAnalysisKeyLookup(queryCanonicalKey);
     if (hit) return hit;
   }
 

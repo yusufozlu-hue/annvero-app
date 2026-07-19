@@ -35,26 +35,29 @@ export default function AnnveroTopbar({ onMenuToggle }) {
 
   const [companySearch, setCompanySearch] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [favoriteIds, setFavoriteIds] = useState(() =>
-    typeof window !== "undefined" ? loadFavoriteCompanyIds() : []
-  );
-  const [recentIds, setRecentIds] = useState(() =>
-    typeof window !== "undefined" ? loadRecentCompanyIds() : []
-  );
-  const [theme, setTheme] = useState(() => {
-    if (typeof window === "undefined") return "dark";
-    try {
-      return localStorage.getItem(ANNVERO_THEME_KEY) || "dark";
-    } catch {
-      return "dark";
-    }
-  });
+  const [favoriteIds, setFavoriteIds] = useState([]);
+  const [recentIds, setRecentIds] = useState([]);
+  const [theme, setTheme] = useState("dark");
   const [notificationCount, setNotificationCount] = useState(0);
   const [highlightIndex, setHighlightIndex] = useState(-1);
 
   const dropdownRef = useRef(null);
   const searchInputRef = useRef(null);
   const listRef = useRef(null);
+
+  useEffect(() => {
+    // Client-only prefs — SSR ile ilk paint aynı (React #418); setState sync effect yasak
+    const timer = window.setTimeout(() => {
+      setFavoriteIds(loadFavoriteCompanyIds());
+      setRecentIds(loadRecentCompanyIds());
+      try {
+        setTheme(localStorage.getItem(ANNVERO_THEME_KEY) || "dark");
+      } catch {
+        setTheme("dark");
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.annveroTheme = theme;

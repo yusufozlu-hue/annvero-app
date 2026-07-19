@@ -39,17 +39,18 @@ import {
   logStandardLucaReport,
 } from "@/src/utils/standardLucaRow";
 import {
-  loadAccountMemoryV1Records,
   saveAccountMemoryFromEdit,
 } from "@/src/utils/accountMemoryV1";
 import {
   buildCariMemoryCanonicalKey,
   formatMemoryDecisionReportText,
   findSimilarMemoryTargets,
+  hydrateAccountMemoryForPipeline,
   loadAccountMemoryV2Records,
   migrateAccountMemoryV2InvertedDirections,
   normalizeMemoryDirection,
   saveAccountMemoryV2Decision,
+  traceAccountMemoryLookup,
 } from "@/src/utils/accountMemoryV2";
 import { normalizeBankAnalysisKey } from "@/src/utils/textNormalize";
 import {
@@ -330,6 +331,16 @@ export default function BankParserWorkbench() {
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
   const [learningMemory, setLearningMemory] = useState([]);
+  /** accountMemoryV2 localStorage — effect hydrate sonrası true; boş hafızayla parse yok */
+  const [accountMemoryReady, setAccountMemoryReady] = useState(false);
+  const accountMemorySnapRef = useRef({
+    ready: false,
+    records: [],
+    index: null,
+    companyId: "",
+    activeCount: 0,
+    loadedAt: 0,
+  });
   const [accountingRules, setAccountingRules] = useState([]);
   const [declarationAccrualRecords, setDeclarationAccrualRecords] = useState([]);
   const [previewSearch, setPreviewSearch] = useState("");
@@ -469,6 +480,51 @@ export default function BankParserWorkbench() {
 
   const showToast = (message, type) => {
     setToast({ message, type });
+  };
+
+  const refreshAccountMemorySnapshot = (companyId = selectedCompanyId) => {
+    const snap = hydrateAccountMemoryForPipeline(companyId || "");
+    accountMemorySnapRef.current = snap;
+    setAccountMemoryReady(Boolean(snap.ready));
+    return snap;
+  };
+
+  useEffect(() => {
+    const result = migrateAccountMemoryV2InvertedDirections();
+    if (result.migratedCount > 0) {
+      console.info("[ANNVERO][MEMORY-V2-MIGRATE]", {
+        migratedCount: result.migratedCount,
+        conflictCount: result.conflictCount,
+        conflicts: result.conflicts,
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    // Mount + firma değişimi: senkron localStorage hydrate (stale closure yok)
+    refreshAccountMemorySnapshot(selectedCompanyId || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCompanyId]);
+
+  const ensureAccountMemoryReadyForProcess = () => {
+    if (isLoadingCompanies) {
+      showToast("Firma yükleniyor; hafıza hazır olana kadar bekleyin.", "error");
+      return null;
+    }
+    if (!selectedCompanyId) {
+      showToast("Önce firma seçmelisin.", "error");
+      return null;
+    }
+    // Process anında her zaman taze oku — React state’e güvenme
+    const snap = refreshAccountMemorySnapshot(selectedCompanyId);
+    if (!snap?.ready) {
+      showToast(
+        "Hesap hafızası henüz hazır değil; işlem başlatılmadı.",
+        "error"
+      );
+      return null;
+    }
+    return snap;
   };
 
   /** Yönetilen pipeline hataları — Next overlay tetiklememek için console.error yok */
@@ -768,17 +824,6 @@ export default function BankParserWorkbench() {
         : "Kaynak hareket yönü bulunamadı; otomatik öğrenme yapılmadı. Luca borc/alacak yönü kullanılmaz.",
     };
   };
-
-  useEffect(() => {
-    const result = migrateAccountMemoryV2InvertedDirections();
-    if (result.migratedCount > 0) {
-      console.info("[ANNVERO][MEMORY-V2-MIGRATE]", {
-        migratedCount: result.migratedCount,
-        conflictCount: result.conflictCount,
-        conflicts: result.conflicts,
-      });
-    }
-  }, []);
 
   useEffect(() => {
     setLucaPage(0);
@@ -1954,6 +1999,9 @@ export default function BankParserWorkbench() {
     const bank = String(bankName || activeBankRef.current || selectedBank || "")
       .trim()
       .toUpperCase();
+    // Her pipeline kurulumunda senkron taze localStorage — React state/cache yok
+    const memorySnap = hydrateAccountMemoryForPipeline(selectedCompanyId || "");
+    accountMemorySnapRef.current = memorySnap;
     return {
       normalizedRows,
       selectedBank: bank,
@@ -1961,7 +2009,8 @@ export default function BankParserWorkbench() {
       companyPlans,
       companyRules,
       learningMemory,
-      accountMemoryRecords: loadAccountMemoryV1Records(),
+      accountMemoryRecords: memorySnap.records,
+      accountMemoryV2Index: memorySnap.index,
       accountingRules,
       declarationAccrualRecords,
       selectedCompanyId,
@@ -2443,15 +2492,45 @@ export default function BankParserWorkbench() {
 
     try {
       const companyId = String(selectedCompanyId || "");
-      const memoryRecords = loadAccountMemoryV2Records() || [];
-      const accountMemoryActiveCount = memoryRecords.filter(
-        (r) =>
-          r?.isActive !== false &&
-          String(r.companyId || r.firmaId || "") === companyId
-      ).length;
+      const memorySnap = hydrateAccountMemoryForPipeline(companyId);
+      accountMemorySnapRef.current = memorySnap;
+      const memoryRecords = memorySnap.records || [];
+      const accountMemoryActiveCount = memorySnap.activeCount || 0;
       const planLeafCount = (companyPlans || []).filter((p) =>
         isSelectableCariLeafAccount(p.accountCode || p.hesapKodu || "")
       ).length;
+      const biletdukTraces = (memoryRecords || [])
+        .filter(
+          (r) =>
+            r?.isActive !== false &&
+            String(r.companyId || "") === companyId &&
+            /BILETDUK|BILET/.test(
+              String(
+                r.canonicalAnalysisKey ||
+                  r.analysisKey ||
+                  r.normalizedDescription ||
+                  ""
+              ).toUpperCase()
+            )
+        )
+        .slice(0, 4)
+        .map((record) => {
+          const sampleDesc =
+            record.normalizedDescription ||
+            String(record.analysisKey || "").split("|")[0] ||
+            "";
+          return traceAccountMemoryLookup(
+            {
+              companyId,
+              analysisKey: normalizeBankAnalysisKey(sampleDesc, record.direction),
+              direction: record.direction,
+              transactionType: record.transactionType || "GELEN_HAVALE",
+              normalizedDescription: sampleDesc,
+            },
+            memorySnap.index,
+            { allowAuto: true }
+          );
+        });
       const diag = buildSafeCariMatchDiagSummary({
         missingReport,
         movementCount: Number(missingReport.uniqueTotalMovements || 0),
@@ -2463,6 +2542,8 @@ export default function BankParserWorkbench() {
         planLeafCount,
         buildCommit: getBuildInfo().commit,
       });
+      diag.accountMemoryReady = Boolean(memorySnap.ready);
+      diag.memoryLookupTraces = biletdukTraces;
       if (typeof window !== "undefined") {
         window.__ANNVERO_CARI_DIAG__ = diag;
         console.info("[ANNVERO][CARI-DIAG]", diag);
@@ -2491,6 +2572,7 @@ export default function BankParserWorkbench() {
   /** AŞAMA 1 — manuel */
   const handleCreatePreview = async () => {
     if (isJobBusy) return;
+    if (!ensureAccountMemoryReadyForProcess()) return;
     if (!selectedCompanyId) {
       showToast("Önce firma seçmelisin.", "error");
       return;
@@ -2725,6 +2807,7 @@ export default function BankParserWorkbench() {
       showToast("Başka bir işlem sürüyor.", "error");
       return;
     }
+    if (!ensureAccountMemoryReadyForProcess()) return;
     if (!selectedCompanyId) {
       showToast("Önce firma seçmelisin.", "error");
       return;
@@ -3361,6 +3444,8 @@ export default function BankParserWorkbench() {
               onClick={() => void runFullBankPipeline()}
               disabled={
                 isJobBusy ||
+                !accountMemoryReady ||
+                isLoadingCompanies ||
                 !selectedCompanyId ||
                 !selectedFile ||
                 !getRunBank() ||
@@ -3371,6 +3456,8 @@ export default function BankParserWorkbench() {
             >
               {isEnginePreparing
                 ? "Hazırlanıyor…"
+                : !accountMemoryReady || isLoadingCompanies
+                  ? "Hafıza yükleniyor…"
                 : isJobBusy && pipelineMode === "auto"
                   ? "İşleniyor…"
                   : pipelinePhase === PIPELINE_PHASES.READY_FOR_EXPORT
@@ -3567,7 +3654,7 @@ export default function BankParserWorkbench() {
             <button
               type="button"
               onClick={handleCreatePreview}
-              disabled={isJobBusy || !selectedFile}
+              disabled={isJobBusy || !accountMemoryReady || !selectedFile}
               className={`rounded-xl px-6 py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${annveroBtnPrimary}`}
             >
               {isParsing ? parserJob.stage || "İşleniyor…" : "Ön İzleme Oluştur"}
