@@ -3,6 +3,11 @@
  */
 
 import { createHmac, timingSafeEqual, createHash } from "crypto";
+import {
+  isLocalDevOrTestEnv,
+  requiresStrictRuntimeSecrets,
+  resolveAnnveroAppEnv,
+} from "@/src/lib/security/envGuard";
 
 const DEFAULT_TOLERANCE_MS = 5 * 60 * 1000;
 const REPLAY_TTL_MS = 10 * 60 * 1000;
@@ -14,13 +19,6 @@ function readEnv(name) {
   return String(process.env[name] ?? "")
     .trim()
     .replace(/^['"]|['"]$/g, "");
-}
-
-function isProductionLike() {
-  const app = readEnv("ANNVERO_APP_ENV").toLowerCase();
-  const vercel = readEnv("VERCEL_ENV").toLowerCase();
-  if (app === "production" || vercel === "production") return true;
-  return process.env.NODE_ENV === "production" && vercel !== "preview";
 }
 
 export function safeEqualString(a = "", b = "") {
@@ -62,20 +60,40 @@ export function resetWebhookReplayStore() {
   replayStore.clear();
 }
 
+function webhookUnavailable(message = "Webhook HMAC secret yapılandırılmamış.") {
+  return {
+    ok: false,
+    code: "WEBHOOK_SECRET_MISSING",
+    message,
+  };
+}
+
 /**
  * @returns {{ ok: boolean, code?: string, message?: string, eventId?: string }}
  */
 export function verifyWebhookRequest(request, rawBody, {
   toleranceMs = DEFAULT_TOLERANCE_MS,
 } = {}) {
-  const secret = readEnv("N8N_AUTOMATION_WEBHOOK_SECRET");
-  const hmacSecret = readEnv("N8N_AUTOMATION_WEBHOOK_HMAC_SECRET") || secret;
+  const appEnv = resolveAnnveroAppEnv();
+  const strict = requiresStrictRuntimeSecrets(appEnv);
+  const localDev = isLocalDevOrTestEnv(appEnv);
 
-  if (!secret && !hmacSecret) {
-    if (isProductionLike()) {
-      return { ok: false, code: "WEBHOOK_SECRET_MISSING", message: "Webhook secret yapılandırılmamış." };
+  const bearerSecret = readEnv("N8N_AUTOMATION_WEBHOOK_SECRET");
+  const hmacSecret = readEnv("N8N_AUTOMATION_WEBHOOK_HMAC_SECRET");
+  // Staging/preview/production: HMAC anahtarı zorunlu (Bearer secret HMAC’yi karşılamaz)
+  const effectiveHmac = hmacSecret || (!strict ? bearerSecret : "");
+
+  if (!effectiveHmac) {
+    if (strict) {
+      return webhookUnavailable();
     }
-    return { ok: true, code: "DEV_OPEN", eventId: "dev" };
+    // Yalnız gerçek local development/test — belgelenmiş DEV_OPEN
+    if (localDev && !bearerSecret) {
+      return { ok: true, code: "DEV_OPEN", eventId: "dev" };
+    }
+    if (!bearerSecret) {
+      return webhookUnavailable();
+    }
   }
 
   const signatureHeader =
@@ -88,8 +106,18 @@ export function verifyWebhookRequest(request, rawBody, {
     request.headers.get("x-idempotency-key") ||
     "";
 
-  // HMAC yolu tercih edilir
-  if (signatureHeader && timestampHeader && hmacSecret) {
+  const hasHmacHeaders = Boolean(signatureHeader && timestampHeader);
+
+  // Deployed-like: HMAC header’ları zorunlu; legacy Bearer sessiz bypass yok
+  if (strict && !hasHmacHeaders) {
+    return {
+      ok: false,
+      code: "HMAC_REQUIRED",
+      message: "Staging/preview/production webhook HMAC (imza + timestamp) zorunludur.",
+    };
+  }
+
+  if (hasHmacHeaders && effectiveHmac) {
     const ts = Number(timestampHeader);
     if (!Number.isFinite(ts)) {
       return { ok: false, code: "INVALID_TIMESTAMP", message: "Geçersiz timestamp." };
@@ -99,7 +127,7 @@ export function verifyWebhookRequest(request, rawBody, {
       return { ok: false, code: "TIMESTAMP_EXPIRED", message: "Timestamp toleransı aşıldı." };
     }
 
-    const expected = computeWebhookSignature(hmacSecret, String(ts), rawBody);
+    const expected = computeWebhookSignature(effectiveHmac, String(ts), rawBody);
     const provided = signatureHeader.replace(/^sha256=/i, "").trim();
     if (!safeEqualString(expected, provided)) {
       return { ok: false, code: "INVALID_SIGNATURE", message: "İmza geçersiz." };
@@ -116,12 +144,20 @@ export function verifyWebhookRequest(request, rawBody, {
     return { ok: true, eventId: replayKey };
   }
 
-  // Geriye uyumluluk: Bearer / x-api-key (constant-time)
+  // Legacy Bearer / x-api-key — yalnız local development/test
+  if (!localDev) {
+    return {
+      ok: false,
+      code: "HMAC_REQUIRED",
+      message: "Legacy Bearer webhook yalnız local development/test için geçerlidir.",
+    };
+  }
+
   const header = request.headers.get("authorization") || "";
   const apiKey = request.headers.get("x-api-key") || "";
   const bearer = header.startsWith("Bearer ") ? header.slice(7) : "";
-  const matchBearer = secret && safeEqualString(bearer, secret);
-  const matchKey = secret && safeEqualString(apiKey, secret);
+  const matchBearer = bearerSecret && safeEqualString(bearer, bearerSecret);
+  const matchKey = bearerSecret && safeEqualString(apiKey, bearerSecret);
 
   if (!matchBearer && !matchKey) {
     return { ok: false, code: "UNAUTHORIZED", message: "Yetkisiz webhook isteği." };

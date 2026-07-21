@@ -11,6 +11,13 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [ ] Vercel staging env / test accounts: bekliyor
 - [ ] Production migration / deploy: **yasak** / bekliyor (açık onay yok)
 
+### Staging / Preview fail-closed (kod)
+
+- [x] Staging/preview webhook: HMAC secret yoksa fail-closed (DEV_OPEN yok)
+- [x] Staging/preview recovery: `RECOVERY_API_ENABLED=true` olmadan disabled
+- [x] Production ve Preview secret paylaşımı yasak (branch override)
+- [x] GİB key exact adı: `GIB_CREDENTIALS_ENCRYPTION_KEY` (çoğul)
+
 ## Ortam ve secret
 
 - [ ] Vercel/Railway secret store'da `SUPABASE_SERVICE_ROLE_KEY` (public değil)
@@ -40,7 +47,10 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 
 - [ ] Security headers production response'da görünüyor
 - [ ] Webhook secret production'da zorunlu
+- [ ] Staging/preview webhook HMAC zorunlu (secret yoksa fail-closed)
+- [ ] Staging/preview `RECOVERY_API_ENABLED=true` olmadan restore kapalı
 - [ ] GİB/export rate limit 429 üretiyor
+- [ ] Production ↔ Preview secret izolasyonu (Supabase/GİB/Drive/HMAC paylaşılmıyor)
 
 ## Backup / DR
 

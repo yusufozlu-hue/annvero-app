@@ -17,6 +17,8 @@ import {
 } from "@/src/lib/audit/auditEvents";
 import { redactDeep } from "@/src/lib/security/redact";
 
+export { isRecoveryApiEnabled } from "@/src/lib/recovery/recoveryGate";
+
 export const RESTORE_CONFIRMATION_PHRASE = "RESTORE_CONFIRM";
 
 /** Client keyfi tablo adı kabul edilmez — sabit allowlist */
@@ -68,15 +70,6 @@ export function normalizeRestoreRecordId(recordId = "") {
   if (!id) return "";
   if (UUID_LIKE.test(id) || SAFE_ID.test(id)) return id;
   return "";
-}
-
-export function isRecoveryApiEnabled() {
-  const env = String(process.env.ANNVERO_APP_ENV || process.env.VERCEL_ENV || "").toLowerCase();
-  const isProd =
-    env === "production" ||
-    (process.env.NODE_ENV === "production" && process.env.VERCEL_ENV !== "preview");
-  if (!isProd) return true;
-  return String(process.env.RECOVERY_API_ENABLED || "").trim() === "true";
 }
 
 /**

@@ -8,8 +8,9 @@ Bu rapor yerel güvenlik paketinin durumunu özetler. Production/staging'e bağl
 - `user_metadata.role=admin` ile yetki yükseltme (düzeltildi)
 - Fallback profilde `user_metadata.company_ids` ile tenant claim (düzeltildi)
 - Company export'ta şifreli GİB alanlarının düz export'u (redaksiyon eklendi)
-- Production'da secret'siz açık webhook (fail-closed)
+- Production'da secret'siz açık webhook (fail-closed; staging/preview de HMAC zorunlu)
 - `/api/tcmb`, `/api/elektraweb` oturumsuz (oturum + rate limit + upload guard)
+- Staging/preview recovery default-on (explicit `RECOVERY_API_ENABLED=true` zorunlu)
 
 ### P1
 - CSRF / security headers yoktu (eklendi)
@@ -55,7 +56,8 @@ Ayrıntılı liste final chat raporunda.
 - Staging ref `bveipjvbopbkvojfdpmo`: 024 + 025 COMMIT; V4.5.4 postflight CONFLICT=0, MISSING=0; ikisi de ALREADY_APPLIED
 - **Uygulama (Next.js) security smoke henüz yapılmadı** — staging application deploy / env / test hesapları bekliyor
 - **Production değiştirilmedi** — production ref’e SQL/HTTP/migration/deploy yok
-
+- Staging/preview: webhook HMAC secret’sız **fail-closed**; recovery yalnız `RECOVERY_API_ENABLED=true`
+- Production ve Preview secret’ları paylaşılmamalı; GİB key adı `GIB_CREDENTIALS_ENCRYPTION_KEY` (çoğul)
 ## 5–7. Test / tenant / backup
 
 Yerel komutlarla doğrulanır (`npm run security:ci`, `backup:dry-run`). Production'a karşı test yok. Staging uygulama smoke bekliyor.

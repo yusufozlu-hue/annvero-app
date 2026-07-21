@@ -39,11 +39,25 @@ npm run backup:dry-run
 
 Şablon: `.env.example`
 Public env'de `service_role` / encryption key **yasak**.
+Production ve Preview secret'ları **paylaşılmamalı** (branch-scoped Preview override).
+
+### Webhook
+
+- Staging / Vercel Preview / production: `N8N_AUTOMATION_WEBHOOK_HMAC_SECRET` yoksa **fail-closed** (DEV_OPEN yok).
+- HMAC = timestamp + raw body + constant-time compare + replay koruması.
+- Legacy Bearer staging/preview'da HMAC zorunluluğunu bypass **etmez**.
+- DEV_OPEN yalnız gerçek local `development` / `test` (Preview değil).
+
+### Recovery
+
+- Staging / Preview / production: yalnız `RECOVERY_API_ENABLED=true` ile açık; missing/false → **disabled**.
+- `RESTORE_CONFIRM` yetki değildir.
+- GİB encryption exact adı: `GIB_CREDENTIALS_ENCRYPTION_KEY` (çoğul; tekil isim yok).
 
 ## Rate limit
 
 - Adapter: `src/lib/security/rateLimitDurable.js`
-- Upstash env varsa kullanılır; yoksa memory (serverless'ta zayıf) veya `rate_limit_buckets` (migration 024)
+- Staging/preview/production: Upstash veya `ANNVERO_RATE_LIMIT_BACKEND=supabase` (migration 024); memory yok
 - Production aktivasyonu: kullanıcı secret tanımı gerekir
 
 ## CSP notu

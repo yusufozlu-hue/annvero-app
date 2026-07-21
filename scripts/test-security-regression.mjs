@@ -15,6 +15,8 @@ import {
   assertSafeSupabaseProjectRef,
   ANNVERO_KNOWN_PROJECT_REFS,
   findForbiddenPublicEnvLeaks,
+  requiresStrictRuntimeSecrets,
+  resolveAnnveroAppEnv,
 } from "../src/lib/security/envGuard.js";
 import {
   checkRateLimit,
@@ -36,9 +38,9 @@ import {
   resetWebhookReplayStore,
   rememberWebhookEvent,
   safeEqualString,
+  verifyWebhookRequest,
 } from "../src/lib/security/webhookAuth.js";
-
-/** next/server'siz privilege strip (requestGuards ile aynı mantık) */
+import { isRecoveryApiEnabled } from "../src/lib/recovery/recoveryGate.js";/** next/server'siz privilege strip (requestGuards ile aynı mantık) */
 function stripClientPrivilegeClaims(body = {}) {
   if (!body || typeof body !== "object") return body;
   const {
@@ -540,6 +542,253 @@ test("webhook HMAC + replay koruması", () => {
   assert.equal(first.ok, true);
   assert.equal(second.ok, false);
   assert.equal(second.reason, "replay");
+});
+
+function mockWebhookRequest(headers = {}) {
+  const map = new Map(
+    Object.entries(headers).map(([k, v]) => [String(k).toLowerCase(), String(v)])
+  );
+  return {
+    headers: {
+      get(name) {
+        return map.get(String(name).toLowerCase()) || null;
+      },
+    },
+  };
+}
+
+function withEnv(overrides, fn) {
+  const keys = Object.keys(overrides);
+  const prev = {};
+  for (const k of keys) {
+    prev[k] = process.env[k];
+    const v = overrides[k];
+    if (v === undefined || v === null) delete process.env[k];
+    else process.env[k] = String(v);
+  }
+  try {
+    return fn();
+  } finally {
+    for (const k of keys) {
+      if (prev[k] === undefined) delete process.env[k];
+      else process.env[k] = prev[k];
+    }
+  }
+}
+
+test("webhook staging/preview/production HMAC missing → fail-closed; local DEV_OPEN", () => {
+  resetWebhookReplayStore();
+  const body = "{}";
+
+  withEnv(
+    {
+      ANNVERO_APP_ENV: "staging",
+      VERCEL_ENV: undefined,
+      NODE_ENV: "production",
+      N8N_AUTOMATION_WEBHOOK_HMAC_SECRET: undefined,
+      N8N_AUTOMATION_WEBHOOK_SECRET: undefined,
+    },
+    () => {
+      assert.equal(requiresStrictRuntimeSecrets(), true);
+      const r = verifyWebhookRequest(mockWebhookRequest(), body);
+      assert.equal(r.ok, false);
+      assert.equal(r.code, "WEBHOOK_SECRET_MISSING");
+    }
+  );
+
+  withEnv(
+    {
+      ANNVERO_APP_ENV: undefined,
+      VERCEL_ENV: "preview",
+      NODE_ENV: "production",
+      N8N_AUTOMATION_WEBHOOK_HMAC_SECRET: undefined,
+      N8N_AUTOMATION_WEBHOOK_SECRET: undefined,
+    },
+    () => {
+      assert.equal(resolveAnnveroAppEnv(), "staging");
+      const r = verifyWebhookRequest(mockWebhookRequest(), body);
+      assert.equal(r.ok, false);
+      assert.equal(r.code, "WEBHOOK_SECRET_MISSING");
+    }
+  );
+
+  withEnv(
+    {
+      ANNVERO_APP_ENV: "production",
+      VERCEL_ENV: "production",
+      NODE_ENV: "production",
+      N8N_AUTOMATION_WEBHOOK_HMAC_SECRET: undefined,
+      N8N_AUTOMATION_WEBHOOK_SECRET: undefined,
+    },
+    () => {
+      const r = verifyWebhookRequest(mockWebhookRequest(), body);
+      assert.equal(r.ok, false);
+      assert.equal(r.code, "WEBHOOK_SECRET_MISSING");
+    }
+  );
+
+  withEnv(
+    {
+      ANNVERO_APP_ENV: "development",
+      VERCEL_ENV: undefined,
+      NODE_ENV: "development",
+      N8N_AUTOMATION_WEBHOOK_HMAC_SECRET: undefined,
+      N8N_AUTOMATION_WEBHOOK_SECRET: undefined,
+    },
+    () => {
+      const r = verifyWebhookRequest(mockWebhookRequest(), body);
+      assert.equal(r.ok, true);
+      assert.equal(r.code, "DEV_OPEN");
+    }
+  );
+});
+
+test("webhook staging valid HMAC accepted; invalid/replay/stale rejected; bearer no bypass", () => {
+  const hmac = "staging-hmac-secret-for-tests-only!!";
+  const body = '{"ok":true}';
+
+  withEnv(
+    {
+      ANNVERO_APP_ENV: "staging",
+      VERCEL_ENV: "preview",
+      NODE_ENV: "production",
+      N8N_AUTOMATION_WEBHOOK_HMAC_SECRET: hmac,
+      N8N_AUTOMATION_WEBHOOK_SECRET: "legacy-bearer-should-not-bypass",
+    },
+    () => {
+      resetWebhookReplayStore();
+      const ts = String(Date.now());
+      const sig = computeWebhookSignature(hmac, ts, body);
+      const ok = verifyWebhookRequest(
+        mockWebhookRequest({
+          "x-annvero-signature": sig,
+          "x-annvero-timestamp": ts,
+          "x-annvero-event-id": "evt-staging-1",
+        }),
+        body
+      );
+      assert.equal(ok.ok, true, ok.message);
+
+      resetWebhookReplayStore();
+      const bad = verifyWebhookRequest(
+        mockWebhookRequest({
+          "x-annvero-signature": "deadbeef",
+          "x-annvero-timestamp": ts,
+          "x-annvero-event-id": "evt-bad",
+        }),
+        body
+      );
+      assert.equal(bad.ok, false);
+      assert.equal(bad.code, "INVALID_SIGNATURE");
+
+      resetWebhookReplayStore();
+      const stale = verifyWebhookRequest(
+        mockWebhookRequest({
+          "x-annvero-signature": computeWebhookSignature(hmac, "1", body),
+          "x-annvero-timestamp": "1",
+          "x-annvero-event-id": "evt-stale",
+        }),
+        body
+      );
+      assert.equal(stale.ok, false);
+      assert.equal(stale.code, "TIMESTAMP_EXPIRED");
+
+      resetWebhookReplayStore();
+      const h1 = {
+        "x-annvero-signature": sig,
+        "x-annvero-timestamp": ts,
+        "x-annvero-event-id": "evt-replay",
+      };
+      assert.equal(verifyWebhookRequest(mockWebhookRequest(h1), body).ok, true);
+      const replay = verifyWebhookRequest(mockWebhookRequest(h1), body);
+      assert.equal(replay.ok, false);
+      assert.equal(replay.code, "REPLAY");
+
+      // Legacy Bearer alone must not bypass HMAC on staging
+      const bearerOnly = verifyWebhookRequest(
+        mockWebhookRequest({ authorization: "Bearer legacy-bearer-should-not-bypass" }),
+        body
+      );
+      assert.equal(bearerOnly.ok, false);
+      assert.equal(bearerOnly.code, "HMAC_REQUIRED");
+    }
+  );
+});
+
+test("recovery staging/preview require RECOVERY_API_ENABLED=true; local default on", () => {
+  withEnv(
+    {
+      ANNVERO_APP_ENV: "staging",
+      VERCEL_ENV: undefined,
+      NODE_ENV: "production",
+      RECOVERY_API_ENABLED: undefined,
+    },
+    () => assert.equal(isRecoveryApiEnabled(), false)
+  );
+
+  withEnv(
+    {
+      ANNVERO_APP_ENV: "staging",
+      VERCEL_ENV: "preview",
+      NODE_ENV: "production",
+      RECOVERY_API_ENABLED: "false",
+    },
+    () => assert.equal(isRecoveryApiEnabled(), false)
+  );
+
+  withEnv(
+    {
+      ANNVERO_APP_ENV: undefined,
+      VERCEL_ENV: "preview",
+      NODE_ENV: "production",
+      RECOVERY_API_ENABLED: undefined,
+    },
+    () => assert.equal(isRecoveryApiEnabled(), false)
+  );
+
+  withEnv(
+    {
+      ANNVERO_APP_ENV: "staging",
+      VERCEL_ENV: "preview",
+      NODE_ENV: "production",
+      RECOVERY_API_ENABLED: "true",
+    },
+    () => assert.equal(isRecoveryApiEnabled(), true)
+  );
+
+  withEnv(
+    {
+      ANNVERO_APP_ENV: "production",
+      VERCEL_ENV: "production",
+      NODE_ENV: "production",
+      RECOVERY_API_ENABLED: "false",
+    },
+    () => assert.equal(isRecoveryApiEnabled(), false)
+  );
+
+  withEnv(
+    {
+      ANNVERO_APP_ENV: "development",
+      VERCEL_ENV: undefined,
+      NODE_ENV: "development",
+      RECOVERY_API_ENABLED: undefined,
+    },
+    () => assert.equal(isRecoveryApiEnabled(), true)
+  );
+
+  // Route still gates on management/CSRF when enabled — static contract
+  const routeSrc = fs.readFileSync(
+    path.join(root, "app/api/recovery/restore/route.js"),
+    "utf8"
+  );
+  assert.match(routeSrc, /requireManagementApi/);
+  assert.match(routeSrc, /enforceSameOriginCsrf/);
+  assert.match(routeSrc, /isRecoveryApiEnabled/);
+  assert.match(routeSrc, /RECOVERY_API_ENABLED=true/);
+  assert.match(
+    routeSrc,
+    /RESTORE_CONFIRM tek başına yetki değildir/
+  );
 });
 
 test("user_metadata yetki kaynağı olarak kullanılmıyor (tarama)", () => {

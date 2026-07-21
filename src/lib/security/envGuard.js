@@ -58,6 +58,32 @@ export function isLocalLikeAppEnv(appEnv = resolveAnnveroAppEnv()) {
   );
 }
 
+/** Vercel Preview deployment (branch preview). */
+export function isVercelPreviewEnv() {
+  return normalize(process.env.VERCEL_ENV).toLowerCase() === "preview";
+}
+
+/**
+ * Production / staging / Vercel Preview — secret’sız fail-open yasak.
+ * NODE_ENV=production tek başına yeterli değildir; merkezî ortam çözümlemesi + Preview.
+ * Yerel development/test (Preview değil) hariç tutulur.
+ */
+export function requiresStrictRuntimeSecrets(appEnv = resolveAnnveroAppEnv()) {
+  if (isVercelPreviewEnv()) return true;
+  return (
+    appEnv === ANNVERO_APP_ENVS.PRODUCTION ||
+    appEnv === ANNVERO_APP_ENVS.STAGING
+  );
+}
+
+/**
+ * Gerçek local development/test (Vercel Preview değil).
+ * DEV_OPEN / recovery default-on yalnız burada.
+ */
+export function isLocalDevOrTestEnv(appEnv = resolveAnnveroAppEnv()) {
+  return isLocalLikeAppEnv(appEnv) && !isVercelPreviewEnv();
+}
+
 export function isKnownRemoteProjectRef(projectRef = "") {
   const ref = normalize(projectRef).toLowerCase();
   return (

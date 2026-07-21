@@ -20,7 +20,8 @@ export const dynamic = "force-dynamic";
 function recoveryDisabledResponse(requestId) {
   return NextResponse.json(
     {
-      error: "Recovery API production'da kapalı. RECOVERY_API_ENABLED=true gerekir.",
+      error:
+        "Recovery API kapalı. Production/staging/preview için RECOVERY_API_ENABLED=true gerekir.",
       code: "RECOVERY_API_DISABLED",
       requestId,
       note: "Bu endpoint DB backup/PITR restore yapmaz; yalnız soft-delete satır geri alır.",
