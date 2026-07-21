@@ -1,5 +1,6 @@
 /**
- * Webhook kimlik doğrulama — HMAC + timestamp + constant-time + replay koruması.
+ * Webhook kimlik doğrulama — HMAC + timestamp + constant-time.
+ * Replay claim bu modülde yazılmaz (stateless); bkz. webhookReplay.js.
  */
 
 import { createHmac, timingSafeEqual, createHash } from "crypto";
@@ -8,10 +9,15 @@ import {
   requiresStrictRuntimeSecrets,
   resolveAnnveroAppEnv,
 } from "@/src/lib/security/envGuard";
+import { N8N_FLOW_DEFINITIONS } from "@/src/config/n8nOtomasyonDefaults";
 
 const DEFAULT_TOLERANCE_MS = 5 * 60 * 1000;
 const REPLAY_TTL_MS = 10 * 60 * 1000;
 
+const KNOWN_FLOW_IDS = new Set(N8N_FLOW_DEFINITIONS.map((f) => f.id));
+const PAYLOAD_SIGNAL_KEYS = ["fileName", "subject", "sender", "documentType", "bankName"];
+
+/** Yalnız local/test memory yardımcıları + kritik-route statik envanter. */
 const replayStore = globalThis.__annveroWebhookReplay || new Map();
 globalThis.__annveroWebhookReplay = replayStore;
 
@@ -25,7 +31,6 @@ export function safeEqualString(a = "", b = "") {
   const left = Buffer.from(String(a));
   const right = Buffer.from(String(b));
   if (left.length !== right.length) {
-    // uzunluk sızıntısını azaltmak için sabit karşılaştırma
     const fill = Buffer.alloc(left.length);
     timingSafeEqual(left, fill);
     return false;
@@ -33,6 +38,9 @@ export function safeEqualString(a = "", b = "") {
   return timingSafeEqual(left, right);
 }
 
+/**
+ * İmza girdisi: exact `${timestampMs}.${rawBody}` — timestamp Unix epoch milliseconds.
+ */
 export function computeWebhookSignature(secret, timestamp, rawBody) {
   const payload = `${timestamp}.${rawBody}`;
   return createHmac("sha256", secret).update(payload, "utf8").digest("hex");
@@ -44,6 +52,7 @@ function pruneReplay(now) {
   }
 }
 
+/** Local/test memory claim — production/staging güvenlik kaynağı değildir. */
 export function rememberWebhookEvent(eventKey, { ttlMs = REPLAY_TTL_MS } = {}) {
   const now = Date.now();
   pruneReplay(now);
@@ -68,8 +77,70 @@ function webhookUnavailable(message = "Webhook HMAC secret yapılandırılmamı�
   };
 }
 
+export function readWebhookEventIdHeader(request) {
+  return (
+    request.headers.get("x-annvero-event-id") ||
+    request.headers.get("x-idempotency-key") ||
+    ""
+  );
+}
+
 /**
- * @returns {{ ok: boolean, code?: string, message?: string, eventId?: string }}
+ * Replay/idempotency anahtarı — ham değer loglanmamalı.
+ */
+export function resolveWebhookEventKey(request, rawBody, timestamp) {
+  const eventId = String(readWebhookEventIdHeader(request) || "").slice(0, 200);
+  if (eventId) return eventId;
+  return createHash("sha256")
+    .update(`${timestamp}.${rawBody}`, "utf8")
+    .digest("hex")
+    .slice(0, 40);
+}
+
+/**
+ * Mevcut n8n tüketici sözleşmesi: bilinen flowId veya resolveFlowFromPayload sinyal alanları.
+ * Boş `{}` / primitive / array → reddedilir (varsayılan mail-to-pool enqueue yok).
+ */
+export function validateWebhookPayloadBody(body) {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return {
+      ok: false,
+      code: "INVALID_PAYLOAD",
+      message: "Webhook gövdesi JSON nesnesi olmalıdır.",
+    };
+  }
+
+  const flowId = typeof body.flowId === "string" ? body.flowId.trim() : "";
+  if (flowId) {
+    if (!KNOWN_FLOW_IDS.has(flowId)) {
+      return {
+        ok: false,
+        code: "INVALID_PAYLOAD",
+        message: "Bilinmeyen veya desteklenmeyen flowId.",
+      };
+    }
+    return { ok: true };
+  }
+
+  const hasSignal = PAYLOAD_SIGNAL_KEYS.some((key) => {
+    const value = body[key];
+    return value != null && String(value).trim() !== "";
+  });
+
+  if (hasSignal || body.scheduled === true) {
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    code: "INVALID_PAYLOAD",
+    message: "Webhook payload yetersiz (flowId veya tanıma sinyali gerekli).",
+  };
+}
+
+/**
+ * Stateless HMAC/timestamp doğrulama — replay yazmaz.
+ * @returns {{ ok: boolean, code?: string, message?: string, eventId?: string, timestamp?: string }}
  */
 export function verifyWebhookRequest(request, rawBody, {
   toleranceMs = DEFAULT_TOLERANCE_MS,
@@ -80,14 +151,12 @@ export function verifyWebhookRequest(request, rawBody, {
 
   const bearerSecret = readEnv("N8N_AUTOMATION_WEBHOOK_SECRET");
   const hmacSecret = readEnv("N8N_AUTOMATION_WEBHOOK_HMAC_SECRET");
-  // Staging/preview/production: HMAC anahtarı zorunlu (Bearer secret HMAC’yi karşılamaz)
   const effectiveHmac = hmacSecret || (!strict ? bearerSecret : "");
 
   if (!effectiveHmac) {
     if (strict) {
       return webhookUnavailable();
     }
-    // Yalnız gerçek local development/test — belgelenmiş DEV_OPEN
     if (localDev && !bearerSecret) {
       return { ok: true, code: "DEV_OPEN", eventId: "dev" };
     }
@@ -101,14 +170,9 @@ export function verifyWebhookRequest(request, rawBody, {
     request.headers.get("x-hub-signature-256") ||
     "";
   const timestampHeader = request.headers.get("x-annvero-timestamp") || "";
-  const eventId =
-    request.headers.get("x-annvero-event-id") ||
-    request.headers.get("x-idempotency-key") ||
-    "";
 
   const hasHmacHeaders = Boolean(signatureHeader && timestampHeader);
 
-  // Deployed-like: HMAC header’ları zorunlu; legacy Bearer sessiz bypass yok
   if (strict && !hasHmacHeaders) {
     return {
       ok: false,
@@ -133,18 +197,10 @@ export function verifyWebhookRequest(request, rawBody, {
       return { ok: false, code: "INVALID_SIGNATURE", message: "İmza geçersiz." };
     }
 
-    const replayKey =
-      eventId ||
-      createHash("sha256").update(`${ts}.${rawBody}`).digest("hex").slice(0, 40);
-    const replay = rememberWebhookEvent(replayKey);
-    if (!replay.ok) {
-      return { ok: false, code: "REPLAY", message: "Tekrarlanan webhook olayı." };
-    }
-
-    return { ok: true, eventId: replayKey };
+    const eventId = resolveWebhookEventKey(request, rawBody, String(ts));
+    return { ok: true, eventId, timestamp: String(ts) };
   }
 
-  // Legacy Bearer / x-api-key — yalnız local development/test
   if (!localDev) {
     return {
       ok: false,
@@ -163,12 +219,6 @@ export function verifyWebhookRequest(request, rawBody, {
     return { ok: false, code: "UNAUTHORIZED", message: "Yetkisiz webhook isteği." };
   }
 
-  if (eventId) {
-    const replay = rememberWebhookEvent(eventId);
-    if (!replay.ok) {
-      return { ok: false, code: "REPLAY", message: "Tekrarlanan webhook olayı." };
-    }
-  }
-
+  const eventId = resolveWebhookEventKey(request, rawBody, String(Date.now()));
   return { ok: true, eventId: eventId || "legacy" };
 }

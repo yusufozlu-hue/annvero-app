@@ -54,7 +54,17 @@ import {
   rememberWebhookEvent,
   safeEqualString,
   verifyWebhookRequest,
+  validateWebhookPayloadBody,
+  resolveWebhookEventKey,
 } from "../src/lib/security/webhookAuth.js";
+import { claimWebhookReplayEvent, buildWebhookReplayRateLimitKey, WEBHOOK_REPLAY_NAMESPACE } from "../src/lib/security/webhookReplay.js";
+import {
+  checkDurableRateLimit,
+  resolveRateLimitBackend,
+  hashRateLimitBucketKey,
+  RATE_LIMIT_BACKENDS,
+} from "../src/lib/security/rateLimitDurable.js";
+import { buildJobFromWebhookPayload } from "../src/utils/n8nOtomasyonEngine.js";
 import { isRecoveryApiEnabled } from "../src/lib/recovery/recoveryGate.js";
 
 /** next/server'siz privilege strip (requestGuards ile aynı mantık) */
@@ -160,15 +170,10 @@ function stripSqlCommentsAndStrings(sql) {
   return out;
 }
 
+const __securityTestQueue = [];
+
 function test(name, fn) {
-  try {
-    fn();
-    console.log(`PASS  ${name}`);
-  } catch (error) {
-    console.error(`FAIL  ${name}`);
-    console.error(error);
-    process.exitCode = 1;
-  }
+  __securityTestQueue.push({ name, fn });
 }
 
 // 1–3: Auth gate helpers (statik + davranış)
@@ -1024,13 +1029,48 @@ test("production rate limit memory fallback kullanmaz (statik)", () => {
     src,
     /production.*falling back to memory|falling back to memory.*production/i
   );
+  assert.doesNotMatch(src, /from ["']next\/server["']/);
 });
 
-test("webhook HMAC + replay koruması", () => {
+test("kök neden: staging supabase RL client yok → unavailable; dual Map; boş body enqueue", async () => {
+  await withEnvAsync(
+    {
+      ANNVERO_APP_ENV: "staging",
+      VERCEL_ENV: undefined,
+      NODE_ENV: "production",
+      ANNVERO_RATE_LIMIT_BACKEND: "supabase",
+      UPSTASH_REDIS_REST_URL: undefined,
+      UPSTASH_REDIS_REST_TOKEN: undefined,
+    },
+    async () => {
+      assert.equal(resolveRateLimitBackend(), RATE_LIMIT_BACKENDS.SUPABASE);
+      const rl = await checkDurableRateLimit("automation:webhook:proof", { limit: 60, windowMs: 300_000 }, { supabase: null });
+      assert.equal(rl.unavailable, true);
+      assert.equal(rl.allowed, false);
+    }
+  );
+
+  const mapA = new Map();
+  const mapB = new Map();
+  const claimLocal = (store, key) => {
+    if (store.has(key)) return false;
+    store.set(key, 1);
+    return true;
+  };
+  assert.equal(claimLocal(mapA, "evt") && claimLocal(mapB, "evt"), true);
+
+  const job = buildJobFromWebhookPayload({});
+  assert.equal(job.flowId, "mail-to-pool");
+  assert.equal(job.triggeredBy, "n8n_webhook");
+  assert.equal(validateWebhookPayloadBody({}).ok, false);
+  assert.equal(validateWebhookPayloadBody({}).code, "INVALID_PAYLOAD");
+});
+
+test("webhook HMAC helpers + local memory rememberWebhookEvent", () => {
   resetWebhookReplayStore();
   const secret = "test-hmac-secret-value-32chars!!";
   const ts = String(Date.now());
-  const body = '{"event":"ping"}';
+  const body = '{"flowId":"mail-to-pool"}';
   const sig = computeWebhookSignature(secret, ts, body);
   assert.equal(safeEqualString(sig, sig), true);
   assert.equal(safeEqualString(sig, "nope"), false);
@@ -1072,6 +1112,50 @@ function withEnv(overrides, fn) {
       else process.env[k] = prev[k];
     }
   }
+}
+
+async function withEnvAsync(overrides, fn) {
+  const keys = Object.keys(overrides);
+  const prev = {};
+  for (const k of keys) {
+    prev[k] = process.env[k];
+    const v = overrides[k];
+    if (v === undefined || v === null) delete process.env[k];
+    else process.env[k] = String(v);
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const k of keys) {
+      if (prev[k] === undefined) delete process.env[k];
+      else process.env[k] = prev[k];
+    }
+  }
+}
+
+function createAtomicRateLimitMock() {
+  const counts = new Map();
+  return {
+    counts,
+    rpc(_name, args) {
+      const key = args.p_bucket_key;
+      assert.match(key, /^[a-f0-9]{64}$/);
+      const limit = Number(args.p_limit);
+      const next = (counts.get(key) || 0) + 1;
+      counts.set(key, next);
+      return Promise.resolve({
+        data: [
+          {
+            allowed: next <= limit,
+            current_count: next,
+            remaining: Math.max(0, limit - next),
+            reset_at: new Date(Date.now() + Number(args.p_window_ms || 600_000)).toISOString(),
+          },
+        ],
+        error: null,
+      });
+    },
+  };
 }
 
 test("webhook staging/preview/production HMAC missing → fail-closed; local DEV_OPEN", () => {
@@ -1141,9 +1225,9 @@ test("webhook staging/preview/production HMAC missing → fail-closed; local DEV
   );
 });
 
-test("webhook staging valid HMAC accepted; invalid/replay/stale rejected; bearer no bypass", () => {
+test("webhook HMAC: seconds expired; ms invalid signature; valid accepts without consuming replay", () => {
   const hmac = "staging-hmac-secret-for-tests-only!!";
-  const body = '{"ok":true}';
+  const body = '{"flowId":"mail-to-pool"}';
 
   withEnv(
     {
@@ -1154,8 +1238,30 @@ test("webhook staging valid HMAC accepted; invalid/replay/stale rejected; bearer
       N8N_AUTOMATION_WEBHOOK_SECRET: "legacy-bearer-should-not-bypass",
     },
     () => {
-      resetWebhookReplayStore();
+      const tsSec = String(Math.floor(Date.now() / 1000));
+      const staleSec = verifyWebhookRequest(
+        mockWebhookRequest({
+          "x-annvero-signature": computeWebhookSignature(hmac, tsSec, body),
+          "x-annvero-timestamp": tsSec,
+          "x-annvero-event-id": "evt-seconds",
+        }),
+        body
+      );
+      assert.equal(staleSec.ok, false);
+      assert.equal(staleSec.code, "TIMESTAMP_EXPIRED");
+
       const ts = String(Date.now());
+      const bad = verifyWebhookRequest(
+        mockWebhookRequest({
+          "x-annvero-signature": "0".repeat(64),
+          "x-annvero-timestamp": ts,
+          "x-annvero-event-id": "evt-bad",
+        }),
+        body
+      );
+      assert.equal(bad.ok, false);
+      assert.equal(bad.code, "INVALID_SIGNATURE");
+
       const sig = computeWebhookSignature(hmac, ts, body);
       const ok = verifyWebhookRequest(
         mockWebhookRequest({
@@ -1166,43 +1272,17 @@ test("webhook staging valid HMAC accepted; invalid/replay/stale rejected; bearer
         body
       );
       assert.equal(ok.ok, true, ok.message);
-
-      resetWebhookReplayStore();
-      const bad = verifyWebhookRequest(
+      // Stateless: aynı imza ikinci kez de verify OK (replay claim ayrı)
+      const ok2 = verifyWebhookRequest(
         mockWebhookRequest({
-          "x-annvero-signature": "deadbeef",
+          "x-annvero-signature": sig,
           "x-annvero-timestamp": ts,
-          "x-annvero-event-id": "evt-bad",
+          "x-annvero-event-id": "evt-staging-1",
         }),
         body
       );
-      assert.equal(bad.ok, false);
-      assert.equal(bad.code, "INVALID_SIGNATURE");
+      assert.equal(ok2.ok, true);
 
-      resetWebhookReplayStore();
-      const stale = verifyWebhookRequest(
-        mockWebhookRequest({
-          "x-annvero-signature": computeWebhookSignature(hmac, "1", body),
-          "x-annvero-timestamp": "1",
-          "x-annvero-event-id": "evt-stale",
-        }),
-        body
-      );
-      assert.equal(stale.ok, false);
-      assert.equal(stale.code, "TIMESTAMP_EXPIRED");
-
-      resetWebhookReplayStore();
-      const h1 = {
-        "x-annvero-signature": sig,
-        "x-annvero-timestamp": ts,
-        "x-annvero-event-id": "evt-replay",
-      };
-      assert.equal(verifyWebhookRequest(mockWebhookRequest(h1), body).ok, true);
-      const replay = verifyWebhookRequest(mockWebhookRequest(h1), body);
-      assert.equal(replay.ok, false);
-      assert.equal(replay.code, "REPLAY");
-
-      // Legacy Bearer alone must not bypass HMAC on staging
       const bearerOnly = verifyWebhookRequest(
         mockWebhookRequest({ authorization: "Bearer legacy-bearer-should-not-bypass" }),
         body
@@ -1211,6 +1291,127 @@ test("webhook staging valid HMAC accepted; invalid/replay/stale rejected; bearer
       assert.equal(bearerOnly.code, "HMAC_REQUIRED");
     }
   );
+});
+
+test("webhook payload gate: null/array/primitive/empty rejected; known signals ok", () => {
+  assert.equal(validateWebhookPayloadBody(null).ok, false);
+  assert.equal(validateWebhookPayloadBody([]).ok, false);
+  assert.equal(validateWebhookPayloadBody("x").ok, false);
+  assert.equal(validateWebhookPayloadBody(1).ok, false);
+  assert.equal(validateWebhookPayloadBody({}).ok, false);
+  assert.equal(validateWebhookPayloadBody({ ok: true }).ok, false);
+  assert.equal(validateWebhookPayloadBody({ flowId: "not-a-real-flow" }).ok, false);
+  assert.equal(validateWebhookPayloadBody({ flowId: "mail-to-pool" }).ok, true);
+  assert.equal(validateWebhookPayloadBody({ fileName: "fatura.pdf" }).ok, true);
+  assert.equal(validateWebhookPayloadBody({ scheduled: true }).ok, true);
+});
+
+test("durable webhook replay claim: unavailable / single enqueue / replay / concurrent / cross-instance", async () => {
+  resetRateLimitBuckets();
+
+  await withEnvAsync(
+    {
+      ANNVERO_APP_ENV: "staging",
+      NODE_ENV: "production",
+      ANNVERO_RATE_LIMIT_BACKEND: "supabase",
+      UPSTASH_REDIS_REST_URL: undefined,
+      UPSTASH_REDIS_REST_TOKEN: undefined,
+    },
+    async () => {
+      const missing = await claimWebhookReplayEvent("evt-no-client", { supabase: null });
+      assert.equal(missing.ok, false);
+      assert.equal(missing.unavailable, true);
+      assert.equal(missing.code, "REPLAY_BACKEND_UNAVAILABLE");
+
+      const mock = createAtomicRateLimitMock();
+      const first = await claimWebhookReplayEvent("evt-shared", { supabase: mock });
+      const second = await claimWebhookReplayEvent("evt-shared", { supabase: mock });
+      assert.equal(first.ok, true);
+      assert.equal(second.ok, false);
+      assert.equal(second.code, "REPLAY");
+
+      // Concurrent: aynı store üzerinde Promise.all — en fazla bir CLAIMED
+      const mock2 = createAtomicRateLimitMock();
+      const concurrent = await Promise.all([
+        claimWebhookReplayEvent("evt-conc", { supabase: mock2 }),
+        claimWebhookReplayEvent("evt-conc", { supabase: mock2 }),
+      ]);
+      assert.equal(concurrent.filter((r) => r.ok).length, 1);
+      assert.equal(concurrent.filter((r) => r.code === "REPLAY").length, 1);
+
+      // İki “instance” aynı durable mock’u paylaşır → ikinci reddedilir
+      const shared = createAtomicRateLimitMock();
+      const instA = await claimWebhookReplayEvent("evt-cross", { supabase: shared });
+      const instB = await claimWebhookReplayEvent("evt-cross", { supabase: shared });
+      assert.equal(instA.ok, true);
+      assert.equal(instB.ok, false);
+      assert.equal(instB.code, "REPLAY");
+
+      assert.match(buildWebhookReplayRateLimitKey("evt-x"), new RegExp(`^${WEBHOOK_REPLAY_NAMESPACE}:`));
+      const hashed = hashRateLimitBucketKey(buildWebhookReplayRateLimitKey("secret-event-id"));
+      assert.equal(hashed.length, 64);
+      assert.doesNotMatch(hashed, /secret-event-id/);
+    }
+  );
+
+  // local/test memory kullanılabilir
+  await withEnvAsync(
+    {
+      ANNVERO_APP_ENV: "development",
+      NODE_ENV: "development",
+      ANNVERO_RATE_LIMIT_BACKEND: undefined,
+      UPSTASH_REDIS_REST_URL: undefined,
+      UPSTASH_REDIS_REST_TOKEN: undefined,
+    },
+    async () => {
+      resetRateLimitBuckets();
+      assert.equal(resolveRateLimitBackend(), RATE_LIMIT_BACKENDS.MEMORY);
+      const a = await claimWebhookReplayEvent("local-evt-1", { supabase: null });
+      const b = await claimWebhookReplayEvent("local-evt-1", { supabase: null });
+      assert.equal(a.ok, true);
+      assert.equal(b.ok, false);
+      assert.equal(b.code, "REPLAY");
+    }
+  );
+});
+
+test("webhook route pipeline: HMAC ok ama invalid JSON/payload replay tüketmez (statik sıra)", () => {
+  const routeSrc = fs.readFileSync(path.join(root, "app/api/automation/webhook/route.js"), "utf8");
+  const postSrc = routeSrc.slice(routeSrc.indexOf("export async function POST"));
+  const authIdx = postSrc.indexOf("verifyWebhookRequest");
+  const parseIdx = postSrc.indexOf("JSON.parse");
+  const payloadIdx = postSrc.indexOf("validateWebhookPayloadBody");
+  const rlIdx = postSrc.indexOf("enforceDurableRateLimit");
+  const claimIdx = postSrc.indexOf("claimWebhookReplayEvent");
+  const enqueueIdx = postSrc.indexOf("globalQueue.unshift");
+  assert.ok(authIdx > 0 && parseIdx > authIdx);
+  assert.ok(payloadIdx > parseIdx);
+  assert.ok(rlIdx > payloadIdx);
+  assert.ok(claimIdx > rlIdx);
+  assert.ok(enqueueIdx > claimIdx);
+  assert.match(routeSrc, /getWebhookDurableSupabase/);
+  assert.match(routeSrc, /claimWebhookReplayEvent/);
+});
+
+test("webhook raw event-id/body secret loglanmaz (statik)", () => {
+  const authSrc = fs.readFileSync(path.join(root, "src/lib/security/webhookAuth.js"), "utf8");
+  const routeSrc = fs.readFileSync(path.join(root, "app/api/automation/webhook/route.js"), "utf8");
+  const replaySrc = fs.readFileSync(path.join(root, "src/lib/security/webhookReplay.js"), "utf8");
+  assert.match(routeSrc, /code:\s*auth\.code/);
+  assert.doesNotMatch(routeSrc, /console\.(log|warn|error)\([^)]*rawBody/);
+  assert.doesNotMatch(routeSrc, /console\.(log|warn|error)\([^)]*eventId/);
+  assert.doesNotMatch(authSrc, /console\.(log|warn|error)\([^)]*rawBody/);
+  assert.match(replaySrc, /Ham event-id/);
+  void resolveWebhookEventKey;
+});
+
+test("SECURITY.md webhook timestamp milliseconds sözleşmesi", () => {
+  const md = fs.readFileSync(path.join(root, "SECURITY.md"), "utf8");
+  assert.match(md, /milliseconds/i);
+  assert.match(md, /timestampMs\.\$\{rawBody\}|`\$\{timestampMs\}\.\$\{rawBody\}`/);
+  assert.match(md, /HMAC-SHA256/i);
+  assert.match(md, /lowercase hex/i);
+  assert.match(md, /webhook:replay/);
 });
 
 test("recovery staging/preview require RECOVERY_API_ENABLED=true; local default on", () => {
@@ -1330,6 +1531,18 @@ test("security headers next.config'te bağlı", () => {
   const src = fs.readFileSync(path.join(root, "next.config.ts"), "utf8");
   assert.match(src, /buildSecurityHeaders/);
 });
+
+for (const { name, fn } of __securityTestQueue) {
+  try {
+    // eslint-disable-next-line no-await-in-loop
+    await fn();
+    console.log(`PASS  ${name}`);
+  } catch (error) {
+    console.error(`FAIL  ${name}`);
+    console.error(error);
+    process.exitCode = 1;
+  }
+}
 
 if (process.exitCode) {
   console.error("\nSecurity regression: FAILED");

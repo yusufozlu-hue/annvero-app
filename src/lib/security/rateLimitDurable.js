@@ -8,15 +8,14 @@
  * 4. production/staging → durable yoksa FAIL-CLOSED (memory kullanılmaz)
  *
  * Migration 024 öncesi supabase backend: tablo yoksa fail-closed (memory'ye düşmez).
+ * next/server import edilmez — test edilebilir çekirdek.
  */
 
-import { NextResponse } from "next/server";
 import { createHash } from "crypto";
 import {
   checkRateLimit as memoryCheck,
   buildRateLimitKey,
 } from "@/src/lib/security/rateLimitCore";
-import { jsonRateLimited } from "@/src/lib/security/rateLimit";
 import {
   resolveAnnveroAppEnv,
   isLocalLikeAppEnv,
@@ -43,6 +42,16 @@ function readEnv(name) {
     .replace(/^['"]|['"]$/g, "");
 }
 
+function jsonResponse(body, { status = 200, headers = {} } = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...headers,
+    },
+  });
+}
+
 export function resolveRateLimitBackend(appEnv = resolveAnnveroAppEnv()) {
   if (readEnv("UPSTASH_REDIS_REST_URL") && readEnv("UPSTASH_REDIS_REST_TOKEN")) {
     return RATE_LIMIT_BACKENDS.UPSTASH;
@@ -58,13 +67,28 @@ export function resolveRateLimitBackend(appEnv = resolveAnnveroAppEnv()) {
 }
 
 export function jsonRateLimitMisconfigured() {
-  return NextResponse.json(
+  return jsonResponse(
     {
       error:
         "Rate limit backend yapılandırılmamış. Production'da Upstash veya ANNVERO_RATE_LIMIT_BACKEND=supabase gerekir.",
       code: "RATE_LIMIT_BACKEND_UNAVAILABLE",
     },
     { status: 503, headers: { "Retry-After": "60" } }
+  );
+}
+
+export function jsonRateLimited(retryAfterMs = 60_000) {
+  const retrySeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  return jsonResponse(
+    {
+      error: `Çok fazla istek gönderildi. Lütfen ${retrySeconds} saniye sonra tekrar deneyin.`,
+      code: "RATE_LIMITED",
+      retryAfterSeconds: retrySeconds,
+    },
+    {
+      status: 429,
+      headers: { "Retry-After": String(retrySeconds) },
+    }
   );
 }
 
@@ -190,6 +214,17 @@ export async function checkDurableRateLimit(key, options = {}, { supabase = null
       return await checkUpstashRateLimit(key, options);
     }
     if (backend === RATE_LIMIT_BACKENDS.SUPABASE) {
+      // Client yoksa throw etmeden fail-closed (webhook route için kritik)
+      if (!supabase) {
+        return {
+          allowed: false,
+          limit: 0,
+          remaining: 0,
+          retryAfterMs: 60_000,
+          backend: RATE_LIMIT_BACKENDS.UNAVAILABLE,
+          unavailable: true,
+        };
+      }
       return await checkSupabaseRateLimit(supabase, key, options);
     }
   } catch (error) {
@@ -241,4 +276,4 @@ export async function enforceDurableRateLimit(
   return null;
 }
 
-export { buildRateLimitKey, jsonRateLimited, ANNVERO_APP_ENVS };
+export { buildRateLimitKey, ANNVERO_APP_ENVS };

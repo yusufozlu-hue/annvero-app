@@ -44,9 +44,14 @@ Production ve Preview secret'ları **paylaşılmamalı** (branch-scoped Preview 
 ### Webhook
 
 - Staging / Vercel Preview / production: `N8N_AUTOMATION_WEBHOOK_HMAC_SECRET` yoksa **fail-closed** (DEV_OPEN yok).
-- HMAC = timestamp + raw body + constant-time compare + replay koruması.
 - Legacy Bearer staging/preview'da HMAC zorunluluğunu bypass **etmez**.
 - DEV_OPEN yalnız gerçek local `development` / `test` (Preview değil).
+- **`x-annvero-timestamp`:** Unix epoch **milliseconds** (`Date.now()` ile aynı birim; saniye → `TIMESTAMP_EXPIRED`).
+- **İmza girdisi (exact):** `` `${timestampMs}.${rawBody}` `` — HMAC-SHA256, çıktı **lowercase hex**.
+- Header: `x-annvero-signature` (veya `x-hub-signature-256`, isteğe bağlı `sha256=` öneki).
+- Replay: `x-annvero-event-id` / `x-idempotency-key` yoksa `sha256(timestampMs.rawBody)` kısaltması; pencere ~**10 dakika**; durable store = migration 024 `annvero_rate_limit_consume` (`limit=1`, namespace `webhook:replay:` — genel rate-limit’ten ayrı).
+- Production/staging/Preview: durable rate-limit **ve** durable replay zorunlu (Upstash veya `ANNVERO_RATE_LIMIT_BACKEND=supabase` + service_role client); memory güvenlik kaynağı **değil**; backend yoksa **503** fail-closed, queue yazılmaz.
+- İşlem sırası: Content-Type/size → raw body → HMAC (stateless) → JSON → payload → rate-limit → replay claim → enqueue → 202.
 
 ### Recovery
 
