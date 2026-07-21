@@ -69,25 +69,27 @@ export const SYSTEM_HEALTH_METRICS = [
 /** Önerilen admin route (UI Faz 3) */
 export const SYSTEM_HEALTH_ADMIN_ROUTE = "/admin/guvenlik-sistem-merkezi";
 
-/** Faz 2'de hazır API uçları */
-export const SYSTEM_HEALTH_API_ENDPOINTS = [
-  "/api/backup/company-export",
-  "/api/recovery/deleted-records",
-  "/api/auth/login-event",
-];
-
 /** Faz 3 backlog */
 export const SYSTEM_HEALTH_PHASE3_TASKS = [
   "Admin dashboard UI — metrik kartları ve durum özeti",
   "Otomatik haftalık company-export zamanlayıcısı",
-  "Redis/Upstash rate limit (production)",
+  "Upstash rate limit secret aktivasyonu (adapter hazır)",
   "API hata oranı toplama (middleware veya log drain)",
-  "Recovery restore işlemleri",
   "Sistem sağlığı e-posta / push uyarıları",
+  "CSP nonce/hash geçişi (unsafe-inline azaltma)",
 ];
 
 export const SYSTEM_HEALTH_IMPLEMENTATION_NOTES = [
-  "Faz 2: export + recovery list + login_events + rate limit altyapısı tamamlandı.",
+  "Faz 2: export + recovery list + login_events + rate limit altyapısı.",
+  "DR paketi: restore API (dry-run+onay), export redaksiyon, durable rate limit adapter, migration 024 taslağı.",
   "Audit export action: AUDIT_ACTIONS.EXPORT + entity_type company_backup.",
   "Health merkezi verileri service_role API üzerinden okunmalı; RLS bypass + management guard.",
+];
+
+/** Faz 2'de hazır API uçları */
+export const SYSTEM_HEALTH_API_ENDPOINTS = [
+  "/api/backup/company-export",
+  "/api/recovery/deleted-records",
+  "/api/recovery/restore",
+  "/api/auth/login-event",
 ];

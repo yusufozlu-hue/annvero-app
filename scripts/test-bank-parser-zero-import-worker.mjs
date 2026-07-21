@@ -180,18 +180,21 @@ assert.match(bridgeSource, /message\.type === "success" \|\| message\.type === "
 assert.match(bridgeSource, /console\.warn\("\[workerParserBridge\] worker\.onerror"/);
 console.log("OK — classic worker + result protocol");
 
-section("3) Page: single XLSX + sheetRows to worker / fallback");
+section("3) Workbench: single XLSX + sheetRows to worker / fallback");
 const pageSource = readFileSync(
-  path.join(root, "app/(annvero)/muhasebe/banka-ekstresi/page.jsx"),
+  path.join(root, "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"),
   "utf8"
 );
 assert.match(pageSource, /sheetRows/);
 assert.match(pageSource, /bankName:\s*selectedBank/);
-assert.match(pageSource, /parseBankExcelOnMainThread\(file,\s*selectedBank,\s*onProgress,\s*\{\s*sheetRows/);
+assert.match(
+  pageSource,
+  /parseBankExcelOnMainThread\(\s*file,\s*bank,\s*onProgress,\s*\{\s*sheetRows/
+);
 assert.doesNotMatch(pageSource, /arrayBuffer:\s*workerBuffer/);
 assert.doesNotMatch(pageSource, /JSON\.stringify/);
 assert.doesNotMatch(pageSource, /JSON\.parse/);
-console.log("OK — page wire-up");
+console.log("OK — workbench wire-up");
 
 section("4) Worker boot + parse: Vakıfbank");
 {

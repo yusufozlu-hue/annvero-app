@@ -1,0 +1,40 @@
+# ANNVERO günlük yedek — ŞABLON (aktif değil)
+# Aktive etmeden önce: GitHub Environment "production-backup" + required reviewers
+#
+# name: annvero-backup-daily
+# on:
+#   schedule:
+#     - cron: "0 2 * * *"
+#   workflow_dispatch:
+#
+# permissions:
+#   contents: read
+#
+# jobs:
+#   backup:
+#     runs-on: ubuntu-latest
+#     environment:
+#       name: production-backup   # manual approval / protection rules
+#     permissions:
+#       contents: read
+#     steps:
+#       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+#       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3f2eb4ae
+#         with:
+#           node-version: "20"
+#       - name: Dry-run manifests
+#         run: |
+#           node scripts/backup/backup-dry-run.mjs --out ./backup-artifacts
+#           node scripts/backup/storage-backup-dry-run.mjs --out ./backup-artifacts --run-id "$(date -u +%Y%m%dT%H%M%SZ)"
+#         # Secret değerlerini echo etme
+#       - name: Production dump (secret store)
+#         if: ${{ secrets.SUPABASE_DB_URL_BACKUP_ROLE != '' }}
+#         env:
+#           SUPABASE_DB_URL_BACKUP_ROLE: ${{ secrets.SUPABASE_DB_URL_BACKUP_ROLE }}
+#           BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+#         run: echo "pg_dump + encrypt — secret loglanmaz"
+#       - name: Storage secondary copy (object-lock)
+#         if: ${{ secrets.BACKUP_SECONDARY_S3_BUCKET != '' }}
+#         run: echo "storage sync to immutable bucket — kullanıcı yapılandırır"
+#
+# NOT: Untrusted PR title/body bu workflow'da shell'e sokulmaz (schedule/dispatch only).

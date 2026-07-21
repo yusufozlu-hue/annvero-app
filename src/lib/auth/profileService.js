@@ -114,12 +114,23 @@ export async function syncAnnveroUserMetadata(authUserId = "", profile = {}) {
   const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
   if (schemaMissing || adminUnavailable || !supabase) return { ok: false };
 
+  const role = profile.role || ANNVERO_ROLES.ACCOUNTING;
+  // user_metadata: bilgilendirici (yetki kaynağı değil)
+  // app_metadata: yalnız service_role yazar — admin AND kapısının güvenilir ayağı
   const { error } = await supabase.auth.admin.updateUserById(authUserId, {
     user_metadata: {
-      annvero_role: profile.role || ANNVERO_ROLES.ACCOUNTING,
       display_name: profile.displayName || profile.email,
-      company_ids: profile.companyIds || [],
       team_id: profile.teamId || "",
+      // company_ids / role user_metadata'ya YAZILMAZ (yetki claim sızıntısı)
+    },
+    app_metadata: {
+      annvero_role: role,
+      role:
+        role === ANNVERO_ROLES.ADMIN
+          ? "admin"
+          : role === ANNVERO_ROLES.PARTNER
+            ? "partner"
+            : role,
     },
   });
 
@@ -417,9 +428,7 @@ export async function provisionProfileForUser(user) {
           user.user_metadata?.display_name || user.user_metadata?.full_name || user.email,
         role,
         permissions: getDefaultPermissionsForRole(role),
-        companyIds: Array.isArray(user.user_metadata?.company_ids)
-          ? user.user_metadata.company_ids
-          : [],
+        companyIds: [],
         teamId: user.user_metadata?.team_id || "",
         isActive: true,
         lastLoginAt: new Date().toISOString(),

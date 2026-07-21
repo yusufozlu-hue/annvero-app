@@ -43,11 +43,13 @@ export async function GET(request) {
   let credentialsQuery = supabase.from(GIB_CREDENTIALS_TABLE).select("*");
   if (companyId) credentialsQuery = credentialsQuery.eq("company_id", companyId);
 
+  let stateQuery = supabase.from(GIB_QUERY_STATE_TABLE).select("*");
+  if (companyId) {
+    stateQuery = stateQuery.eq("company_id", companyId);
+  }
+
   const [{ data: credentials, error }, { data: queryStates, error: stateError }] =
-    await Promise.all([
-      credentialsQuery,
-      supabase.from(GIB_QUERY_STATE_TABLE).select("*"),
-    ]);
+    await Promise.all([credentialsQuery, stateQuery]);
 
   if (error) {
     logGibSupabaseConnectionError("gib-credentials:get", error, GIB_CREDENTIALS_TABLE);
@@ -59,7 +61,11 @@ export async function GET(request) {
     return NextResponse.json({ error: stateError.message }, { status: 500 });
   }
 
-  const stateMap = new Map((queryStates || []).map((row) => [row.company_id, row]));
+  const stateMap = new Map(
+    (queryStates || [])
+      .filter((row) => session.access.canAccessCompany(row.company_id))
+      .map((row) => [row.company_id, row])
+  );
 
   const payload = (credentials || [])
     .filter((row) => session.access.canAccessCompany(row.company_id))

@@ -1,4 +1,4 @@
-import { getAnnveroRoleFromUser, isManagementUser, isOwnerEmail, isPlatformAdmin } from "@/src/lib/auth/admin";
+import { getTrustedAppRole, isManagementUser, isOwnerEmail, isPlatformAdmin } from "@/src/lib/auth/admin";
 import {
   canAccessCompany,
   canAccessModule,
@@ -14,17 +14,22 @@ const ELEVATED_ROLES = new Set([
   ANNVERO_ROLES.MANAGER,
 ]);
 
+/**
+ * Profil yok / hata — fail-closed kısıtlı profil.
+ * user_metadata.role / company_ids ASLA yetki kaynağı değildir.
+ */
 export function buildFallbackProfile(user, { schemaMissing = false } = {}) {
   const isAdmin = isPlatformAdmin(user);
-  const metadataRole = getAnnveroRoleFromUser(user);
+  const trustedAppRole = getTrustedAppRole(user);
   const role = resolveUserRole({
     isAdmin,
-    storedRole: metadataRole,
+    storedRole: isTrustedElevatedRole(trustedAppRole) ? trustedAppRole : "",
     profileRole: "",
   });
 
-  const safeRole =
-    schemaMissing || isAdmin || metadataRole
+  const safeRole = isAdmin
+    ? ANNVERO_ROLES.ADMIN
+    : isTrustedElevatedRole(trustedAppRole)
       ? role
       : ANNVERO_ROLES.VIEWER;
 
@@ -38,22 +43,27 @@ export function buildFallbackProfile(user, { schemaMissing = false } = {}) {
       "",
     role: safeRole,
     permissions: getDefaultPermissionsForRole(safeRole),
-    companyIds: Array.isArray(user?.user_metadata?.company_ids)
-      ? user.user_metadata.company_ids
-      : [],
-    teamId: user?.user_metadata?.team_id || "",
+    // Tenant claim: user_metadata company_ids yok sayılır — yetki kaynağı değil
+    companyIds: [],
+    teamId: "",
     isActive: true,
     lastLoginAt: new Date().toISOString(),
     source: schemaMissing ? "fallback" : "restricted",
     isPlatformAdmin: isAdmin,
     isPartner: safeRole === ANNVERO_ROLES.PARTNER,
-    isManagementUser:
-      isManagementUser(user) ||
-      safeRole === ANNVERO_ROLES.PARTNER ||
-      safeRole === ANNVERO_ROLES.ADMIN ||
-      isAdmin,
-    needsInvite: !schemaMissing && !isAdmin && !metadataRole,
+    isManagementUser: isAdmin || safeRole === ANNVERO_ROLES.PARTNER || isManagementUser(user),
+    needsInvite: !schemaMissing && !isAdmin && !isTrustedElevatedRole(trustedAppRole),
   };
+}
+
+function isTrustedElevatedRole(role = "") {
+  const r = String(role || "").trim().toLowerCase();
+  return (
+    r === ANNVERO_ROLES.ADMIN ||
+    r === ANNVERO_ROLES.PARTNER ||
+    r === "admin" ||
+    r === "partner"
+  );
 }
 
 export function mergeProfileWithAuth(user, profile = null, options = {}) {
@@ -109,7 +119,6 @@ function hasEffectiveCompanyAccess(profile = {}) {
   const role = profile.role || "";
   const companyIds = Array.isArray(profile.companyIds) ? profile.companyIds : [];
 
-  // Admin/partner: boş company_ids = tüm firmalar
   if (role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER) {
     return true;
   }
@@ -123,7 +132,7 @@ function hasEffectiveCompanyAccess(profile = {}) {
 
 function isElevatedAccess(profile = {}) {
   if (!profile) return false;
-  if (isOwnerEmail(profile.email)) return true;
+  // Email allowlist tek başına elevated access VERMEZ
   if (profile.isPlatformAdmin || profile.isManagementUser) return true;
   const role = profile.role || "";
   return (
@@ -133,14 +142,9 @@ function isElevatedAccess(profile = {}) {
   );
 }
 
-/**
- * Banner neden gösterilmeli / gösterilmemeli — debug için.
- * Admin/partner/platform admin/owner → asla banner.
- */
 export function getAccessWarningReason(profile = null) {
   if (!profile) return "no_profile";
   if (profile.source === "fallback") return "hidden_network_fallback";
-  if (isOwnerEmail(profile.email)) return "hidden_owner_email";
   if (profile.isPlatformAdmin) return "hidden_platform_admin";
   if (profile.isManagementUser) return "hidden_management_user";
   if (profile.role === ANNVERO_ROLES.ADMIN) return "hidden_role_admin";
@@ -159,7 +163,6 @@ export function getAccessWarningReason(profile = null) {
   return "ok_no_warning";
 }
 
-/** Banner: yalnızca rol boş/viewer VEYA (normal rol + firma erişimi yok) */
 export function shouldShowAccessWarning(profile = null) {
   if (!profile) return false;
   if (isElevatedAccess(profile)) return false;
@@ -173,13 +176,13 @@ export function shouldShowAccessWarning(profile = null) {
   );
 }
 
+/**
+ * Access nesnesi — email allowlist tek başına ADMIN role zorlamaz.
+ * Platform admin flag profil/AND kapısından gelir.
+ */
 export function createUserAccess(profile) {
   const email = profile?.email || "";
-  const owner = isOwnerEmail(email);
   let role = profile?.role || ANNVERO_ROLES.VIEWER;
-  if (owner && role !== ANNVERO_ROLES.PARTNER) {
-    role = ANNVERO_ROLES.ADMIN;
-  }
 
   const permissions =
     (Array.isArray(profile?.permissions) && profile.permissions.length
@@ -187,7 +190,6 @@ export function createUserAccess(profile) {
       : null) || getDefaultPermissionsForRole(role);
   const companyIds = Array.isArray(profile?.companyIds) ? profile.companyIds : [];
   const elevated =
-    owner ||
     Boolean(profile?.isPlatformAdmin) ||
     Boolean(profile?.isManagementUser) ||
     role === ANNVERO_ROLES.ADMIN ||
@@ -198,8 +200,7 @@ export function createUserAccess(profile) {
     permissions,
     companyIds,
     modules: getModulesForRole(role),
-    isPlatformAdmin:
-      Boolean(profile?.isPlatformAdmin) || role === ANNVERO_ROLES.ADMIN || owner,
+    isPlatformAdmin: Boolean(profile?.isPlatformAdmin) || role === ANNVERO_ROLES.ADMIN,
     isPartner: Boolean(profile?.isPartner) || role === ANNVERO_ROLES.PARTNER,
     isManagementUser: elevated,
     canAccessRoute: (pathname, routeChecker) => routeChecker(role, pathname),
@@ -208,23 +209,17 @@ export function createUserAccess(profile) {
     hasPermission: (permission) => hasPermission(role, permission, permissions),
     isActive: profile?.isActive !== false,
     usingFallback: profile?.source === "fallback" || profile?.source === "fallback_restricted",
-    // Admin/partner/owner asla uyarı görmez
     showAccessWarning: elevated ? false : shouldShowAccessWarning({ ...profile, role, email }),
   };
 }
 
-/** /api/auth/me debug + kesin showAccessWarning */
 export function buildAccessDebugPayload(user, profile, extras = {}) {
   const email = String(user?.email || profile?.email || "").trim().toLowerCase();
-  const owner = isOwnerEmail(email);
-  let role = profile?.role || "";
-  if (owner && role !== ANNVERO_ROLES.PARTNER) role = ANNVERO_ROLES.ADMIN;
+  const role = profile?.role || "";
 
   const isAdmin =
     Boolean(extras.isAdmin) ||
     Boolean(profile?.isPlatformAdmin) ||
-    role === ANNVERO_ROLES.ADMIN ||
-    owner ||
     isPlatformAdmin(user);
   const isPartner =
     Boolean(profile?.isPartner) || role === ANNVERO_ROLES.PARTNER;
@@ -233,11 +228,9 @@ export function buildAccessDebugPayload(user, profile, extras = {}) {
   let showAccessWarning = shouldShowAccessWarning({ ...profile, role, email });
   let warningReason = getAccessWarningReason({ ...profile, role, email });
 
-  // Kesin kural: admin/partner/owner → banner yok
-  if (isAdmin || isPartner || owner || role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER) {
+  if (isAdmin || isPartner || role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER) {
     showAccessWarning = false;
-    if (owner) warningReason = "forced_false_owner_email";
-    else if (role === ANNVERO_ROLES.PARTNER || isPartner) warningReason = "forced_false_partner";
+    if (role === ANNVERO_ROLES.PARTNER || isPartner) warningReason = "forced_false_partner";
     else warningReason = "forced_false_admin";
   }
 
@@ -250,5 +243,6 @@ export function buildAccessDebugPayload(user, profile, extras = {}) {
     companyIds: Array.isArray(profile?.companyIds) ? profile.companyIds : [],
     showAccessWarning,
     warningReason,
+    ownerEmailAloneNotAdmin: isOwnerEmail(email) && !isAdmin,
   };
 }

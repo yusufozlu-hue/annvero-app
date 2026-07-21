@@ -76,6 +76,7 @@ export function assertCompanyAccess(access, companyId, { required = true } = {})
 
 /**
  * Oturum + profil + access nesnesi.
+ * Profil sorgusu hata verirse veya profil yoksa fail-closed (403).
  * @returns {{ error: NextResponse|null, user, profile, access, supabaseAuth }}
  */
 export async function requireApiSession() {
@@ -86,6 +87,37 @@ export async function requireApiSession() {
   }
 
   const profileResult = await fetchProfileByEmail(user.email);
+
+  if (profileResult.adminUnavailable || profileResult.schemaMissing) {
+    return {
+      error: jsonForbidden("Profil servisi doğrulanamadı. Erişim reddedildi."),
+      user,
+      profile: null,
+      access: null,
+      supabaseAuth: supabase,
+    };
+  }
+
+  if (profileResult.error && !profileResult.profile) {
+    return {
+      error: jsonForbidden("Profil okunamadı. Erişim reddedildi."),
+      user,
+      profile: null,
+      access: null,
+      supabaseAuth: supabase,
+    };
+  }
+
+  if (!profileResult.profile) {
+    return {
+      error: jsonForbidden("Profil/üyelik bulunamadı. Erişim reddedildi."),
+      user,
+      profile: null,
+      access: null,
+      supabaseAuth: supabase,
+    };
+  }
+
   const profile = mergeProfileWithAuth(user, profileResult.profile);
   const access = createUserAccess(profile);
 

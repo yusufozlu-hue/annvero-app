@@ -1,5 +1,6 @@
 /**
- * Firma bazlı DB export — Güvenlik Faz 2.
+ * Firma bazlı DB export — Güvenlik Faz 2 / DR paketi.
+ * Hassas alanlar (şifreli parola, token) export'ta redakte edilir.
  */
 
 import {
@@ -7,8 +8,9 @@ import {
   GIB_QUERY_SESSIONS_TABLE,
   GIB_QUERY_STATE_TABLE,
 } from "@/src/lib/supabase/gibSupabase";
+import { redactExportRows, stripSecretsFromExportValue } from "@/src/lib/security/redact";
 
-export const COMPANY_EXPORT_VERSION = 2;
+export const COMPANY_EXPORT_VERSION = 3;
 
 /** Zorunlu export tabloları */
 export const COMPANY_EXPORT_TABLE_SPECS = [
@@ -101,7 +103,7 @@ export async function buildCompanyExportEnvelope(supabase, { companyId, actor = 
     throw new Error("Firma bulunamadı.");
   }
 
-  tables.companies = [companyRow];
+  tables.companies = redactExportRows([companyRow]);
   metadata.row_counts.companies = 1;
 
   for (const spec of allSpecs) {
@@ -121,11 +123,31 @@ export async function buildCompanyExportEnvelope(supabase, { companyId, actor = 
       continue;
     }
 
-    tables[spec.key] = rows;
+    // Tenant doğrulama: satırlar yalnızca istenen companyId'ye ait olmalı
+    const foreign = rows.find((row) => {
+      if (spec.scope === "id") return String(row.id) !== String(companyId);
+      return row.company_id && String(row.company_id) !== String(companyId);
+    });
+    if (foreign) {
+      metadata.table_errors[spec.key] = "cross_tenant_row_blocked";
+      tables[spec.key] = [];
+      metadata.row_counts[spec.key] = 0;
+      continue;
+    }
+
+    tables[spec.key] = redactExportRows(rows);
     metadata.row_counts[spec.key] = rows.length;
   }
 
-  return {
+  metadata.redacted = true;
+  metadata.secrets_stripped = true;
+  metadata.export_notes = [
+    "Hassas credential alanları export nesnesinden tamamen çıkarılır (maskeleme yok).",
+    "encrypted_* / token / password / parola değerleri dahil edilmez.",
+  ];
+
+  // Envelope kökünde de strip (defense in depth)
+  const envelope = {
     version: COMPANY_EXPORT_VERSION,
     exported_at: new Date().toISOString(),
     company_id: companyId,
@@ -134,4 +156,6 @@ export async function buildCompanyExportEnvelope(supabase, { companyId, actor = 
     tables,
     metadata,
   };
+
+  return stripSecretsFromExportValue(envelope);
 }

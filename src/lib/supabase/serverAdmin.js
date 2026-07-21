@@ -1,5 +1,7 @@
+import "server-only";
 import { createClient } from "@supabase/supabase-js";
 import { getSupabaseAnonKeyType, getSupabaseConfig } from "@/src/lib/supabase/config";
+import { redactDeep } from "@/src/lib/security/redact";
 
 const SERVICE_ROLE_ENV = "SUPABASE_SERVICE_ROLE_KEY";
 const SUPABASE_URL_ENV = "NEXT_PUBLIC_SUPABASE_URL";
@@ -40,23 +42,15 @@ export function getSupabaseEnvSafeDiagnostics() {
   const serviceRoleKey = readServerEnv(SERVICE_ROLE_ENV);
   const config = getSupabaseConfig();
   const anonKey = config?.anonKey || readServerEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
-  const serviceRoleKeyPrefix = serviceRoleKey ? serviceRoleKey.slice(0, 10) : null;
-  const anonKeyPrefix = anonKey ? anonKey.slice(0, 10) : null;
 
   return {
     hasNextPublicSupabaseUrl: Boolean(runtimeUrl),
     projectRef: extractSupabaseProjectRef(config?.supabaseUrl || runtimeUrl),
     hasSupabaseServiceRoleKey: Boolean(serviceRoleKey),
-    serviceRoleKeyPrefix,
-    serviceRoleKeyPrefixType: serviceRoleKeyPrefix
-      ? getSupabaseKeyPrefixType(serviceRoleKeyPrefix)
-      : null,
-    serviceRoleKeyLength: serviceRoleKey.length,
+    serviceRoleKeyConfigured: Boolean(serviceRoleKey),
     serviceRoleKeyFormat: getSupabaseApiKeyFormat(serviceRoleKey),
     hasAnonKey: Boolean(anonKey),
-    anonKeyPrefix,
-    anonKeyPrefixType: anonKeyPrefix ? getSupabaseKeyPrefixType(anonKeyPrefix) : null,
-    anonKeyLength: anonKey.length,
+    anonKeyConfigured: Boolean(anonKey),
     anonKeyFormat: getSupabaseApiKeyFormat(anonKey),
   };
 }
@@ -174,28 +168,31 @@ export function getServerSupabaseAdminGuardResponse(context, table) {
 
 export function logSupabaseQueryError(context, error, table, options = {}) {
   const diagnostics = getSupabaseConnectionDiagnostics({ table });
-  const serviceRoleKey = readServerEnv(SERVICE_ROLE_ENV);
-  const payload = {
+  const payload = redactDeep({
     message: error?.message || String(error),
     code: error?.code || null,
     details: error?.details || null,
     hint: error?.hint || null,
-    diagnostics,
-  };
+    diagnostics: {
+      projectRef: diagnostics.projectRef,
+      table: diagnostics.table,
+      keyType: diagnostics.keyType,
+      keyFormat: diagnostics.keyFormat,
+      hasServiceRoleKey: diagnostics.hasServiceRoleKey,
+      anonKeyType: diagnostics.anonKeyType,
+    },
+  });
 
   if (isInvalidApiKeyError(error)) {
-    payload.invalidApiKeyDiagnostics = {
-      usedKeyType: options.usedKeyType || diagnostics.keyType,
-      usedKeyFormat: getSupabaseApiKeyFormat(serviceRoleKey),
-      keyPrefix: serviceRoleKey ? serviceRoleKey.slice(0, 10) : null,
-      keyPrefixType: serviceRoleKey
-        ? getSupabaseKeyPrefixType(serviceRoleKey.slice(0, 10))
-        : null,
-      keyLength: serviceRoleKey.length,
-      projectRef: diagnostics.projectRef,
-      table,
-    };
-    console.error(`[${context}] Supabase Invalid API key`, payload);
+    console.error(`[${context}] Supabase Invalid API key`, {
+      ...payload,
+      invalidApiKeyDiagnostics: {
+        usedKeyType: options.usedKeyType || diagnostics.keyType,
+        usedKeyFormat: diagnostics.keyFormat,
+        projectRef: diagnostics.projectRef,
+        table,
+      },
+    });
     return;
   }
 
