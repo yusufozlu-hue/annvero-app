@@ -166,7 +166,8 @@ export function getAccessWarningReason(profile = null) {
 
   const role = profile.role || "";
   if (!role) return "empty_role";
-  if (role === ANNVERO_ROLES.VIEWER) return "viewer_role";
+
+  // Canonical membership önce değerlendirilir — role=goruntuleme tek başına uyarı DEĞİLDİR.
   if (profile.source === "restricted" || profile.needsInvite) {
     return hasEffectiveCompanyAccess(profile)
       ? "hidden_restricted_has_companies"
@@ -183,7 +184,6 @@ export function shouldShowAccessWarning(profile = null) {
   const reason = getAccessWarningReason(profile);
   return (
     reason === "empty_role" ||
-    reason === "viewer_role" ||
     reason === "restricted_no_company_access" ||
     reason === "no_company_access"
   );

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
 import { isAdminUser, isManagementUser, explainAdminGate, isAdminEmail, getAdminEmails, evaluateManagementGate, isOwnerEmail } from "../src/lib/auth/admin.js";
-import { buildFallbackProfile, createUserAccess, mergeProfileWithAuth, demoteUntrustedElevatedRole } from "../src/lib/auth/userAccess.js";
+import { buildFallbackProfile, createUserAccess, mergeProfileWithAuth, demoteUntrustedElevatedRole, shouldShowAccessWarning, getAccessWarningReason } from "../src/lib/auth/userAccess.js";
 import {
   buildAnnveroMetadataUpdatePayload,
   resolveProvisionRole,
@@ -568,6 +568,124 @@ test("P1: legacy profile.company_ids / metadata yetki vermez; membership verir",
     ["a"]
   );
   assert.deepEqual(normalizeCompanyIds(["", null, "x", "x"]), ["x"]);
+});
+
+test("P1: viewer banner — goruntuleme tek başına uyarı değil; canonical membership karar verir", () => {
+  const stagingCompany = "00000000-0000-4000-8000-000000000001";
+  const viewerBase = {
+    email: "viewer@staging.test",
+    role: ANNVERO_ROLES.VIEWER,
+    isPlatformAdmin: false,
+    isManagementUser: false,
+    isPartner: false,
+    isActive: true,
+    source: "database",
+  };
+
+  assert.equal(
+    shouldShowAccessWarning({
+      ...viewerBase,
+      companyIds: [stagingCompany],
+      companyIdsSource: "membership",
+    }),
+    false
+  );
+  assert.equal(
+    getAccessWarningReason({
+      ...viewerBase,
+      companyIds: [stagingCompany],
+      companyIdsSource: "membership",
+    }),
+    "ok_no_warning"
+  );
+
+  assert.equal(
+    shouldShowAccessWarning({
+      ...viewerBase,
+      companyIds: [],
+      companyIdsSource: "membership",
+    }),
+    true
+  );
+  assert.equal(
+    shouldShowAccessWarning({
+      ...viewerBase,
+      companyIds: [stagingCompany],
+      companyIdsSource: "none",
+    }),
+    true
+  );
+  assert.equal(
+    shouldShowAccessWarning({
+      ...viewerBase,
+      companyIds: ["legacy-only"],
+      companyIdsSource: "none",
+      legacyCompanyIds: ["legacy-only"],
+    }),
+    true
+  );
+
+  const metaUser = {
+    id: "1fb8c953-ed5a-4d13-9a46-f69619cc11d6",
+    email: "viewer@staging.test",
+    app_metadata: { company_ids: [stagingCompany] },
+    user_metadata: { company_ids: [stagingCompany] },
+  };
+  const mergedMeta = mergeProfileWithAuth(metaUser, {
+    id: metaUser.id,
+    email: metaUser.email,
+    role: ANNVERO_ROLES.VIEWER,
+    companyIds: [],
+    companyIdsSource: "none",
+    legacyCompanyIds: [stagingCompany],
+    isActive: true,
+  });
+  assert.equal(shouldShowAccessWarning(mergedMeta), true);
+  assert.equal(createUserAccess(mergedMeta).isManagementUser, false);
+  assert.equal(createUserAccess(mergedMeta).isPlatformAdmin, false);
+
+  const accessOk = createUserAccess({
+    ...viewerBase,
+    companyIds: [stagingCompany],
+    companyIdsSource: "membership",
+  });
+  assert.equal(accessOk.showAccessWarning, false);
+  assert.equal(accessOk.isManagementUser, false);
+  assert.equal(accessOk.role, ANNVERO_ROLES.VIEWER);
+
+  withAdminEnv("admin@annvero.test", () => {
+    const admin = {
+      email: "admin@annvero.test",
+      app_metadata: { role: "admin" },
+      user_metadata: {},
+    };
+    const mergedAdmin = mergeProfileWithAuth(admin, {
+      id: "a1",
+      email: admin.email,
+      role: ANNVERO_ROLES.ACCOUNTING,
+      companyIds: [],
+      companyIdsSource: "elevated_trusted",
+      isActive: true,
+    });
+    assert.equal(mergedAdmin.isPlatformAdmin, true);
+    assert.equal(shouldShowAccessWarning(mergedAdmin), false);
+
+    const partner = {
+      email: "partner@annvero.test",
+      app_metadata: { role: "partner" },
+      user_metadata: {},
+    };
+    const mergedPartner = mergeProfileWithAuth(partner, {
+      id: "p1",
+      email: partner.email,
+      role: ANNVERO_ROLES.VIEWER,
+      companyIds: [],
+      companyIdsSource: "elevated_trusted",
+      isActive: true,
+    });
+    assert.equal(mergedPartner.isManagementUser, true);
+    assert.equal(shouldShowAccessWarning(mergedPartner), false);
+  });
 });
 
 test("client privilege claim strip edilir", () => {
