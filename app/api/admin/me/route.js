@@ -3,8 +3,9 @@ import { isManagementUser, isPlatformAdmin } from "@/src/lib/auth/admin";
 import { mergeProfileWithAuth, shouldShowAccessWarning } from "@/src/lib/auth/userAccess";
 import { ensureBootstrapAdmin } from "@/src/lib/auth/bootstrapAdmin";
 import {
-  fetchProfileByEmail,
+  fetchHydratedProfileForUser,
   provisionProfileForUser,
+  hydrateProfileWithMembership,
 } from "@/src/lib/auth/profileService";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
 
@@ -24,7 +25,7 @@ export async function GET() {
     });
   }
 
-  let profileResult = await fetchProfileByEmail(user.email);
+  let profileResult = await fetchHydratedProfileForUser(user);
   let profile = profileResult.profile;
   const dbUnreachable =
     Boolean(profileResult.schemaMissing) || Boolean(profileResult.adminUnavailable);
@@ -32,6 +33,14 @@ export async function GET() {
   if (!dbUnreachable && (!profile || (profile && user.id && profile.id !== user.id))) {
     const provision = await provisionProfileForUser(user);
     profile = provision.profile || profile;
+    if (profile) {
+      const hydrated = await hydrateProfileWithMembership(
+        { ...profile, authUserId: profile.authUserId || user.id },
+        user.id,
+        user
+      );
+      if (hydrated.ok) profile = hydrated.profile;
+    }
   }
 
   const merged = mergeProfileWithAuth(user, profile, {
@@ -48,18 +57,19 @@ export async function GET() {
     Boolean(profileResult.adminUnavailable) ||
     finalProfile.source === "fallback";
 
-  const platformAdmin =
-    isPlatformAdmin(user) || finalProfile.role === "admin" || finalProfile.role === "partner";
+  const platformAdmin = isPlatformAdmin(user);
+  const management = isManagementUser(user) || Boolean(finalProfile.isManagementUser);
 
   return NextResponse.json({
     authenticated: true,
     email: user.email,
     isAdmin: platformAdmin,
     isPlatformAdmin: platformAdmin,
-    isManagementUser:
-      isManagementUser(user) || finalProfile.isManagementUser || finalProfile.role === "admin",
+    isManagementUser: management,
     isPartner: finalProfile.isPartner,
     role: finalProfile.role,
+    companyIds: finalProfile.companyIds || [],
+    companyIdsSource: finalProfile.companyIdsSource || "none",
     schemaMissing: Boolean(profileResult.schemaMissing),
     usingFallback,
     showAccessWarning: shouldShowAccessWarning(finalProfile),

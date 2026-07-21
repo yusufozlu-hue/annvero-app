@@ -18,6 +18,13 @@ import {
   shouldBootstrapAsAdmin,
   isBootstrapOwnerEmail,
 } from "../src/lib/auth/profileProvisionPolicy.js";
+import {
+  resolveRuntimeCompanyAccess,
+  resolveAccessibleCompanyScope,
+  selectActiveMembershipCompanyIds,
+  normalizeCompanyIds,
+} from "../src/lib/auth/companyAccessPolicy.js";
+import { mapProfileRow } from "../src/lib/supabase/userProfilesSchema.js";
 import { ANNVERO_ROLES } from "../src/config/annveroRoles.js";
 import {
   assertSafeSupabaseProjectRef,
@@ -428,6 +435,139 @@ test("createUserAccess email allowlist / role string tek başına ADMIN zorlamaz
     assert.equal(access.isPlatformAdmin, false);
     assert.equal(access.isManagementUser, false);
   });
+});
+
+test("P1: legacy profile.company_ids / metadata yetki vermez; membership verir", () => {
+  const stagingCompany = "00000000-0000-4000-8000-000000000001";
+  const authUserId = "1fb8c953-ed5a-4d13-9a46-f69619cc11d6";
+
+  const mapped = mapProfileRow({
+    id: authUserId,
+    auth_user_id: authUserId,
+    email: "viewer@staging.test",
+    role: "goruntuleme",
+    company_ids: ["legacy-should-not-grant"],
+    is_active: true,
+  });
+  assert.deepEqual(mapped.companyIds, []);
+  assert.equal(mapped.companyIdsSource, "none");
+  assert.deepEqual(mapped.legacyCompanyIds, ["legacy-should-not-grant"]);
+
+  const legacyOnly = resolveRuntimeCompanyAccess({
+    authUserId,
+    profileAuthUserId: authUserId,
+    membershipRows: [],
+    legacyProfileCompanyIds: ["legacy-should-not-grant"],
+    userMetadataCompanyIds: [stagingCompany],
+    appMetadataCompanyIds: [stagingCompany],
+    clientProvidedCompanyIds: [stagingCompany],
+  });
+  assert.equal(legacyOnly.ok, true);
+  assert.deepEqual(legacyOnly.companyIds, []);
+  assert.equal(legacyOnly.companyIdsSource, "membership");
+
+  const withMembership = resolveRuntimeCompanyAccess({
+    authUserId,
+    profileAuthUserId: authUserId,
+    membershipRows: [
+      { user_id: authUserId, company_id: stagingCompany, is_active: true },
+      { user_id: authUserId, company_id: stagingCompany, is_active: true },
+      { user_id: "other-user", company_id: "other-co", is_active: true },
+      { user_id: authUserId, company_id: null, is_active: true },
+      { user_id: authUserId, company_id: "passive-co", is_active: false },
+    ],
+  });
+  assert.deepEqual(withMembership.companyIds, [stagingCompany]);
+
+  const passiveOnly = resolveRuntimeCompanyAccess({
+    authUserId,
+    profileAuthUserId: authUserId,
+    membershipRows: [
+      { user_id: authUserId, company_id: stagingCompany, is_active: false },
+    ],
+  });
+  assert.deepEqual(passiveOnly.companyIds, []);
+
+  const queryError = resolveRuntimeCompanyAccess({
+    authUserId,
+    profileAuthUserId: authUserId,
+    membershipError: new Error("db down"),
+    legacyProfileCompanyIds: [stagingCompany],
+  });
+  assert.equal(queryError.ok, false);
+  assert.equal(queryError.deniedReason, "membership_query_error");
+  assert.deepEqual(queryError.companyIds, []);
+
+  const unbound = resolveRuntimeCompanyAccess({
+    authUserId,
+    profileAuthUserId: "",
+    membershipRows: [{ user_id: authUserId, company_id: stagingCompany, is_active: true }],
+  });
+  assert.equal(unbound.ok, false);
+  assert.equal(unbound.deniedReason, "profile_unbound");
+
+  const mergedLegacy = mergeProfileWithAuth(
+    { id: authUserId, email: "viewer@staging.test", app_metadata: {}, user_metadata: { company_ids: [stagingCompany] } },
+    {
+      ...mapped,
+      companyIds: mapped.legacyCompanyIds,
+      companyIdsSource: "none",
+    }
+  );
+  assert.deepEqual(mergedLegacy.companyIds, []);
+  const accessLegacy = createUserAccess(mergedLegacy);
+  assert.equal(accessLegacy.canAccessCompany(stagingCompany), false);
+
+  const mergedOk = mergeProfileWithAuth(
+    { id: authUserId, email: "viewer@staging.test", app_metadata: {}, user_metadata: {} },
+    {
+      ...mapped,
+      companyIds: [stagingCompany],
+      companyIdsSource: "membership",
+    }
+  );
+  assert.deepEqual(mergedOk.companyIds, [stagingCompany]);
+  const accessOk = createUserAccess(mergedOk);
+  assert.equal(accessOk.canAccessCompany(stagingCompany), true);
+  assert.equal(accessOk.canAccessCompany("other-co"), false);
+  assert.deepEqual(
+    resolveAccessibleCompanyScope({
+      isElevatedTrusted: false,
+      companyIds: accessOk.companyIds,
+      companyIdsSource: accessOk.companyIdsSource,
+    }),
+    [stagingCompany]
+  );
+
+  // DB role=admin tek başına unscoped liste açmaz
+  assert.deepEqual(
+    resolveAccessibleCompanyScope({
+      isElevatedTrusted: false,
+      companyIds: [stagingCompany],
+      companyIdsSource: "none",
+    }),
+    []
+  );
+  assert.equal(
+    resolveAccessibleCompanyScope({
+      isElevatedTrusted: true,
+      companyIds: [],
+      companyIdsSource: "elevated_trusted",
+    }),
+    null
+  );
+
+  assert.deepEqual(
+    selectActiveMembershipCompanyIds(
+      [
+        { user_id: authUserId, company_id: "a", is_active: true },
+        { user_id: authUserId, company_id: "a", is_active: true },
+      ],
+      authUserId
+    ),
+    ["a"]
+  );
+  assert.deepEqual(normalizeCompanyIds(["", null, "x", "x"]), ["x"]);
 });
 
 test("client privilege claim strip edilir", () => {

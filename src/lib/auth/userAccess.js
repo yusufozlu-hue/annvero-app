@@ -61,6 +61,7 @@ export function buildFallbackProfile(user, { schemaMissing = false } = {}) {
     role: safeRole,
     permissions: getDefaultPermissionsForRole(safeRole),
     companyIds: [],
+    companyIdsSource: "none",
     teamId: "",
     isActive: true,
     lastLoginAt: new Date().toISOString(),
@@ -102,6 +103,17 @@ export function mergeProfileWithAuth(user, profile = null, options = {}) {
         ? ANNVERO_ROLES.VIEWER
         : role;
 
+  // Firma yetkisi: yalnız membership-derived (companyIdsSource === "membership")
+  // Legacy profile.company_ids / metadata ASLA kopyalanmaz.
+  const membershipDerived =
+    profile.companyIdsSource === "membership" ||
+    profile.companyIdsSource === "elevated_trusted";
+  const companyIds = membershipDerived
+    ? Array.isArray(profile.companyIds)
+      ? profile.companyIds
+      : []
+    : [];
+
   return {
     id: user.id || profile.id,
     email: String(profile.email || user.email || "").trim().toLowerCase(),
@@ -120,7 +132,8 @@ export function mergeProfileWithAuth(user, profile = null, options = {}) {
       !trustedPartner
         ? profile.permissions
         : getDefaultPermissionsForRole(effectiveRole),
-    companyIds: Array.isArray(profile.companyIds) ? profile.companyIds : [],
+    companyIds,
+    companyIdsSource: membershipDerived ? profile.companyIdsSource : "none",
     teamId: profile.teamId || "",
     isActive: profile.isActive !== false,
     lastLoginAt: profile.lastLoginAt || new Date().toISOString(),
@@ -135,14 +148,8 @@ export function mergeProfileWithAuth(user, profile = null, options = {}) {
 
 function hasEffectiveCompanyAccess(profile = {}) {
   if (profile.isPlatformAdmin || profile.isManagementUser) return true;
-  const role = profile.role || "";
+  if (profile.companyIdsSource !== "membership") return false;
   const companyIds = Array.isArray(profile.companyIds) ? profile.companyIds : [];
-
-  // Untrusted elevated role strings do not grant company-wide access
-  if (role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER) {
-    return Boolean(profile.isPlatformAdmin || profile.isManagementUser);
-  }
-
   return companyIds.length > 0;
 }
 
@@ -212,25 +219,43 @@ export function createUserAccess(profile) {
     (Array.isArray(profile?.permissions) && profile.permissions.length
       ? profile.permissions
       : null) || getDefaultPermissionsForRole(role);
-  const companyIds = Array.isArray(profile?.companyIds) ? profile.companyIds : [];
+  const companyIds =
+    profile?.companyIdsSource === "membership" ||
+    profile?.companyIdsSource === "elevated_trusted" ||
+    isPlatformAdminFlag ||
+    isManagementFlag
+      ? Array.isArray(profile?.companyIds)
+        ? profile.companyIds
+        : []
+      : [];
 
   return {
     role,
     permissions,
     companyIds,
+    companyIdsSource:
+      isPlatformAdminFlag || isManagementFlag
+        ? "elevated_trusted"
+        : profile?.companyIdsSource === "membership"
+          ? "membership"
+          : "none",
     modules: getModulesForRole(role),
     isPlatformAdmin: isPlatformAdminFlag,
     isPartner: isPartnerFlag,
     isManagementUser: isManagementFlag,
     canAccessRoute: (pathname, routeChecker) => routeChecker(role, pathname),
-    canAccessCompany: (companyId) => canAccessCompany(role, companyId, companyIds),
+    canAccessCompany: (companyId) => {
+      if (isPlatformAdminFlag || isManagementFlag) return true;
+      if (!companyId) return true;
+      return canAccessCompany(role, companyId, companyIds);
+    },
     canAccessModule: (moduleId) => canAccessModule(role, moduleId, permissions),
     hasPermission: (permission) => hasPermission(role, permission, permissions),
     isActive: profile?.isActive !== false,
     usingFallback: profile?.source === "fallback" || profile?.source === "fallback_restricted",
     showAccessWarning: isManagementFlag
       ? false
-      : shouldShowAccessWarning({ ...profile, role, email }),
+      : shouldShowAccessWarning({ ...profile, role, email, companyIds }),
   };
 }
 
@@ -263,6 +288,7 @@ export function buildAccessDebugPayload(user, profile, extras = {}) {
     isPartner,
     isPlatformAdmin: isPlatformAdminFlag,
     companyIds: Array.isArray(profile?.companyIds) ? profile.companyIds : [],
+    companyIdsSource: profile?.companyIdsSource || "none",
     showAccessWarning,
     warningReason,
     ownerEmailAloneNotAdmin: isOwnerEmail(email) && !isAdmin,

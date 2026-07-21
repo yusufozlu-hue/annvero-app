@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
-import { isOwnerEmail, isPlatformAdmin } from "@/src/lib/auth/admin";
+import { isPlatformAdmin } from "@/src/lib/auth/admin";
 import {
   buildAccessDebugPayload,
   mergeProfileWithAuth,
   shouldShowAccessWarning,
 } from "@/src/lib/auth/userAccess";
 import {
-  fetchProfileByEmail,
+  fetchHydratedProfileForUser,
   provisionProfileForUser,
   touchLastLogin,
+  hydrateProfileWithMembership,
 } from "@/src/lib/auth/profileService";
 import { ensureBootstrapAdmin } from "@/src/lib/auth/bootstrapAdmin";
 import { getServerSupabaseUser } from "@/src/lib/supabase/serverAuth";
@@ -47,6 +48,7 @@ function withAccessFields(payload, user, profile) {
     isPartner: debug.isPartner,
     isPlatformAdmin: debug.isPlatformAdmin,
     companyIds: debug.companyIds,
+    companyIdsSource: profile?.companyIdsSource || "none",
     showAccessWarning: debug.showAccessWarning,
     warningReason: debug.warningReason,
   };
@@ -59,7 +61,7 @@ export async function GET() {
     return NextResponse.json({ authenticated: false });
   }
 
-  let profileResult = await fetchProfileByEmail(user.email);
+  let profileResult = await fetchHydratedProfileForUser(user);
   let profile = profileResult.profile;
   let schemaMissing = Boolean(profileResult.schemaMissing);
   let adminUnavailable = Boolean(profileResult.adminUnavailable);
@@ -67,7 +69,27 @@ export async function GET() {
   let needsInvite = false;
   let dbUnreachable = schemaMissing || adminUnavailable;
 
-  if (profileResult.error && !profile && !dbUnreachable) {
+  if (profileResult.membershipError && !profile && !dbUnreachable) {
+    logProfileIssue("Firma üyeliği okunamadı (fail-closed)", {
+      email: user.email,
+      error: profileResult.membershipError?.message || String(profileResult.membershipError),
+    });
+    return NextResponse.json(
+      {
+        authenticated: true,
+        email: user.email,
+        error: "Firma üyeliği doğrulanamadı. Erişim reddedildi.",
+        active: true,
+        companyIds: [],
+        companyIdsSource: "none",
+        isAdmin: false,
+        isPlatformAdmin: false,
+      },
+      { status: 403 }
+    );
+  }
+
+  if (profileResult.error && !profile && !dbUnreachable && !profileResult.membershipError) {
     logProfileIssue("Profil okuma hatası", {
       email: user.email,
       error: profileResult.error?.message || String(profileResult.error),
@@ -75,7 +97,7 @@ export async function GET() {
     });
   }
 
-  // Tablo/admin erişilebilirken profil yoksa veya auth id eşleşmiyorsa otomatik oluştur/bağla.
+  // Profil yoksa veya auth id eşleşmiyorsa provision, sonra membership hydrate
   if (!dbUnreachable && (!profile || (profile && user.id && profile.id !== user.id))) {
     const provision = await provisionProfileForUser(user);
     profile = provision.profile || profile;
@@ -84,6 +106,31 @@ export async function GET() {
     dbUnreachable = schemaMissing || adminUnavailable;
     provisioned = Boolean(provision.created);
     needsInvite = Boolean(provision.needsInvite);
+
+    if (profile && !dbUnreachable) {
+      const hydrated = await hydrateProfileWithMembership(
+        { ...profile, authUserId: profile.authUserId || user.id },
+        user.id,
+        user
+      );
+      if (!hydrated.ok) {
+        logProfileIssue("Provision sonrası membership hydrate başarısız", {
+          email: user.email,
+          error: hydrated.error?.message || hydrated.deniedReason,
+        });
+        return NextResponse.json(
+          {
+            authenticated: true,
+            email: user.email,
+            error: "Firma üyeliği doğrulanamadı. Erişim reddedildi.",
+            companyIds: [],
+            companyIdsSource: "none",
+          },
+          { status: 403 }
+        );
+      }
+      profile = hydrated.profile;
+    }
 
     if (provision.error) {
       logProfileIssue("Profil oluşturma/bağlama hatası", {
@@ -97,7 +144,7 @@ export async function GET() {
     logProfileIssue(
       adminUnavailable
         ? "Profil servisi kullanılamıyor (service role yok)"
-        : "Profil tablosu okunamadı — metadata fallback",
+        : "Profil tablosu okunamadı — kısıtlı erişim",
       {
         email: user.email,
         schemaMissing,
@@ -107,34 +154,28 @@ export async function GET() {
     );
 
     const merged = mergeProfileWithAuth(user, null, { schemaMissing: true });
-    // Owner/admin fallback'te bile banner gösterme
-    const ownerForced = isOwnerEmail(user.email) || isPlatformAdmin(user);
-    if (ownerForced && merged.role !== "admin") {
-      merged.role = "admin";
-      merged.isPlatformAdmin = true;
-      merged.isManagementUser = true;
-      merged.needsInvite = false;
-    }
+    const platformAdmin = isPlatformAdmin(user);
 
     return NextResponse.json(
       withAccessFields(
         {
           authenticated: true,
           email: user.email,
-          isAdmin: ownerForced || isPlatformAdmin(user) || merged.role === "admin",
-          isPlatformAdmin: ownerForced || isPlatformAdmin(user) || merged.role === "admin",
+          isAdmin: platformAdmin,
+          isPlatformAdmin: platformAdmin,
           active: true,
           schemaMissing,
           adminUnavailable,
           schemaHint: getUserProfilesSchemaErrorMessage(),
           provisioned: false,
-          needsInvite: false,
+          needsInvite: !platformAdmin,
           usingFallback: true,
           profile: merged,
           access: {
             role: merged.role,
             permissions: merged.permissions,
-            companyIds: merged.companyIds,
+            companyIds: [],
+            companyIdsSource: "none",
             modules: merged.modules,
             isPartner: merged.isPartner,
             isManagementUser: merged.isManagementUser,
@@ -153,12 +194,21 @@ export async function GET() {
     );
   }
 
-  // Profil hâlâ yoksa (beklenmeyen durum): otomatik oluşturmayı tekrar dene, yoksa daraltılmış erişim.
   if (!profile) {
     const provision = await provisionProfileForUser(user);
     profile = provision.profile;
     provisioned = provisioned || Boolean(provision.created);
     needsInvite = Boolean(provision.needsInvite);
+
+    if (profile) {
+      const hydrated = await hydrateProfileWithMembership(
+        { ...profile, authUserId: profile.authUserId || user.id },
+        user.id,
+        user
+      );
+      if (hydrated.ok) profile = hydrated.profile;
+      else profile = null;
+    }
 
     if (!profile) {
       logProfileIssue("Profil oluşturulamadı; daraltılmış erişim", {
@@ -167,38 +217,31 @@ export async function GET() {
         error: provision.error?.message || null,
       });
       const merged = mergeProfileWithAuth(user, null, { schemaMissing: false });
-      const ownerForced = isOwnerEmail(user.email) || isPlatformAdmin(user);
-      if (ownerForced) {
-        merged.role = "admin";
-        merged.isPlatformAdmin = true;
-        merged.isManagementUser = true;
-        merged.needsInvite = false;
-        merged.source = "owner_fallback";
-      }
+      const platformAdmin = isPlatformAdmin(user);
 
       return NextResponse.json(
         withAccessFields(
           {
             authenticated: true,
             email: user.email,
-            isAdmin: ownerForced || merged.role === "admin",
-            isPlatformAdmin: ownerForced || merged.role === "admin",
+            isAdmin: platformAdmin,
+            isPlatformAdmin: platformAdmin,
             active: true,
             schemaMissing: false,
             provisioned: false,
-            needsInvite: ownerForced ? false : true,
-            // Owner için ASLA hardcode true
-            showAccessWarning: ownerForced ? false : shouldShowAccessWarning(merged),
+            needsInvite: !platformAdmin,
+            showAccessWarning: shouldShowAccessWarning(merged),
             usingFallback: false,
             profile: {
               ...merged,
-              needsInvite: ownerForced ? false : true,
-              source: ownerForced ? "owner_fallback" : "restricted",
+              needsInvite: !platformAdmin,
+              source: "restricted",
             },
             access: {
               role: merged.role,
               permissions: merged.permissions,
-              companyIds: merged.companyIds,
+              companyIds: [],
+              companyIdsSource: "none",
               modules: merged.modules,
               isPartner: merged.isPartner,
               isManagementUser: merged.isManagementUser,
@@ -215,38 +258,40 @@ export async function GET() {
   merged.source = "database";
   merged.needsInvite = false;
 
-  // Owner / ilk admin bootstrap — DB'de role=admin garanti et
   const bootstrap = await ensureBootstrapAdmin(user, merged);
-  const finalProfile = mergeProfileWithAuth(user, bootstrap.profile || merged, {
+  let finalProfile = mergeProfileWithAuth(user, bootstrap.profile || merged, {
     schemaMissing: false,
   });
   finalProfile.source = "database";
   finalProfile.needsInvite = false;
 
-  // Owner e-posta: bootstrap DB'ye yazamasa bile yanıtlarda admin say
-  if (isOwnerEmail(user.email) || isPlatformAdmin(user)) {
-    finalProfile.role = "admin";
-    finalProfile.isPlatformAdmin = true;
-    finalProfile.isManagementUser = true;
-    finalProfile.needsInvite = false;
+  // Bootstrap sonrası membership bilgisini koru / yeniden bağla
+  if (finalProfile.companyIdsSource !== "membership" && !finalProfile.isPlatformAdmin) {
+    const rehydrated = await hydrateProfileWithMembership(
+      {
+        ...finalProfile,
+        authUserId: finalProfile.authUserId || user.id,
+        legacyCompanyIds: profile.legacyCompanyIds || [],
+      },
+      user.id,
+      user
+    );
+    if (rehydrated.ok) {
+      finalProfile = mergeProfileWithAuth(user, rehydrated.profile, { schemaMissing: false });
+    }
+  } else if (profile.companyIdsSource === "membership") {
+    finalProfile.companyIds = profile.companyIds;
+    finalProfile.companyIdsSource = "membership";
   }
 
   if (bootstrap.bootstrapped) {
-    logProfileIssue("Owner admin bootstrap uygulandı", {
+    logProfileIssue("Trusted admin profil senkronu uygulandı", {
       email: user.email,
       role: finalProfile.role,
       upsertOk: Boolean(bootstrap.upsertOk),
     });
   }
 
-  if (bootstrap.error) {
-    logProfileIssue("Owner admin bootstrap upsert hatası", {
-      email: user.email,
-      error: bootstrap.error?.message || String(bootstrap.error),
-    });
-  }
-
-  // last_login yanıtı bloke etmesin
   void touchLastLogin(user, finalProfile).catch((error) => {
     logProfileIssue("last_login güncellenemedi", {
       email: user.email,
@@ -254,10 +299,7 @@ export async function GET() {
     });
   });
 
-  const platformAdmin =
-    isOwnerEmail(user.email) ||
-    isPlatformAdmin(user) ||
-    finalProfile.role === "admin";
+  const platformAdmin = isPlatformAdmin(user);
 
   return NextResponse.json(
     withAccessFields(
@@ -279,6 +321,7 @@ export async function GET() {
           role: finalProfile.role,
           permissions: finalProfile.permissions,
           companyIds: finalProfile.companyIds,
+          companyIdsSource: finalProfile.companyIdsSource,
           modules: finalProfile.modules,
           isPartner: finalProfile.isPartner,
           isManagementUser: finalProfile.isManagementUser,

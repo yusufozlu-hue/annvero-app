@@ -12,7 +12,8 @@ import {
   syncAnnveroUserMetadata,
   upsertProfile,
 } from "@/src/lib/auth/profileService";
-import { syncCompanyMembership } from "@/src/lib/auth/companyMembership";
+import { syncCompanyMembership, fetchActiveMembershipCompanyIds } from "@/src/lib/auth/companyMembership";
+import { normalizeCompanyIds, isAuthUserUuid } from "@/src/lib/auth/companyAccessPolicy";
 import { ANNVERO_ROLE_LABELS, ANNVERO_ROLES } from "@/src/config/annveroRoles";
 import {
   mapProfileRow,
@@ -33,6 +34,21 @@ function canAssignRole(callerRole = "", targetRole = "") {
     return false;
   }
   return true;
+}
+
+async function attachMembershipCompanyIds(mapped) {
+  const uid =
+    mapped.authUserId || (isAuthUserUuid(mapped.id) ? mapped.id : "");
+  if (!uid) return mapped;
+  const membership = await fetchActiveMembershipCompanyIds(uid);
+  if (!membership.ok) {
+    return { ...mapped, companyIds: [], companyIdsSource: "none" };
+  }
+  return {
+    ...mapped,
+    companyIds: membership.companyIds,
+    companyIdsSource: "membership",
+  };
 }
 
 export async function GET() {
@@ -71,8 +87,13 @@ export async function GET() {
     return NextResponse.json({ error: dbError.message }, { status: 500 });
   }
 
+  const users = [];
+  for (const row of data || []) {
+    users.push(await attachMembershipCompanyIds(mapProfileRow(row)));
+  }
+
   return NextResponse.json({
-    users: (data || []).map(mapProfileRow),
+    users,
     roles: Object.entries(ANNVERO_ROLE_LABELS).map(([id, label]) => ({ id, label })),
   });
 }
@@ -116,7 +137,7 @@ export async function POST(request) {
     displayName,
     role,
     permissions: body?.permissions || getDefaultPermissionsForRole(role),
-    companyIds: body?.companyIds || body?.company_ids || [],
+    companyIds: normalizeCompanyIds(body?.companyIds || body?.company_ids || []),
     teamId: body?.teamId || body?.team_id || "",
     isActive: body?.isActive ?? body?.is_active ?? true,
   };
@@ -149,10 +170,9 @@ export async function POST(request) {
 
   if (saved.profile?.id && !String(saved.profile.id).startsWith("pending-")) {
     await syncAnnveroUserMetadata(saved.profile.id, saved.profile);
-    // DB doğruluk kaynağı: firma üyeliğini (023) admin'in verdiği companyIds ile ATOMİK eşitle.
-    // Başarısızsa işlemi başarılı SAYMA: sanitize edilmiş hata ile 500 dön.
+    // DB doğruluk kaynağı: membership — admin'in verdiği companyIds (mapProfileRow yetki vermez)
     try {
-      await syncCompanyMembership(saved.profile.id, saved.profile.companyIds, user?.id);
+      await syncCompanyMembership(saved.profile.id, profileDraft.companyIds, user?.id);
       membershipSynced = true;
     } catch (membershipError) {
       return NextResponse.json(
@@ -160,7 +180,11 @@ export async function POST(request) {
           error: membershipError.message || "Firma erişimi güncellenemedi.",
           code: membershipError.code || null,
           membershipSynced: false,
-          user: saved.profile,
+          user: {
+            ...saved.profile,
+            companyIds: [],
+            companyIdsSource: "none",
+          },
           warning:
             "Kullanıcı kaydedildi ancak firma erişimi atanamadı; kullanıcı şu anda hiçbir firmaya erişemiyor.",
         },
@@ -173,7 +197,11 @@ export async function POST(request) {
   }
 
   return NextResponse.json({
-    user: saved.profile,
+    user: {
+      ...saved.profile,
+      companyIds: membershipSynced ? profileDraft.companyIds : [],
+      companyIdsSource: membershipSynced ? "membership" : "none",
+    },
     createdBy: user.email,
     invited,
     inviteError: inviteError?.message || null,
@@ -223,12 +251,17 @@ export async function PUT(request) {
     recoveryError = recovery.error;
   }
 
+  const assignedCompanyIds =
+    body?.companyIds !== undefined || body?.company_ids !== undefined
+      ? normalizeCompanyIds(body?.companyIds || body?.company_ids || [])
+      : null;
+
   const saved = await upsertProfile({
     email,
     displayName: body?.displayName || body?.display_name,
     role: role || body?.role,
     permissions: body?.permissions,
-    companyIds: body?.companyIds || body?.company_ids,
+    companyIds: assignedCompanyIds === null ? undefined : assignedCompanyIds,
     teamId: body?.teamId || body?.team_id,
     isActive: body?.isActive ?? body?.is_active,
     id: body?.id || `pending-${email}`,
@@ -243,33 +276,49 @@ export async function PUT(request) {
 
   let membershipSynced = false;
   let membershipPending = false;
+  let responseCompanyIds = [];
 
   if (saved.profile?.id && !String(saved.profile.id).startsWith("pending-")) {
     await syncAnnveroUserMetadata(saved.profile.id, saved.profile);
-    // DB doğruluk kaynağı: firma üyeliğini (023) admin'in verdiği companyIds ile ATOMİK eşitle.
-    // RPC atomik olduğundan başarısızlıkta ESKİ membership korunur; işlemi başarısız say.
-    try {
-      await syncCompanyMembership(saved.profile.id, saved.profile.companyIds, user?.id);
-      membershipSynced = true;
-    } catch (membershipError) {
-      return NextResponse.json(
-        {
-          error: membershipError.message || "Firma erişimi güncellenemedi.",
-          code: membershipError.code || null,
-          membershipSynced: false,
-          user: saved.profile,
-          warning:
-            "Profil güncellendi ancak firma erişimi güncellenemedi; önceki firma erişimi korundu.",
-        },
-        { status: 500 }
-      );
+    if (assignedCompanyIds !== null) {
+      try {
+        await syncCompanyMembership(saved.profile.id, assignedCompanyIds, user?.id);
+        membershipSynced = true;
+        responseCompanyIds = assignedCompanyIds;
+      } catch (membershipError) {
+        return NextResponse.json(
+          {
+            error: membershipError.message || "Firma erişimi güncellenemedi.",
+            code: membershipError.code || null,
+            membershipSynced: false,
+            user: {
+              ...saved.profile,
+              companyIds: [],
+              companyIdsSource: "none",
+            },
+            warning:
+              "Profil güncellendi ancak firma erişimi güncellenemedi; önceki firma erişimi korundu.",
+          },
+          { status: 500 }
+        );
+      }
+    } else {
+      const membership = await fetchActiveMembershipCompanyIds(saved.profile.id);
+      if (membership.ok) {
+        responseCompanyIds = membership.companyIds;
+        membershipSynced = true;
+      }
     }
   } else if (saved.profile?.id) {
     membershipPending = true;
   }
 
   return NextResponse.json({
-    user: saved.profile,
+    user: {
+      ...saved.profile,
+      companyIds: responseCompanyIds,
+      companyIdsSource: membershipSynced ? "membership" : "none",
+    },
     recoverySent,
     recoveryError: recoveryError?.message || null,
     membershipSynced,

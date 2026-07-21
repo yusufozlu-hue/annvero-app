@@ -1,8 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import { isPlatformAdmin } from "@/src/lib/auth/admin";
-import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
-import { fetchProfileByEmail } from "@/src/lib/auth/profileService";
 import {
   ANNVERO_RETURN_TO_COOKIE,
   getReturnToCookieOptions,
@@ -30,23 +28,9 @@ function isAdminPath(pathname) {
   return pathname.startsWith("/admin");
 }
 
+/** Admin alanı: yalnız trusted AND platform admin (P0). DB/metadata role yetmez. */
 async function canAccessAdminArea(user) {
-  if (!user) return false;
-  if (isPlatformAdmin(user)) return true;
-
-  const { profile, schemaMissing } = await fetchProfileByEmail(user.email);
-  if (!schemaMissing && profile?.isActive !== false) {
-    return (
-      profile.role === ANNVERO_ROLES.ADMIN || profile.role === ANNVERO_ROLES.PARTNER
-    );
-  }
-
-  const metaRole =
-    user.user_metadata?.annvero_role ||
-    user.user_metadata?.role ||
-    user.app_metadata?.annvero_role ||
-    "";
-  return metaRole === ANNVERO_ROLES.ADMIN || metaRole === ANNVERO_ROLES.PARTNER;
+  return isPlatformAdmin(user);
 }
 
 function withSupabaseCookies(supabaseResponse, response) {

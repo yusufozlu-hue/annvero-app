@@ -5,6 +5,12 @@ import {
   resolveProvisionRole,
 } from "@/src/lib/auth/profileProvisionPolicy";
 import {
+  isAuthUserUuid,
+  resolveRuntimeCompanyAccess,
+} from "@/src/lib/auth/companyAccessPolicy";
+import { fetchActiveMembershipCompanyIds } from "@/src/lib/auth/companyMembership";
+import { isPlatformAdmin, isManagementUser } from "@/src/lib/auth/admin";
+import {
   getServerSupabaseAdmin,
   getServerSupabaseAdminGuardResponse,
   logSupabaseQueryError,
@@ -46,6 +52,7 @@ function emptyResult(overrides = {}) {
     schemaMissing: false,
     adminUnavailable: false,
     error: null,
+    membershipError: null,
     ...overrides,
   };
 }
@@ -78,6 +85,158 @@ export async function fetchProfileByEmail(email = "") {
   return emptyResult({ profile: data ? mapProfileRow(data) : null });
 }
 
+export async function fetchProfileByAuthUserId(authUserId = "") {
+  const uid = String(authUserId || "").trim();
+  if (!isAuthUserUuid(uid)) return emptyResult();
+
+  const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
+  if (adminUnavailable) return emptyResult({ adminUnavailable: true });
+  if (schemaMissing) return emptyResult({ schemaMissing: true });
+  if (!supabase) return emptyResult({ adminUnavailable: true });
+
+  const { data, error } = await supabase
+    .from(USER_PROFILES_TABLE)
+    .select("*")
+    .eq("auth_user_id", uid)
+    .maybeSingle();
+
+  if (error) {
+    if (isUserProfilesSchemaCacheError(error)) {
+      logSupabaseQueryError("auth:profiles:fetch-by-auth", error, USER_PROFILES_TABLE);
+      return emptyResult({ schemaMissing: true });
+    }
+    logSupabaseQueryError("auth:profiles:fetch-by-auth", error, USER_PROFILES_TABLE);
+    return emptyResult({ error });
+  }
+
+  return emptyResult({ profile: data ? mapProfileRow(data) : null });
+}
+
+/**
+ * Profil companyIds'ini yalnız canonical membership'ten doldurur.
+ * Legacy / metadata fallback YOK. Hata → ok:false (fail-closed).
+ */
+export async function hydrateProfileWithMembership(profile, authUserId, user = null) {
+  if (!profile) {
+    return {
+      ok: false,
+      profile: null,
+      error: new Error("Profil yok."),
+      deniedReason: "no_profile",
+    };
+  }
+
+  const elevatedTrusted = Boolean(
+    user && (isPlatformAdmin(user) || isManagementUser(user))
+  );
+
+  const membership = elevatedTrusted
+    ? { ok: true, rows: [], companyIds: [], error: null }
+    : await fetchActiveMembershipCompanyIds(authUserId);
+
+  const resolved = resolveRuntimeCompanyAccess({
+    authUserId,
+    profileAuthUserId: profile.authUserId || (isAuthUserUuid(profile.id) ? profile.id : ""),
+    membershipRows: membership.ok ? membership.rows : null,
+    membershipError: membership.ok ? null : membership.error,
+    legacyProfileCompanyIds: profile.legacyCompanyIds,
+    userMetadataCompanyIds: user?.user_metadata?.company_ids,
+    appMetadataCompanyIds: user?.app_metadata?.company_ids,
+    isElevatedTrusted: elevatedTrusted,
+  });
+
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      profile: {
+        ...profile,
+        companyIds: [],
+        companyIdsSource: "none",
+      },
+      error: membership.error || new Error(resolved.deniedReason || "membership_denied"),
+      deniedReason: resolved.deniedReason,
+    };
+  }
+
+  return {
+    ok: true,
+    profile: {
+      ...profile,
+      companyIds: resolved.companyIds,
+      companyIdsSource: resolved.companyIdsSource,
+    },
+    error: null,
+    deniedReason: null,
+  };
+}
+
+/**
+ * Oturum kullanıcısı için exact auth bağ + membership hydrate.
+ * Normal kullanıcı: auth_user_id zorunlu; membership hatasında fail-closed.
+ */
+export async function fetchHydratedProfileForUser(user) {
+  if (!user?.id && !user?.email) return emptyResult();
+
+  const authId = String(user.id || "").trim();
+  let result = isAuthUserUuid(authId)
+    ? await fetchProfileByAuthUserId(authId)
+    : emptyResult();
+
+  if (!result.profile && user?.email) {
+    result = await fetchProfileByEmail(user.email);
+  }
+
+  if (result.schemaMissing || result.adminUnavailable || result.error) {
+    return result;
+  }
+
+  if (!result.profile) {
+    return emptyResult();
+  }
+
+  // Email yolu bulunduysa auth bağını doğrula / bağla
+  let profile = result.profile;
+  const profileAuth =
+    profile.authUserId || (isAuthUserUuid(profile.id) ? profile.id : "");
+
+  if (!isAuthUserUuid(profileAuth) && isAuthUserUuid(authId)) {
+    // Bağsız profil — normal kullanıcı fail-closed (elevated hydrate politikası ayrı)
+    const elevatedTrusted = isPlatformAdmin(user) || isManagementUser(user);
+    if (!elevatedTrusted) {
+      return emptyResult({
+        error: new Error("Profil auth_user_id bağlı değil."),
+        membershipError: new Error("profile_unbound"),
+      });
+    }
+  }
+
+  if (
+    isAuthUserUuid(profileAuth) &&
+    isAuthUserUuid(authId) &&
+    profileAuth !== authId
+  ) {
+    return emptyResult({
+      error: new Error("Profil auth kullanıcısı ile eşleşmiyor."),
+      membershipError: new Error("auth_profile_mismatch"),
+    });
+  }
+
+  if (!profile.authUserId && isAuthUserUuid(authId)) {
+    profile = { ...profile, authUserId: authId };
+  }
+
+  const hydrated = await hydrateProfileWithMembership(profile, authId, user);
+  if (!hydrated.ok) {
+    return emptyResult({
+      profile: null,
+      error: hydrated.error,
+      membershipError: hydrated.error,
+    });
+  }
+
+  return emptyResult({ profile: hydrated.profile });
+}
+
 export async function upsertProfile(profile = {}) {
   const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
   if (adminUnavailable || !supabase) {
@@ -98,6 +257,15 @@ export async function upsertProfile(profile = {}) {
   }
 
   const record = mapProfileToRecord(profile);
+  // companyIds verilmediyse legacy company_ids kolonunu silme
+  if (
+    profile.companyIds === undefined &&
+    profile.company_ids === undefined &&
+    profile.legacyCompanyIds === undefined
+  ) {
+    delete record.company_ids;
+  }
+
   const { data, error } = await supabase
     .from(USER_PROFILES_TABLE)
     .upsert(record, { onConflict: "email" })
@@ -264,6 +432,7 @@ export async function provisionProfileForUser(user) {
     const linked = {
       ...existing.profile,
       id: user.id,
+      authUserId: user.id,
       email: String(user.email).trim().toLowerCase(),
       displayName:
         existing.profile.displayName ||
@@ -297,6 +466,7 @@ export async function provisionProfileForUser(user) {
   const role = resolveProvisionRole(user);
   const draft = {
     id: user.id,
+    authUserId: user.id,
     email: String(user.email).trim().toLowerCase(),
     displayName:
       user.user_metadata?.display_name || user.user_metadata?.full_name || user.email,
