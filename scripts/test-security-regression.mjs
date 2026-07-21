@@ -9,8 +9,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
-import { isAdminUser, isManagementUser, explainAdminGate, isAdminEmail } from "../src/lib/auth/admin.js";
-import { buildFallbackProfile, createUserAccess } from "../src/lib/auth/userAccess.js";
+import { isAdminUser, isManagementUser, explainAdminGate, isAdminEmail, getAdminEmails, evaluateManagementGate, isOwnerEmail } from "../src/lib/auth/admin.js";
+import { buildFallbackProfile, createUserAccess, mergeProfileWithAuth, demoteUntrustedElevatedRole } from "../src/lib/auth/userAccess.js";
+import {
+  buildAnnveroMetadataUpdatePayload,
+  resolveProvisionRole,
+  shouldPromoteToOwner,
+  shouldBootstrapAsAdmin,
+  isBootstrapOwnerEmail,
+} from "../src/lib/auth/profileProvisionPolicy.js";
+import { ANNVERO_ROLES } from "../src/config/annveroRoles.js";
 import {
   assertSafeSupabaseProjectRef,
   ANNVERO_KNOWN_PROJECT_REFS,
@@ -40,7 +48,9 @@ import {
   safeEqualString,
   verifyWebhookRequest,
 } from "../src/lib/security/webhookAuth.js";
-import { isRecoveryApiEnabled } from "../src/lib/recovery/recoveryGate.js";/** next/server'siz privilege strip (requestGuards ile aynı mantık) */
+import { isRecoveryApiEnabled } from "../src/lib/recovery/recoveryGate.js";
+
+/** next/server'siz privilege strip (requestGuards ile aynı mantık) */
 function stripClientPrivilegeClaims(body = {}) {
   if (!body || typeof body !== "object") return body;
   const {
@@ -62,6 +72,35 @@ function stripClientPrivilegeClaims(body = {}) {
 }
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const PREV_ADMIN_EMAILS = process.env.ANNVERO_ADMIN_EMAILS;
+const PREV_OWNER_EMAILS = process.env.ANNVERO_OWNER_EMAILS;
+const PREV_PUBLIC_ADMIN = process.env.NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS;
+const PREV_PUBLIC_OWNER = process.env.NEXT_PUBLIC_ANNVERO_OWNER_EMAILS;
+
+function withAdminEnv(adminEmails, fn) {
+  process.env.ANNVERO_ADMIN_EMAILS = adminEmails;
+  delete process.env.NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS;
+  try {
+    return fn();
+  } finally {
+    if (PREV_ADMIN_EMAILS === undefined) delete process.env.ANNVERO_ADMIN_EMAILS;
+    else process.env.ANNVERO_ADMIN_EMAILS = PREV_ADMIN_EMAILS;
+    if (PREV_PUBLIC_ADMIN === undefined) delete process.env.NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS;
+    else process.env.NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS = PREV_PUBLIC_ADMIN;
+  }
+}
+
+function restoreAuthEnvs() {
+  if (PREV_ADMIN_EMAILS === undefined) delete process.env.ANNVERO_ADMIN_EMAILS;
+  else process.env.ANNVERO_ADMIN_EMAILS = PREV_ADMIN_EMAILS;
+  if (PREV_OWNER_EMAILS === undefined) delete process.env.ANNVERO_OWNER_EMAILS;
+  else process.env.ANNVERO_OWNER_EMAILS = PREV_OWNER_EMAILS;
+  if (PREV_PUBLIC_ADMIN === undefined) delete process.env.NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS;
+  else process.env.NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS = PREV_PUBLIC_ADMIN;
+  if (PREV_PUBLIC_OWNER === undefined) delete process.env.NEXT_PUBLIC_ANNVERO_OWNER_EMAILS;
+  else process.env.NEXT_PUBLIC_ANNVERO_OWNER_EMAILS = PREV_PUBLIC_OWNER;
+}
 
 function stripSqlCommentsAndStrings(sql) {
   let out = "";
@@ -135,59 +174,260 @@ test("oturumsuz / yetkisiz / cross-tenant koruma kalıpları apiGuard'da mevcut"
   assert.match(src, /requireApiSession/);
 });
 
+test("P0: hardcoded DEFAULT_OWNER_EMAILS runtime source'ta yok", () => {
+  const adminSrc = fs.readFileSync(path.join(root, "src/lib/auth/admin.js"), "utf8");
+  assert.doesNotMatch(adminSrc, /DEFAULT_OWNER_EMAILS/);
+  assert.doesNotMatch(adminSrc, /yusufozlu@gmail\.com/);
+  assert.doesNotMatch(adminSrc, /NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS/);
+  withAdminEnv("", () => {
+    assert.deepEqual(getAdminEmails(), []);
+    assert.equal(isAdminEmail("yusufozlu@gmail.com"), false);
+  });
+});
+
+test("P0: NEXT_PUBLIC admin/owner env yetki kaynağı değil", () => {
+  delete process.env.ANNVERO_ADMIN_EMAILS;
+  process.env.NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS = "public-admin@example.com";
+  process.env.NEXT_PUBLIC_ANNVERO_OWNER_EMAILS = "public-owner@example.com";
+  process.env.ANNVERO_OWNER_EMAILS = "owner-only@example.com";
+  try {
+    assert.equal(isAdminEmail("public-admin@example.com"), false);
+    assert.equal(getAdminEmails().includes("public-admin@example.com"), false);
+    assert.equal(isOwnerEmail("owner-only@example.com"), true);
+    const ownerOnly = {
+      email: "owner-only@example.com",
+      app_metadata: { role: "admin" },
+      user_metadata: {},
+    };
+    assert.equal(isAdminUser(ownerOnly), false);
+    assert.equal(evaluateManagementGate(ownerOnly).allowed, false);
+  } finally {
+    restoreAuthEnvs();
+  }
+});
+
 test("admin user_metadata.role ile yükseltilmez", () => {
-  const attacker = {
-    email: "attacker@example.com",
-    user_metadata: { role: "admin", annvero_role: "admin", company_ids: ["other"] },
-    app_metadata: {},
-  };
-  assert.equal(isAdminUser(attacker), false);
-  assert.equal(isManagementUser(attacker), false);
-  const fallback = buildFallbackProfile(attacker);
-  assert.equal(fallback.role !== "admin" || !fallback.isPlatformAdmin, true);
-  assert.deepEqual(fallback.companyIds, []);
+  withAdminEnv("attacker@example.com", () => {
+    const attacker = {
+      email: "attacker@example.com",
+      user_metadata: { role: "admin", annvero_role: "admin", company_ids: ["other"] },
+      app_metadata: {},
+    };
+    assert.equal(isAdminUser(attacker), false);
+    assert.equal(isManagementUser(attacker), false);
+    const fallback = buildFallbackProfile(attacker);
+    assert.equal(fallback.isPlatformAdmin, false);
+    assert.notEqual(fallback.role, "admin");
+    assert.deepEqual(fallback.companyIds, []);
+  });
 });
 
-test("admin AND: email yalnız VEYA app_metadata yalnız yetmez", () => {
-  const emailOnly = {
-    email: "yusufozlu@gmail.com",
+test("admin AND: email yalnız VEYA app_metadata yalnız yetmez; ikisi birlikte admin", () => {
+  withAdminEnv("admin@annvero.test", () => {
+    const emailOnly = {
+      email: "admin@annvero.test",
+      app_metadata: {},
+      user_metadata: {},
+    };
+    assert.equal(isAdminEmail(emailOnly.email), true);
+    assert.equal(isAdminUser(emailOnly), false);
+    assert.equal(evaluateManagementGate(emailOnly).allowed, false);
+
+    const appOnly = {
+      email: "random@example.com",
+      app_metadata: { role: "admin" },
+      user_metadata: {},
+    };
+    assert.equal(isAdminUser(appOnly), false);
+    assert.equal(evaluateManagementGate(appOnly).allowed, false);
+
+    const both = {
+      email: "admin@annvero.test",
+      app_metadata: { role: "admin" },
+      user_metadata: { role: "viewer" },
+    };
+    const gate = explainAdminGate(both);
+    assert.equal(gate.emailOk, true);
+    assert.equal(gate.appOk, true);
+    assert.equal(gate.isAdmin, true);
+    assert.equal(gate.usedOrInsteadOfAnd, false);
+    assert.equal(isAdminUser(both), true);
+    assert.equal(evaluateManagementGate(both).allowed, true);
+    assert.equal(evaluateManagementGate(both).reason, "platform_admin_and");
+  });
+});
+
+test("P0: owner email tek başına admin/management değil", () => {
+  process.env.ANNVERO_OWNER_EMAILS = "owner@annvero.test";
+  delete process.env.ANNVERO_ADMIN_EMAILS;
+  try {
+    assert.equal(isOwnerEmail("owner@annvero.test"), true);
+    assert.equal(isAdminEmail("owner@annvero.test"), false);
+    const user = {
+      email: "owner@annvero.test",
+      app_metadata: {},
+      user_metadata: {},
+    };
+    assert.equal(isAdminUser(user), false);
+    assert.equal(isManagementUser(user), false);
+  } finally {
+    restoreAuthEnvs();
+  }
+});
+
+test("P0: first-user / no-admin / first-profile / owner auto-promote kapalı", () => {
+  assert.equal(shouldPromoteToOwner(), false);
+  assert.equal(isBootstrapOwnerEmail("anything@x.com"), false);
+  withAdminEnv("first@annvero.test", () => {
+    const first = { email: "first@annvero.test", app_metadata: {}, user_metadata: {} };
+    assert.equal(resolveProvisionRole(first), ANNVERO_ROLES.ACCOUNTING);
+    assert.equal(resolveProvisionRole({ email: "x@y.com", app_metadata: { role: "admin" } }), ANNVERO_ROLES.ACCOUNTING);
+  });
+});
+
+test("P0: login provisioning elevated app_metadata yazmaz", () => {
+  const adminPayload = buildAnnveroMetadataUpdatePayload({
+    email: "a@b.com",
+    displayName: "A",
+    role: ANNVERO_ROLES.ADMIN,
+    teamId: "",
+  });
+  assert.equal(adminPayload.skippedElevatedAppMetadata, true);
+  assert.equal(adminPayload.payload.app_metadata, undefined);
+  assert.ok(adminPayload.payload.user_metadata);
+
+  const partnerPayload = buildAnnveroMetadataUpdatePayload({
+    email: "p@b.com",
+    role: ANNVERO_ROLES.PARTNER,
+  });
+  assert.equal(partnerPayload.skippedElevatedAppMetadata, true);
+  assert.equal(partnerPayload.payload.app_metadata, undefined);
+
+  const safePayload = buildAnnveroMetadataUpdatePayload({
+    email: "c@b.com",
+    role: ANNVERO_ROLES.ACCOUNTING,
+  });
+  assert.equal(safePayload.skippedElevatedAppMetadata, false);
+  assert.equal(safePayload.payload.app_metadata.role, ANNVERO_ROLES.ACCOUNTING);
+});
+
+test("P0: DB profile role=admin + boş app_metadata → management/admin değil", () => {
+  withAdminEnv("db-admin@annvero.test", () => {
+    const user = {
+      id: "u1",
+      email: "db-admin@annvero.test",
+      app_metadata: {},
+      user_metadata: {},
+    };
+    assert.equal(demoteUntrustedElevatedRole(ANNVERO_ROLES.ADMIN, user), ANNVERO_ROLES.VIEWER);
+    const merged = mergeProfileWithAuth(user, {
+      id: "u1",
+      email: user.email,
+      role: ANNVERO_ROLES.ADMIN,
+      permissions: [],
+      companyIds: [],
+      isActive: true,
+    });
+    assert.equal(merged.isPlatformAdmin, false);
+    assert.equal(merged.isManagementUser, false);
+    assert.notEqual(merged.role, ANNVERO_ROLES.ADMIN);
+    const access = createUserAccess(merged);
+    assert.equal(access.isPlatformAdmin, false);
+    assert.equal(access.isManagementUser, false);
+    assert.notEqual(access.role, ANNVERO_ROLES.ADMIN);
+    assert.equal(evaluateManagementGate(user).allowed, false);
+  });
+});
+
+test("P0: DB profile role=partner + boş app_metadata → management değil", () => {
+  const user = {
+    id: "u2",
+    email: "partner-db@annvero.test",
     app_metadata: {},
     user_metadata: {},
   };
-  assert.equal(isAdminEmail(emailOnly.email), true);
-  assert.equal(isAdminUser(emailOnly), false);
-
-  const appOnly = {
-    email: "random@example.com",
-    app_metadata: { role: "admin" },
-    user_metadata: {},
-  };
-  assert.equal(isAdminUser(appOnly), false);
-
-  const both = {
-    email: "yusufozlu@gmail.com",
-    app_metadata: { role: "admin" },
-    user_metadata: { role: "viewer" },
-  };
-  const gate = explainAdminGate(both);
-  assert.equal(gate.emailOk, true);
-  assert.equal(gate.appOk, true);
-  assert.equal(gate.isAdmin, true);
-  assert.equal(gate.usedOrInsteadOfAnd, false);
-  assert.equal(isAdminUser(both), true);
-});
-
-test("createUserAccess email allowlist tek başına ADMIN zorlamaz", () => {
-  const access = createUserAccess({
-    email: "yusufozlu@gmail.com",
-    role: "goruntuleme",
+  const merged = mergeProfileWithAuth(user, {
+    id: "u2",
+    email: user.email,
+    role: ANNVERO_ROLES.PARTNER,
+    permissions: [],
     companyIds: [],
-    isPlatformAdmin: false,
-    isManagementUser: false,
     isActive: true,
   });
-  assert.notEqual(access.role, "admin");
-  assert.equal(access.isPlatformAdmin, false);
+  assert.equal(merged.isManagementUser, false);
+  assert.equal(merged.isPartner, false);
+  assert.equal(merged.role, ANNVERO_ROLES.VIEWER);
+  assert.equal(evaluateManagementGate(user).allowed, false);
+});
+
+test("P0: trusted app_metadata partner management olur; AND admin admin route erişir", () => {
+  withAdminEnv("real-admin@annvero.test", () => {
+    const partner = {
+      email: "partner@annvero.test",
+      app_metadata: { role: "partner" },
+      user_metadata: {},
+    };
+    assert.equal(isAdminUser(partner), false);
+    assert.equal(isManagementUser(partner), true);
+    const mgmt = evaluateManagementGate(partner);
+    assert.equal(mgmt.allowed, true);
+    assert.equal(mgmt.reason, "trusted_app_partner");
+
+    const admin = {
+      email: "real-admin@annvero.test",
+      app_metadata: { role: "admin" },
+      user_metadata: {},
+    };
+    assert.equal(isAdminUser(admin), true);
+    const merged = mergeProfileWithAuth(admin, {
+      id: "a1",
+      email: admin.email,
+      role: ANNVERO_ROLES.ACCOUNTING,
+      permissions: [],
+      companyIds: [],
+      isActive: true,
+    });
+    assert.equal(merged.isPlatformAdmin, true);
+    assert.equal(merged.role, ANNVERO_ROLES.ADMIN);
+    const access = createUserAccess(merged);
+    assert.equal(access.isPlatformAdmin, true);
+    assert.equal(
+      access.canAccessRoute("/admin", (role, pathname) => {
+        return role === ANNVERO_ROLES.ADMIN && String(pathname).startsWith("/admin");
+      }),
+      true
+    );
+
+    assert.equal(shouldBootstrapAsAdmin({ email: "x@y.com", app_metadata: {} }), false);
+    assert.equal(shouldBootstrapAsAdmin(admin), true);
+  });
+});
+
+test("P0: serverAuth management DB profile role tek başına kabul etmez (kaynak)", () => {
+  const src = fs.readFileSync(path.join(root, "src/lib/supabase/serverAuth.js"), "utf8");
+  assert.match(src, /evaluateManagementGate/);
+  assert.match(src, /requireAdminUser[\s\S]*isPlatformAdmin/);
+  assert.doesNotMatch(
+    src,
+    /profileRole === ANNVERO_ROLES\.PARTNER \|\| profileRole === ANNVERO_ROLES\.ADMIN/
+  );
+  assert.match(src, /Profil rolü bilgilendirici/);
+});
+
+test("createUserAccess email allowlist / role string tek başına ADMIN zorlamaz", () => {
+  withAdminEnv("listed@annvero.test", () => {
+    const access = createUserAccess({
+      email: "listed@annvero.test",
+      role: ANNVERO_ROLES.ADMIN,
+      companyIds: [],
+      isPlatformAdmin: false,
+      isManagementUser: false,
+      isActive: true,
+    });
+    assert.notEqual(access.role, "admin");
+    assert.equal(access.isPlatformAdmin, false);
+    assert.equal(access.isManagementUser, false);
+  });
 });
 
 test("client privilege claim strip edilir", () => {

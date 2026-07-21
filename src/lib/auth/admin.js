@@ -3,17 +3,15 @@
  *
  * Platform admin = AND(
  *   app_metadata.role === "admin" (veya annvero_role),
- *   email server-side allowlist içinde
+ *   email explicit server-only ANNVERO_ADMIN_EMAILS içinde
  * )
  *
  * Email tek başına VEYA app_metadata tek başına admin yetkisi VERMEZ.
- * user_metadata.role / company_ids yetkilendirmede kullanılmaz.
+ * Hardcoded email, NEXT_PUBLIC_* allowlist, owner email, DB profile role,
+ * user_metadata ve login provisioning admin yetkisi VERMEZ.
  */
 
 import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
-
-/** Kurulum sahibi allowlist varsayılanı — yalnız AND koşulunun email ayağı */
-const DEFAULT_OWNER_EMAILS = ["yusufozlu@gmail.com"];
 
 function splitEmailList(raw = "") {
   return String(raw || "")
@@ -22,20 +20,21 @@ function splitEmailList(raw = "") {
     .filter((email) => email.includes("@"));
 }
 
+/**
+ * Yalnız server-side ANNVERO_ADMIN_EMAILS.
+ * NEXT_PUBLIC_* ve hardcoded varsayılan yok.
+ */
 export function getAdminEmails() {
-  const fromEnv = [
-    ...splitEmailList(process.env.ANNVERO_ADMIN_EMAILS),
-    ...splitEmailList(process.env.NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS),
-  ];
-  return [...new Set([...fromEnv, ...DEFAULT_OWNER_EMAILS])];
+  return [...new Set(splitEmailList(process.env.ANNVERO_ADMIN_EMAILS))];
 }
 
+/**
+ * Owner e-posta listesi bilgilendirici / ops ayrımı içindir.
+ * Owner email tek başına platform admin yetkisi VERMEZ.
+ * NEXT_PUBLIC_* owner env yetki kaynağı değildir.
+ */
 export function getOwnerEmails() {
-  const owners = [
-    ...splitEmailList(process.env.ANNVERO_OWNER_EMAILS),
-    ...splitEmailList(process.env.NEXT_PUBLIC_ANNVERO_OWNER_EMAILS),
-  ];
-  return [...new Set([...owners, ...getAdminEmails(), ...DEFAULT_OWNER_EMAILS])];
+  return [...new Set(splitEmailList(process.env.ANNVERO_OWNER_EMAILS))];
 }
 
 export function isOwnerEmail(email) {
@@ -43,9 +42,10 @@ export function isOwnerEmail(email) {
   return getOwnerEmails().includes(String(email).trim().toLowerCase());
 }
 
+/** Explicit ANNVERO_ADMIN_EMAILS — owner listesi dahil edilmez. */
 export function isAdminEmail(email) {
   if (!email) return false;
-  return getOwnerEmails().includes(String(email).trim().toLowerCase());
+  return getAdminEmails().includes(String(email).trim().toLowerCase());
 }
 
 function normalizeElevatedRole(value = "") {
@@ -101,12 +101,29 @@ export function isPlatformAdmin(user) {
 
 /**
  * Yönetim: platform admin (AND) veya trusted app_metadata partner.
- * user_metadata ile partner/admin olunamaz.
+ * DB profile role / owner email / user_metadata ile management olunamaz.
  */
 export function isManagementUser(user) {
   if (!user) return false;
   if (isPlatformAdmin(user)) return true;
   return isTrustedAppPartnerRole(getTrustedAppRole(user));
+}
+
+/**
+ * Yönetim kapısı (saf): platform AND admin veya trusted app_metadata partner.
+ * DB profile role bu kararın parçası değildir.
+ */
+export function evaluateManagementGate(user) {
+  if (!user) {
+    return { allowed: false, role: "", reason: "unauthenticated" };
+  }
+  if (isPlatformAdmin(user)) {
+    return { allowed: true, role: "admin", reason: "platform_admin_and" };
+  }
+  if (isTrustedAppPartnerRole(getTrustedAppRole(user))) {
+    return { allowed: true, role: "partner", reason: "trusted_app_partner" };
+  }
+  return { allowed: false, role: "", reason: "forbidden" };
 }
 
 export function isPartnerUser(user) {
