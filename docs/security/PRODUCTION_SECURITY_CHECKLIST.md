@@ -21,10 +21,14 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
   Cleanup **COMPLETED**: geçici proje `annvero-staging-restore-drill-20260722` silindi;
   kaynak staging etkilenmedi; geçici $10.18/ay kaynağı artık aktif değil
   (faturalanmış tutar/iade iddiası yok)
+- [x] **Staging Storage backup/restore drill**: tamamlandı (2026-07-22) — **PASS**
+  Kanıt: `docs/security/STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md`
+  Manuel object-level; SHA match; bucket/nesne cleanup; production impact **NONE**
 - [x] Vercel staging env / proof test account (viewer + membership A): tatbikatta kullanıldı
 - [ ] **Production admin doğrulaması**: bekliyor (staging AND-gate production sayılmaz)
 - [ ] **Production tenant izolasyonu**: uygulanmadı (staging tatbikatı production’ı kapsamaz)
 - [ ] **Production database restore**: uygulanmadı (staging restore production sayılmaz)
+- [ ] **Production Storage restore**: uygulanmadı (staging Storage drill production sayılmaz)
 - [ ] Production migration / deploy: **yasak** / bekliyor (açık onay yok)
 - [ ] Paket tamamen production-ready: **hayır** (production onay + migration + smoke bekliyor; bu test sonucu değiştirmez)
 
@@ -79,9 +83,12 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [ ] İkinci immutable yedek hedefi
 - [x] Staging restore tatbikatı izole ortamda yapıldı (2026-07-22) —
   `STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md` (geçici restore projesi cleanup **COMPLETED**)
-- [ ] Storage objects/settings yedekleme/restore kanıtı (bu tatbikatta kapsam dışı; risk açık)
+- [x] Staging manuel Storage object-level backup/restore (2026-07-22) —
+  `STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md` (SHA match + cleanup)
+- [ ] Otomatik / scheduled Storage backup (kanıtlanmadı — risk açık)
+- [ ] Production Storage restore (bekliyor; staging PASS production sayılmaz)
 - [ ] Production restore tatbikatı (bekliyor; staging PASS production sayılmaz)
-- [x] Staging RTO ölçüldü (≤ 7m23s); production RPO/RTO tatbikatı bekliyor
+- [x] Staging DB RTO ölçüldü (≤ 7m23s); production RPO/RTO tatbikatı bekliyor
 - [ ] Supabase PITR etkin (staging’de PITR kapalı — risk açık kalır)
 
 ## CI

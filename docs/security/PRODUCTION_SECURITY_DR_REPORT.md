@@ -93,21 +93,34 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 - Şema/veri PASS (kritik tablolar + rate-limit RPC; A=1 / B=0 membership tutarlı)
 - Güvenlik PASS (ilk 8 kontrol true; restrictive deny policy count=9)
 - **Cleanup COMPLETED (2026-07-22):** geçici restore projesi kalıcı silindi; proje listesinde yok; kaynak staging etkilenmedi; production impact **NONE**; faturalanmış tutar/iade konusunda kanıtsız iddia yok
-- **Açık riskler (devam):** PITR kapalı; storage objects/settings bu tatbikatta kanıtlanmadı; production restore uygulanmadı
+- **Açık riskler (devam):** PITR kapalı; production restore uygulanmadı; otomatik Storage backup bu DB drill’de kanıtlanmadı
+- **Production impact: NONE**
+- Bu tatbikat production-ready sonucunu değiştirmez
+
+### Staging Storage backup/restore drill (2026-07-22) — PASS (staging only, manuel)
+
+- Kanıt: [`STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md`](./STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md)
+- Staging ref `bveipjvbopbkvojfdpmo`; private bucket `annvero-security-storage-drill-20260722` (1 MB / `text/plain`; 114 byte sentetik)
+- SHA-256 (kaynak=yedek=restore): `8ADD6A3E30E9E28CF7EF633AA4260F230317D701C8AC5F7ED02E7A6F3E9CC3BA`
+- `BACKUP_MATCH=True`, `RESTORE_MATCH=True`; restore sonrası yeniden indirme doğrulandı
+- Cleanup: sentetik nesne + bucket kalıcı silindi
+- **Kanıtlanan:** yalnız manuel object-level backup/restore
+- **Kanıtlanmayan:** otomatik/scheduled Storage backup; production Storage restore
+- **Açık risk:** PITR kapalı
 - **Production impact: NONE**
 - Bu tatbikat production-ready sonucunu değiştirmez
 
 ## 5–7. Test / tenant / backup
 
 Yerel: `npm run security:ci`, `backup:dry-run`.
-Staging: tenant isolation + admin AND-gate + database restore drill PASS.
+Staging: tenant isolation + admin AND-gate + database restore + Storage (manuel) drill PASS.
 Production’a karşı smoke / izolasyon / admin / restore tatbikatı **yok**.
 
 ## 8. Bağlantı teyidi
 
 - Bu DR raporunun ilk yazımında production/staging’e agent bağlantısı yoktu.
 - Staging DB 024/025 uygulaması operatör tarafından SQL Editor ile yapıldı; kanıt tarihli migration raporunda.
-- Staging tenant, admin AND-gate ve database restore operatör kanıtları tarihli raporlarda.
+- Staging tenant, admin AND-gate, database restore ve Storage drill operatör kanıtları tarihli raporlarda.
 - Production hâlâ değiştirilmedi; `supabase link` / `db push` / production SQL yok.
 
 ## 9. Dokunulmayan
@@ -121,6 +134,7 @@ Production’a karşı smoke / izolasyon / admin / restore tatbikatı **yok**.
 - Production tenant isolation smoke: **yapılmadı**
 - Production admin AND-gate doğrulaması: **yapılmadı**
 - Production database restore: **yapılmadı**
-- PITR kapalı (staging restore drill’de açık risk)
-- Storage objects/settings yedekleme/restore: bu tatbikatta kanıtlanmadı
+- Production Storage restore: **yapılmadı**
+- PITR kapalı (açık risk)
+- Otomatik / scheduled Storage backup: **kanıtlanmadı**
 - Chat final / checklist ile hizalı kalın; staging PASS ≠ production-ready
