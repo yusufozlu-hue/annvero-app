@@ -1532,6 +1532,101 @@ test("security headers next.config'te bağlı", () => {
   assert.match(src, /buildSecurityHeaders/);
 });
 
+function extractExportAsyncHandler(src, name) {
+  const start = src.indexOf(`export async function ${name}`);
+  assert.ok(start >= 0, `${name} handler missing`);
+  const next = src.indexOf("export async function ", start + 1);
+  return next === -1 ? src.slice(start) : src.slice(start, next);
+}
+
+test("GİB credentials: tenant guard encryption/supabase/decrypt'ten önce (sıra)", () => {
+  const src = fs.readFileSync(
+    path.join(root, "app/api/gib-credentials/route.js"),
+    "utf8"
+  );
+
+  for (const method of ["GET", "POST", "DELETE"]) {
+    const body = extractExportAsyncHandler(src, method);
+    const accessAt = body.search(/assertCompanyAccess\s*\(/);
+    assert.ok(accessAt >= 0, `${method}: assertCompanyAccess zorunlu`);
+
+    const encryptionAt = body.search(/getGibEncryptionKeyGuardResponse\s*\(/);
+    if (encryptionAt >= 0) {
+      assert.ok(
+        accessAt < encryptionAt,
+        `${method}: assertCompanyAccess encryption guard'dan önce olmalı`
+      );
+    }
+
+    const supabaseGuardAt = body.search(/getGibSupabaseGuardResponse\s*\(/);
+    assert.ok(supabaseGuardAt >= 0, `${method}: supabase guard`);
+    assert.ok(
+      accessAt < supabaseGuardAt,
+      `${method}: assertCompanyAccess supabase guard'dan önce olmalı`
+    );
+
+    const adminAt = body.search(/getGibSupabaseAdmin\s*\(/);
+    assert.ok(adminAt >= 0, `${method}: getGibSupabaseAdmin`);
+    assert.ok(
+      accessAt < adminAt,
+      `${method}: assertCompanyAccess credential DB client'tan önce olmalı`
+    );
+
+    const encryptAt = body.search(/encryptSecret\s*\(/);
+    if (encryptAt >= 0) {
+      assert.ok(
+        accessAt < encryptAt,
+        `${method}: assertCompanyAccess encryptSecret'ten önce olmalı`
+      );
+    }
+  }
+
+  // Bilinen auth/access hatası genel catch ile 500'e çevrilmesin; DB hata mesajı sızmasın
+  assert.doesNotMatch(src, /error:\s*error\.message/);
+  assert.doesNotMatch(src, /error:\s*stateError\.message/);
+  assert.doesNotMatch(src, /error:\s*existingError\.message/);
+  assert.match(src, /SANITIZED_SERVER_ERROR|İşlem tamamlanamadı/);
+});
+
+test("GİB credentials: viewer membership A → B cross-tenant deny (mevcut/yok aynı)", () => {
+  const companyA = "00000000-0000-4000-8000-000000000001";
+  const companyB = "00000000-0000-4000-8000-eeeeeeeeee01";
+  const missingId = "00000000-0000-4000-8000-ffffffff0002";
+  const access = createUserAccess({
+    role: ANNVERO_ROLES.VIEWER,
+    companyIds: [companyA],
+    companyIdsSource: "membership",
+    isActive: true,
+  });
+
+  assert.equal(access.canAccessCompany(companyA), true);
+  assert.equal(access.canAccessCompany(companyB), false);
+  assert.equal(access.canAccessCompany(missingId), false);
+
+  // apiGuard.assertCompanyAccess aynı canAccessCompany kapısını kullanır → 403
+  const apiGuardSrc = fs.readFileSync(
+    path.join(root, "src/lib/auth/apiGuard.js"),
+    "utf8"
+  );
+  assert.match(apiGuardSrc, /canAccessCompany/);
+  assert.match(apiGuardSrc, /jsonForbidden/);
+  assert.match(apiGuardSrc, /status:\s*403|jsonForbidden\(/);
+});
+
+test("GİB encryption key guard: missing → sanitize 503 (secret/config ayrıntısı yok)", () => {
+  const src = fs.readFileSync(
+    path.join(root, "src/lib/gibCredentialsRouteGuard.js"),
+    "utf8"
+  );
+  assert.match(src, /status:\s*503/);
+  assert.match(src, /Servis geçici olarak kullanılamıyor/);
+  assert.doesNotMatch(src, /error\s*,\s*\{\s*status:\s*500/);
+  assert.doesNotMatch(src, /status:\s*500/);
+  // Ham env hata mesajı istemciye yazılmamalı
+  assert.doesNotMatch(src, /error:\s*error\b/);
+  assert.doesNotMatch(src, /\{\s*error\s*\}/);
+});
+
 for (const { name, fn } of __securityTestQueue) {
   try {
     // eslint-disable-next-line no-await-in-loop
