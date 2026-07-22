@@ -7,6 +7,7 @@ import {
   getSafeNextPath,
 } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
+import { getSupabaseSsrCookieOptions } from "@/src/lib/supabase/ssrCookies";
 
 function isProtectedPath(pathname) {
   return (
@@ -26,6 +27,14 @@ function isProtectedPath(pathname) {
 
 function isAdminPath(pathname) {
   return pathname.startsWith("/admin");
+}
+
+/** HMAC webhook: getUser/refresh yok (fail-closed auth ayrı). */
+function shouldSkipSessionRefresh(pathname) {
+  return (
+    pathname === "/api/automation/webhook" ||
+    pathname.startsWith("/api/automation/webhook/")
+  );
 }
 
 /** Admin alanı: yalnız trusted AND platform admin (P0). DB/metadata role yetmez. */
@@ -60,6 +69,10 @@ export async function updateSession(request) {
 
   const { pathname, searchParams } = request.nextUrl;
 
+  if (shouldSkipSessionRefresh(pathname)) {
+    return NextResponse.next({ request });
+  }
+
   // Public /login: asla Supabase getUser / token refresh bekleme.
   // Oturumlu yönlendirme istemci tarafında; ?next= istemci + return-to API.
   if (pathname === "/login") {
@@ -78,6 +91,7 @@ export async function updateSession(request) {
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(config.supabaseUrl, config.anonKey, {
+    cookieOptions: getSupabaseSsrCookieOptions({ rememberMe: true }),
     cookies: {
       getAll() {
         return request.cookies.getAll();

@@ -11,7 +11,7 @@
     "import:companies": "node scripts/import-companies-json.mjs",
     "test:security": "node --import ./scripts/_alias-loader.mjs ./scripts/test-security-regression.mjs",
     "test:migration-contract": "node --import ./scripts/_alias-loader.mjs ./scripts/test-migration-contract-020-025.mjs",
-    "test:security:gates": "node scripts/test-auth-security-gates.mjs && node scripts/test-company-membership-security.mjs",
+    "test:security:gates": "node scripts/test-auth-security-gates.mjs && node scripts/test-company-membership-security.mjs && node --import ./scripts/_alias-loader.mjs ./scripts/test-auth-cookie-transport.mjs",
     "security:scan-secrets": "node scripts/security/scan-secrets.mjs",
     "security:scan-client": "node scripts/security/scan-client-secrets.mjs",
     "security:scan-sql": "node scripts/security/scan-destructive-sql.mjs",

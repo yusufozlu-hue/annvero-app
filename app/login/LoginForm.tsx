@@ -14,6 +14,7 @@ import { getSupabaseConfig } from "@/src/lib/supabase/config";
 import {
   clearClientAuthStorage,
   getSupabaseBrowserClient,
+  hasSupabaseAuthCookieHint,
   setRememberMePreference,
 } from "@/src/lib/supabase/client";
 import {
@@ -286,11 +287,23 @@ export default function LoginForm() {
 
     try {
       setRememberMePreference(rememberMe);
-      clearClientAuthStorage();
       const { clearClientSessionCaches } = await import(
         "@/src/lib/auth/clearClientSession"
       );
       clearClientSessionCaches();
+
+      // Önce mevcut client ile resmi signOut (cookie storage temizliği);
+      // elle session JSON → document.cookie kopyası yok.
+      const existing = getSupabaseBrowserClient({ rememberMe });
+      if (existing) {
+        try {
+          await existing.auth.signOut({ scope: "local" });
+        } catch {
+          // devam — yeni giriş denenecek
+        }
+      }
+      clearClientAuthStorage();
+
       const supabase = getSupabaseBrowserClient({ rememberMe });
       if (!supabase) {
         setIsConfigMissing(true);
@@ -328,6 +341,22 @@ export default function LoginForm() {
         return;
       }
 
+      // Fail-closed: SSR cookie yazılmadıysa UI-only oturuma izin verme.
+      if (!hasSupabaseAuthCookieHint()) {
+        try {
+          await supabase.auth.signOut({ scope: "local" });
+        } catch {
+          // ignore
+        }
+        clearClientAuthStorage();
+        setError(
+          "Giriş başarısız: Oturum çerezi yazılamadı. Tarayıcı çerezlerini kontrol edin."
+        );
+        setIsLoading(false);
+        submitLock.current = false;
+        return;
+      }
+
       // Kritik yol: return-to → yönlendir. me / login-event bekletmez.
       const loginEventBody = JSON.stringify({
         source: "password_login",
@@ -354,6 +383,7 @@ export default function LoginForm() {
 
       const redirectTarget = await consumeReturnToPath();
       router.push(redirectTarget);
+      router.refresh();
     } catch (caughtError) {
       logLoginError(caughtError);
       if (isNetworkError(caughtError)) {

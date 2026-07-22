@@ -1,4 +1,3 @@
-import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
@@ -7,6 +6,7 @@ import {
   getSafeNextPath,
 } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
+import { createAnnveroServerSupabase } from "@/src/lib/supabase/createServerSupabase";
 import {
   buildLoginEventContextFromRequest,
   LOGIN_EVENT_TYPES,
@@ -56,18 +56,20 @@ export async function GET(request) {
     "/dashboard"
   );
 
-  const supabase = createServerClient(config.supabaseUrl, config.anonKey, {
-    cookies: {
-      getAll() {
-        return cookieStore.getAll();
-      },
-      setAll(cookiesToSet) {
-        cookiesToSet.forEach(({ name, value, options }) => {
-          cookieStore.set(name, value, options);
-        });
-      },
+  const supabase = createAnnveroServerSupabase({
+    getAll() {
+      return cookieStore.getAll();
+    },
+    setAll(cookiesToSet) {
+      cookiesToSet.forEach(({ name, value, options }) => {
+        cookieStore.set(name, value, options);
+      });
     },
   });
+
+  if (!supabase) {
+    return NextResponse.redirect(`${origin}/login?error=supabase_config_missing`);
+  }
 
   const { data: sessionData, error } = await supabase.auth.exchangeCodeForSession(code);
 

@@ -1,7 +1,7 @@
 import { cache } from "react";
 import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
+import { createAnnveroServerSupabase } from "@/src/lib/supabase/createServerSupabase";
 import {
   getAnnveroRoleFromUser,
   evaluateManagementGate,
@@ -16,6 +16,8 @@ import { fetchProfileByEmail } from "@/src/lib/auth/profileService";
  * Request başına tek getUser — React cache() ile RSC/API içinde tekilleştirilir.
  * getClaims: JWKS boş (simetrik JWT) projelerde Auth sunucusuna düşer; körlemesine
  * değiştirilmedi. Asimetrik JWT opt-in sonrası ayrı doğrulama ile geçilebilir.
+ *
+ * Cookie: yalnız @supabase/ssr createServerClient getAll/setAll. Bearer yok.
  */
 export const getServerSupabaseUser = cache(async () => {
   const config = getSupabaseConfig();
@@ -23,16 +25,25 @@ export const getServerSupabaseUser = cache(async () => {
 
   const cookieStore = await cookies();
 
-  const supabase = createServerClient(config.supabaseUrl, config.anonKey, {
-    cookies: {
-      getAll() {
-        return cookieStore.getAll();
-      },
-      setAll() {
-        // API route read-only oturum okuması
-      },
+  const supabase = createAnnveroServerSupabase({
+    getAll() {
+      return cookieStore.getAll();
+    },
+    setAll(cookiesToSet) {
+      // Route Handler / Server Action: refresh sonrası Set-Cookie yazılmalı.
+      // RSC render sırasında cookieStore.set fırlatabilir → fail-open yazma yok;
+      // proxy updateSession oturumu yeniler.
+      try {
+        cookiesToSet.forEach(({ name, value, options }) => {
+          cookieStore.set(name, value, options);
+        });
+      } catch {
+        // read-only context
+      }
     },
   });
+
+  if (!supabase) return { supabase: null, user: null };
 
   const {
     data: { user },

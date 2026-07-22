@@ -1,35 +1,21 @@
 import { type NextRequest } from "next/server";
 import { updateSession } from "@/src/lib/supabase/updateSession";
 
+/**
+ * Next.js 16 proxy (eski middleware).
+ * /api dahil — TOKEN_REFRESHED Set-Cookie route handler'dan önce uygulanır.
+ * /login getUser atlanır (updateSession içinde).
+ */
 export async function proxy(request: NextRequest) {
   return updateSession(request);
 }
 
 export const config = {
   matcher: [
-    "/muhasebe",
-    "/muhasebe/:path*",
-    "/dashboard",
-    "/dashboard/:path*",
-    "/ofis-takip",
-    "/ofis-takip/:path*",
-    "/admin",
-    "/admin/:path*",
-    "/sistem-loglari",
-    "/sistem-loglari/:path*",
-    "/otomasyon",
-    "/otomasyon/:path*",
-    "/ai-ofis-asistani",
-    "/ai-ofis-asistani/:path*",
-    "/ik-personel",
-    "/ik-personel/:path*",
-    "/platform",
-    "/platform/:path*",
-    "/evrak-havuzu",
-    "/evrak-havuzu/:path*",
-    "/ticaret-sicil",
-    "/ticaret-sicil/:path*",
-    // /login bilerek dışarıda: public form getUser / token refresh beklememeli.
-    "/auth/callback",
+    /*
+     * Statik varlıklar hariç tüm path'ler (API dahil).
+     * Resmi Supabase SSR: her istekte cookie yenileme.
+     */
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };
