@@ -85,17 +85,28 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 - **Production impact: NONE**
 - Bu tatbikat production-ready sonucunu değiştirmez
 
+### Staging database restore drill (2026-07-22) — PASS (staging only)
+
+- Kanıt: [`STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md`](./STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md)
+- Kaynak: staging ref `bveipjvbopbkvojfdpmo` (yedek 21 Jul 2026 23:25:02 UTC)
+- Restore projesi: `annvero-staging-restore-drill-20260722` (`eu-central-1`); RTO ≤ 7m23s; ek maliyet $10.18/ay
+- Şema/veri PASS (kritik tablolar + rate-limit RPC; A=1 / B=0 membership tutarlı)
+- Güvenlik PASS (ilk 8 kontrol true; restrictive deny policy count=9)
+- **Açık riskler:** PITR kapalı; storage objects/settings bu tatbikatta kanıtlanmadı; production restore uygulanmadı
+- **Production impact: NONE**
+- Bu tatbikat production-ready sonucunu değiştirmez
+
 ## 5–7. Test / tenant / backup
 
 Yerel: `npm run security:ci`, `backup:dry-run`.
-Staging: tenant isolation + admin AND-gate drill PASS.
-Production’a karşı smoke / izolasyon / admin tatbikatı **yok**.
+Staging: tenant isolation + admin AND-gate + database restore drill PASS.
+Production’a karşı smoke / izolasyon / admin / restore tatbikatı **yok**.
 
 ## 8. Bağlantı teyidi
 
 - Bu DR raporunun ilk yazımında production/staging’e agent bağlantısı yoktu.
 - Staging DB 024/025 uygulaması operatör tarafından SQL Editor ile yapıldı; kanıt tarihli migration raporunda.
-- Staging tenant drill ve admin AND-gate operatör kanıtları tarihli raporlarda.
+- Staging tenant, admin AND-gate ve database restore operatör kanıtları tarihli raporlarda.
 - Production hâlâ değiştirilmedi; `supabase link` / `db push` / production SQL yok.
 
 ## 9. Dokunulmayan
@@ -108,4 +119,7 @@ Production’a karşı smoke / izolasyon / admin tatbikatı **yok**.
 - Production migration 024/025 + deploy: **açık onay bekliyor**
 - Production tenant isolation smoke: **yapılmadı**
 - Production admin AND-gate doğrulaması: **yapılmadı**
+- Production database restore: **yapılmadı**
+- PITR kapalı (staging restore drill’de açık risk)
+- Storage objects/settings yedekleme/restore: bu tatbikatta kanıtlanmadı
 - Chat final / checklist ile hizalı kalın; staging PASS ≠ production-ready

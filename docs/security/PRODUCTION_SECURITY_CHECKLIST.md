@@ -15,9 +15,13 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
   Kanıt: `docs/security/STAGING_ADMIN_AND_GATE_DRILL_2026-07-22.md`
   Negatif: allowlist yok + `app_metadata.admin` → `/api/admin/users` **403**;
   Pozitif: staging-only allowlist + trusted `app_metadata.admin` → **200** (`PASS_ADMIN_AND_POSITIVE`)
+- [x] **Staging database restore drill**: tamamlandı (2026-07-22) — **PASS**
+  Kanıt: `docs/security/STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md`
+  RTO ≤ 7m23s; şema/veri + restrictive deny PASS; production impact **NONE**
 - [x] Vercel staging env / proof test account (viewer + membership A): tatbikatta kullanıldı
 - [ ] **Production admin doğrulaması**: bekliyor (staging AND-gate production sayılmaz)
 - [ ] **Production tenant izolasyonu**: uygulanmadı (staging tatbikatı production’ı kapsamaz)
+- [ ] **Production database restore**: uygulanmadı (staging restore production sayılmaz)
 - [ ] Production migration / deploy: **yasak** / bekliyor (açık onay yok)
 - [ ] Paket tamamen production-ready: **hayır** (production onay + migration + smoke bekliyor; bu test sonucu değiştirmez)
 
@@ -67,11 +71,14 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 
 ## Backup / DR
 
-- [ ] Supabase PITR panel kontrolü
+- [ ] Supabase PITR panel kontrolü (**staging’de PITR kapalı** — açık risk)
 - [ ] Günlük yedek workflow aktif (şablondan)
 - [ ] İkinci immutable yedek hedefi
-- [ ] Restore tatbikatı izole ortamda yapıldı
-- [ ] RPO/RTO hedefleri tatbikatla ölçüldü
+- [x] Staging restore tatbikatı izole ortamda yapıldı (2026-07-22) —
+  `STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md`
+- [ ] Storage objects/settings yedekleme/restore kanıtı (bu tatbikatta kapsam dışı)
+- [ ] Production restore tatbikatı (bekliyor; staging PASS production sayılmaz)
+- [x] Staging RTO ölçüldü (≤ 7m23s); production RPO/RTO tatbikatı bekliyor
 
 ## CI
 
