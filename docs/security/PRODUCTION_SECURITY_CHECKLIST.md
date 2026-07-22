@@ -18,6 +18,9 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [x] **Staging database restore drill**: tamamlandı (2026-07-22) — **PASS**
   Kanıt: `docs/security/STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md`
   RTO ≤ 7m23s; şema/veri + restrictive deny PASS; production impact **NONE**
+  Cleanup **COMPLETED**: geçici proje `annvero-staging-restore-drill-20260722` silindi;
+  kaynak staging etkilenmedi; geçici $10.18/ay kaynağı artık aktif değil
+  (faturalanmış tutar/iade iddiası yok)
 - [x] Vercel staging env / proof test account (viewer + membership A): tatbikatta kullanıldı
 - [ ] **Production admin doğrulaması**: bekliyor (staging AND-gate production sayılmaz)
 - [ ] **Production tenant izolasyonu**: uygulanmadı (staging tatbikatı production’ı kapsamaz)
@@ -75,10 +78,11 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [ ] Günlük yedek workflow aktif (şablondan)
 - [ ] İkinci immutable yedek hedefi
 - [x] Staging restore tatbikatı izole ortamda yapıldı (2026-07-22) —
-  `STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md`
-- [ ] Storage objects/settings yedekleme/restore kanıtı (bu tatbikatta kapsam dışı)
+  `STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md` (geçici restore projesi cleanup **COMPLETED**)
+- [ ] Storage objects/settings yedekleme/restore kanıtı (bu tatbikatta kapsam dışı; risk açık)
 - [ ] Production restore tatbikatı (bekliyor; staging PASS production sayılmaz)
 - [x] Staging RTO ölçüldü (≤ 7m23s); production RPO/RTO tatbikatı bekliyor
+- [ ] Supabase PITR etkin (staging’de PITR kapalı — risk açık kalır)
 
 ## CI
 

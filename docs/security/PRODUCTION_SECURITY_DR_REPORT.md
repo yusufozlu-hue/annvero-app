@@ -89,10 +89,11 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 
 - Kanıt: [`STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md`](./STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md)
 - Kaynak: staging ref `bveipjvbopbkvojfdpmo` (yedek 21 Jul 2026 23:25:02 UTC)
-- Restore projesi: `annvero-staging-restore-drill-20260722` (`eu-central-1`); RTO ≤ 7m23s; ek maliyet $10.18/ay
+- Restore projesi: `annvero-staging-restore-drill-20260722` (`eu-central-1`); RTO ≤ 7m23s; geçici ek maliyet $10.18/ay (proje silindi — artık aktif değil)
 - Şema/veri PASS (kritik tablolar + rate-limit RPC; A=1 / B=0 membership tutarlı)
 - Güvenlik PASS (ilk 8 kontrol true; restrictive deny policy count=9)
-- **Açık riskler:** PITR kapalı; storage objects/settings bu tatbikatta kanıtlanmadı; production restore uygulanmadı
+- **Cleanup COMPLETED (2026-07-22):** geçici restore projesi kalıcı silindi; proje listesinde yok; kaynak staging etkilenmedi; production impact **NONE**; faturalanmış tutar/iade konusunda kanıtsız iddia yok
+- **Açık riskler (devam):** PITR kapalı; storage objects/settings bu tatbikatta kanıtlanmadı; production restore uygulanmadı
 - **Production impact: NONE**
 - Bu tatbikat production-ready sonucunu değiştirmez
 

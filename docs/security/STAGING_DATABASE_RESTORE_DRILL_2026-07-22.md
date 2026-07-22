@@ -13,11 +13,23 @@ Operatör tatbikat kanıtı. Secret / connection string içermez.
 | Healthy gözlemi | 22 Jul 2026 13:25:26 UTC |
 | Gözlenen RTO | ≤ 7 dakika 23 saniye |
 | Region | `eu-central-1` |
-| Ek aylık maliyet | $10.18 |
+| Ek aylık maliyet (geçici proje) | $10.18/ay — proje silindiği için artık aktif değil |
 | Sonuç | **PASS** |
+| Cleanup | **COMPLETED** (2026-07-22) |
 | Production impact | **NONE** |
 
-Gerçek production (`annvero-app` / ref `ttxigznwcjvrlzuppbro`) kullanılmadı. Restore projesi bu doküman turunda silinmedi.
+Gerçek production (`annvero-app` / ref `ttxigznwcjvrlzuppbro`) kullanılmadı.
+
+## Cleanup (2026-07-22)
+
+| Madde | Sonuç |
+|-------|--------|
+| Geçici restore projesi | `annvero-staging-restore-drill-20260722` **kalıcı silindi** |
+| Proje listesinde görünürlük | Artık yok |
+| Kaynak `annvero-staging` / ref `bveipjvbopbkvojfdpmo` | Etkilenmedi |
+| Geçici $10.18/ay kaynağı | Artık aktif değil |
+| Faturalanmış tutar / iade | Kanıtsız iddia yok (bu raporda belirtilmez) |
+| Production impact | **NONE** |
 
 ## Kapsam dışı
 
