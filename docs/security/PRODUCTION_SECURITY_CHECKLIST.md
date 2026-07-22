@@ -2,14 +2,19 @@
 
 Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 
-## Staging durumu (2026-07-21)
+## Staging durumu (2026-07-22)
 
 - [x] Staging DB migration **024** + **025**: tamamlandı
   Kanıt: `docs/security/STAGING_MIGRATION_APPLICATION_REPORT_2026-07-21.md`
-- [ ] Staging application deploy: bekliyor
-- [ ] Staging security smoke: bekliyor
-- [ ] Vercel staging env / test accounts: bekliyor
+- [x] Staging application deploy (branch build `66c35a5`): tamamlandı (ayrı `annvero-staging` Vercel projesi)
+- [x] Staging security smoke (unauth + auth transport + GİB/admin/export 403): tamamlandı
+- [x] **Staging tenant isolation drill**: tamamlandı (2026-07-22)
+  Kanıt: `docs/security/STAGING_TENANT_ISOLATION_DRILL_2026-07-22.md`
+  Sınıflar: HTTP / membership / RLS / anon grant / synthetic cleanup → **PASS**; production impact **NONE**
+- [x] Vercel staging env / proof test account (viewer + membership A): tatbikatta kullanıldı
+- [ ] **Production tenant izolasyonu**: uygulanmadı (staging tatbikatı production’ı kapsamaz)
 - [ ] Production migration / deploy: **yasak** / bekliyor (açık onay yok)
+- [ ] Paket tamamen production-ready: **hayır** (production onay + migration + smoke bekliyor)
 
 ### Staging / Preview fail-closed (kod)
 
@@ -38,10 +43,11 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 
 ## Auth / tenant
 
-- [ ] Kritik API'ler 401/403 davranışı smoke test
-- [ ] Cross-tenant `companyId` denemesi 403
-- [ ] Admin client role spoof başarısız
-- [ ] Login / beni hatırla / logout cookie temizliği OK
+- [x] Staging: kritik API'ler 401/403 davranışı smoke + tenant drill
+- [x] Staging: cross-tenant `companyId` denemesi 403 (export, GİB, admin)
+- [ ] Production: kritik API / cross-tenant smoke (bekliyor; staging PASS production sayılmaz)
+- [ ] Admin client role spoof başarısız (production smoke)
+- [x] Staging: login / SSR cookie transport sonrası `/api/auth/me` authenticated=true (auth cookie sync)
 
 ## API hardening
 

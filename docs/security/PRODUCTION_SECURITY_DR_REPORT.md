@@ -1,6 +1,7 @@
 # PRODUCTION SECURITY & DR REPORT
 
-Bu rapor yerel güvenlik paketinin durumunu özetler. Production/staging'e bağlantı kurulmamıştır.
+Bu rapor yerel güvenlik paketinin durumunu özetler. Production’a agent bağlantısı kurulmamıştır.
+Staging tatbikat kanıtları operatör kayıtlarıdır (aşağıdaki tarihli raporlar).
 
 ## 1. Tespit edilen riskler
 
@@ -18,6 +19,8 @@ Bu rapor yerel güvenlik paketinin durumunu özetler. Production/staging'e bağl
 - Restore API yoktu (dry-run + onay eklendi)
 - CI güvenlik kapıları yoktu (workflow eklendi)
 - `.env.example` / SECURITY docs yoktu
+- Browser/server auth cookie ayrışması (SSR cookie sync; staging drill’de doğrulandı)
+- GİB cross-tenant’ın encryption/supabase guard’dan önce 500 dönmesi (tenant guard önce; staging’de 403)
 
 ### P2
 - CSP `unsafe-inline` (bilinçli, raporlandı)
@@ -37,11 +40,13 @@ Bu rapor yerel güvenlik paketinin durumunu özetler. Production/staging'e bağl
 - `server-only` on `serverAdmin` / encryption service
 - CI + secret/SQL/client scans + regression tests
 - Backup dry-run + workflow example
+- Supabase SSR cookie session sync (`@supabase/ssr`)
+- GİB credentials: tenant `assertCompanyAccess` encryption/DB’den önce
 - Dokümantasyon seti
 
 ## 3. Değiştirilen / eklenen dosyalar
 
-Ayrıntılı liste final chat raporunda.
+Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 
 ## 4. Migration
 
@@ -54,25 +59,41 @@ Ayrıntılı liste final chat raporunda.
 
 - Tarihli operasyonel kanıt: [`STAGING_MIGRATION_APPLICATION_REPORT_2026-07-21.md`](./STAGING_MIGRATION_APPLICATION_REPORT_2026-07-21.md)
 - Staging ref `bveipjvbopbkvojfdpmo`: 024 + 025 COMMIT; V4.5.4 postflight CONFLICT=0, MISSING=0; ikisi de ALREADY_APPLIED
-- **Uygulama (Next.js) security smoke henüz yapılmadı** — staging application deploy / env / test hesapları bekliyor
-- **Production değiştirilmedi** — production ref’e SQL/HTTP/migration/deploy yok
 - Staging/preview: webhook HMAC secret’sız **fail-closed**; recovery yalnız `RECOVERY_API_ENABLED=true`
 - Production ve Preview secret’ları paylaşılmamalı; GİB key adı `GIB_CREDENTIALS_ENCRYPTION_KEY` (çoğul)
+
+### Staging tenant isolation drill (2026-07-22) — PASS (staging only)
+
+- Kanıt: [`STAGING_TENANT_ISOLATION_DRILL_2026-07-22.md`](./STAGING_TENANT_ISOLATION_DRILL_2026-07-22.md)
+- Build `66c35a5` @ `https://annvero-staging.vercel.app`
+- Same-origin: `/api/auth/me` membership A only; GİB/admin/export B → **403** (`PASS_STAGE2_AUTH`)
+- Authenticated RLS: firm A visible=1, firm B visible=0
+- Anon select grant yok; RLS açık
+- Sentetik firma B cleanup: rows=0; A membership=1; ikinci cleanup fail-closed abort; CASCADE yok
+- **Production tenant izolasyonu uygulanmadı**
+- **Production impact: NONE**
+- Paket **production-ready ilan edilmez**; production deploy/migration onayı hâlâ bekliyor
+
 ## 5–7. Test / tenant / backup
 
-Yerel komutlarla doğrulanır (`npm run security:ci`, `backup:dry-run`). Production'a karşı test yok. Staging uygulama smoke bekliyor.
+Yerel: `npm run security:ci`, `backup:dry-run`.
+Staging: yukarıdaki tenant isolation drill PASS.
+Production’a karşı smoke / izolasyon tatbikatı **yok**.
 
 ## 8. Bağlantı teyidi
 
 - Bu DR raporunun ilk yazımında production/staging’e agent bağlantısı yoktu.
-- Staging DB 024/025 uygulaması operatör tarafından SQL Editor ile yapıldı; kanıt yukarıdaki tarihli raporda.
+- Staging DB 024/025 uygulaması operatör tarafından SQL Editor ile yapıldı; kanıt tarihli migration raporunda.
+- Staging tenant drill operatör kanıtı tarihli isolation raporunda.
 - Production hâlâ değiştirilmedi; `supabase link` / `db push` / production SQL yok.
 
 ## 9. Dokunulmayan
 
 - `.cursor/hooks/lib/deploy-utils.mjs`
-- Commit / push / deploy yok
+- Bu doküman turunda commit / push / deploy yok (ayrı onay gerekir)
 
 ## 10–13. Kalan riskler ve kullanıcı adımları
 
-Chat final raporuna bakın.
+- Production migration 024/025 + deploy: **açık onay bekliyor**
+- Production tenant isolation smoke: **yapılmadı**
+- Chat final / checklist ile hizalı kalın; staging PASS ≠ production-ready
