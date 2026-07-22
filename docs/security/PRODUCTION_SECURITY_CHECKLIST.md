@@ -6,15 +6,20 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 
 - [x] Staging DB migration **024** + **025**: tamamlandı
   Kanıt: `docs/security/STAGING_MIGRATION_APPLICATION_REPORT_2026-07-21.md`
-- [x] Staging application deploy (branch build `66c35a5`): tamamlandı (ayrı `annvero-staging` Vercel projesi)
+- [x] Staging application deploy (branch build `118f660`): tamamlandı (ayrı `annvero-staging` Vercel projesi)
 - [x] Staging security smoke (unauth + auth transport + GİB/admin/export 403): tamamlandı
 - [x] **Staging tenant isolation drill**: tamamlandı (2026-07-22)
   Kanıt: `docs/security/STAGING_TENANT_ISOLATION_DRILL_2026-07-22.md`
   Sınıflar: HTTP / membership / RLS / anon grant / synthetic cleanup → **PASS**; production impact **NONE**
+- [x] **Staging admin AND-gate live smoke**: tamamlandı (2026-07-22)
+  Kanıt: `docs/security/STAGING_ADMIN_AND_GATE_DRILL_2026-07-22.md`
+  Negatif: allowlist yok + `app_metadata.admin` → `/api/admin/users` **403**;
+  Pozitif: staging-only allowlist + trusted `app_metadata.admin` → **200** (`PASS_ADMIN_AND_POSITIVE`)
 - [x] Vercel staging env / proof test account (viewer + membership A): tatbikatta kullanıldı
+- [ ] **Production admin doğrulaması**: bekliyor (staging AND-gate production sayılmaz)
 - [ ] **Production tenant izolasyonu**: uygulanmadı (staging tatbikatı production’ı kapsamaz)
 - [ ] Production migration / deploy: **yasak** / bekliyor (açık onay yok)
-- [ ] Paket tamamen production-ready: **hayır** (production onay + migration + smoke bekliyor)
+- [ ] Paket tamamen production-ready: **hayır** (production onay + migration + smoke bekliyor; bu test sonucu değiştirmez)
 
 ### Staging / Preview fail-closed (kod)
 
@@ -48,6 +53,8 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [ ] Production: kritik API / cross-tenant smoke (bekliyor; staging PASS production sayılmaz)
 - [ ] Admin client role spoof başarısız (production smoke)
 - [x] Staging: login / SSR cookie transport sonrası `/api/auth/me` authenticated=true (auth cookie sync)
+- [x] Staging: admin AND-gate (negatif 403 + pozitif 200) — `STAGING_ADMIN_AND_GATE_DRILL_2026-07-22.md`
+- [ ] Production: admin AND-gate live smoke (bekliyor)
 
 ## API hardening
 

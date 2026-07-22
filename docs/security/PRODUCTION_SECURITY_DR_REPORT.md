@@ -74,17 +74,28 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 - **Production impact: NONE**
 - Paket **production-ready ilan edilmez**; production deploy/migration onayı hâlâ bekliyor
 
+### Staging admin AND-gate drill (2026-07-22) — PASS (staging only)
+
+- Kanıt: [`STAGING_ADMIN_AND_GATE_DRILL_2026-07-22.md`](./STAGING_ADMIN_AND_GATE_DRILL_2026-07-22.md)
+- Build `118f660` @ `https://annvero-staging.vercel.app` (Vercel projesi `annvero-staging`)
+- Negatif: `ANNVERO_ADMIN_EMAILS` yok + trusted `app_metadata.admin` → `GET /api/admin/users` **403**
+- Pozitif: allowlist yalnız staging proje “Production” env + trusted `app_metadata.admin` → status **200** (`PASS_ADMIN_AND_POSITIVE`); body kaydedilmedi
+- Truth: allowlist AND trusted app_metadata; `user_metadata` / DB `role=admin` tek başına yetki değil
+- **Production admin testi yapılmadı**; production env değiştirilmedi
+- **Production impact: NONE**
+- Bu tatbikat production-ready sonucunu değiştirmez
+
 ## 5–7. Test / tenant / backup
 
 Yerel: `npm run security:ci`, `backup:dry-run`.
-Staging: yukarıdaki tenant isolation drill PASS.
-Production’a karşı smoke / izolasyon tatbikatı **yok**.
+Staging: tenant isolation + admin AND-gate drill PASS.
+Production’a karşı smoke / izolasyon / admin tatbikatı **yok**.
 
 ## 8. Bağlantı teyidi
 
 - Bu DR raporunun ilk yazımında production/staging’e agent bağlantısı yoktu.
 - Staging DB 024/025 uygulaması operatör tarafından SQL Editor ile yapıldı; kanıt tarihli migration raporunda.
-- Staging tenant drill operatör kanıtı tarihli isolation raporunda.
+- Staging tenant drill ve admin AND-gate operatör kanıtları tarihli raporlarda.
 - Production hâlâ değiştirilmedi; `supabase link` / `db push` / production SQL yok.
 
 ## 9. Dokunulmayan
@@ -96,4 +107,5 @@ Production’a karşı smoke / izolasyon tatbikatı **yok**.
 
 - Production migration 024/025 + deploy: **açık onay bekliyor**
 - Production tenant isolation smoke: **yapılmadı**
+- Production admin AND-gate doğrulaması: **yapılmadı**
 - Chat final / checklist ile hizalı kalın; staging PASS ≠ production-ready
