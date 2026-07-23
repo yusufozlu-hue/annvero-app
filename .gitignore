@@ -61,4 +61,5 @@ annvero-companies-export-*.json
 *.export.json
 .tmp-backup-dry-run/
 .tmp-staging-storage-backup/
+.tmp-production-storage-backup/
 backup-artifacts/
