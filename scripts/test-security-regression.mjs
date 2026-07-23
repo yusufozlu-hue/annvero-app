@@ -907,6 +907,64 @@ test("backup dry-run manifest + checksum üretir", () => {
   assert.equal(manifest.dry_run, true);
 });
 
+test("staging storage backup guard production'u fail-closed reddeder", async () => {
+  const {
+    assertStagingOnlyBackupTarget,
+    STAGING_PROJECT_REF,
+    PRODUCTION_PROJECT_REF,
+    redactSecrets,
+  } = await import("./backup/lib/stagingBackupGuard.mjs");
+
+  const prodLive = assertStagingOnlyBackupTarget({
+    projectRef: PRODUCTION_PROJECT_REF,
+    mode: "live",
+  });
+  assert.equal(prodLive.ok, false);
+  assert.equal(prodLive.blocked, true);
+  assert.equal(prodLive.code, "PRODUCTION_REF_FORBIDDEN");
+
+  const prodDry = assertStagingOnlyBackupTarget({
+    supabaseUrl: `https://${PRODUCTION_PROJECT_REF}.supabase.co`,
+    mode: "dry-run",
+  });
+  assert.equal(prodDry.ok, false);
+  assert.equal(prodDry.code, "PRODUCTION_REF_FORBIDDEN");
+
+  const stagingLive = assertStagingOnlyBackupTarget({
+    projectRef: STAGING_PROJECT_REF,
+    mode: "live",
+  });
+  assert.equal(stagingLive.ok, true);
+
+  const otherLive = assertStagingOnlyBackupTarget({
+    projectRef: "abcdefghijklmnop",
+    mode: "live",
+  });
+  assert.equal(otherLive.ok, false);
+
+  const redacted = redactSecrets("key=sb_secret_abcDEF123_and eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaa.bbb");
+  assert.ok(!redacted.includes("sb_secret_abcDEF123"));
+  assert.ok(!redacted.includes("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"));
+});
+
+test("staging storage backup workflow staging-only ve min permissions", () => {
+  const wf = fs.readFileSync(
+    path.join(root, ".github/workflows/staging-storage-backup.yml"),
+    "utf8"
+  );
+  assert.match(wf, /name:\s*annvero-staging-storage-backup/);
+  assert.match(wf, /workflow_dispatch:/);
+  assert.match(wf, /concurrency:/);
+  assert.match(wf, /timeout-minutes:\s*30/);
+  assert.match(wf, /permissions:\s*\n\s*contents:\s*read/m);
+  assert.match(wf, /environment:\s*staging-backup/);
+  assert.match(wf, /STAGING_SUPABASE_URL/);
+  assert.match(wf, /STAGING_SUPABASE_SERVICE_ROLE_KEY/);
+  assert.doesNotMatch(wf, /ttxigznwcjvrlzuppbro/);
+  assert.doesNotMatch(wf, /production-backup/);
+  assert.match(wf, /actions\/upload-artifact@[0-9a-f]{40}/);
+});
+
 // Upload + open redirect
 test("path traversal ve open redirect engellenir", () => {
   assert.equal(getSafeNextPath("https://evil.com"), "/dashboard");

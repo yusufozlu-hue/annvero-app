@@ -1,0 +1,86 @@
+# ANNVERO staging-only otomatik Storage backup
+# Production ref / secret kullanılmaz. origin/main deploy tetiklemez (docs/scripts branch).
+#
+# Gerekli GitHub Environment secrets (staging-backup):
+#   STAGING_SUPABASE_URL              — https://bveipjvbopbkvojfdpmo.supabase.co
+#   STAGING_SUPABASE_SERVICE_ROLE_KEY — staging service role (değer repo’ya yazılmaz)
+# İsteğe bağlı:
+#   BACKUP_SECONDARY_DIR              — ikinci yerel/CI kopya kökü
+#   BACKUP_SECONDARY_S3_BUCKET        — immutable S3 hedefi (henüz zorunlu değil)
+#   BACKUP_ENCRYPTION_KEY             — ileride envelope şifreleme
+
+name: annvero-staging-storage-backup
+
+on:
+  schedule:
+    # UTC 03:00 daily — staging RPO hedefi ≤ 24s
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run (no network) or live (staging drill)"
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - live
+
+concurrency:
+  group: annvero-staging-storage-backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  staging-storage-backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging-backup
+    permissions:
+      contents: read
+    steps:
+      # Pin: actions/checkout v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      # Pin: actions/setup-node v4.1.0
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3f2eb4ae
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve mode
+        id: mode
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ -z "$MODE" ]; then MODE="live"; fi
+          echo "value=$MODE" >> "$GITHUB_OUTPUT"
+
+      - name: Staging storage backup
+        env:
+          STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          BACKUP_SECONDARY_DIR: ${{ secrets.BACKUP_SECONDARY_DIR }}
+          BACKUP_SECONDARY_S3_BUCKET: ${{ secrets.BACKUP_SECONDARY_S3_BUCKET }}
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ./backup-artifacts
+          # Secret değerlerini echo etme
+          node scripts/backup/staging-storage-backup.mjs \
+            --mode "${{ steps.mode.outputs.value }}" \
+            --out ./backup-artifacts \
+            --run-id "$(date -u +%Y%m%dT%H%M%SZ)"
+
+      - name: Upload backup artifacts (checksum manifests)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: staging-storage-backup-${{ github.run_id }}
+          path: backup-artifacts/
+          if-no-files-found: warn
+          retention-days: 35

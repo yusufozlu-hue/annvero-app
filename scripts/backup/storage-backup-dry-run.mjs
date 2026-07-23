@@ -1,14 +1,29 @@
 /**
  * Storage backup manifest — sentetik / dry-run.
  * Production dosya indirmez. DB backup Storage objelerini kapsamaz.
+ * Canlı staging yedek: scripts/backup/staging-storage-backup.mjs
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import {
+  BACKUP_RETENTION,
+  STAGING_PROJECT_REF,
+  assertStagingOnlyBackupTarget,
+} from "./lib/stagingBackupGuard.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+const prodGuard = assertStagingOnlyBackupTarget({
+  projectRef: "ttxigznwcjvrlzuppbro",
+  mode: "live",
+});
+if (prodGuard.ok) {
+  console.error("FAIL  production ref must be rejected by staging backup guard");
+  process.exit(1);
+}
 
 function argValue(flag, fallback = "") {
   const idx = process.argv.indexOf(flag);
@@ -58,8 +73,12 @@ const storageManifest = {
   generated_at: new Date().toISOString(),
   dry_run: true,
   note: "Supabase DB backup Storage dosyalarını kapsamaz. Silinen dosya yalnız DB restore ile geri gelmez.",
+  staging_ref_only: STAGING_PROJECT_REF,
+  production_ref_forbidden: true,
+  retention_policy: BACKUP_RETENTION,
   secondary_target: "NOT_CONFIGURED",
   object_lock: false,
+  mutates_user_objects: false,
   objects,
   totals: {
     object_count: objects.length,

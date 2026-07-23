@@ -100,7 +100,7 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 ### Staging Storage backup/restore drill (2026-07-22) — PASS (staging only, manuel)
 
 - Kanıt: [`STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md`](./STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md)
-- Staging ref `bveipjvbopbkvojfdpmo`; private bucket `annvero-security-storage-drill-20260722` (1 MB / `text/plain`; 114 byte sentetik)
+- Staging ref `bveipjvbopbkvojfdpmo`; private bucket `annvero-security-storage-drill-20260722` (1 MB / `text/plain`; 114 byte)
 - SHA-256 (kaynak=yedek=restore): `8ADD6A3E30E9E28CF7EF633AA4260F230317D701C8AC5F7ED02E7A6F3E9CC3BA`
 - `BACKUP_MATCH=True`, `RESTORE_MATCH=True`; restore sonrası yeniden indirme doğrulandı
 - Cleanup: sentetik nesne + bucket kalıcı silindi
@@ -109,6 +109,16 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 - **Açık risk:** PITR kapalı
 - **Production impact: NONE**
 - Bu tatbikat production-ready sonucunu değiştirmez
+
+### Staging automated Storage backup pipeline (2026-07-23) — PARTIAL
+
+- Kanıt: [`STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md`](./STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md)
+- Kod: `scripts/backup/staging-storage-backup.mjs` + `lib/stagingBackupGuard.mjs`
+- Workflow: `.github/workflows/staging-storage-backup.yml` (cron `0 3 * * *` UTC, dispatch, concurrency, timeout 30m, `contents: read`)
+- Dry-run + production ref fail-closed: **PASS**
+- Live staging API: **BLOCKED** — `STAGING_SUPABASE_URL` / `STAGING_SUPABASE_SERVICE_ROLE_KEY` yok; yerel `.env.local` production ref (kullanılmadı)
+- İkinci S3 hedefi: **NOT_CONFIGURED**
+- **Production impact: NONE**
 
 ## 5–7. Test / tenant / backup
 
@@ -136,5 +146,5 @@ Production’a karşı smoke / izolasyon / admin / restore tatbikatı **yok**.
 - Production database restore: **yapılmadı**
 - Production Storage restore: **yapılmadı**
 - PITR kapalı (açık risk)
-- Otomatik / scheduled Storage backup: **kanıtlanmadı**
+- Otomatik / scheduled Storage backup: **pipeline hazır; live kanıt BLOCKED** (STAGING_* secrets)
 - Chat final / checklist ile hizalı kalın; staging PASS ≠ production-ready

@@ -19,6 +19,9 @@
 - Silinen Storage dosyası yalnız database restore ile geri gelmez
 - Inventory manifest: bucket, path, company_id, size, checksum, version
 - Dry-run: `npm run backup:storage-dry-run`
+- Staging otomatik (drill-scoped): `npm run backup:staging-storage:dry-run` /
+  `npm run backup:staging-storage -- --mode live` (yalnız `STAGING_*` secret’lar)
+- Workflow: `.github/workflows/staging-storage-backup.yml` (staging Environment; production-backup değil)
 - İkinci bağımsız + object-lock hedef kurulmadan Storage yedek “tamamlandı” sayılmaz
 
 ## Tek backup run ID

@@ -24,6 +24,10 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [x] **Staging Storage backup/restore drill**: tamamlandı (2026-07-22) — **PASS**
   Kanıt: `docs/security/STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md`
   Manuel object-level; SHA match; bucket/nesne cleanup; production impact **NONE**
+- [x] **Staging otomatik Storage backup pipeline (kod + dry-run)**: hazır (2026-07-23)
+  Kanıt: `docs/security/STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md`
+  Workflow + staging-only guard + dry-run PASS; **live staging API BLOCKED** (STAGING_* secret yok;
+  yerel `.env.local` production ref → kullanılmadı)
 - [x] Vercel staging env / proof test account (viewer + membership A): tatbikatta kullanıldı
 - [ ] **Production admin doğrulaması**: bekliyor (staging AND-gate production sayılmaz)
 - [ ] **Production tenant izolasyonu**: uygulanmadı (staging tatbikatı production’ı kapsamaz)
@@ -85,7 +89,10 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
   `STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md` (geçici restore projesi cleanup **COMPLETED**)
 - [x] Staging manuel Storage object-level backup/restore (2026-07-22) —
   `STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md` (SHA match + cleanup)
-- [ ] Otomatik / scheduled Storage backup (kanıtlanmadı — risk açık)
+- [x] Staging otomatik Storage backup **pipeline** (2026-07-23) —
+  `STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md` (workflow + dry-run + prod fail-closed);
+  live staging API hâlâ **BLOCKED** (STAGING_* secrets)
+- [ ] Otomatik / scheduled Storage backup **live kanıt** (GitHub `staging-backup` secrets + bir yeşil run)
 - [ ] Production Storage restore (bekliyor; staging PASS production sayılmaz)
 - [ ] Production restore tatbikatı (bekliyor; staging PASS production sayılmaz)
 - [x] Staging DB RTO ölçüldü (≤ 7m23s); production RPO/RTO tatbikatı bekliyor

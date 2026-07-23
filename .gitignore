@@ -59,3 +59,6 @@ scripts/profile-*.mjs
 annvero-companies-export-*.json
 *.backup.json
 *.export.json
+.tmp-backup-dry-run/
+.tmp-staging-storage-backup/
+backup-artifacts/

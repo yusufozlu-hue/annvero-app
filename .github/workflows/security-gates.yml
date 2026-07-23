@@ -49,10 +49,11 @@ jobs:
       - name: Company membership security
         run: node scripts/test-company-membership-security.mjs
 
-      - name: Backup dry-run (DB + Storage)
+      - name: Backup dry-run (DB + Storage + staging guard)
         run: |
           npm run backup:dry-run
           npm run backup:storage-dry-run
+          npm run backup:staging-storage:dry-run
 
       - name: Bank parser regression
         run: npm run test:bank-parser
