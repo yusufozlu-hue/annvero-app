@@ -110,15 +110,22 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 - **Production impact: NONE**
 - Bu tatbikat production-ready sonucunu değiştirmez
 
-### Staging automated Storage backup pipeline (2026-07-23) — PARTIAL
+### Staging automated Storage backup pipeline (2026-07-23) — PASS (staging live)
 
 - Kanıt: [`STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md`](./STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md)
 - Kod: `scripts/backup/staging-storage-backup.mjs` + `lib/stagingBackupGuard.mjs`
-- Workflow: `.github/workflows/staging-storage-backup.yml` (cron `0 3 * * *` UTC, dispatch, concurrency, timeout 30m, `contents: read`)
-- Dry-run + production ref fail-closed: **PASS**
-- Live staging API: **BLOCKED** — `STAGING_SUPABASE_URL` / `STAGING_SUPABASE_SERVICE_ROLE_KEY` yok; yerel `.env.local` production ref (kullanılmadı)
-- İkinci S3 hedefi: **NOT_CONFIGURED**
+- Workflow: `.github/workflows/staging-storage-backup.yml` (cron + dispatch + push path trigger)
+- Live: Actions run **`29994737249`** @ `473aa77` — **success** (Node 22)
+- Drill-scoped; BACKUP/RESTORE match + cleanup; kullanıcı objelerine etki **NONE**
+- İkinci S3 hedefi: **NOT_CONFIGURED** (karar kapısı)
 - **Production impact: NONE**
+
+### Production cutover plan (2026-07-23) — DRAFT ONLY
+
+- Runbook: [`PRODUCTION_CUTOVER_RUNBOOK_2026-07-23.md`](./PRODUCTION_CUTOVER_RUNBOOK_2026-07-23.md)
+- Uygulama yok; `deploy onayla` + SQL onayı zorunlu
+- PITR: maliyetli karar (otomatik açılmaz)
+- Immutable ikinci hedef: production-ready öncesi karar kapısı
 
 ## 5–7. Test / tenant / backup
 
@@ -140,11 +147,11 @@ Production’a karşı smoke / izolasyon / admin / restore tatbikatı **yok**.
 
 ## 10–13. Kalan riskler ve kullanıcı adımları
 
-- Production migration 024/025 + deploy: **açık onay bekliyor**
+- Production migration 024/025 + deploy: **açık onay bekliyor** — bkz. cutover runbook
 - Production tenant isolation smoke: **yapılmadı**
 - Production admin AND-gate doğrulaması: **yapılmadı**
 - Production database restore: **yapılmadı**
 - Production Storage restore: **yapılmadı**
-- PITR kapalı (açık risk)
-- Otomatik / scheduled Storage backup: **pipeline hazır; live kanıt BLOCKED** (STAGING_* secrets)
+- PITR: staging bilinçli kapalı; production **maliyetli karar** (otomatik açılmaz)
+- Otomatik / scheduled Storage backup: **staging live PASS** (`29994737249`); production + immutable hedef açık
 - Chat final / checklist ile hizalı kalın; staging PASS ≠ production-ready

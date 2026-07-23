@@ -26,15 +26,16 @@ Operatör / agent kanıtı. Secret / service-role değerleri içermez.
 | Min GHA permissions (`contents: read`) | **PASS** |
 | concurrency + timeout-minutes(30) + workflow_dispatch | **PASS** |
 | Drill-only; kullanıcı objelerine dokunmama | **PASS** (tasarım + dry-run) |
+| Live staging object-level backup (Actions) | **PASS** — run `29994737249` @ `473aa77` (Node 22) |
+| Live BACKUP_MATCH / RESTORE_MATCH / cleanup | **PASS** (script exit 0 + artifact) |
 
-## Bu turda BLOCKED
+## Bu turda BLOCKED / açık
 
 | Madde | Neden |
 |-------|--------|
-| Live object-level backup (staging API) | `STAGING_SUPABASE_URL` + `STAGING_SUPABASE_SERVICE_ROLE_KEY` bu ortamda tanımlı değil |
-| Yerel `.env.local` ile canlı koşum | `NEXT_PUBLIC_SUPABASE_URL` **production** ref’ine işaret ediyor → kullanılamaz / DUR |
-| İkinci immutable S3 hedefi | `BACKUP_SECONDARY_S3_BUCKET` yok |
-| GitHub Environment `staging-backup` secret kurulumu | Değer uydurulmadı; operatör adımı |
+| İkinci immutable S3 hedefi | `BACKUP_SECONDARY_S3_BUCKET` yok — karar kapısı |
+| Production Storage backup/restore | Cutover runbook; staging PASS production sayılmaz |
+| PITR | Bilinçli kapalı (maliyet); production ayrı onay |
 
 ### Gerekli secret adları (değer yok)
 
@@ -54,11 +55,11 @@ Operatör / agent kanıtı. Secret / service-role değerleri içermez.
 
 ## Cleanup
 
-Bu turda canlı drill bucket oluşturulmadı → cleanup N/A.
+Live run `29994737249`: sentetik nesne + drill bucket cleanup script varsayılanıyla PASS (exit 0).
 Dry-run çıktıları `.tmp-staging-storage-backup/` / `.gitignore` altında; commit kapsamı dışı.
 
 ## Non-claims
 
 - Bu rapor production-ready Storage DR ilanı değildir.
-- Otomatik zamanlama workflow dosyası hazır; GitHub’da secret + Environment olmadan schedule **yeşil live PASS üretmez**.
-- PITR hâlâ kapalı (ayrı açık risk).
+- Production cutover: `PRODUCTION_CUTOVER_RUNBOOK_2026-07-23.md` (`deploy onayla` zorunlu).
+- PITR ve immutable ikinci hedef ayrı karar kapılarıdır.

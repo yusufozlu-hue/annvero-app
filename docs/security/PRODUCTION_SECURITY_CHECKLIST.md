@@ -26,9 +26,13 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
   Manuel object-level; SHA match; bucket/nesne cleanup; production impact **NONE**
 - [x] **Staging otomatik Storage backup pipeline (kod + dry-run)**: hazır (2026-07-23)
   Kanıt: `docs/security/STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md`
-  Workflow + staging-only guard + dry-run PASS; **live staging API BLOCKED** (STAGING_* secret yok;
-  yerel `.env.local` production ref → kullanılmadı)
+  Workflow + staging-only guard + dry-run PASS
+- [x] **Staging otomatik Storage backup live**: PASS (2026-07-23)
+  Actions run `29994737249` @ commit `473aa77`; Node 22; drill-scoped;
+  manifest/checksum/restore/cleanup PASS; production impact **NONE**
 - [x] Vercel staging env / proof test account (viewer + membership A): tatbikatta kullanıldı
+- [ ] **Production cutover**: plan hazır — `PRODUCTION_CUTOVER_RUNBOOK_2026-07-23.md`
+  (`deploy onayla` + SQL onayı olmadan uygulama **yasak**)
 - [ ] **Production admin doğrulaması**: bekliyor (staging AND-gate production sayılmaz)
 - [ ] **Production tenant izolasyonu**: uygulanmadı (staging tatbikatı production’ı kapsamaz)
 - [ ] **Production database restore**: uygulanmadı (staging restore production sayılmaz)
@@ -90,13 +94,15 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [x] Staging manuel Storage object-level backup/restore (2026-07-22) —
   `STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md` (SHA match + cleanup)
 - [x] Staging otomatik Storage backup **pipeline** (2026-07-23) —
-  `STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md` (workflow + dry-run + prod fail-closed);
-  live staging API hâlâ **BLOCKED** (STAGING_* secrets)
-- [ ] Otomatik / scheduled Storage backup **live kanıt** (GitHub `staging-backup` secrets + bir yeşil run)
+  `STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md` (workflow + dry-run + prod fail-closed)
+- [x] Staging otomatik Storage backup **live kanıt** (2026-07-23) —
+  Actions `29994737249` @ `473aa77` (Node 22; drill PASS; cleanup PASS)
+- [ ] İkinci immutable Storage hedefi (object-lock) — **karar kapısı** (cutover runbook)
 - [ ] Production Storage restore (bekliyor; staging PASS production sayılmaz)
 - [ ] Production restore tatbikatı (bekliyor; staging PASS production sayılmaz)
 - [x] Staging DB RTO ölçüldü (≤ 7m23s); production RPO/RTO tatbikatı bekliyor
-- [ ] Supabase PITR etkin (staging’de PITR kapalı — risk açık kalır)
+- [ ] Supabase PITR etkin — **maliyetli karar**; staging’de bilinçli kapalı (~100 USD/ay);
+  production için cutover runbook’ta ayrı onay (şimdi otomatik açılmaz)
 
 ## CI
 
