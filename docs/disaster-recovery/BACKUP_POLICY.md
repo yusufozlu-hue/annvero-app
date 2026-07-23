@@ -21,8 +21,10 @@
 - Dry-run: `npm run backup:storage-dry-run`
 - Staging otomatik (drill-scoped): `npm run backup:staging-storage:dry-run` /
   `npm run backup:staging-storage -- --mode live` (yalnız `STAGING_*` secret’lar)
-- Workflow: `.github/workflows/staging-storage-backup.yml` (staging Environment; production-backup değil)
+- Immutable S3 plan (AWS’siz): `npm run backup:immutable-s3:dry-run`
+- Workflow: `.github/workflows/staging-storage-backup.yml` (staging Environment; OIDC → S3)
 - İkinci bağımsız + object-lock hedef kurulmadan Storage yedek “tamamlandı” sayılmaz
+  (kod hazır; **live S3 kanıtı bekliyor**)
 
 ## Tek backup run ID
 - DB + Storage manifest’leri aynı `run_id` ile bağlanır

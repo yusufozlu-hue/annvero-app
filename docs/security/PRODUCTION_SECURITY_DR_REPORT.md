@@ -117,7 +117,7 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 - Workflow: `.github/workflows/staging-storage-backup.yml` (cron + dispatch + push path trigger)
 - Live: Actions run **`29994737249`** @ `473aa77` — **success** (Node 22)
 - Drill-scoped; BACKUP/RESTORE match + cleanup; kullanıcı objelerine etki **NONE**
-- İkinci S3 hedefi: **NOT_CONFIGURED** (karar kapısı)
+- Immutable S3 ikinci hedef: **kod hazır** (OIDC + Object Lock verify); **live S3 kanıtı henüz yok**
 - **Production impact: NONE**
 
 ### Production cutover plan (2026-07-23) — DRAFT ONLY
@@ -153,5 +153,6 @@ Production’a karşı smoke / izolasyon / admin / restore tatbikatı **yok**.
 - Production database restore: **yapılmadı**
 - Production Storage restore: **yapılmadı**
 - PITR: staging bilinçli kapalı; production **maliyetli karar** (otomatik açılmaz)
-- Otomatik / scheduled Storage backup: **staging live PASS** (`29994737249`); production + immutable hedef açık
+- Otomatik / scheduled Storage backup: **staging live PASS** (`29994737249`);
+  immutable S3: **kod hazır / live run bekliyor**
 - Chat final / checklist ile hizalı kalın; staging PASS ≠ production-ready

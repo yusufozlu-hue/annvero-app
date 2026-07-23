@@ -956,13 +956,82 @@ test("staging storage backup workflow staging-only ve min permissions", () => {
   assert.match(wf, /workflow_dispatch:/);
   assert.match(wf, /concurrency:/);
   assert.match(wf, /timeout-minutes:\s*30/);
+  assert.match(wf, /id-token:\s*write/);
   assert.match(wf, /permissions:\s*\n\s*contents:\s*read/m);
   assert.match(wf, /environment:\s*staging-backup/);
   assert.match(wf, /STAGING_SUPABASE_URL/);
   assert.match(wf, /STAGING_SUPABASE_SERVICE_ROLE_KEY/);
+  assert.match(wf, /vars\.AWS_ROLE_ARN/);
+  assert.match(wf, /vars\.AWS_REGION/);
+  assert.match(wf, /vars\.BACKUP_SECONDARY_S3_BUCKET/);
+  assert.match(wf, /node-version:\s*"22"/);
+  assert.match(
+    wf,
+    /aws-actions\/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a/
+  );
+  assert.doesNotMatch(wf, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
   assert.doesNotMatch(wf, /ttxigznwcjvrlzuppbro/);
   assert.doesNotMatch(wf, /production-backup/);
+  assert.doesNotMatch(wf, /s3api\s+delete-object|aws\s+s3\s+rm\b/);
   assert.match(wf, /actions\/upload-artifact@[0-9a-f]{40}/);
+  assert.match(wf, /upload-immutable-s3\.mjs/);
+});
+
+test("immutable S3 secondary key + Object Lock COMPLIANCE doğrulama", async () => {
+  const {
+    buildS3ObjectKey,
+    assertImmutableHeadObject,
+    assertDownloadedChecksum,
+    sha256Hex,
+    SOURCE_METADATA,
+  } = await import("./backup/lib/s3ImmutableSecondary.mjs");
+
+  const key = buildS3ObjectKey({
+    dateUtc: new Date("2026-07-23T12:00:00.000Z"),
+    githubRunId: "29994737249",
+    fileName: "storage-backup-manifest.json",
+  });
+  assert.equal(
+    key,
+    "staging/2026-07-23/29994737249/storage-backup-manifest.json"
+  );
+  assert.throws(() =>
+    buildS3ObjectKey({ githubRunId: "1", fileName: "../evil.json" })
+  );
+
+  const body = Buffer.from('{"ok":true}');
+  const digest = sha256Hex(body);
+  const now = new Date("2026-07-23T12:00:00.000Z");
+  const headOk = {
+    ObjectLockMode: "COMPLIANCE",
+    ObjectLockRetainUntilDate: new Date(
+      now.getTime() + 35 * 24 * 60 * 60 * 1000
+    ).toISOString(),
+    ContentLength: body.length,
+    Metadata: {
+      source: SOURCE_METADATA,
+      "github-run-id": "29994737249",
+      sha256: digest,
+    },
+  };
+  const pass = assertImmutableHeadObject(headOk, {
+    sha256Expected: digest,
+    contentLength: body.length,
+    githubRunId: "29994737249",
+    now,
+  });
+  assert.equal(pass.ok, true);
+
+  const badMode = assertImmutableHeadObject(
+    { ...headOk, ObjectLockMode: "GOVERNANCE" },
+    { sha256Expected: digest, now }
+  );
+  assert.equal(badMode.ok, false);
+  assert.equal(badMode.code, "OBJECT_LOCK_MODE");
+
+  const badSum = assertDownloadedChecksum(body, "0".repeat(64));
+  assert.equal(badSum.ok, false);
+  assert.equal(assertDownloadedChecksum(body, digest).ok, true);
 });
 
 // Upload + open redirect

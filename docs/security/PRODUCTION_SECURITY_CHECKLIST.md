@@ -97,7 +97,10 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
   `STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md` (workflow + dry-run + prod fail-closed)
 - [x] Staging otomatik Storage backup **live kanıt** (2026-07-23) —
   Actions `29994737249` @ `473aa77` (Node 22; drill PASS; cleanup PASS)
-- [ ] İkinci immutable Storage hedefi (object-lock) — **karar kapısı** (cutover runbook)
+- [x] Immutable S3 ikinci hedef **kod/OIDC/workflow** hazır (2026-07-23) —
+  `upload-immutable-s3.mjs` + `configure-aws-credentials` pin; Object Lock COMPLIANCE doğrulama;
+  **live S3 upload kanıtı henüz yok** (ayrı push/onay ile run bekliyor)
+- [ ] İkinci immutable Storage hedefi **live kanıt** (object-lock head/checksum PASS run)
 - [ ] Production Storage restore (bekliyor; staging PASS production sayılmaz)
 - [ ] Production restore tatbikatı (bekliyor; staging PASS production sayılmaz)
 - [x] Staging DB RTO ölçüldü (≤ 7m23s); production RPO/RTO tatbikatı bekliyor

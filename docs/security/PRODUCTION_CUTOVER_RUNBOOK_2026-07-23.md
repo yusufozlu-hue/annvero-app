@@ -168,12 +168,12 @@ Her adım için doldurulacak alanlar:
 
 | Alan | İçerik |
 |------|--------|
-| Durum | **AÇIK** — production-ready öncesi karar |
-| İşlem | Object-lock / WORM S3 (veya eşdeğer) hesap + bucket + write-only kimlik |
-| PASS (kapı) | Hedef yapılandırıldı **veya** ürün sahibi yazılı risk kabulü |
-| FAIL | Ne hedef ne risk kabulü |
-| DUR (öneri) | Tam “production-ready DR” ilanı için immutable hedef olmadan **Go** verme |
-| Not | Staging’de `BACKUP_SECONDARY_S3_BUCKET` hâlâ opsiyonel; complete backup sayılmaz |
+| Durum | Staging: **kod/OIDC hazır**; **live S3 kanıtı bekliyor**. Production-ready öncesi kapı |
+| İşlem | Object-lock / WORM S3 + write-only OIDC rol (DeleteObject yok) + cutover sonrası prod eşleniği |
+| PASS (kapı) | Staging live S3 verify PASS **ve** (prod hedef yapılandırıldı **veya** yazılı risk kabulü) |
+| FAIL | Ne live kanıt ne risk kabulü |
+| DUR (öneri) | Tam "production-ready DR" ilanı için immutable live kanıt olmadan **Go** verme |
+| Not | Key: `staging/<date>/<run_id>/…`; COMPLIANCE ~35g; access key yok |
 
 ### B5. Rollback paketi
 

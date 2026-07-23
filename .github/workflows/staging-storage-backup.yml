@@ -2,12 +2,18 @@
 # Production ref / secret kullanılmaz. origin/main deploy tetiklemez (docs/scripts branch).
 #
 # Gerekli GitHub Environment secrets (staging-backup):
-#   STAGING_SUPABASE_URL              — https://bveipjvbopbkvojfdpmo.supabase.co
-#   STAGING_SUPABASE_SERVICE_ROLE_KEY — staging service role (değer repo’ya yazılmaz)
-# İsteğe bağlı:
-#   BACKUP_SECONDARY_DIR              — ikinci yerel/CI kopya kökü
-#   BACKUP_SECONDARY_S3_BUCKET        — immutable S3 hedefi (henüz zorunlu değil)
-#   BACKUP_ENCRYPTION_KEY             — ileride envelope şifreleme
+#   STAGING_SUPABASE_URL
+#   STAGING_SUPABASE_SERVICE_ROLE_KEY
+# Gerekli GitHub Environment variables (staging-backup):
+#   AWS_ROLE_ARN
+#   AWS_REGION                    (örn. eu-central-1)
+#   BACKUP_SECONDARY_S3_BUCKET   (örn. annvero-immutable-backup-tr-20260723)
+# İsteğe bağlı secrets:
+#   BACKUP_SECONDARY_DIR
+#   BACKUP_ENCRYPTION_KEY
+#
+# AWS: GitHub OIDC → role assume. Access key YOK.
+# S3 bucket default Object Lock COMPLIANCE 35g; IAM rolünde object silme yok.
 
 name: annvero-staging-storage-backup
 
@@ -38,6 +44,7 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   staging-storage-backup:
@@ -46,6 +53,7 @@ jobs:
     environment: staging-backup
     permissions:
       contents: read
+      id-token: write
     steps:
       # Pin: actions/checkout v4.2.2
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -74,11 +82,11 @@ jobs:
           echo "event=${EVENT_NAME} mode=${MODE}"
 
       - name: Staging storage backup
+        id: backup
         env:
           STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
           STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
           BACKUP_SECONDARY_DIR: ${{ secrets.BACKUP_SECONDARY_DIR }}
-          BACKUP_SECONDARY_S3_BUCKET: ${{ secrets.BACKUP_SECONDARY_S3_BUCKET }}
           BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
         run: |
           set -euo pipefail
@@ -88,6 +96,28 @@ jobs:
             --mode "${{ steps.mode.outputs.value }}" \
             --out ./backup-artifacts \
             --run-id "$(date -u +%Y%m%dT%H%M%SZ)"
+
+      # Pin: aws-actions/configure-aws-credentials v4.3.1
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ steps.mode.outputs.value == 'live' && success() }}
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload immutable S3 secondary + verify
+        if: ${{ steps.mode.outputs.value == 'live' && success() }}
+        env:
+          BACKUP_SECONDARY_S3_BUCKET: ${{ vars.BACKUP_SECONDARY_S3_BUCKET }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Access key yok; secret echo yok. S3 delete denenmez.
+          node scripts/backup/upload-immutable-s3.mjs \
+            --out ./backup-artifacts \
+            --github-run-id "${GITHUB_RUN_ID}"
 
       - name: Upload backup artifacts (checksum manifests)
         if: always()

@@ -33,9 +33,20 @@ Operatör / agent kanıtı. Secret / service-role değerleri içermez.
 
 | Madde | Neden |
 |-------|--------|
-| İkinci immutable S3 hedefi | `BACKUP_SECONDARY_S3_BUCKET` yok — karar kapısı |
+| Immutable S3 **live** upload/verify | Kod + workflow hazır; henüz yeşil live S3 run yok |
 | Production Storage backup/restore | Cutover runbook; staging PASS production sayılmaz |
 | PITR | Bilinçli kapalı (maliyet); production ayrı onay |
+
+### Immutable S3 (kod hazır)
+
+| Alan | Değer |
+|------|--------|
+| Action | `aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a` (v4.3.1) |
+| Auth | GitHub OIDC → `vars.AWS_ROLE_ARN` (access key yok) |
+| Bucket var | `vars.BACKUP_SECONDARY_S3_BUCKET` |
+| Key | `staging/<UTC-YYYY-MM-DD>/<GITHUB_RUN_ID>/<file>` |
+| Lock kontrolü | head-object: COMPLIANCE + retain ~35g + sha256 metadata + re-download |
+| Delete | **Yok** (rolde DeleteObject yok; script denemez) |
 
 ### Gerekli secret adları (değer yok)
 
