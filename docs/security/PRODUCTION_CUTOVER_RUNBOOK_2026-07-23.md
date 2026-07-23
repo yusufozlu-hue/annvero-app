@@ -37,6 +37,7 @@ Hiçbir adım **açık kullanıcı onayı** + chat’te **`deploy onayla`** (ve 
 | Staging PITR | kapalı — **maliyet nedeniyle kabul edilmiş açık risk** (~100 USD/ay/proje); staging’de açılmayacak | operatör kararı |
 | Production PITR | şimdi açılmayacak; cutover’da **bütçe/onay kapısı** (~100 USD/ay/proje) | ayrı açık onay |
 | Günlük fiziksel DB backup | aktif (operatör beyanı) | panel/operasyon |
+| Production immutable S3 altyapı/kod | hazır; live kanıt değil | `PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md` |
 
 ---
 
@@ -160,8 +161,9 @@ Her adım için doldurulacak alanlar:
 | Alan | İçerik |
 |------|--------|
 | Ön koşul | Staging auto Storage backup PASS (`29994737249`) |
-| İşlem | Production Storage için: envanter + object-level yedek planı (drill-only değil; **read-only kopya**); manifest SHA-256 |
-| PASS | Manifest + checksum prosedürü ve saklama yeri tanımlı |
+| Hazırlık | Production ref guard + salt okunur inventory/copy kodu + manuel workflow hazır (`866da13`) |
+| İşlem | Önce `inventory` (salt okunur); inceleme sonrası ayrı onayla `live` object-level yedek; manifest SHA-256 |
+| PASS | Inventory temiz; manifest + checksum + immutable saklama + re-download kanıtı var |
 | FAIL | Storage yedeksiz cutover |
 | DUR | Kullanıcı bucket’larında silme/mutate içeren “yedek” |
 
@@ -170,11 +172,12 @@ Her adım için doldurulacak alanlar:
 | Alan | İçerik |
 |------|--------|
 | Staging | **PASS** — `STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md` (OIDC environment subject; 3 object; COMPLIANCE / 35g) |
-| Production kapısı | Staging PASS production sayılmaz; prod eşleniği yapılandırılmalı **veya** yazılı risk kabulü |
-| İşlem | Object-lock / WORM S3 + OIDC (access key yok; DeleteObject yok) + cutover sonrası prod eşleniği |
-| PASS (prod kapı) | Prod hedef yapılandırıldı **veya** yazılı risk kabulü |
-| FAIL | Prod hedef yok ve risk kabulü yok |
-| DUR (öneri) | Tam "production-ready DR" ilanı için prod immutable **veya** yazılı risk kabulü olmadan **Go** verme |
+| Production hazırlık | S3 Object Lock COMPLIANCE / 35g + OIDC environment subject + main-only GitHub Environment + workflow kodu **hazır** |
+| Kanıt | `PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md`; staging commit `866da13` |
+| İşlem | PR/main/deploy sonrası önce `inventory`; ayrı onayla tek `live` run; head-object + re-download checksum |
+| PASS (prod kapı) | Prod live upload + COMPLIANCE retain-until + manifest/object SHA-256 + re-download doğrulandı |
+| FAIL | OIDC/upload/checksum/lock doğrulaması başarısız |
+| DUR (öneri) | Hazırlığı live PASS sayma; live kanıt veya yazılı risk kabulü olmadan tam "production-ready DR" ilan etme |
 | Not | Staging key: `staging/<date>/<run_id>/…`; COMPLIANCE ~35g; access key yok |
 
 ### B5. Rollback paketi
@@ -329,8 +332,8 @@ Kontroller (same-origin, authenticated):
 - [ ] Recovery default-off doğrulandı
 - [ ] Fiziksel DB backup taze
 - [ ] Storage yedek politikası tanımlı
-- [ ] Production immutable ikinci hedef **veya** yazılı risk kabulü
-  (staging S3 PASS production sayılmaz)
+- [ ] Production immutable ikinci hedef **live kanıtı** veya yazılı risk kabulü
+  (altyapı/kod hazır; inventory/upload/lock/checksum kanıtı bekliyor)
 - [ ] PITR kararı belgelendi (etkin **veya** erteleme + maliyet onayı)
 - [ ] `deploy onayla` + SQL onayları kayıtlı
 
@@ -362,9 +365,10 @@ Kontroller (same-origin, authenticated):
 | Madde | Değer |
 |-------|--------|
 | Staging | **PASS** (live S3; Object Lock COMPLIANCE / 35g; OIDC; delete yok) |
-| Production | **Açık** — staging kanıtı production sayılmaz |
-| Minimum (prod) | Object-lock bucket + OIDC write-only rol + Environment vars (`BACKUP_SECONDARY_S3_*`) |
-| Olmadan (prod) | Production “complete immutable backup” **ilan edilmez** (yazılı risk kabulü yoksa) |
+| Production hazırlık | **Hazır** — Object Lock bucket + OIDC rolü + `production-backup` Environment + manuel workflow |
+| Production live kanıt | **Açık** — inventory/upload/COMPLIANCE/checksum/re-download henüz çalıştırılmadı |
+| Değişkenler | `AWS_ROLE_ARN`, `AWS_REGION`, `BACKUP_SECONDARY_S3_BUCKET` |
+| Live kanıt olmadan | Production “complete immutable backup” **ilan edilmez** (yazılı risk kabulü yoksa) |
 | İlk staging FAIL | Trust sub/ref → environment subject + Environment branch restriction ile düzeltildi |
 
 ---

@@ -135,7 +135,10 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 - Runbook: [`PRODUCTION_CUTOVER_RUNBOOK_2026-07-23.md`](./PRODUCTION_CUTOVER_RUNBOOK_2026-07-23.md)
 - Uygulama yok; `deploy onayla` + SQL onayı zorunlu
 - PITR: maliyetli karar (otomatik açılmaz)
-- Staging immutable S3: **PASS**; production eşleniği hâlâ karar kapısı
+- Staging immutable S3: **PASS**
+- Production immutable S3 **altyapı + OIDC + workflow kodu hazır**:
+  [`PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md`](./PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md)
+- Production `inventory` / `live` / restore kanıtı henüz yok; hazırlık production backup **PASS** sayılmaz
 
 ## 5–7. Test / tenant / backup
 
@@ -164,7 +167,8 @@ Production’a karşı smoke / izolasyon / admin / restore tatbikatı **yok**.
 - Production Storage restore: **yapılmadı**
 - PITR: staging bilinçli kapalı; production **maliyetli karar** (otomatik açılmaz)
 - Otomatik / scheduled Storage backup: **staging live PASS** (`29994737249`)
-- Immutable S3: **staging live PASS** (`30004604101` / job `89201131433`);
-  production eşleniği **açık**
+- Immutable S3: **staging live PASS** (`30004604101` / job `89201131433`)
+- Production immutable altyapı/kod: **hazır** (`866da13`);
+  production inventory/live/restore kanıtı **açık**
 - Production admin / tenant / restore / 024–025: **açık**
 - Chat final / checklist ile hizalı kalın; staging PASS ≠ production-ready

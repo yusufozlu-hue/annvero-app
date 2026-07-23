@@ -42,6 +42,12 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [ ] **Production tenant izolasyonu**: uygulanmadı (staging tatbikatı production’ı kapsamaz)
 - [ ] **Production database restore**: uygulanmadı (staging restore production sayılmaz)
 - [ ] **Production Storage restore**: uygulanmadı (staging Storage drill production sayılmaz)
+- [x] **Production immutable S3 altyapısı + OIDC + workflow kodu**: hazır (2026-07-23)
+  Kanıt: `PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md`;
+  bucket / Object Lock COMPLIANCE 35g / GitHub Environment / OIDC rolü yapılandırıldı;
+  staging commit `866da13`; production workflow henüz çalıştırılmadı
+- [ ] **Production Storage inventory/live immutable kanıtı**: bekliyor
+  (`inventory` ve `live` ayrı açık onay; hazırlık PASS, canlı backup PASS sayılmaz)
 - [ ] Production migration / deploy: **yasak** / bekliyor (açık onay yok)
 - [ ] Paket tamamen production-ready: **hayır** (production onay + migration + smoke bekliyor; bu test sonucu değiştirmez)
 
@@ -95,7 +101,12 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [ ] Günlük yedek workflow aktif (şablondan)
 - [x] Staging ikinci immutable yedek hedefi **live** (2026-07-23) —
   `STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md` (COMPLIANCE / 35g; OIDC; delete yok)
-- [ ] Production ikinci immutable yedek hedefi (staging PASS production sayılmaz)
+- [x] Production ikinci immutable yedek hedefi **altyapı/kod hazırlığı** —
+  `PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md`;
+  `annvero-production-immutable-backup-tr-20260723`, `eu-central-1`,
+  Object Lock COMPLIANCE / 35g, OIDC, access key yok, delete yok
+- [ ] Production ikinci immutable yedek hedefi **live kanıtı**
+  (inventory/upload/head-object/re-download henüz çalıştırılmadı)
 - [x] Staging restore tatbikatı izole ortamda yapıldı (2026-07-22) —
   `STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md` (geçici restore projesi cleanup **COMPLETED**)
 - [x] Staging manuel Storage object-level backup/restore (2026-07-22) —
