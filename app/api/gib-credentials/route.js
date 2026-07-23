@@ -15,9 +15,32 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const SANITIZED_SERVER_ERROR = "İşlem tamamlanamadı.";
+const SANITIZED_UNAVAILABLE = "Servis geçici olarak kullanılamıyor.";
+
+function jsonSanitizedServerError() {
+  return NextResponse.json({ error: SANITIZED_SERVER_ERROR }, { status: 500 });
+}
+
+function resolveCompanyIdParam(request) {
+  return String(request.nextUrl.searchParams.get("companyId") || "").trim();
+}
+
+/**
+ * Fail-closed sıra (tüm yöntemler):
+ * 1) oturum 2) companyId erişimi 3) rate limit 4) encryption/config
+ * 5) supabase admin 6) credential/decrypt/DB.
+ * Auth/access reddi config veya DB hatasına düşmez.
+ */
 export async function GET(request) {
   const session = await requireApiSession();
   if (session.error) return session.error;
+
+  const companyId = resolveCompanyIdParam(request);
+  if (companyId) {
+    const check = assertCompanyAccess(session.access, companyId, { required: true });
+    if (!check.ok) return check.response;
+  }
 
   const rateLimited = enforceRateLimit(request, session, "gib-credentials", {
     limit: 40,
@@ -29,52 +52,54 @@ export async function GET(request) {
   if (encryptionKeyError) return encryptionKeyError;
 
   const supabaseGuard = getGibSupabaseGuardResponse("gib-credentials:get");
-  if (supabaseGuard) return supabaseGuard;
+  if (supabaseGuard) {
+    return NextResponse.json({ error: SANITIZED_UNAVAILABLE }, { status: 503 });
+  }
 
   const supabase = getGibSupabaseAdmin();
   logGibSupabaseDiagnostics("gib-credentials:get", GIB_CREDENTIALS_TABLE);
 
-  const companyId = request.nextUrl.searchParams.get("companyId");
-  if (companyId) {
-    const check = assertCompanyAccess(session.access, companyId, { required: true });
-    if (!check.ok) return check.response;
-  }
-
   let credentialsQuery = supabase.from(GIB_CREDENTIALS_TABLE).select("*");
   if (companyId) credentialsQuery = credentialsQuery.eq("company_id", companyId);
 
+  let stateQuery = supabase.from(GIB_QUERY_STATE_TABLE).select("*");
+  if (companyId) {
+    stateQuery = stateQuery.eq("company_id", companyId);
+  }
+
   const [{ data: credentials, error }, { data: queryStates, error: stateError }] =
-    await Promise.all([
-      credentialsQuery,
-      supabase.from(GIB_QUERY_STATE_TABLE).select("*"),
-    ]);
+    await Promise.all([credentialsQuery, stateQuery]);
 
   if (error) {
     logGibSupabaseConnectionError("gib-credentials:get", error, GIB_CREDENTIALS_TABLE);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return jsonSanitizedServerError();
   }
 
   if (stateError) {
     logGibSupabaseConnectionError("gib-credentials:get", stateError, GIB_QUERY_STATE_TABLE);
-    return NextResponse.json({ error: stateError.message }, { status: 500 });
+    return jsonSanitizedServerError();
   }
 
-  const stateMap = new Map((queryStates || []).map((row) => [row.company_id, row]));
+  const stateMap = new Map(
+    (queryStates || [])
+      .filter((row) => session.access.canAccessCompany(row.company_id))
+      .map((row) => [row.company_id, row])
+  );
 
   const payload = (credentials || [])
     .filter((row) => session.access.canAccessCompany(row.company_id))
     .map((row) => ({
-    companyId: row.company_id,
-    gibUserCode: row.gib_user_code,
-    hasPassword: Boolean(row.encrypted_password),
-    hasParola: Boolean(row.encrypted_parola),
-    passwordMasked: row.encrypted_password ? maskSecret("secret") : "",
-    parolaMasked: row.encrypted_parola ? maskSecret("secret") : "",
-    isActive: row.is_active !== false,
-    lastQueryAt: stateMap.get(row.company_id)?.last_query_at || null,
-    resultStatus: stateMap.get(row.company_id)?.result_status || null,
-    lastError: stateMap.get(row.company_id)?.last_error || null,
-  }));
+      companyId: row.company_id,
+      gibUserCode: row.gib_user_code,
+      hasPassword: Boolean(row.encrypted_password),
+      hasParola: Boolean(row.encrypted_parola),
+      passwordMasked: row.encrypted_password ? maskSecret("secret") : "",
+      parolaMasked: row.encrypted_parola ? maskSecret("secret") : "",
+      isActive: row.is_active !== false,
+      lastQueryAt: stateMap.get(row.company_id)?.last_query_at || null,
+      resultStatus: stateMap.get(row.company_id)?.result_status || null,
+      lastError: stateMap.get(row.company_id)?.last_error || null,
+    }));
 
   return NextResponse.json({ data: payload });
 }
@@ -82,21 +107,6 @@ export async function GET(request) {
 export async function POST(request) {
   const session = await requireApiSession();
   if (session.error) return session.error;
-
-  const rateLimited = enforceRateLimit(request, session, "gib-credentials", {
-    limit: 40,
-    windowMs: 300_000,
-  });
-  if (rateLimited) return rateLimited;
-
-  const encryptionKeyError = getGibEncryptionKeyGuardResponse();
-  if (encryptionKeyError) return encryptionKeyError;
-
-  const supabaseGuard = getGibSupabaseGuardResponse("gib-credentials:post");
-  if (supabaseGuard) return supabaseGuard;
-
-  const supabase = getGibSupabaseAdmin();
-  logGibSupabaseDiagnostics("gib-credentials:post", GIB_CREDENTIALS_TABLE);
 
   let body;
   try {
@@ -122,6 +132,23 @@ export async function POST(request) {
   const accessCheck = assertCompanyAccess(session.access, companyId, { required: true });
   if (!accessCheck.ok) return accessCheck.response;
 
+  const rateLimited = enforceRateLimit(request, session, "gib-credentials", {
+    limit: 40,
+    windowMs: 300_000,
+  });
+  if (rateLimited) return rateLimited;
+
+  const encryptionKeyError = getGibEncryptionKeyGuardResponse();
+  if (encryptionKeyError) return encryptionKeyError;
+
+  const supabaseGuard = getGibSupabaseGuardResponse("gib-credentials:post");
+  if (supabaseGuard) {
+    return NextResponse.json({ error: SANITIZED_UNAVAILABLE }, { status: 503 });
+  }
+
+  const supabase = getGibSupabaseAdmin();
+  logGibSupabaseDiagnostics("gib-credentials:post", GIB_CREDENTIALS_TABLE);
+
   const { data: existing, error: existingError } = await supabase
     .from(GIB_CREDENTIALS_TABLE)
     .select("*")
@@ -130,22 +157,31 @@ export async function POST(request) {
 
   if (existingError) {
     logGibSupabaseConnectionError("gib-credentials:post", existingError, GIB_CREDENTIALS_TABLE);
-    return NextResponse.json({ error: existingError.message }, { status: 500 });
+    return jsonSanitizedServerError();
   }
 
   if (!password && !existing?.encrypted_password && !keepExistingSecrets) {
     return NextResponse.json({ error: "GİB şifresi zorunludur." }, { status: 400 });
   }
 
+  let encryptedPassword;
+  let encryptedParola;
+  try {
+    encryptedPassword = password
+      ? encryptSecret(password)
+      : existing?.encrypted_password;
+    encryptedParola = parola
+      ? encryptSecret(parola)
+      : existing?.encrypted_parola || null;
+  } catch {
+    return jsonSanitizedServerError();
+  }
+
   const payload = {
     company_id: companyId,
     gib_user_code: gibUserCode,
-    encrypted_password: password
-      ? encryptSecret(password)
-      : existing?.encrypted_password,
-    encrypted_parola: parola
-      ? encryptSecret(parola)
-      : existing?.encrypted_parola || null,
+    encrypted_password: encryptedPassword,
+    encrypted_parola: encryptedParola,
     is_active: isActive,
     updated_by: session.user.email || session.user.id,
     updated_at: new Date().toISOString(),
@@ -159,7 +195,7 @@ export async function POST(request) {
 
   if (error) {
     logGibSupabaseConnectionError("gib-credentials:post", error, GIB_CREDENTIALS_TABLE);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return jsonSanitizedServerError();
   }
 
   return NextResponse.json({
@@ -179,19 +215,27 @@ export async function DELETE(request) {
   const session = await requireApiSession();
   if (session.error) return session.error;
 
-  const supabaseGuard = getGibSupabaseGuardResponse("gib-credentials:delete");
-  if (supabaseGuard) return supabaseGuard;
-
-  const supabase = getGibSupabaseAdmin();
-  logGibSupabaseDiagnostics("gib-credentials:delete", GIB_CREDENTIALS_TABLE);
-
-  const companyId = request.nextUrl.searchParams.get("companyId");
+  const companyId = resolveCompanyIdParam(request);
   if (!companyId) {
     return NextResponse.json({ error: "companyId zorunludur." }, { status: 400 });
   }
 
   const accessCheck = assertCompanyAccess(session.access, companyId, { required: true });
   if (!accessCheck.ok) return accessCheck.response;
+
+  const rateLimited = enforceRateLimit(request, session, "gib-credentials", {
+    limit: 40,
+    windowMs: 300_000,
+  });
+  if (rateLimited) return rateLimited;
+
+  const supabaseGuard = getGibSupabaseGuardResponse("gib-credentials:delete");
+  if (supabaseGuard) {
+    return NextResponse.json({ error: SANITIZED_UNAVAILABLE }, { status: 503 });
+  }
+
+  const supabase = getGibSupabaseAdmin();
+  logGibSupabaseDiagnostics("gib-credentials:delete", GIB_CREDENTIALS_TABLE);
 
   const { error } = await supabase
     .from(GIB_CREDENTIALS_TABLE)
@@ -200,7 +244,7 @@ export async function DELETE(request) {
 
   if (error) {
     logGibSupabaseConnectionError("gib-credentials:delete", error, GIB_CREDENTIALS_TABLE);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return jsonSanitizedServerError();
   }
 
   return NextResponse.json({ ok: true });

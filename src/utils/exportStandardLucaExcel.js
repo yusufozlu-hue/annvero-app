@@ -10,6 +10,7 @@ import {
   sortStandardLucaRows,
   standardLucaRowsToExcelRows,
 } from "@/src/utils/standardLucaRow";
+import { sanitizeExportJsonRows } from "@/src/utils/safeXlsx";
 
 function yieldToMain() {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -123,7 +124,7 @@ export async function exportStandardLucaExcel(rows = [], options = {}) {
         detail: `Dosya ${fileIndex + 1}/${totalFiles} hazırlanıyor (${ilkFis}-${sonFis})`,
       });
 
-      const excelRows = standardLucaRowsToExcelRows(chunkRows);
+      const excelRows = sanitizeExportJsonRows(standardLucaRowsToExcelRows(chunkRows));
       const worksheet = XLSX.utils.json_to_sheet(excelRows, {
         header: LUCA_EXPORT_HEADERS,
       });

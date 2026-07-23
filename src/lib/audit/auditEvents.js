@@ -8,6 +8,7 @@ import {
   getServerSupabaseAdminGuardResponse,
   logSupabaseQueryError,
 } from "@/src/lib/supabase/serverAdmin";
+import { redactDeep } from "@/src/lib/security/redact";
 
 export const AUDIT_ENTITY_TYPES = {
   COMPANY: "company",
@@ -41,7 +42,7 @@ function sanitizeState(value) {
     return value;
   }
   try {
-    return JSON.parse(JSON.stringify(value));
+    return redactDeep(JSON.parse(JSON.stringify(value)));
   } catch {
     return { value: String(value) };
   }
@@ -76,6 +77,8 @@ export async function writeAuditEvent(partial = {}) {
     metadata: sanitizeState(partial.metadata) || {},
     ip_address: partial.ipAddress || partial.ip_address || null,
     user_agent: partial.userAgent || partial.user_agent || null,
+    request_id: String(partial.requestId || partial.request_id || "").trim(),
+    result: String(partial.result || "success").trim() || "success",
   };
 
   const { data, error } = await supabase

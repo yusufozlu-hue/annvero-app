@@ -120,10 +120,10 @@ test("fetchCompanies oturumsuz localStorage sızdırmaz", () => {
   );
 });
 
-test("public /login proxy matcher dışında (getUser yok)", () => {
+test("public /login proxy'de getUser yok (updateSession early return)", () => {
   const proxy = read("proxy.ts");
-  assert.doesNotMatch(proxy, /"\/login"/);
-  assert.match(proxy, /\/login bilerek dışarıda|getUser/);
+  assert.match(proxy, /updateSession/);
+  assert.match(proxy, /_next\/static/);
   const session = read("src/lib/supabase/updateSession.js");
   assert.match(session, /pathname === "\/login"/);
   assert.match(session, /asla Supabase getUser/);

@@ -1,6 +1,6 @@
-import { isAdminEmail, isAdminUser, isOwnerEmail } from "@/src/lib/auth/admin";
 import { getDefaultPermissionsForRole } from "@/src/lib/auth/permissions";
 import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
+import { shouldBootstrapAsAdmin } from "@/src/lib/auth/profileProvisionPolicy";
 import {
   fetchProfileByEmail,
   upsertProfile,
@@ -13,14 +13,13 @@ import {
 } from "@/src/lib/supabase/serverAdmin";
 import { USER_PROFILES_TABLE } from "@/src/lib/supabase/userProfilesSchema";
 
+export {
+  isBootstrapOwnerEmail,
+  shouldBootstrapAsAdmin,
+} from "@/src/lib/auth/profileProvisionPolicy";
+
 function normalizeEmail(email = "") {
   return String(email || "").trim().toLowerCase();
-}
-
-export function isBootstrapOwnerEmail(email = "") {
-  const normalized = normalizeEmail(email);
-  if (!normalized) return false;
-  return isAdminEmail(normalized) || isOwnerEmail(normalized);
 }
 
 function getAdminClient() {
@@ -78,24 +77,6 @@ async function getAllCompanyIds() {
   return (data || []).map((row) => row.id).filter(Boolean);
 }
 
-export async function shouldBootstrapAsAdmin(user, profile = null) {
-  const email = normalizeEmail(user?.email);
-  if (!email) return false;
-
-  // Owner allowlist: her zaman admin
-  if (isAdminUser(user) || isBootstrapOwnerEmail(email)) return true;
-
-  const role = profile?.role || "";
-  if (role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER) return false;
-
-  if (!(await hasAdminProfileInDb())) return true;
-
-  const firstEmail = await getFirstProfileEmail();
-  if (firstEmail && firstEmail === email) return true;
-
-  return false;
-}
-
 function buildAdminProfile(user, profile = {}) {
   const role = ANNVERO_ROLES.ADMIN;
   return {
@@ -109,7 +90,6 @@ function buildAdminProfile(user, profile = {}) {
       user.email,
     role,
     permissions: getDefaultPermissionsForRole(role),
-    // Admin/partner: boş company_ids = tüm firmalara erişim (permissions.js)
     companyIds: [],
     teamId: profile.teamId || user.user_metadata?.team_id || "",
     isActive: true,
@@ -119,12 +99,17 @@ function buildAdminProfile(user, profile = {}) {
 }
 
 /**
- * İlk kurulum / owner kullanıcıyı Admin yapar ve metadata senkronlar.
- * company_ids boş bırakılır — admin tüm firmalara erişir.
- * Upsert başarısız olsa bile in-memory admin profil döner (banner kapanır).
+ * Profil senkronu yalnız isAdminUser (AND) için.
+ * Auto-promotion / owner-email / first-user yok.
+ * Elevated app_metadata login'de yazılmaz (syncAnnveroUserMetadata skip eder);
+ * zaten AND admin olan kullanıcının app_metadata'sı ops tarafından set edilmiştir.
  */
 export async function ensureBootstrapAdmin(user, profile = null) {
   if (!user?.email) {
+    return { profile, bootstrapped: false, upsertOk: false, error: null };
+  }
+
+  if (!shouldBootstrapAsAdmin(user)) {
     return { profile, bootstrapped: false, upsertOk: false, error: null };
   }
 
@@ -134,21 +119,11 @@ export async function ensureBootstrapAdmin(user, profile = null) {
     current = fetched.profile;
   }
 
-  // Profil yoksa owner için sıfırdan oluştur
   if (!current) {
-    if (!isBootstrapOwnerEmail(user.email) && !isAdminUser(user)) {
-      return { profile: null, bootstrapped: false, upsertOk: false, error: null };
-    }
     current = buildAdminProfile(user, {});
   }
 
-  const shouldPromote = await shouldBootstrapAsAdmin(user, current);
-  if (!shouldPromote) {
-    return { profile: current, bootstrapped: false, upsertOk: false, error: null };
-  }
-
-  // Zaten admin ama DB'ye yazmayı yine de doğrula (owner)
-  if (current.role === ANNVERO_ROLES.ADMIN && !isBootstrapOwnerEmail(user.email)) {
+  if (current.role === ANNVERO_ROLES.ADMIN) {
     return { profile: current, bootstrapped: false, upsertOk: true, error: null };
   }
 
@@ -156,6 +131,7 @@ export async function ensureBootstrapAdmin(user, profile = null) {
   const saved = await upsertProfile(promoted);
 
   if (saved.profile) {
+    // Elevated skip — app_metadata zaten ops tarafından set
     await syncAnnveroUserMetadata(user.id, saved.profile);
     return {
       profile: { ...saved.profile, role: ANNVERO_ROLES.ADMIN, source: "database" },
@@ -168,11 +144,9 @@ export async function ensureBootstrapAdmin(user, profile = null) {
   const error = saved.error || new Error("bootstrap upsert failed");
   console.error("[bootstrapAdmin] upsert failed", error.message);
 
-  // DB yazılamasa bile oturumda admin say — banner kesin kalksın
-  await syncAnnveroUserMetadata(user.id, promoted).catch(() => {});
   return {
-    profile: promoted,
-    bootstrapped: true,
+    profile: current,
+    bootstrapped: false,
     upsertOk: false,
     error,
   };
@@ -189,8 +163,8 @@ export async function getProfileDiagnostics(email = "") {
     profile: result.profile,
     profileRole: result.profile?.role || null,
     companyIdsInProfile: result.profile?.companyIds || [],
-    companiesInSystem: companyIds.length,
-    isBootstrapOwner: isBootstrapOwnerEmail(normalized),
+    companiesInSystem: Array.isArray(companyIds) ? companyIds.length : 0,
+    isBootstrapOwner: false,
     hasAdminInDb: await hasAdminProfileInDb(),
     firstProfileEmail: await getFirstProfileEmail(),
   };

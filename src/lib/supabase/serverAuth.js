@@ -1,8 +1,14 @@
 import { cache } from "react";
 import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
-import { isManagementUser, isPlatformAdmin, getAnnveroRoleFromUser } from "@/src/lib/auth/admin";
+import { createAnnveroServerSupabase } from "@/src/lib/supabase/createServerSupabase";
+import {
+  getAnnveroRoleFromUser,
+  evaluateManagementGate,
+  isPlatformAdmin,
+  isTrustedAppPartnerRole,
+  getTrustedAppRole,
+} from "@/src/lib/auth/admin";
 import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
 import { fetchProfileByEmail } from "@/src/lib/auth/profileService";
 
@@ -10,6 +16,8 @@ import { fetchProfileByEmail } from "@/src/lib/auth/profileService";
  * Request başına tek getUser — React cache() ile RSC/API içinde tekilleştirilir.
  * getClaims: JWKS boş (simetrik JWT) projelerde Auth sunucusuna düşer; körlemesine
  * değiştirilmedi. Asimetrik JWT opt-in sonrası ayrı doğrulama ile geçilebilir.
+ *
+ * Cookie: yalnız @supabase/ssr createServerClient getAll/setAll. Bearer yok.
  */
 export const getServerSupabaseUser = cache(async () => {
   const config = getSupabaseConfig();
@@ -17,16 +25,25 @@ export const getServerSupabaseUser = cache(async () => {
 
   const cookieStore = await cookies();
 
-  const supabase = createServerClient(config.supabaseUrl, config.anonKey, {
-    cookies: {
-      getAll() {
-        return cookieStore.getAll();
-      },
-      setAll() {
-        // API route read-only oturum okuması
-      },
+  const supabase = createAnnveroServerSupabase({
+    getAll() {
+      return cookieStore.getAll();
+    },
+    setAll(cookiesToSet) {
+      // Route Handler / Server Action: refresh sonrası Set-Cookie yazılmalı.
+      // RSC render sırasında cookieStore.set fırlatabilir → fail-open yazma yok;
+      // proxy updateSession oturumu yeniler.
+      try {
+        cookiesToSet.forEach(({ name, value, options }) => {
+          cookieStore.set(name, value, options);
+        });
+      } catch {
+        // read-only context
+      }
     },
   });
+
+  if (!supabase) return { supabase: null, user: null };
 
   const {
     data: { user },
@@ -55,33 +72,40 @@ async function fetchProfileRole(email = "") {
   return result.profile.role || "";
 }
 
+/**
+ * Yönetim: platform admin (AND) VEYA trusted app_metadata partner.
+ * DB profile role=admin/partner tek başına kabul edilmez.
+ */
 export async function requireManagementUser() {
   const { supabase, user } = await getServerSupabaseUser();
-  if (!user) {
+  const gate = evaluateManagementGate(user);
+
+  if (gate.reason === "unauthenticated") {
     return { supabase, user: null, error: "unauthenticated", role: "" };
   }
 
-  if (isPlatformAdmin(user)) {
-    return { supabase, user, error: null, role: ANNVERO_ROLES.ADMIN };
-  }
-
-  const profileRole = await fetchProfileRole(user.email);
-  if (profileRole === ANNVERO_ROLES.PARTNER || profileRole === ANNVERO_ROLES.ADMIN) {
-    return { supabase, user, error: null, role: profileRole };
-  }
-
-  if (isManagementUser(user)) {
+  if (gate.allowed) {
     return {
       supabase,
       user,
       error: null,
-      role: profileRole || getAnnveroRoleFromUser(user) || ANNVERO_ROLES.PARTNER,
+      role:
+        gate.role === "admin"
+          ? ANNVERO_ROLES.ADMIN
+          : getAnnveroRoleFromUser(user) || ANNVERO_ROLES.PARTNER,
     };
   }
 
+  // Profil rolü bilgilendirici — management kapısı açmaz
+  const profileRole = user?.email ? await fetchProfileRole(user.email) : "";
   return { supabase, user: null, error: "forbidden", role: profileRole || "" };
 }
 
+/**
+ * Non-elevated uygulama rolleri için.
+ * Admin/partner profile role tek başına requireRole ile elevated sayılmaz;
+ * elevated allowedRoles yalnız trusted kapıdan geçer.
+ */
 export async function requireRole(allowedRoles = []) {
   const { supabase, user } = await getServerSupabaseUser();
   if (!user) {
@@ -92,8 +116,20 @@ export async function requireRole(allowedRoles = []) {
     return { supabase, user, error: null, role: ANNVERO_ROLES.ADMIN };
   }
 
+  if (
+    allowedRoles.includes(ANNVERO_ROLES.PARTNER) &&
+    isTrustedAppPartnerRole(getTrustedAppRole(user))
+  ) {
+    return { supabase, user, error: null, role: ANNVERO_ROLES.PARTNER };
+  }
+
   const profileRole = await fetchProfileRole(user.email);
-  const effectiveRole = profileRole || ANNVERO_ROLES.ACCOUNTING;
+  const elevatedDb =
+    profileRole === ANNVERO_ROLES.ADMIN || profileRole === ANNVERO_ROLES.PARTNER;
+  const effectiveRole = elevatedDb
+    ? ANNVERO_ROLES.VIEWER
+    : profileRole || ANNVERO_ROLES.ACCOUNTING;
+
   if (!allowedRoles.includes(effectiveRole)) {
     return { supabase, user: null, error: "forbidden", role: effectiveRole };
   }

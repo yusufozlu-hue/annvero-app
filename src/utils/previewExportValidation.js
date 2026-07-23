@@ -558,20 +558,23 @@ export async function downloadMissingHesapExcelReport(
 ) {
   if (typeof window === "undefined") return { ok: false };
   const XLSX = await import("xlsx");
+  const { sanitizeExportJsonRows } = await import("@/src/utils/safeXlsx");
   const report = analyzeMissingHesapRows(rows);
-  const sheetRows = report.missingRows.map((row, index) => ({
-    Sira: index + 1,
-    FisNo: row.fisNo ?? "",
-    Tarih: row.fisTarihi || row.evrakTarihi || "",
-    Tutar: Number(row.borc || 0) || Number(row.alacak || 0) || 0,
-    Yon: Number(row.borc || 0) > 0 ? "BORC" : "ALACAK",
-    Aciklama: row.detayAciklama || row.fisAciklama || "",
-    Kategori: classifyMissingHesapCategory(row),
-    OneriHesap: row.accountSuggestions?.[0]?.code || "",
-    CariOneri: row.cariSuggestions?.[0]?.label || "",
-    Neden: row.kontrolNotu || row.uyari || "",
-    AnalysisKey: row.analysisKey || "",
-  }));
+  const sheetRows = sanitizeExportJsonRows(
+    report.missingRows.map((row, index) => ({
+      Sira: index + 1,
+      FisNo: row.fisNo ?? "",
+      Tarih: row.fisTarihi || row.evrakTarihi || "",
+      Tutar: Number(row.borc || 0) || Number(row.alacak || 0) || 0,
+      Yon: Number(row.borc || 0) > 0 ? "BORC" : "ALACAK",
+      Aciklama: row.detayAciklama || row.fisAciklama || "",
+      Kategori: classifyMissingHesapCategory(row),
+      OneriHesap: row.accountSuggestions?.[0]?.code || "",
+      CariOneri: row.cariSuggestions?.[0]?.label || "",
+      Neden: row.kontrolNotu || row.uyari || "",
+      AnalysisKey: row.analysisKey || "",
+    }))
+  );
   const worksheet = XLSX.utils.json_to_sheet(sheetRows);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "EksikHesap");

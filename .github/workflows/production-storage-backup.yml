@@ -1,0 +1,87 @@
+# Production Storage backup. İlk kanıta kadar schedule YOK; yalnız workflow_dispatch.
+name: annvero-production-storage-backup
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run, inventory (read-only) veya live"
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - inventory
+          - live
+
+concurrency:
+  group: annvero-production-storage-backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  production-storage-backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: production-backup
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production Storage copy (source read-only)
+        env:
+          PRODUCTION_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}
+          PRODUCTION_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PRODUCTION_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          node scripts/backup/production-storage-backup.mjs \
+            --mode "${{ inputs.mode }}" \
+            --out ./backup-artifacts \
+            --run-id "${{ github.run_id }}"
+
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ inputs.mode == 'live' && success() }}
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload production immutable S3 + verify
+        if: ${{ inputs.mode == 'live' && success() }}
+        env:
+          BACKUP_SECONDARY_S3_BUCKET: ${{ vars.BACKUP_SECONDARY_S3_BUCKET }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          node scripts/backup/upload-production-immutable-s3.mjs \
+            --out ./backup-artifacts \
+            --github-run-id "${GITHUB_RUN_ID}"
+
+      - name: Remove source object copies from runner
+        if: always()
+        run: rm -rf ./backup-artifacts/objects
+
+      - name: Upload secret-free proof artifacts only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: production-storage-backup-proof-${{ github.run_id }}
+          path: |
+            backup-artifacts/production-storage-backup-proof.json
+            backup-artifacts/production-immutable-s3-proof.json
+          if-no-files-found: warn
+          retention-days: 35

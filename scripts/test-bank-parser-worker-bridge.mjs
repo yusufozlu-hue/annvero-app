@@ -35,9 +35,9 @@ assert.match(
 );
 console.log("OK — bankExcel URL pattern");
 
-section("3) page uses PARSER_WORKER_URLS.bankExcel");
+section("3) workbench uses PARSER_WORKER_URLS.bankExcel");
 const pageSource = readFileSync(
-  path.join(root, "app/(annvero)/muhasebe/banka-ekstresi/page.jsx"),
+  path.join(root, "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"),
   "utf8"
 );
 assert.match(pageSource, /PARSER_WORKER_URLS/);
@@ -49,7 +49,7 @@ assert.doesNotMatch(
   /new URL\("\.\/bankParser\.worker\.js",\s*import\.meta\.url\)/
 );
 assert.doesNotMatch(pageSource, /arrayBuffer:\s*workerBuffer/);
-console.log("OK — page uses sheetRows + PARSER_WORKER_URLS.bankExcel");
+console.log("OK — workbench uses sheetRows + PARSER_WORKER_URLS.bankExcel");
 
 section("4) bridge avoids console.error(ErrorEvent) + classic bank worker");
 const bridgeSource = readFileSync(

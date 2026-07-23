@@ -1,14 +1,13 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import { isPlatformAdmin } from "@/src/lib/auth/admin";
-import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
-import { fetchProfileByEmail } from "@/src/lib/auth/profileService";
 import {
   ANNVERO_RETURN_TO_COOKIE,
   getReturnToCookieOptions,
   getSafeNextPath,
 } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
+import { getSupabaseSsrCookieOptions } from "@/src/lib/supabase/ssrCookies";
 
 function isProtectedPath(pathname) {
   return (
@@ -30,23 +29,17 @@ function isAdminPath(pathname) {
   return pathname.startsWith("/admin");
 }
 
+/** HMAC webhook: getUser/refresh yok (fail-closed auth ayrı). */
+function shouldSkipSessionRefresh(pathname) {
+  return (
+    pathname === "/api/automation/webhook" ||
+    pathname.startsWith("/api/automation/webhook/")
+  );
+}
+
+/** Admin alanı: yalnız trusted AND platform admin (P0). DB/metadata role yetmez. */
 async function canAccessAdminArea(user) {
-  if (!user) return false;
-  if (isPlatformAdmin(user)) return true;
-
-  const { profile, schemaMissing } = await fetchProfileByEmail(user.email);
-  if (!schemaMissing && profile?.isActive !== false) {
-    return (
-      profile.role === ANNVERO_ROLES.ADMIN || profile.role === ANNVERO_ROLES.PARTNER
-    );
-  }
-
-  const metaRole =
-    user.user_metadata?.annvero_role ||
-    user.user_metadata?.role ||
-    user.app_metadata?.annvero_role ||
-    "";
-  return metaRole === ANNVERO_ROLES.ADMIN || metaRole === ANNVERO_ROLES.PARTNER;
+  return isPlatformAdmin(user);
 }
 
 function withSupabaseCookies(supabaseResponse, response) {
@@ -76,6 +69,10 @@ export async function updateSession(request) {
 
   const { pathname, searchParams } = request.nextUrl;
 
+  if (shouldSkipSessionRefresh(pathname)) {
+    return NextResponse.next({ request });
+  }
+
   // Public /login: asla Supabase getUser / token refresh bekleme.
   // Oturumlu yönlendirme istemci tarafında; ?next= istemci + return-to API.
   if (pathname === "/login") {
@@ -94,6 +91,7 @@ export async function updateSession(request) {
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(config.supabaseUrl, config.anonKey, {
+    cookieOptions: getSupabaseSsrCookieOptions({ rememberMe: true }),
     cookies: {
       getAll() {
         return request.cookies.getAll();

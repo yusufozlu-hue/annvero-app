@@ -1,6 +1,15 @@
-import { isAdminUser, getAnnveroRoleFromUser, isOwnerEmail } from "@/src/lib/auth/admin";
 import { getDefaultPermissionsForRole } from "@/src/lib/auth/permissions";
-import { ANNVERO_ROLE_LABELS, ANNVERO_ROLES } from "@/src/config/annveroRoles";
+import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
+import {
+  buildAnnveroMetadataUpdatePayload,
+  resolveProvisionRole,
+} from "@/src/lib/auth/profileProvisionPolicy";
+import {
+  isAuthUserUuid,
+  resolveRuntimeCompanyAccess,
+} from "@/src/lib/auth/companyAccessPolicy";
+import { fetchActiveMembershipCompanyIds } from "@/src/lib/auth/companyMembership";
+import { isPlatformAdmin, isManagementUser } from "@/src/lib/auth/admin";
 import {
   getServerSupabaseAdmin,
   getServerSupabaseAdminGuardResponse,
@@ -12,6 +21,12 @@ import {
   USER_PROFILES_TABLE,
   isUserProfilesSchemaCacheError,
 } from "@/src/lib/supabase/userProfilesSchema";
+
+export {
+  buildAnnveroMetadataUpdatePayload,
+  resolveProvisionRole,
+  shouldPromoteToOwner,
+} from "@/src/lib/auth/profileProvisionPolicy";
 
 function getAdminClient() {
   const guard = getServerSupabaseAdminGuardResponse("auth:profiles", USER_PROFILES_TABLE);
@@ -37,6 +52,7 @@ function emptyResult(overrides = {}) {
     schemaMissing: false,
     adminUnavailable: false,
     error: null,
+    membershipError: null,
     ...overrides,
   };
 }
@@ -69,6 +85,158 @@ export async function fetchProfileByEmail(email = "") {
   return emptyResult({ profile: data ? mapProfileRow(data) : null });
 }
 
+export async function fetchProfileByAuthUserId(authUserId = "") {
+  const uid = String(authUserId || "").trim();
+  if (!isAuthUserUuid(uid)) return emptyResult();
+
+  const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
+  if (adminUnavailable) return emptyResult({ adminUnavailable: true });
+  if (schemaMissing) return emptyResult({ schemaMissing: true });
+  if (!supabase) return emptyResult({ adminUnavailable: true });
+
+  const { data, error } = await supabase
+    .from(USER_PROFILES_TABLE)
+    .select("*")
+    .eq("auth_user_id", uid)
+    .maybeSingle();
+
+  if (error) {
+    if (isUserProfilesSchemaCacheError(error)) {
+      logSupabaseQueryError("auth:profiles:fetch-by-auth", error, USER_PROFILES_TABLE);
+      return emptyResult({ schemaMissing: true });
+    }
+    logSupabaseQueryError("auth:profiles:fetch-by-auth", error, USER_PROFILES_TABLE);
+    return emptyResult({ error });
+  }
+
+  return emptyResult({ profile: data ? mapProfileRow(data) : null });
+}
+
+/**
+ * Profil companyIds'ini yalnız canonical membership'ten doldurur.
+ * Legacy / metadata fallback YOK. Hata → ok:false (fail-closed).
+ */
+export async function hydrateProfileWithMembership(profile, authUserId, user = null) {
+  if (!profile) {
+    return {
+      ok: false,
+      profile: null,
+      error: new Error("Profil yok."),
+      deniedReason: "no_profile",
+    };
+  }
+
+  const elevatedTrusted = Boolean(
+    user && (isPlatformAdmin(user) || isManagementUser(user))
+  );
+
+  const membership = elevatedTrusted
+    ? { ok: true, rows: [], companyIds: [], error: null }
+    : await fetchActiveMembershipCompanyIds(authUserId);
+
+  const resolved = resolveRuntimeCompanyAccess({
+    authUserId,
+    profileAuthUserId: profile.authUserId || (isAuthUserUuid(profile.id) ? profile.id : ""),
+    membershipRows: membership.ok ? membership.rows : null,
+    membershipError: membership.ok ? null : membership.error,
+    legacyProfileCompanyIds: profile.legacyCompanyIds,
+    userMetadataCompanyIds: user?.user_metadata?.company_ids,
+    appMetadataCompanyIds: user?.app_metadata?.company_ids,
+    isElevatedTrusted: elevatedTrusted,
+  });
+
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      profile: {
+        ...profile,
+        companyIds: [],
+        companyIdsSource: "none",
+      },
+      error: membership.error || new Error(resolved.deniedReason || "membership_denied"),
+      deniedReason: resolved.deniedReason,
+    };
+  }
+
+  return {
+    ok: true,
+    profile: {
+      ...profile,
+      companyIds: resolved.companyIds,
+      companyIdsSource: resolved.companyIdsSource,
+    },
+    error: null,
+    deniedReason: null,
+  };
+}
+
+/**
+ * Oturum kullanıcısı için exact auth bağ + membership hydrate.
+ * Normal kullanıcı: auth_user_id zorunlu; membership hatasında fail-closed.
+ */
+export async function fetchHydratedProfileForUser(user) {
+  if (!user?.id && !user?.email) return emptyResult();
+
+  const authId = String(user.id || "").trim();
+  let result = isAuthUserUuid(authId)
+    ? await fetchProfileByAuthUserId(authId)
+    : emptyResult();
+
+  if (!result.profile && user?.email) {
+    result = await fetchProfileByEmail(user.email);
+  }
+
+  if (result.schemaMissing || result.adminUnavailable || result.error) {
+    return result;
+  }
+
+  if (!result.profile) {
+    return emptyResult();
+  }
+
+  // Email yolu bulunduysa auth bağını doğrula / bağla
+  let profile = result.profile;
+  const profileAuth =
+    profile.authUserId || (isAuthUserUuid(profile.id) ? profile.id : "");
+
+  if (!isAuthUserUuid(profileAuth) && isAuthUserUuid(authId)) {
+    // Bağsız profil — normal kullanıcı fail-closed (elevated hydrate politikası ayrı)
+    const elevatedTrusted = isPlatformAdmin(user) || isManagementUser(user);
+    if (!elevatedTrusted) {
+      return emptyResult({
+        error: new Error("Profil auth_user_id bağlı değil."),
+        membershipError: new Error("profile_unbound"),
+      });
+    }
+  }
+
+  if (
+    isAuthUserUuid(profileAuth) &&
+    isAuthUserUuid(authId) &&
+    profileAuth !== authId
+  ) {
+    return emptyResult({
+      error: new Error("Profil auth kullanıcısı ile eşleşmiyor."),
+      membershipError: new Error("auth_profile_mismatch"),
+    });
+  }
+
+  if (!profile.authUserId && isAuthUserUuid(authId)) {
+    profile = { ...profile, authUserId: authId };
+  }
+
+  const hydrated = await hydrateProfileWithMembership(profile, authId, user);
+  if (!hydrated.ok) {
+    return emptyResult({
+      profile: null,
+      error: hydrated.error,
+      membershipError: hydrated.error,
+    });
+  }
+
+  return emptyResult({ profile: hydrated.profile });
+}
+
 export async function upsertProfile(profile = {}) {
   const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
   if (adminUnavailable || !supabase) {
@@ -89,6 +257,15 @@ export async function upsertProfile(profile = {}) {
   }
 
   const record = mapProfileToRecord(profile);
+  // companyIds verilmediyse legacy company_ids kolonunu silme
+  if (
+    profile.companyIds === undefined &&
+    profile.company_ids === undefined &&
+    profile.legacyCompanyIds === undefined
+  ) {
+    delete record.company_ids;
+  }
+
   const { data, error } = await supabase
     .from(USER_PROFILES_TABLE)
     .upsert(record, { onConflict: "email" })
@@ -108,22 +285,20 @@ export async function upsertProfile(profile = {}) {
   };
 }
 
+/**
+ * Elevated (admin/partner) app_metadata login akışında ASLA yazılmaz.
+ * Gerçek bootstrap yalnız ops / Supabase Auth Dashboard ile yapılır.
+ */
 export async function syncAnnveroUserMetadata(authUserId = "", profile = {}) {
   if (!authUserId || !profile?.email) return { ok: false };
 
   const { supabase, schemaMissing, adminUnavailable } = getAdminClient();
   if (schemaMissing || adminUnavailable || !supabase) return { ok: false };
 
-  const { error } = await supabase.auth.admin.updateUserById(authUserId, {
-    user_metadata: {
-      annvero_role: profile.role || ANNVERO_ROLES.ACCOUNTING,
-      display_name: profile.displayName || profile.email,
-      company_ids: profile.companyIds || [],
-      team_id: profile.teamId || "",
-    },
-  });
+  const { payload, skippedElevatedAppMetadata } = buildAnnveroMetadataUpdatePayload(profile);
+  const { error } = await supabase.auth.admin.updateUserById(authUserId, payload);
 
-  return { ok: !error, error };
+  return { ok: !error, error, skippedElevatedAppMetadata };
 }
 
 function isLocalHostUrl(value) {
@@ -219,110 +394,6 @@ export async function sendPasswordRecoveryEmail(email = "", redirectTo = "") {
   return { sent: true, error: null, actionLink };
 }
 
-function resolveProvisionRole(user, { isFirstUser = false, hasAdminProfile = true } = {}) {
-  if (isAdminUser(user) || isFirstUser || !hasAdminProfile) {
-    return ANNVERO_ROLES.ADMIN;
-  }
-
-  const metadataRole = getAnnveroRoleFromUser(user);
-  if (metadataRole && ANNVERO_ROLE_LABELS[metadataRole]) {
-    return metadataRole;
-  }
-
-  return ANNVERO_ROLES.ACCOUNTING;
-}
-
-async function countUserProfiles() {
-  const { supabase, adminUnavailable, schemaMissing } = getAdminClient();
-  if (adminUnavailable || schemaMissing || !supabase) return -1;
-
-  const { count, error } = await supabase
-    .from(USER_PROFILES_TABLE)
-    .select("id", { count: "exact", head: true });
-
-  if (error) {
-    logSupabaseQueryError("auth:profiles:count", error, USER_PROFILES_TABLE);
-    return -1;
-  }
-
-  return count ?? 0;
-}
-
-async function hasAdminProfileInDb() {
-  const { supabase, adminUnavailable, schemaMissing } = getAdminClient();
-  if (adminUnavailable || schemaMissing || !supabase) return false;
-
-  const { count, error } = await supabase
-    .from(USER_PROFILES_TABLE)
-    .select("id", { count: "exact", head: true })
-    .eq("role", ANNVERO_ROLES.ADMIN);
-
-  if (error) {
-    logSupabaseQueryError("auth:profiles:has-admin", error, USER_PROFILES_TABLE);
-    return false;
-  }
-
-  return (count ?? 0) > 0;
-}
-
-function buildOwnerProfileDraft(user, overrides = {}) {
-  const role = ANNVERO_ROLES.ADMIN;
-  return {
-    id: user.id,
-    email: String(user.email).trim().toLowerCase(),
-    displayName:
-      overrides.displayName ||
-      user.user_metadata?.display_name ||
-      user.user_metadata?.full_name ||
-      user.email,
-    role,
-    permissions: getDefaultPermissionsForRole(role),
-    companyIds: [],
-    teamId: user.user_metadata?.team_id || "",
-    isActive: true,
-    lastLoginAt: new Date().toISOString(),
-    ...overrides,
-  };
-}
-
-async function getFirstProfileEmail() {
-  const { supabase, adminUnavailable, schemaMissing } = getAdminClient();
-  if (adminUnavailable || schemaMissing || !supabase) return "";
-
-  const { data, error } = await supabase
-    .from(USER_PROFILES_TABLE)
-    .select("email")
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    logSupabaseQueryError("auth:profiles:first-email", error, USER_PROFILES_TABLE);
-    return "";
-  }
-
-  return String(data?.email || "").trim().toLowerCase();
-}
-
-function shouldPromoteToOwner(user, profileCount, hasAdminProfile, firstProfileEmail = "") {
-  const email = String(user?.email || "").trim().toLowerCase();
-  if (isAdminUser(user) || isOwnerEmail(email)) return true;
-  if (profileCount === 0) return true;
-  if (!hasAdminProfile) return true;
-  if (firstProfileEmail && firstProfileEmail === email) return true;
-  return false;
-}
-
-function applyOwnerPromotion(profile) {
-  const role = ANNVERO_ROLES.ADMIN;
-  return {
-    ...profile,
-    role,
-    permissions: getDefaultPermissionsForRole(role),
-    companyIds: [],
-  };
-}
-
 export async function provisionProfileForUser(user) {
   if (!user?.email) {
     return {
@@ -333,17 +404,6 @@ export async function provisionProfileForUser(user) {
       needsInvite: false,
     };
   }
-
-  const profileCount = await countUserProfiles();
-  const hasAdminProfile = await hasAdminProfileInDb();
-  const isFirstUser = profileCount === 0;
-  const firstProfileEmail = await getFirstProfileEmail();
-  const bootstrapOwner = shouldPromoteToOwner(
-    user,
-    profileCount,
-    hasAdminProfile,
-    firstProfileEmail
-  );
 
   const existing = await fetchProfileByEmail(user.email);
   if (existing.schemaMissing || existing.adminUnavailable) {
@@ -367,11 +427,12 @@ export async function provisionProfileForUser(user) {
     };
   }
 
-  // Mevcut profil (pending-* dahil) → auth user id'ye bağla
+  // Mevcut profil (pending-* dahil) → auth user id'ye bağla; role yükseltilmez
   if (existing.profile) {
-    let linked = {
+    const linked = {
       ...existing.profile,
       id: user.id,
+      authUserId: user.id,
       email: String(user.email).trim().toLowerCase(),
       displayName:
         existing.profile.displayName ||
@@ -379,10 +440,6 @@ export async function provisionProfileForUser(user) {
         user.email,
       lastLoginAt: new Date().toISOString(),
     };
-
-    if (bootstrapOwner) {
-      linked = applyOwnerPromotion(linked);
-    }
 
     const saved = await upsertProfile(linked);
     if (saved.profile) {
@@ -395,7 +452,6 @@ export async function provisionProfileForUser(user) {
         needsInvite: false,
       };
     }
-    // Upsert başarısız olsa bile mevcut DB profilini kullan
     return {
       profile: linked,
       schemaMissing: false,
@@ -406,24 +462,21 @@ export async function provisionProfileForUser(user) {
     };
   }
 
-  // İlk login: Auth kullanıcısı için otomatik profil oluştur
-  const role = resolveProvisionRole(user, { isFirstUser, hasAdminProfile });
-  const draft = bootstrapOwner
-    ? buildOwnerProfileDraft(user)
-    : {
-        id: user.id,
-        email: String(user.email).trim().toLowerCase(),
-        displayName:
-          user.user_metadata?.display_name || user.user_metadata?.full_name || user.email,
-        role,
-        permissions: getDefaultPermissionsForRole(role),
-        companyIds: Array.isArray(user.user_metadata?.company_ids)
-          ? user.user_metadata.company_ids
-          : [],
-        teamId: user.user_metadata?.team_id || "",
-        isActive: true,
-        lastLoginAt: new Date().toISOString(),
-      };
+  // İlk login: güvenli non-elevated profil
+  const role = resolveProvisionRole(user);
+  const draft = {
+    id: user.id,
+    authUserId: user.id,
+    email: String(user.email).trim().toLowerCase(),
+    displayName:
+      user.user_metadata?.display_name || user.user_metadata?.full_name || user.email,
+    role,
+    permissions: getDefaultPermissionsForRole(role),
+    companyIds: [],
+    teamId: user.user_metadata?.team_id || "",
+    isActive: true,
+    lastLoginAt: new Date().toISOString(),
+  };
 
   const saved = await upsertProfile(draft);
   if (saved.profile) {

@@ -41,14 +41,10 @@ function pickDecisionPayload(result = {}) {
 
 function buildCompanyAccess(session = {}) {
   const access = session.access || {};
-  if (
-    access.isManagementUser ||
-    access.isPlatformAdmin ||
-    access.role === "admin" ||
-    access.role === "partner"
-  ) {
+  if (access.isManagementUser || access.isPlatformAdmin) {
     return ["*"];
   }
+  if (access.companyIdsSource !== "membership") return [];
   return Array.isArray(access.companyIds) ? access.companyIds : [];
 }
 

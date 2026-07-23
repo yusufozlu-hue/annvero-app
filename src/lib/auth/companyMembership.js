@@ -3,12 +3,16 @@ import {
   getServerSupabaseAdminGuardResponse,
   logSupabaseQueryError,
 } from "@/src/lib/supabase/serverAdmin";
+import {
+  isAuthUserUuid,
+  normalizeCompanyIds,
+  selectActiveMembershipCompanyIds,
+} from "@/src/lib/auth/companyAccessPolicy";
 
 export const COMPANY_MEMBERS_TABLE = "annvero_company_members";
 export const COMPANY_MEMBERS_RPC = "annvero_sync_company_membership";
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export { normalizeCompanyIds, selectActiveMembershipCompanyIds };
 
 export class CompanyMembershipError extends Error {
   constructor(message, code = null) {
@@ -18,14 +22,6 @@ export class CompanyMembershipError extends Error {
   }
 }
 
-function normalizeCompanyIds(companyIds) {
-  const list = Array.isArray(companyIds) ? companyIds : [];
-  return Array.from(
-    new Set(list.map((value) => String(value || "").trim()).filter(Boolean))
-  );
-}
-
-// Kullanıcıya iç detay sızdırmadan güvenli mesaj üret.
 function sanitizeMembershipError(error) {
   const code = error?.code || "";
   if (code === "23503") {
@@ -38,23 +34,81 @@ function sanitizeMembershipError(error) {
 }
 
 /**
- * annvero_company_members'i profilin companyIds değeriyle ATOMİK olarak senkronize eder.
- *
- * Güvenlik:
- * - DB doğruluk kaynağı membership'tir (023). user_metadata/app_metadata yetki için kullanılmaz.
- * - Erişimi sessizce genişletmez; kaynak admin'in açıkça verdiği companyIds'tir.
- * - Best-effort/no-op DEĞİLDİR: hata YUTULMAZ. Başarısızlıkta CompanyMembershipError fırlatır;
- *   çağıran (admin route) işlemi başarısız saymalı ve hata dönmelidir.
- * - Tüm senkron tek atomik RPC (annvero_sync_company_membership) içinde yapılır; geçersiz
- *   firma ID'sinde tüm işlem rollback olur, mevcut membership korunur.
- *
- * @returns {{ ok: true, active: number } | { ok: false, skipped: "no_auth_user" }}
- * @throws {CompanyMembershipError} servis kullanılamıyorsa veya RPC hata verirse
+ * Service-role: yalnız target auth_user_id için aktif membership company_id listesi.
+ * Hata YUTULMAZ — çağıran legacy profile.company_ids'e düşmemeli.
+ */
+export async function fetchActiveMembershipCompanyIds(authUserId) {
+  const uid = String(authUserId || "").trim();
+  if (!isAuthUserUuid(uid)) {
+    return {
+      ok: false,
+      companyIds: [],
+      rows: [],
+      error: new CompanyMembershipError("auth_user_id gerekli.", "missing_auth_user_id"),
+    };
+  }
+
+  const guard = getServerSupabaseAdminGuardResponse(
+    "auth:membership:fetch",
+    COMPANY_MEMBERS_TABLE
+  );
+  if (guard) {
+    return {
+      ok: false,
+      companyIds: [],
+      rows: [],
+      error: new CompanyMembershipError(
+        "Firma üyeliği okunamadı: yönetim servisi kullanılamıyor."
+      ),
+    };
+  }
+
+  const supabase = getServerSupabaseAdmin({ requireServiceRole: true });
+  if (!supabase) {
+    return {
+      ok: false,
+      companyIds: [],
+      rows: [],
+      error: new CompanyMembershipError(
+        "Firma üyeliği okunamadı: yönetim servisi kullanılamıyor."
+      ),
+    };
+  }
+
+  const { data, error } = await supabase
+    .from(COMPANY_MEMBERS_TABLE)
+    .select("company_id, user_id, is_active")
+    .eq("user_id", uid)
+    .eq("is_active", true);
+
+  if (error) {
+    logSupabaseQueryError("auth:membership:fetch", error, COMPANY_MEMBERS_TABLE);
+    return {
+      ok: false,
+      companyIds: [],
+      rows: [],
+      error: new CompanyMembershipError(
+        "Firma üyeliği okunamadı.",
+        error?.code || null
+      ),
+    };
+  }
+
+  const rows = Array.isArray(data) ? data : [];
+  return {
+    ok: true,
+    companyIds: selectActiveMembershipCompanyIds(rows, uid),
+    rows,
+    error: null,
+  };
+}
+
+/**
+ * annvero_company_members'i admin'in verdiği companyIds ile ATOMİK senkronize eder.
  */
 export async function syncCompanyMembership(authUserId, companyIds = [], actorId = null) {
   const uid = String(authUserId || "").trim();
-  // Pending kullanıcı (gerçek auth kullanıcısı yok): membership yazma; çağıran raporlar.
-  if (!UUID_RE.test(uid)) {
+  if (!isAuthUserUuid(uid)) {
     return { ok: false, skipped: "no_auth_user" };
   }
 
@@ -76,7 +130,7 @@ export async function syncCompanyMembership(authUserId, companyIds = [], actorId
   }
 
   const desired = normalizeCompanyIds(companyIds);
-  const actor = actorId && UUID_RE.test(String(actorId)) ? String(actorId) : null;
+  const actor = actorId && isAuthUserUuid(String(actorId)) ? String(actorId) : null;
 
   const { error } = await supabase.rpc(COMPANY_MEMBERS_RPC, {
     target_user_id: uid,

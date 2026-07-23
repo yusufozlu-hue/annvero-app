@@ -9,6 +9,7 @@ import {
   setCachedAuthStatus,
 } from "@/src/components/authGateCache";
 import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
+import { hasSupabaseAuthCookieHint } from "@/src/lib/supabase/client";
 import { buildLoginUrl } from "@/src/utils/authRedirect";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 
@@ -66,8 +67,13 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
           SESSION_CHECK_TIMEOUT_MS
         );
         if (!isMounted) return;
-        if (data.session) {
+        // Bellek/localStorage-only oturum: API cookie yoksa fail-closed.
+        if (data.session && hasSupabaseAuthCookieHint()) {
           applyStatus("authenticated");
+          return;
+        }
+        if (data.session && !hasSupabaseAuthCookieHint()) {
+          markUnauthenticated();
           return;
         }
         markUnauthenticated();
@@ -78,7 +84,7 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
             REVERIFY_TIMEOUT_MS
           );
           if (!isMounted) return;
-          if (data.user) {
+          if (data.user && hasSupabaseAuthCookieHint()) {
             applyStatus("authenticated");
             return;
           }
@@ -94,7 +100,7 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) applyStatus("authenticated");
+      if (session && hasSupabaseAuthCookieHint()) applyStatus("authenticated");
       else markUnauthenticated();
     });
 

@@ -10,15 +10,26 @@ jobs:
   notify-failure:
     if: github.event.deployment_status.state == 'failure' || github.event.deployment_status.state == 'error'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Report failed deployment
+        env:
+          DEPLOY_STATE: ${{ github.event.deployment_status.state }}
+          DEPLOY_ENV: ${{ github.event.deployment_status.environment }}
+          DEPLOY_SHA: ${{ github.event.deployment_status.sha }}
+          # description/target_url shell interpolation yerine env — injection riskini azaltır
+          DEPLOY_DESC: ${{ github.event.deployment_status.description }}
+          DEPLOY_URL: ${{ github.event.deployment_status.target_url }}
         run: |
           echo "::error title=ANNVERO Deploy Failed::Vercel deployment failed for commit ${GITHUB_SHA}."
-          echo "## ANNVERO deploy hatasi" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Durum: ${{ github.event.deployment_status.state }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Ortam: ${{ github.event.deployment_status.environment }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Commit: \`${{ github.event.deployment_status.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Aciklama: ${{ github.event.deployment_status.description }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Vercel: ${{ github.event.deployment_status.target_url }}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## ANNVERO deploy hatasi"
+            echo ""
+            echo "- Durum: ${DEPLOY_STATE}"
+            echo "- Ortam: ${DEPLOY_ENV}"
+            echo "- Commit: \`${DEPLOY_SHA}\`"
+            echo "- Aciklama: ${DEPLOY_DESC}"
+            echo "- Vercel: ${DEPLOY_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
           exit 1

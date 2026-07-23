@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import { safeRead } from "@/src/utils/safeXlsx";
 import {
   buildElektrawebPreviewRows,
   finalizeStandardLucaRow,
@@ -267,7 +268,7 @@ export function processElektrawebWorkbook(workbook, matchingContext = {}) {
 }
 
 export function processElektrawebFile(buffer, matchingContext = {}) {
-  const workbook = XLSX.read(buffer, {
+  const workbook = safeRead(buffer, {
     type: "array",
     cellDates: true,
   });

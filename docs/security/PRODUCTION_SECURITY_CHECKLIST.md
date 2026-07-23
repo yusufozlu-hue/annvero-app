@@ -1,0 +1,132 @@
+# Production Security Checklist
+
+Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
+
+## Staging durumu (2026-07-22)
+
+- [x] Staging DB migration **024** + **025**: tamamlandı
+  Kanıt: `docs/security/STAGING_MIGRATION_APPLICATION_REPORT_2026-07-21.md`
+- [x] Staging application deploy (branch build `118f660`): tamamlandı (ayrı `annvero-staging` Vercel projesi)
+- [x] Staging security smoke (unauth + auth transport + GİB/admin/export 403): tamamlandı
+- [x] **Staging tenant isolation drill**: tamamlandı (2026-07-22)
+  Kanıt: `docs/security/STAGING_TENANT_ISOLATION_DRILL_2026-07-22.md`
+  Sınıflar: HTTP / membership / RLS / anon grant / synthetic cleanup → **PASS**; production impact **NONE**
+- [x] **Staging admin AND-gate live smoke**: tamamlandı (2026-07-22)
+  Kanıt: `docs/security/STAGING_ADMIN_AND_GATE_DRILL_2026-07-22.md`
+  Negatif: allowlist yok + `app_metadata.admin` → `/api/admin/users` **403**;
+  Pozitif: staging-only allowlist + trusted `app_metadata.admin` → **200** (`PASS_ADMIN_AND_POSITIVE`)
+- [x] **Staging database restore drill**: tamamlandı (2026-07-22) — **PASS**
+  Kanıt: `docs/security/STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md`
+  RTO ≤ 7m23s; şema/veri + restrictive deny PASS; production impact **NONE**
+  Cleanup **COMPLETED**: geçici proje `annvero-staging-restore-drill-20260722` silindi;
+  kaynak staging etkilenmedi; geçici $10.18/ay kaynağı artık aktif değil
+  (faturalanmış tutar/iade iddiası yok)
+- [x] **Staging Storage backup/restore drill**: tamamlandı (2026-07-22) — **PASS**
+  Kanıt: `docs/security/STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md`
+  Manuel object-level; SHA match; bucket/nesne cleanup; production impact **NONE**
+- [x] **Staging otomatik Storage backup pipeline (kod + dry-run)**: hazır (2026-07-23)
+  Kanıt: `docs/security/STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md`
+  Workflow + staging-only guard + dry-run PASS
+- [x] **Staging otomatik Storage backup live**: PASS (2026-07-23)
+  Actions run `29994737249` @ commit `473aa77`; Node 22; drill-scoped;
+  manifest/checksum/restore/cleanup PASS; production impact **NONE**
+- [x] **Staging immutable S3 ikinci hedef live**: PASS (2026-07-23)
+  Kanıt: `STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md`
+  Run `30004604101` / job `89201131433`; OIDC (environment subject) + 3 object;
+  Object Lock COMPLIANCE / 35g; access key **NONE**; production impact **NONE**
+  (ilk deneme OIDC FAIL → trust düzeltmesi; ikinci deneme PASS)
+- [x] Vercel staging env / proof test account (viewer + membership A): tatbikatta kullanıldı
+- [ ] **Production cutover**: plan hazır — `PRODUCTION_CUTOVER_RUNBOOK_2026-07-23.md`
+  (`deploy onayla` + SQL onayı olmadan uygulama **yasak**)
+- [ ] **Production admin doğrulaması**: bekliyor (staging AND-gate production sayılmaz)
+- [ ] **Production tenant izolasyonu**: uygulanmadı (staging tatbikatı production’ı kapsamaz)
+- [ ] **Production database restore**: uygulanmadı (staging restore production sayılmaz)
+- [ ] **Production Storage restore**: uygulanmadı (staging Storage drill production sayılmaz)
+- [x] **Production immutable S3 altyapısı + OIDC + workflow kodu**: hazır (2026-07-23)
+  Kanıt: `PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md`;
+  bucket / Object Lock COMPLIANCE 35g / GitHub Environment / OIDC rolü yapılandırıldı;
+  staging commit `866da13`; production workflow henüz çalıştırılmadı
+- [ ] **Production Storage inventory/live immutable kanıtı**: bekliyor
+  (`inventory` ve `live` ayrı açık onay; hazırlık PASS, canlı backup PASS sayılmaz)
+- [ ] Production migration / deploy: **yasak** / bekliyor (açık onay yok)
+- [ ] Paket tamamen production-ready: **hayır** (production onay + migration + smoke bekliyor; bu test sonucu değiştirmez)
+
+### Staging / Preview fail-closed (kod)
+
+- [x] Staging/preview webhook: HMAC secret yoksa fail-closed (DEV_OPEN yok)
+- [x] Staging/preview recovery: `RECOVERY_API_ENABLED=true` olmadan disabled
+- [x] Production ve Preview secret paylaşımı yasak (branch override)
+- [x] GİB key exact adı: `GIB_CREDENTIALS_ENCRYPTION_KEY` (çoğul)
+
+## Ortam ve secret
+
+- [ ] Vercel/Railway secret store'da `SUPABASE_SERVICE_ROLE_KEY` (public değil)
+- [ ] `GIB_CREDENTIALS_ENCRYPTION_KEY` tanımlı ve rotate prosedürü biliniyor
+- [ ] `ANNVERO_ADMIN_EMAILS` server-only
+- [ ] Yerel `.env*` production secret içermiyor
+- [ ] `ANNVERO_APP_ENV=production` (veya Vercel production)
+- [ ] Upstash veya `ANNVERO_RATE_LIMIT_BACKEND=supabase` + migration 024
+
+## Veritabanı
+
+- [ ] Production migration sırası: 020 → 021 → 022 → 023 uygulandı
+- [ ] 023 üyelik seed yönetici onayı ile yapıldı
+- [x] Migration **024** (+ **025**) staging'de uygulandı ve postflight CONFLICT=0 (production henüz yok)
+- [ ] Migration **024** / **025** production'a uygulandı (yasak / bekliyor)
+- [ ] RLS policy envanteri gözden geçirildi
+- [ ] `docs/security/REMEDIATION_SQL_REQUIRES_APPROVAL.sql` gerekirse onaylı uygulandı
+
+## Auth / tenant
+
+- [x] Staging: kritik API'ler 401/403 davranışı smoke + tenant drill
+- [x] Staging: cross-tenant `companyId` denemesi 403 (export, GİB, admin)
+- [ ] Production: kritik API / cross-tenant smoke (bekliyor; staging PASS production sayılmaz)
+- [ ] Admin client role spoof başarısız (production smoke)
+- [x] Staging: login / SSR cookie transport sonrası `/api/auth/me` authenticated=true (auth cookie sync)
+- [x] Staging: admin AND-gate (negatif 403 + pozitif 200) — `STAGING_ADMIN_AND_GATE_DRILL_2026-07-22.md`
+- [ ] Production: admin AND-gate live smoke (bekliyor)
+
+## API hardening
+
+- [ ] Security headers production response'da görünüyor
+- [ ] Webhook secret production'da zorunlu
+- [ ] Staging/preview webhook HMAC zorunlu (secret yoksa fail-closed)
+- [ ] Staging/preview `RECOVERY_API_ENABLED=true` olmadan restore kapalı
+- [ ] GİB/export rate limit 429 üretiyor
+- [ ] Production ↔ Preview secret izolasyonu (Supabase/GİB/Drive/HMAC paylaşılmıyor)
+
+## Backup / DR
+
+- [ ] Supabase PITR panel kontrolü (**staging’de PITR kapalı** — açık risk)
+- [ ] Günlük yedek workflow aktif (şablondan)
+- [x] Staging ikinci immutable yedek hedefi **live** (2026-07-23) —
+  `STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md` (COMPLIANCE / 35g; OIDC; delete yok)
+- [x] Production ikinci immutable yedek hedefi **altyapı/kod hazırlığı** —
+  `PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md`;
+  `annvero-production-immutable-backup-tr-20260723`, `eu-central-1`,
+  Object Lock COMPLIANCE / 35g, OIDC, access key yok, delete yok
+- [ ] Production ikinci immutable yedek hedefi **live kanıtı**
+  (inventory/upload/head-object/re-download henüz çalıştırılmadı)
+- [x] Staging restore tatbikatı izole ortamda yapıldı (2026-07-22) —
+  `STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md` (geçici restore projesi cleanup **COMPLETED**)
+- [x] Staging manuel Storage object-level backup/restore (2026-07-22) —
+  `STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md` (SHA match + cleanup)
+- [x] Staging otomatik Storage backup **pipeline** (2026-07-23) —
+  `STAGING_AUTOMATED_STORAGE_BACKUP_2026-07-23.md` (workflow + dry-run + prod fail-closed)
+- [x] Staging otomatik Storage backup **live kanıt** (2026-07-23) —
+  Actions `29994737249` @ `473aa77` (Node 22; drill PASS; cleanup PASS)
+- [x] Immutable S3 ikinci hedef **kod/OIDC/workflow** hazır (2026-07-23) —
+  `upload-immutable-s3.mjs` + `configure-aws-credentials` pin; Object Lock COMPLIANCE doğrulama
+- [x] Staging immutable S3 **live kanıt** (2026-07-23) —
+  Run `30004604101` / job `89201131433`; artifact `8562898431`;
+  3 object; head-object COMPLIANCE; re-download checksum PASS
+- [ ] Production Storage restore (bekliyor; staging PASS production sayılmaz)
+- [ ] Production restore tatbikatı (bekliyor; staging PASS production sayılmaz)
+- [x] Staging DB RTO ölçüldü (≤ 7m23s); production RPO/RTO tatbikatı bekliyor
+- [ ] Supabase PITR etkin — **maliyetli karar**; staging’de bilinçli kapalı (~100 USD/ay);
+  production için cutover runbook’ta ayrı onay (şimdi otomatik açılmaz)
+
+## CI
+
+- [ ] `security-gates.yml` workflow yeşil
+- [ ] `npm audit` yüksek/kritik kabul kaydı veya fix

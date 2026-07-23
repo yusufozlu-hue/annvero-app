@@ -1,40 +1,40 @@
 /**
  * Admin erişim kontrolü.
- * ANNVERO_ADMIN_EMAILS ortam değişkeni veya Supabase user metadata role=admin.
+ *
+ * Platform admin = AND(
+ *   app_metadata.role === "admin" (veya annvero_role),
+ *   email explicit server-only ANNVERO_ADMIN_EMAILS içinde
+ * )
+ *
+ * Email tek başına VEYA app_metadata tek başına admin yetkisi VERMEZ.
+ * Hardcoded email, NEXT_PUBLIC_* allowlist, owner email, DB profile role,
+ * user_metadata ve login provisioning admin yetkisi VERMEZ.
  */
 
 import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
 
-/** Kurulum sahibi — env yoksa bile bootstrap için tanınır */
-const DEFAULT_OWNER_EMAILS = ["yusufozlu@gmail.com"];
-
-export function getAdminEmails() {
-  const raw =
-    process.env.ANNVERO_ADMIN_EMAILS ||
-    process.env.NEXT_PUBLIC_ANNVERO_ADMIN_EMAILS ||
-    "";
-
-  const fromEnv = raw
+function splitEmailList(raw = "") {
+  return String(raw || "")
     .split(/[,;\n]/)
     .map((email) => email.trim().toLowerCase())
     .filter((email) => email.includes("@"));
-
-  // yusufozlu@gmail.com her zaman admin allowlist'te (env yoksa bile)
-  return [...new Set([...fromEnv, ...DEFAULT_OWNER_EMAILS])];
 }
 
+/**
+ * Yalnız server-side ANNVERO_ADMIN_EMAILS.
+ * NEXT_PUBLIC_* ve hardcoded varsayılan yok.
+ */
+export function getAdminEmails() {
+  return [...new Set(splitEmailList(process.env.ANNVERO_ADMIN_EMAILS))];
+}
+
+/**
+ * Owner e-posta listesi bilgilendirici / ops ayrımı içindir.
+ * Owner email tek başına platform admin yetkisi VERMEZ.
+ * NEXT_PUBLIC_* owner env yetki kaynağı değildir.
+ */
 export function getOwnerEmails() {
-  const raw =
-    process.env.ANNVERO_OWNER_EMAILS ||
-    process.env.NEXT_PUBLIC_ANNVERO_OWNER_EMAILS ||
-    "";
-
-  const owners = raw
-    .split(/[,;\n]/)
-    .map((email) => email.trim().toLowerCase())
-    .filter((email) => email.includes("@"));
-
-  return [...new Set([...owners, ...getAdminEmails(), ...DEFAULT_OWNER_EMAILS])];
+  return [...new Set(splitEmailList(process.env.ANNVERO_OWNER_EMAILS))];
 }
 
 export function isOwnerEmail(email) {
@@ -42,52 +42,109 @@ export function isOwnerEmail(email) {
   return getOwnerEmails().includes(String(email).trim().toLowerCase());
 }
 
+/** Explicit ANNVERO_ADMIN_EMAILS — owner listesi dahil edilmez. */
 export function isAdminEmail(email) {
   if (!email) return false;
-  return getOwnerEmails().includes(String(email).trim().toLowerCase());
+  return getAdminEmails().includes(String(email).trim().toLowerCase());
 }
 
+function normalizeElevatedRole(value = "") {
+  return String(value || "").trim().toLowerCase();
+}
+
+/**
+ * Yalnız app_metadata (kullanıcı değiştiremez).
+ */
+export function getTrustedAppRole(user) {
+  if (!user) return "";
+  return normalizeElevatedRole(
+    user.app_metadata?.annvero_role || user.app_metadata?.role || ""
+  );
+}
+
+export function isTrustedAppAdminRole(role = "") {
+  const r = normalizeElevatedRole(role);
+  return r === "admin" || r === String(ANNVERO_ROLES.ADMIN).toLowerCase();
+}
+
+export function isTrustedAppPartnerRole(role = "") {
+  const r = normalizeElevatedRole(role);
+  return r === "partner" || r === String(ANNVERO_ROLES.PARTNER).toLowerCase();
+}
+
+/**
+ * Bilgilendirici rol — elevated claim için kullanılmaz.
+ * user_metadata asla elevated rol döndürmez.
+ */
+export function getAnnveroRoleFromUser(user) {
+  if (!user) return "";
+  return getTrustedAppRole(user);
+}
+
+/**
+ * Platform admin: app_metadata admin AND email allowlist (AND, OR değil).
+ */
 export function isAdminUser(user) {
   if (!user) return false;
 
-  const email = String(user.email || "").toLowerCase();
-  if (email && isAdminEmail(email)) {
-    return true;
-  }
+  const email = String(user.email || "").trim().toLowerCase();
+  const emailOk = Boolean(email && isAdminEmail(email));
+  const appOk = isTrustedAppAdminRole(getTrustedAppRole(user));
 
-  const appRole = user.app_metadata?.role;
-  const userRole = user.user_metadata?.role;
-
-  return appRole === "admin" || userRole === "admin";
+  return emailOk && appOk;
 }
 
-/** Supabase Auth metadata içindeki ANNVERO rolü */
-export function getAnnveroRoleFromUser(user) {
-  if (!user) return "";
-  const metaRole =
-    user.user_metadata?.annvero_role ||
-    user.user_metadata?.role ||
-    user.app_metadata?.annvero_role ||
-    user.app_metadata?.role ||
-    "";
-  return String(metaRole || "").trim();
-}
-
-/** Platform süper-admin (env allowlist veya metadata admin) */
+/** Platform süper-admin — isAdminUser ile aynı (AND) */
 export function isPlatformAdmin(user) {
   return isAdminUser(user);
 }
 
-/** Admin paneline erişebilen kullanıcı: platform admin veya partner/admin rolü */
+/**
+ * Yönetim: platform admin (AND) veya trusted app_metadata partner.
+ * DB profile role / owner email / user_metadata ile management olunamaz.
+ */
 export function isManagementUser(user) {
   if (!user) return false;
   if (isPlatformAdmin(user)) return true;
-  const role = getAnnveroRoleFromUser(user);
-  return role === ANNVERO_ROLES.ADMIN || role === ANNVERO_ROLES.PARTNER;
+  return isTrustedAppPartnerRole(getTrustedAppRole(user));
+}
+
+/**
+ * Yönetim kapısı (saf): platform AND admin veya trusted app_metadata partner.
+ * DB profile role bu kararın parçası değildir.
+ */
+export function evaluateManagementGate(user) {
+  if (!user) {
+    return { allowed: false, role: "", reason: "unauthenticated" };
+  }
+  if (isPlatformAdmin(user)) {
+    return { allowed: true, role: "admin", reason: "platform_admin_and" };
+  }
+  if (isTrustedAppPartnerRole(getTrustedAppRole(user))) {
+    return { allowed: true, role: "partner", reason: "trusted_app_partner" };
+  }
+  return { allowed: false, role: "", reason: "forbidden" };
 }
 
 export function isPartnerUser(user) {
   if (!user) return false;
   if (isPlatformAdmin(user)) return false;
-  return getAnnveroRoleFromUser(user) === ANNVERO_ROLES.PARTNER;
+  return isTrustedAppPartnerRole(getTrustedAppRole(user));
+}
+
+/**
+ * Test / denetim: AND koşulunun her iki ayağını ayrı doğrular.
+ */
+export function explainAdminGate(user) {
+  const email = String(user?.email || "").trim().toLowerCase();
+  const appRole = getTrustedAppRole(user);
+  const emailOk = Boolean(email && isAdminEmail(email));
+  const appOk = isTrustedAppAdminRole(appRole);
+  return {
+    emailOk,
+    appOk,
+    isAdmin: emailOk && appOk,
+    usedOrInsteadOfAnd: false,
+    appRole,
+  };
 }

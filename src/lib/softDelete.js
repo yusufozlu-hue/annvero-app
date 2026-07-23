@@ -10,6 +10,7 @@ export const SOFT_DELETE_TABLES = [
   "normalized_financial_transactions",
   "learned_bank_rules",
   "reconciliation_matches",
+  "official_notifications",
 ];
 
 /**

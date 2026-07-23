@@ -1,3 +1,5 @@
+import { assertSafeSupabaseProjectRef } from "@/src/lib/security/envGuard";
+
 export type SupabaseConfig = {
   supabaseUrl: string;
   anonKey: string;
@@ -68,6 +70,13 @@ export function getSupabaseConfig(): SupabaseConfig | null {
   const supabaseUrl = normalizeSupabaseUrl(rawUrl);
 
   if (!isValidSupabaseUrl(supabaseUrl)) {
+    return null;
+  }
+
+  // Fail-closed: local/test ortamında bilinen production/staging ref engellenir.
+  const check = assertSafeSupabaseProjectRef({ supabaseUrl });
+  if (!check.ok) {
+    console.error("[envGuard]", check.message);
     return null;
   }
 

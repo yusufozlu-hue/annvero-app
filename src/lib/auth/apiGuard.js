@@ -9,9 +9,9 @@ import {
   requireAdminUser,
   requireManagementUser,
 } from "@/src/lib/supabase/serverAuth";
-import { fetchProfileByEmail } from "@/src/lib/auth/profileService";
+import { fetchHydratedProfileForUser } from "@/src/lib/auth/profileService";
 import { mergeProfileWithAuth, createUserAccess } from "@/src/lib/auth/userAccess";
-import { ANNVERO_ROLES } from "@/src/config/annveroRoles";
+import { resolveAccessibleCompanyScope } from "@/src/lib/auth/companyAccessPolicy";
 import {
   getServerSupabaseAdmin,
   getServerSupabaseAdminGuardResponse,
@@ -40,17 +40,17 @@ export function resolveCompanyId(source = {}) {
 }
 
 export function isElevatedCompanyLister(access = {}) {
-  return (
-    access.isManagementUser ||
-    access.role === ANNVERO_ROLES.ADMIN ||
-    access.role === ANNVERO_ROLES.PARTNER
-  );
+  // Yalnız trusted kapılar — DB role=admin/partner string yetmez
+  return Boolean(access.isPlatformAdmin || access.isManagementUser);
 }
 
-/** Admin/partner tüm firmaları görebilir; diğerleri yalnızca companyIds */
+/** Elevated: null (tüm firmalar). Diğerleri: membership-derived id listesi. */
 export function getAccessibleCompanyIds(access = {}) {
-  if (isElevatedCompanyLister(access)) return null;
-  return Array.isArray(access.companyIds) ? access.companyIds : [];
+  return resolveAccessibleCompanyScope({
+    isElevatedTrusted: isElevatedCompanyLister(access),
+    companyIds: access.companyIds,
+    companyIdsSource: access.companyIdsSource || "none",
+  });
 }
 
 export function assertCompanyAccess(access, companyId, { required = true } = {}) {
@@ -76,6 +76,7 @@ export function assertCompanyAccess(access, companyId, { required = true } = {})
 
 /**
  * Oturum + profil + access nesnesi.
+ * Profil sorgusu hata verirse veya profil yoksa fail-closed (403).
  * @returns {{ error: NextResponse|null, user, profile, access, supabaseAuth }}
  */
 export async function requireApiSession() {
@@ -85,7 +86,38 @@ export async function requireApiSession() {
     return { error: jsonUnauthorized(), user: null, profile: null, access: null, supabaseAuth: null };
   }
 
-  const profileResult = await fetchProfileByEmail(user.email);
+  const profileResult = await fetchHydratedProfileForUser(user);
+
+  if (profileResult.adminUnavailable || profileResult.schemaMissing) {
+    return {
+      error: jsonForbidden("Profil servisi doğrulanamadı. Erişim reddedildi."),
+      user,
+      profile: null,
+      access: null,
+      supabaseAuth: supabase,
+    };
+  }
+
+  if (profileResult.membershipError || (profileResult.error && !profileResult.profile)) {
+    return {
+      error: jsonForbidden("Firma üyeliği doğrulanamadı. Erişim reddedildi."),
+      user,
+      profile: null,
+      access: null,
+      supabaseAuth: supabase,
+    };
+  }
+
+  if (!profileResult.profile) {
+    return {
+      error: jsonForbidden("Profil/üyelik bulunamadı. Erişim reddedildi."),
+      user,
+      profile: null,
+      access: null,
+      supabaseAuth: supabase,
+    };
+  }
+
   const profile = mergeProfileWithAuth(user, profileResult.profile);
   const access = createUserAccess(profile);
 
