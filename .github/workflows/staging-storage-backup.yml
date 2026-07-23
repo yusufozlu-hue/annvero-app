@@ -25,6 +25,12 @@ on:
         options:
           - dry-run
           - live
+  # Staging kanıt tetikleyicisi — yalnız bu branch + bu workflow dosyası
+  push:
+    branches:
+      - security/staging-hardening
+    paths:
+      - .github/workflows/staging-storage-backup.yml
 
 concurrency:
   group: annvero-staging-storage-backup
@@ -56,9 +62,16 @@ jobs:
       - name: Resolve mode
         id: mode
         run: |
-          MODE="${{ github.event.inputs.mode }}"
-          if [ -z "$MODE" ]; then MODE="live"; fi
+          # push/schedule → açıkça live; workflow_dispatch → input (boşsa live)
+          EVENT_NAME="${{ github.event_name }}"
+          if [ "$EVENT_NAME" = "push" ] || [ "$EVENT_NAME" = "schedule" ]; then
+            MODE="live"
+          else
+            MODE="${{ github.event.inputs.mode }}"
+            if [ -z "$MODE" ]; then MODE="live"; fi
+          fi
           echo "value=$MODE" >> "$GITHUB_OUTPUT"
+          echo "event=${EVENT_NAME} mode=${MODE}"
 
       - name: Staging storage backup
         env:
