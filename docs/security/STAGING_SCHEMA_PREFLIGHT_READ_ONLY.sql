@@ -264,7 +264,8 @@ secdef_targets as (
   )
 ),
 
--- Canonical bodies (hardened = 024; legacy = 022/023). Exact text after CRLF→LF only.
+-- Canonical bodies (hardened = 024; legacy = 022/023).
+-- Compare after CRLF→LF + strip full-line `-- ...` comments only (inline comments kept).
 fn_body_expect as (
   select * from (
     values
@@ -541,7 +542,12 @@ secdef_evaluated as (
          else (select p.provolatile from pg_catalog.pg_proc p where p.oid = to_regprocedure(t.signature))
     end as provolatile,
     case when to_regprocedure(t.signature) is null then null
-         else (select replace(coalesce(p.prosrc, ''), E'\r\n', E'\n')
+         else (select regexp_replace(
+                      replace(coalesce(p.prosrc, ''), E'\r\n', E'\n'),
+                      E'^[ \\t]*--[^\\n]*(?:\\n|$)',
+                      '',
+                      'gn'
+                    )
                from pg_catalog.pg_proc p where p.oid = to_regprocedure(t.signature))
     end as body_norm,
     case when to_regprocedure(t.signature) is null then null
@@ -566,7 +572,7 @@ secdef_evaluated as (
   from secdef_targets t
 ),
 
--- Normalize search_path; body = exact equality after CRLF→LF only
+-- Normalize search_path; body = exact equality after CRLF→LF + full-line `--` strip
 norm_path as (
   select se.*,
          lower(replace(coalesce(se.search_path, ''), ' ', '')) as search_path_norm,
@@ -575,12 +581,24 @@ norm_path as (
          exists (
            select 1 from fn_body_expect fb
            where fb.signature = se.signature and fb.body_kind = 'hardened'
-             and se.body_norm is not distinct from replace(fb.body_text, E'\r\n', E'\n')
+             and se.body_norm is not distinct from
+               regexp_replace(
+                 replace(fb.body_text, E'\r\n', E'\n'),
+                 E'^[ \\t]*--[^\\n]*(?:\\n|$)',
+                 '',
+                 'gn'
+               )
          ) as body_hardened,
          exists (
            select 1 from fn_body_expect fb
            where fb.signature = se.signature and fb.body_kind = 'legacy'
-             and se.body_norm is not distinct from replace(fb.body_text, E'\r\n', E'\n')
+             and se.body_norm is not distinct from
+               regexp_replace(
+                 replace(fb.body_text, E'\r\n', E'\n'),
+                 E'^[ \\t]*--[^\\n]*(?:\\n|$)',
+                 '',
+                 'gn'
+               )
          ) as body_legacy
   from secdef_evaluated se
 ),
