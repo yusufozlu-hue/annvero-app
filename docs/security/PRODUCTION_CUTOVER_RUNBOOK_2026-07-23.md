@@ -33,6 +33,7 @@ Hiçbir adım **açık kullanıcı onayı** + chat’te **`deploy onayla`** (ve 
 | DB restore drill | PASS | `STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md` |
 | Storage manuel drill | PASS | `STAGING_STORAGE_BACKUP_RESTORE_DRILL_2026-07-22.md` |
 | Otomatik Storage backup live | PASS | Actions run `29994737249` @ `473aa77` |
+| Immutable S3 ikinci hedef (staging) | PASS | `STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md` — run `30004604101` / job `89201131433` |
 | Staging PITR | kapalı — **maliyet nedeniyle kabul edilmiş açık risk** (~100 USD/ay/proje); staging’de açılmayacak | operatör kararı |
 | Production PITR | şimdi açılmayacak; cutover’da **bütçe/onay kapısı** (~100 USD/ay/proje) | ayrı açık onay |
 | Günlük fiziksel DB backup | aktif (operatör beyanı) | panel/operasyon |
@@ -168,12 +169,13 @@ Her adım için doldurulacak alanlar:
 
 | Alan | İçerik |
 |------|--------|
-| Durum | Staging: **kod/OIDC hazır**; **live S3 kanıtı bekliyor**. Production-ready öncesi kapı |
-| İşlem | Object-lock / WORM S3 + write-only OIDC rol (DeleteObject yok) + cutover sonrası prod eşleniği |
-| PASS (kapı) | Staging live S3 verify PASS **ve** (prod hedef yapılandırıldı **veya** yazılı risk kabulü) |
-| FAIL | Ne live kanıt ne risk kabulü |
-| DUR (öneri) | Tam "production-ready DR" ilanı için immutable live kanıt olmadan **Go** verme |
-| Not | Key: `staging/<date>/<run_id>/…`; COMPLIANCE ~35g; access key yok |
+| Staging | **PASS** — `STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md` (OIDC environment subject; 3 object; COMPLIANCE / 35g) |
+| Production kapısı | Staging PASS production sayılmaz; prod eşleniği yapılandırılmalı **veya** yazılı risk kabulü |
+| İşlem | Object-lock / WORM S3 + OIDC (access key yok; DeleteObject yok) + cutover sonrası prod eşleniği |
+| PASS (prod kapı) | Prod hedef yapılandırıldı **veya** yazılı risk kabulü |
+| FAIL | Prod hedef yok ve risk kabulü yok |
+| DUR (öneri) | Tam "production-ready DR" ilanı için prod immutable **veya** yazılı risk kabulü olmadan **Go** verme |
+| Not | Staging key: `staging/<date>/<run_id>/…`; COMPLIANCE ~35g; access key yok |
 
 ### B5. Rollback paketi
 
@@ -327,7 +329,8 @@ Kontroller (same-origin, authenticated):
 - [ ] Recovery default-off doğrulandı
 - [ ] Fiziksel DB backup taze
 - [ ] Storage yedek politikası tanımlı
-- [ ] Immutable ikinci hedef **veya** yazılı risk kabulü
+- [ ] Production immutable ikinci hedef **veya** yazılı risk kabulü
+  (staging S3 PASS production sayılmaz)
 - [ ] PITR kararı belgelendi (etkin **veya** erteleme + maliyet onayı)
 - [ ] `deploy onayla` + SQL onayları kayıtlı
 
@@ -358,10 +361,11 @@ Kontroller (same-origin, authenticated):
 
 | Madde | Değer |
 |-------|--------|
-| Durum | Açık |
-| Minimum | Ayrı hesap + object-lock bucket + write-only key + `BACKUP_SECONDARY_S3_*` |
-| Olmadan | Object-level/local artifact “complete immutable backup” **ilan edilmez** |
-| Staging | Live drill PASS; secondary S3 hâlâ NOT_CONFIGURED olabilir |
+| Staging | **PASS** (live S3; Object Lock COMPLIANCE / 35g; OIDC; delete yok) |
+| Production | **Açık** — staging kanıtı production sayılmaz |
+| Minimum (prod) | Object-lock bucket + OIDC write-only rol + Environment vars (`BACKUP_SECONDARY_S3_*`) |
+| Olmadan (prod) | Production “complete immutable backup” **ilan edilmez** (yazılı risk kabulü yoksa) |
+| İlk staging FAIL | Trust sub/ref → environment subject + Environment branch restriction ile düzeltildi |
 
 ---
 
@@ -384,7 +388,7 @@ Kontroller (same-origin, authenticated):
 | SQL/migration açık onay | 024, 025, REMEDIATION |
 | Merge/`main` açık onay | **PR** `security/staging-hardening` → `main` + diff + kontrollü merge (**doğrudan push yok**) |
 | PITR bütçe onayı | ~100 USD/ay/proje; production etkinleştirme ayrı — staging PITR açılmayacak (risk kabulü) |
-| Immutable S3 onayı | İkinci hedef kurulumu (production-ready öncesi kapı) |
+| Immutable S3 onayı | Production ikinci hedef kurulumu (staging PASS production sayılmaz) |
 | Risk kabulü | Production PITR veya immutable ertelenirse yazılı |
 
 **Deploy hook’unun genel kirli-dosya kuyruğu yok sayılır; allowlist dışı commit yasak.**
@@ -423,5 +427,6 @@ Kontroller (same-origin, authenticated):
 
 - Bu runbook production-ready ilanı **değildir**.
 - Staging PASS ≠ production PASS.
-- PITR ve immutable S3 bu belgede **otomatik açılmaz**.
+- PITR ve **production** immutable S3 bu belgede **otomatik açılmaz**.
+  Staging immutable S3 live kanıtı ayrı raporda PASS.
 - Commit/push/deploy/SQL bu turda **yok**.

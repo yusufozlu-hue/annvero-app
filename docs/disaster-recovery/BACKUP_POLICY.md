@@ -22,9 +22,11 @@
 - Staging otomatik (drill-scoped): `npm run backup:staging-storage:dry-run` /
   `npm run backup:staging-storage -- --mode live` (yalnız `STAGING_*` secret’lar)
 - Immutable S3 plan (AWS’siz): `npm run backup:immutable-s3:dry-run`
-- Workflow: `.github/workflows/staging-storage-backup.yml` (staging Environment; OIDC → S3)
-- İkinci bağımsız + object-lock hedef kurulmadan Storage yedek “tamamlandı” sayılmaz
-  (kod hazır; **live S3 kanıtı bekliyor**)
+- Workflow: `.github/workflows/staging-storage-backup.yml` (Environment `staging-backup`; OIDC → S3)
+- Staging ikinci hedef **live PASS** (2026-07-23):
+  `docs/security/STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md`
+  (COMPLIANCE / 35g; access key yok; DeleteObject yok)
+- Production ikinci hedef kurulmadan production Storage yedek “tamamlandı” **ilan edilmez**
 
 ## Tek backup run ID
 - DB + Storage manifest’leri aynı `run_id` ile bağlanır

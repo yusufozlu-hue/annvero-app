@@ -117,7 +117,17 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 - Workflow: `.github/workflows/staging-storage-backup.yml` (cron + dispatch + push path trigger)
 - Live: Actions run **`29994737249`** @ `473aa77` — **success** (Node 22)
 - Drill-scoped; BACKUP/RESTORE match + cleanup; kullanıcı objelerine etki **NONE**
-- Immutable S3 ikinci hedef: **kod hazır** (OIDC + Object Lock verify); **live S3 kanıtı henüz yok**
+- **Production impact: NONE**
+
+### Staging immutable S3 secondary (2026-07-23) — PASS (staging live)
+
+- Kanıt: [`STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md`](./STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md)
+- İlk deneme run `30004604101`: OIDC **FAIL** (`sts:AssumeRoleWithWebIdentity`) — trust **sub/ref** uyumsuzluğu
+- Düzeltme: IAM trust → `environment:staging-backup` + GitHub Environment branch restriction
+- İkinci deneme: job **`89201131433`** — OIDC **PASS**; 3 object upload + COMPLIANCE / ~35g + re-download checksum **PASS**
+- Artifact `8562898431` · digest `sha256:1460afce760915d89a1e413097dd364d74aa65ae7118b74891322c1d1c7cda3c`
+- Access key **NONE**; S3 delete denenmedi; kullanıcı objelerine etki **NONE**
+- Bu kanıt **production** immutable/Storage backup sayılmaz
 - **Production impact: NONE**
 
 ### Production cutover plan (2026-07-23) — DRAFT ONLY
@@ -125,7 +135,7 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 - Runbook: [`PRODUCTION_CUTOVER_RUNBOOK_2026-07-23.md`](./PRODUCTION_CUTOVER_RUNBOOK_2026-07-23.md)
 - Uygulama yok; `deploy onayla` + SQL onayı zorunlu
 - PITR: maliyetli karar (otomatik açılmaz)
-- Immutable ikinci hedef: production-ready öncesi karar kapısı
+- Staging immutable S3: **PASS**; production eşleniği hâlâ karar kapısı
 
 ## 5–7. Test / tenant / backup
 
@@ -153,6 +163,8 @@ Production’a karşı smoke / izolasyon / admin / restore tatbikatı **yok**.
 - Production database restore: **yapılmadı**
 - Production Storage restore: **yapılmadı**
 - PITR: staging bilinçli kapalı; production **maliyetli karar** (otomatik açılmaz)
-- Otomatik / scheduled Storage backup: **staging live PASS** (`29994737249`);
-  immutable S3: **kod hazır / live run bekliyor**
+- Otomatik / scheduled Storage backup: **staging live PASS** (`29994737249`)
+- Immutable S3: **staging live PASS** (`30004604101` / job `89201131433`);
+  production eşleniği **açık**
+- Production admin / tenant / restore / 024–025: **açık**
 - Chat final / checklist ile hizalı kalın; staging PASS ≠ production-ready

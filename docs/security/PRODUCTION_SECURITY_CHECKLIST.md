@@ -30,6 +30,11 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [x] **Staging otomatik Storage backup live**: PASS (2026-07-23)
   Actions run `29994737249` @ commit `473aa77`; Node 22; drill-scoped;
   manifest/checksum/restore/cleanup PASS; production impact **NONE**
+- [x] **Staging immutable S3 ikinci hedef live**: PASS (2026-07-23)
+  Kanıt: `STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md`
+  Run `30004604101` / job `89201131433`; OIDC (environment subject) + 3 object;
+  Object Lock COMPLIANCE / 35g; access key **NONE**; production impact **NONE**
+  (ilk deneme OIDC FAIL → trust düzeltmesi; ikinci deneme PASS)
 - [x] Vercel staging env / proof test account (viewer + membership A): tatbikatta kullanıldı
 - [ ] **Production cutover**: plan hazır — `PRODUCTION_CUTOVER_RUNBOOK_2026-07-23.md`
   (`deploy onayla` + SQL onayı olmadan uygulama **yasak**)
@@ -88,7 +93,9 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 
 - [ ] Supabase PITR panel kontrolü (**staging’de PITR kapalı** — açık risk)
 - [ ] Günlük yedek workflow aktif (şablondan)
-- [ ] İkinci immutable yedek hedefi
+- [x] Staging ikinci immutable yedek hedefi **live** (2026-07-23) —
+  `STAGING_IMMUTABLE_S3_BACKUP_2026-07-23.md` (COMPLIANCE / 35g; OIDC; delete yok)
+- [ ] Production ikinci immutable yedek hedefi (staging PASS production sayılmaz)
 - [x] Staging restore tatbikatı izole ortamda yapıldı (2026-07-22) —
   `STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md` (geçici restore projesi cleanup **COMPLETED**)
 - [x] Staging manuel Storage object-level backup/restore (2026-07-22) —
@@ -98,9 +105,10 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [x] Staging otomatik Storage backup **live kanıt** (2026-07-23) —
   Actions `29994737249` @ `473aa77` (Node 22; drill PASS; cleanup PASS)
 - [x] Immutable S3 ikinci hedef **kod/OIDC/workflow** hazır (2026-07-23) —
-  `upload-immutable-s3.mjs` + `configure-aws-credentials` pin; Object Lock COMPLIANCE doğrulama;
-  **live S3 upload kanıtı henüz yok** (ayrı push/onay ile run bekliyor)
-- [ ] İkinci immutable Storage hedefi **live kanıt** (object-lock head/checksum PASS run)
+  `upload-immutable-s3.mjs` + `configure-aws-credentials` pin; Object Lock COMPLIANCE doğrulama
+- [x] Staging immutable S3 **live kanıt** (2026-07-23) —
+  Run `30004604101` / job `89201131433`; artifact `8562898431`;
+  3 object; head-object COMPLIANCE; re-download checksum PASS
 - [ ] Production Storage restore (bekliyor; staging PASS production sayılmaz)
 - [ ] Production restore tatbikatı (bekliyor; staging PASS production sayılmaz)
 - [x] Staging DB RTO ölçüldü (≤ 7m23s); production RPO/RTO tatbikatı bekliyor
