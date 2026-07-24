@@ -186,6 +186,23 @@ test("oturumsuz / yetkisiz / cross-tenant koruma kalıpları apiGuard'da mevcut"
   assert.match(src, /requireApiSession/);
 });
 
+test("firma listesi RLS'yi aşmadan server-side erişim kapsamıyla yüklenir", () => {
+  const routeSrc = fs.readFileSync(
+    path.join(root, "app/api/companies/route.js"),
+    "utf8"
+  );
+  const companiesSrc = fs.readFileSync(
+    path.join(root, "src/utils/companies.js"),
+    "utf8"
+  );
+
+  assert.match(routeSrc, /export async function GET/);
+  assert.match(routeSrc, /requireAuthenticatedApi\("companies:get"/);
+  assert.match(routeSrc, /applyCompanyIdScopeToQuery/);
+  assert.match(companiesSrc, /fetchCompanyRecords\(\)/);
+  assert.doesNotMatch(companiesSrc, /\.from\(["']companies["']\)/);
+});
+
 test("P0: hardcoded DEFAULT_OWNER_EMAILS runtime source'ta yok", () => {
   const adminSrc = fs.readFileSync(path.join(root, "src/lib/auth/admin.js"), "utf8");
   assert.doesNotMatch(adminSrc, /DEFAULT_OWNER_EMAILS/);

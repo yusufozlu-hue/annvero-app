@@ -3,6 +3,21 @@ function formatApiError(body = {}, fallback = "İstek başarısız.") {
   return parts.join(" — ") || fallback;
 }
 
+export async function fetchCompanyRecords() {
+  const response = await fetch("/api/companies", {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  const body = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(formatApiError(body, "Firmalar yüklenemedi."));
+  }
+
+  return Array.isArray(body.data) ? body.data : [];
+}
+
 export async function saveCompanyRecord(payload) {
   const response = await fetch("/api/companies", {
     method: "POST",
