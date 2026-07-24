@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { clearClientAuthStorage } from "@/src/lib/supabase/client";
 import { useAdminAccess } from "@/src/hooks/useAdminAccess";
@@ -12,6 +11,8 @@ import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
 const actionButtonClass =
   "rounded-lg border border-gray-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60";
 
+const SIGN_OUT_TIMEOUT_MS = 750;
+
 const adminLinkClass =
   "rounded-lg border border-amber-700/60 bg-amber-950/40 px-3 py-1.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-900/50";
 
@@ -19,7 +20,6 @@ export default function AuthUserBar({
   variant = "standalone",
   showAdminLink = true,
 }) {
-  const router = useRouter();
   const { isAdmin } = useAdminAccess();
   const { email: roleEmail } = useUserRole();
   const [sessionEmail, setSessionEmail] = useState("");
@@ -41,27 +41,32 @@ export default function AuthUserBar({
 
   const handleSignOut = async () => {
     const supabase = getSupabaseClient();
-    if (!supabase || isSigningOut) return;
+    if (isSigningOut) return;
 
     setIsSigningOut(true);
 
+    if (supabase) {
+      await Promise.race([
+        supabase.auth.signOut({ scope: "local" }).catch(() => undefined),
+        new Promise((resolve) => {
+          window.setTimeout(resolve, SIGN_OUT_TIMEOUT_MS);
+        }),
+      ]);
+    }
+
     try {
-      await supabase.auth.signOut({ scope: "global" });
       clearClientAuthStorage();
       clearClientSessionCaches();
-      try {
-        await fetch("/api/auth/return-to", {
-          method: "DELETE",
-          credentials: "include",
-        });
-      } catch {
-        // cookie temizliği best-effort
-      }
-      router.replace("/login");
-      router.refresh();
-    } finally {
-      setIsSigningOut(false);
+      void fetch("/api/auth/return-to", {
+        method: "DELETE",
+        credentials: "include",
+        keepalive: true,
+      }).catch(() => undefined);
+    } catch {
+      // Yerel temizlik yÃ¶nlendirmeyi engellemez.
     }
+
+    window.location.replace("https://annvero.com/");
   };
 
   if (!email) return null;
