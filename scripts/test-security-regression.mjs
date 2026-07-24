@@ -340,7 +340,7 @@ test("P0: login provisioning elevated app_metadata yazmaz", () => {
   assert.equal(safePayload.payload.app_metadata.role, ANNVERO_ROLES.ACCOUNTING);
 });
 
-test("P0: DB profile role=admin + boş app_metadata → management/admin değil", () => {
+test("P0: allowlist email + canonical DB admin birlikte elevated erişim verir", () => {
   withAdminEnv("db-admin@annvero.test", () => {
     const user = {
       id: "u1",
@@ -357,13 +357,13 @@ test("P0: DB profile role=admin + boş app_metadata → management/admin değil"
       companyIds: [],
       isActive: true,
     });
-    assert.equal(merged.isPlatformAdmin, false);
-    assert.equal(merged.isManagementUser, false);
-    assert.notEqual(merged.role, ANNVERO_ROLES.ADMIN);
+    assert.equal(merged.isPlatformAdmin, true);
+    assert.equal(merged.isManagementUser, true);
+    assert.equal(merged.role, ANNVERO_ROLES.ADMIN);
     const access = createUserAccess(merged);
-    assert.equal(access.isPlatformAdmin, false);
-    assert.equal(access.isManagementUser, false);
-    assert.notEqual(access.role, ANNVERO_ROLES.ADMIN);
+    assert.equal(access.isPlatformAdmin, true);
+    assert.equal(access.isManagementUser, true);
+    assert.equal(access.role, ANNVERO_ROLES.ADMIN);
     assert.equal(evaluateManagementGate(user).allowed, false);
   });
 });
