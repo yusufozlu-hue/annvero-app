@@ -154,6 +154,17 @@ test("open redirect hâlâ kapalı", () => {
   assert.equal(getSafeNextPath("http://localhost:3000/x"), "/dashboard");
 });
 
+test("giriÅŸ ve Ã§Ä±kÄ±ÅŸ yÃ¶nlendirmeleri uzak Ã§aÄŸrÄ±larda asÄ±lÄ± kalmaz", () => {
+  const bar = read("src/components/AuthUserBar.jsx");
+  const login = read("app/login/LoginForm.tsx");
+  assert.match(login, /controller\.abort\(\)/);
+  assert.match(login, /window\.location\.replace\(redirectTarget\)/);
+  assert.doesNotMatch(login, /await existing\.auth\.signOut/);
+  assert.match(bar, /SIGN_OUT_TIMEOUT_MS/);
+  assert.match(bar, /signOut\(\{ scope: "local" \}\)/);
+  assert.match(bar, /keepalive: true/);
+  assert.match(bar, /window\.location\.replace\("https:\/\/annvero\.com\/"\)/);
+});
 if (!process.exitCode) {
   console.log("\nAll auth security gate tests passed.");
 }
