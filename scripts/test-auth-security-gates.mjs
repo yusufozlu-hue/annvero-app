@@ -120,6 +120,17 @@ test("fetchCompanies oturumsuz localStorage sızdırmaz", () => {
   );
 });
 
+test("canonical admin firma erişimi email allowlist AND profil rolü ister", () => {
+  const admin = read("src/lib/auth/admin.js");
+  const access = read("src/lib/auth/userAccess.js");
+  assert.match(admin, /isCanonicalProfileAdmin/);
+  assert.match(admin, /emailOk && profileOk/);
+  assert.match(
+    access,
+    /isPlatformAdmin\(user\) \|\| isCanonicalProfileAdmin\(user, profile\)/
+  );
+});
+
 test("public /login proxy'de getUser yok (updateSession early return)", () => {
   const proxy = read("proxy.ts");
   assert.match(proxy, /updateSession/);
