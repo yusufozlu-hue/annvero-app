@@ -52,10 +52,13 @@ function readInitialRememberMe(): boolean {
 }
 
 async function consumeReturnToPath(): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 1000);
   try {
     const res = await fetch("/api/auth/return-to", {
       credentials: "include",
       cache: "no-store",
+      signal: controller.signal,
     });
     if (res.ok) {
       const data = (await res.json()) as { path?: string };
@@ -63,6 +66,8 @@ async function consumeReturnToPath(): Promise<string> {
     }
   } catch {
     // fallback
+  } finally {
+    window.clearTimeout(timeoutId);
   }
   return "/dashboard";
 }
@@ -294,14 +299,6 @@ export default function LoginForm() {
 
       // Önce mevcut client ile resmi signOut (cookie storage temizliği);
       // elle session JSON → document.cookie kopyası yok.
-      const existing = getSupabaseBrowserClient({ rememberMe });
-      if (existing) {
-        try {
-          await existing.auth.signOut({ scope: "local" });
-        } catch {
-          // devam — yeni giriş denenecek
-        }
-      }
       clearClientAuthStorage();
 
       const supabase = getSupabaseBrowserClient({ rememberMe });
@@ -382,8 +379,8 @@ export default function LoginForm() {
       }
 
       const redirectTarget = await consumeReturnToPath();
-      router.push(redirectTarget);
-      router.refresh();
+      window.location.replace(redirectTarget);
+      return;
     } catch (caughtError) {
       logLoginError(caughtError);
       if (isNetworkError(caughtError)) {

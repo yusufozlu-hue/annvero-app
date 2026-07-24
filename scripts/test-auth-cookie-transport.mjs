@@ -74,7 +74,7 @@ test("login cookie hint fail-closed; logout storage clear", () => {
   const login = read("app/login/LoginForm.tsx");
   assert.match(login, /hasSupabaseAuthCookieHint/);
   assert.match(login, /signOut\(\s*\{\s*scope:\s*"local"/);
-  assert.match(login, /router\.refresh/);
+  assert.match(login, /window\.location\.replace\(redirectTarget\)/);
   assert.doesNotMatch(login, /document\.cookie\s*=\s*`[^`]*access_token/);
 
   const bar = read("src/components/AuthUserBar.jsx");
