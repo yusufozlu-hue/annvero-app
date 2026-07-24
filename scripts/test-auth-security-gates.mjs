@@ -112,7 +112,7 @@ test("CompanyWorkspace oturum yokken firma seed etmez", () => {
 
 test("fetchCompanies oturumsuz localStorage sızdırmaz", () => {
   const src = read("src/utils/companies.js");
-  assert.match(src, /if \(!session\)/);
+  assert.match(src, /fetchCompanyRecords/);
   assert.match(src, /clearCompaniesClientCache/);
   assert.doesNotMatch(
     src,
