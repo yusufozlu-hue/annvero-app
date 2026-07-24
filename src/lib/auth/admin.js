@@ -73,6 +73,21 @@ export function isTrustedAppPartnerRole(role = "") {
 }
 
 /**
+ * Eski/canonical admin hesaplarını güvenli biçimde geri kazanır:
+ * explicit server allowlist AND canonical DB profile admin.
+ * Email veya DB rolü tek başına elevated yetki vermez.
+ */
+export function isCanonicalProfileAdmin(user, profile = null) {
+  if (!user || !profile) return false;
+
+  const email = String(user.email || profile.email || "").trim().toLowerCase();
+  const emailOk = Boolean(email && isAdminEmail(email));
+  const profileOk = isTrustedAppAdminRole(profile.role || "");
+
+  return emailOk && profileOk;
+}
+
+/**
  * Bilgilendirici rol — elevated claim için kullanılmaz.
  * user_metadata asla elevated rol döndürmez.
  */

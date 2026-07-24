@@ -1,4 +1,5 @@
 import {
+  isCanonicalProfileAdmin,
   getTrustedAppRole,
   isManagementUser,
   isOwnerEmail,
@@ -80,7 +81,8 @@ export function mergeProfileWithAuth(user, profile = null, options = {}) {
     return buildFallbackProfile(user, options);
   }
 
-  const platformAdmin = isPlatformAdmin(user);
+  const platformAdmin =
+    isPlatformAdmin(user) || isCanonicalProfileAdmin(user, profile);
   const trustedAppRole = getTrustedAppRole(user);
   const trustedPartner = isTrustedAppPartnerRole(trustedAppRole);
   const trustedManagement = platformAdmin || trustedPartner || isManagementUser(user);
