@@ -1,6 +1,6 @@
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
 import { ANNVERO_SELECTED_COMPANY_KEY } from "@/src/config/annveroNavConfig";
 import { formatCompanyFromSupabaseRow } from "@/src/utils/companyNormalize";
+import { fetchCompanyRecords } from "@/src/utils/companiesApi";
 
 export const COMPANIES_SESSION_STORAGE_KEY = "annvero_companies_session_v1";
 
@@ -173,30 +173,8 @@ export async function fetchCompanies(options = {}) {
     return companiesFetchCache;
   }
 
-  const supabase = getSupabaseClient();
-
-  if (!supabase) {
-    console.error("Supabase istemcisi yapılandırılmamış.");
-    return [];
-  }
-
   try {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) {
-      clearCompaniesClientCache();
-      return [];
-    }
-
-    const { data, error } = await supabase
-      .from("companies")
-      .select("id, company_name, data, created_at")
-      .order("company_name", { ascending: true });
-
-    if (error) {
-      throw error;
-    }
+    const data = await fetchCompanyRecords();
 
     const companies = (data || [])
       .map(formatCompanyFromSupabaseRow)

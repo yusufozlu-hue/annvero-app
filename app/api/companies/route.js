@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import {
+  applyCompanyIdScopeToQuery,
+  requireAuthenticatedApi,
   requireManagementUser,
-  getApiSupabase,
 } from "@/src/lib/auth/apiGuard";
 import {
   buildAuditContextFromRequest,
@@ -45,6 +46,30 @@ function buildSupabaseErrorResponse(context, error) {
     },
     { status: 500 }
   );
+}
+
+export async function GET() {
+  const api = await requireAuthenticatedApi("companies:get", COMPANIES_TABLE);
+  if (api.error) return api.error;
+
+  logSupabaseQueryDiagnostics("companies:get", COMPANIES_TABLE);
+
+  let query = api.supabase
+    .from(COMPANIES_TABLE)
+    .select("id, company_name, data, created_at")
+    .order("company_name", { ascending: true });
+
+  query = applyCompanyIdScopeToQuery(query, api.access);
+  if (!query) {
+    return NextResponse.json({ data: [] });
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    return buildSupabaseErrorResponse("companies:get", error);
+  }
+
+  return NextResponse.json({ data: data || [] });
 }
 
 export async function POST(request) {
