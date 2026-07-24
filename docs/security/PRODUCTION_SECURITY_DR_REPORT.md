@@ -138,7 +138,10 @@ Ayrıntılı liste final chat raporunda ve tarihli staging raporlarında.
 - Staging immutable S3: **PASS**
 - Production immutable S3 **altyapı + OIDC + workflow kodu hazır**:
   [`PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md`](./PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md)
-- Production `inventory` / `live` / restore kanıtı henüz yok; hazırlık production backup **PASS** sayılmaz
+- Production Storage `inventory` / immutable pipeline live kanıtı **PASS** (2026-07-24):
+  [`PRODUCTION_STORAGE_BACKUP_PROOF_2026-07-24.md`](./PRODUCTION_STORAGE_BACKUP_PROOF_2026-07-24.md)
+- Run `30081693929`: source read-only; OIDC; Object Lock COMPLIANCE / 35g; upload + verify PASS
+- Envanter `0 bucket / 0 object`; gerçek kullanıcı object backup/restore kanıtı yok
 
 ## 5–7. Test / tenant / backup
 
@@ -168,7 +171,8 @@ Production’a karşı smoke / izolasyon / admin / restore tatbikatı **yok**.
 - PITR: staging bilinçli kapalı; production **maliyetli karar** (otomatik açılmaz)
 - Otomatik / scheduled Storage backup: **staging live PASS** (`29994737249`)
 - Immutable S3: **staging live PASS** (`30004604101` / job `89201131433`)
-- Production immutable altyapı/kod: **hazır** (`866da13`);
-  production inventory/live/restore kanıtı **açık**
+- Production immutable altyapı/kod: **hazır** (`866da13`)
+- Production Storage inventory/immutable pipeline: **live PASS** (`30081693929`);
+  envanter boş olduğu için gerçek kullanıcı object restore kanıtı **açık**
 - Production admin / tenant / restore / 024–025: **açık**
 - Chat final / checklist ile hizalı kalın; staging PASS ≠ production-ready

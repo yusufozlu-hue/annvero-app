@@ -45,9 +45,11 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
 - [x] **Production immutable S3 altyapısı + OIDC + workflow kodu**: hazır (2026-07-23)
   Kanıt: `PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md`;
   bucket / Object Lock COMPLIANCE 35g / GitHub Environment / OIDC rolü yapılandırıldı;
-  staging commit `866da13`; production workflow henüz çalıştırılmadı
-- [ ] **Production Storage inventory/live immutable kanıtı**: bekliyor
-  (`inventory` ve `live` ayrı açık onay; hazırlık PASS, canlı backup PASS sayılmaz)
+  staging commit `866da13`
+- [x] **Production Storage inventory/live immutable pipeline kanıtı**: PASS (2026-07-24)
+  Kanıt: `PRODUCTION_STORAGE_BACKUP_PROOF_2026-07-24.md`;
+  Actions run `30081693929`; source read-only; OIDC + COMPLIANCE 35g + verify PASS.
+  Envanter `0 bucket / 0 object`: gerçek kullanıcı object backup/restore kanıtı değildir.
 - [ ] Production migration / deploy: **yasak** / bekliyor (açık onay yok)
 - [ ] Paket tamamen production-ready: **hayır** (production onay + migration + smoke bekliyor; bu test sonucu değiştirmez)
 
@@ -105,8 +107,10 @@ Her madde için: kod hazır / kullanıcı işlemi / doğrulandı.
   `PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md`;
   `annvero-production-immutable-backup-tr-20260723`, `eu-central-1`,
   Object Lock COMPLIANCE / 35g, OIDC, access key yok, delete yok
-- [ ] Production ikinci immutable yedek hedefi **live kanıtı**
-  (inventory/upload/head-object/re-download henüz çalıştırılmadı)
+- [x] Production ikinci immutable yedek hedefi **live pipeline kanıtı** —
+  `PRODUCTION_STORAGE_BACKUP_PROOF_2026-07-24.md`;
+  run `30081693929`; inventory/upload/head-object/re-download PASS;
+  envanter `0 bucket / 0 object`, dolayısıyla gerçek kullanıcı object restore kanıtı yok
 - [x] Staging restore tatbikatı izole ortamda yapıldı (2026-07-22) —
   `STAGING_DATABASE_RESTORE_DRILL_2026-07-22.md` (geçici restore projesi cleanup **COMPLETED**)
 - [x] Staging manuel Storage object-level backup/restore (2026-07-22) —

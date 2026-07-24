@@ -37,7 +37,7 @@ Hiçbir adım **açık kullanıcı onayı** + chat’te **`deploy onayla`** (ve 
 | Staging PITR | kapalı — **maliyet nedeniyle kabul edilmiş açık risk** (~100 USD/ay/proje); staging’de açılmayacak | operatör kararı |
 | Production PITR | şimdi açılmayacak; cutover’da **bütçe/onay kapısı** (~100 USD/ay/proje) | ayrı açık onay |
 | Günlük fiziksel DB backup | aktif (operatör beyanı) | panel/operasyon |
-| Production immutable S3 altyapı/kod | hazır; live kanıt değil | `PRODUCTION_STORAGE_BACKUP_PREPARATION_2026-07-23.md` |
+| Production immutable S3 altyapı/kod | hazır; live pipeline PASS | `PRODUCTION_STORAGE_BACKUP_PROOF_2026-07-24.md` |
 
 ---
 
@@ -160,10 +160,10 @@ Her adım için doldurulacak alanlar:
 
 | Alan | İçerik |
 |------|--------|
-| Ön koşul | Staging auto Storage backup PASS (`29994737249`) |
+| Ön koşul | Staging auto Storage backup PASS (`29994737249`); production pipeline PASS (`30081693929`) |
 | Hazırlık | Production ref guard + salt okunur inventory/copy kodu + manuel workflow hazır (`866da13`) |
 | İşlem | Önce `inventory` (salt okunur); inceleme sonrası ayrı onayla `live` object-level yedek; manifest SHA-256 |
-| PASS | Inventory temiz; manifest + checksum + immutable saklama + re-download kanıtı var |
+| PASS | Inventory temiz; manifest + checksum + immutable saklama + re-download kanıtı var. Run `30081693929` envanteri `0 bucket / 0 object`; gerçek kullanıcı object restore kanıtı değildir |
 | FAIL | Storage yedeksiz cutover |
 | DUR | Kullanıcı bucket’larında silme/mutate içeren “yedek” |
 
@@ -332,7 +332,8 @@ Kontroller (same-origin, authenticated):
 - [ ] Recovery default-off doğrulandı
 - [ ] Fiziksel DB backup taze
 - [ ] Storage yedek politikası tanımlı
-- [ ] Production immutable ikinci hedef **live kanıtı** veya yazılı risk kabulü
+- [x] Production immutable ikinci hedef **live pipeline kanıtı** (`30081693929`);
+  envanter boş olduğu için gerçek kullanıcı object restore kanıtı ayrıca açık
   (altyapı/kod hazır; inventory/upload/lock/checksum kanıtı bekliyor)
 - [ ] PITR kararı belgelendi (etkin **veya** erteleme + maliyet onayı)
 - [ ] `deploy onayla` + SQL onayları kayıtlı
