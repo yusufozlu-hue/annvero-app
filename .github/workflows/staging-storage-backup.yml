@@ -44,10 +44,34 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
+  # GitHub schedule yalnız default branch'teki workflow'u çalıştırır. Default
+  # branch (main) staging Environment secret'larına doğrudan girmez; bunun
+  # yerine sabit ve korumalı staging ref'inde workflow_dispatch üretir.
+  dispatch-staging-schedule:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch protected staging ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api \
+            --method POST \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/staging-storage-backup.yml/dispatches" \
+            -f ref=security/staging-hardening \
+            -f 'inputs[mode]=live'
+
   staging-storage-backup:
+    # Schedule parent job secret kullanmaz. Gerçek yedek sabit staging ref'inde
+    # oluşturulan workflow_dispatch çalışmasında yürür.
+    if: ${{ github.event_name != 'schedule' && github.ref == 'refs/heads/security/staging-hardening' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: staging-backup
@@ -70,9 +94,9 @@ jobs:
       - name: Resolve mode
         id: mode
         run: |
-          # push/schedule → açıkça live; workflow_dispatch → input (boşsa live)
+          # push → live; workflow_dispatch → input (schedule ayrı dispatch job'unda)
           EVENT_NAME="${{ github.event_name }}"
-          if [ "$EVENT_NAME" = "push" ] || [ "$EVENT_NAME" = "schedule" ]; then
+          if [ "$EVENT_NAME" = "push" ]; then
             MODE="live"
           else
             MODE="${{ github.event.inputs.mode }}"

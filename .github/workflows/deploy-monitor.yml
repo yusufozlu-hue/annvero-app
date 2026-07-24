@@ -8,7 +8,12 @@ permissions:
 
 jobs:
   notify-failure:
-    if: github.event.deployment_status.state == 'failure' || github.event.deployment_status.state == 'error'
+    # GitHub Environment koruma hataları da deployment_status üretir.
+    # Yalnız Vercel hedef URL'si taşıyan gerçek deploy olaylarını raporla.
+    if: >-
+      (github.event.deployment_status.state == 'failure' ||
+      github.event.deployment_status.state == 'error') &&
+      startsWith(github.event.deployment_status.target_url, 'https://vercel.com/')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -22,7 +27,7 @@ jobs:
           DEPLOY_DESC: ${{ github.event.deployment_status.description }}
           DEPLOY_URL: ${{ github.event.deployment_status.target_url }}
         run: |
-          echo "::error title=ANNVERO Deploy Failed::Vercel deployment failed for commit ${GITHUB_SHA}."
+          echo "::error title=ANNVERO Deploy Failed::Vercel deployment failed for commit ${DEPLOY_SHA}."
           {
             echo "## ANNVERO deploy hatasi"
             echo ""
