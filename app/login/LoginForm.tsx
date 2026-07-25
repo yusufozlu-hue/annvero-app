@@ -18,9 +18,11 @@ import {
 } from "@/src/lib/supabase/client";
 import {
   getSafeNextPath,
+  hasReturnToHint,
   readRememberedEmailState,
   writeRememberedEmail,
 } from "@/src/utils/authRedirect";
+import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
 import {
   armAuthPerfDiagnosticsFromQuery,
   markAuthPerf,
@@ -54,8 +56,11 @@ const DEFAULT_POST_LOGIN_PATH = "/dashboard";
 /**
  * Return-to httpOnly cookie'yi okur (GET siler). Open-redirect: getSafeNextPath.
  * Timeout/hata → varsayılan ANNVERO route; cookie DELETE best-effort.
+ * Marker cookie yoksa özel hedef de yoktur → endpoint hiç çağrılmaz.
  */
 async function consumeReturnToPath(): Promise<string> {
+  if (!hasReturnToHint()) return DEFAULT_POST_LOGIN_PATH;
+
   const controller = new AbortController();
   const timeoutId = window.setTimeout(
     () => controller.abort(),
@@ -312,9 +317,6 @@ export default function LoginForm() {
 
     try {
       startAuthPerfRun({ route: "/login" });
-      const { clearClientSessionCaches } = await import(
-        "@/src/lib/auth/clearClientSession"
-      );
       clearClientSessionCaches();
       markAuthPerf("cache_cleared", { once: true });
 
@@ -383,6 +385,14 @@ export default function LoginForm() {
       }
 
       markAuthPerf("cookie_hint", { ok: true, once: true });
+
+      // Yalnız route kodu/RSC hazırlığı; oturum çerezi yazıldıktan sonra
+      // başlatılır, beklenmez ve hatası girişi engellemez.
+      try {
+        router.prefetch(DEFAULT_POST_LOGIN_PATH);
+      } catch {
+        // prefetch best-effort
+      }
 
       // Yalnız normalize edilmiş e-posta; şifre/token/session yazılmaz.
       // Checkbox kapalıysa boş değer yazılır → eski kayıt silinir.

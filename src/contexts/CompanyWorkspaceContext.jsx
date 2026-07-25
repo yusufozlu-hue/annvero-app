@@ -41,7 +41,12 @@ export function CompanyWorkspaceProvider({ children }) {
   const [selectedCompanyId, setSelectedCompanyIdState] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const lastRefreshAtRef = useRef(0);
+  const companiesCountRef = useRef(0);
   const COMPANY_REFRESH_TTL_MS = 60_000;
+
+  useEffect(() => {
+    companiesCountRef.current = companies.length;
+  }, [companies.length]);
 
   const persistCompanyId = useCallback((companyId = "") => {
     if (typeof window === "undefined") return;
@@ -66,15 +71,16 @@ export function CompanyWorkspaceProvider({ children }) {
 
   const refreshCompanies = useCallback(async (options = {}) => {
     const now = Date.now();
+    const hasCompanies = companiesCountRef.current > 0;
     if (
       !options.force &&
-      companies.length > 0 &&
+      hasCompanies &&
       now - lastRefreshAtRef.current < COMPANY_REFRESH_TTL_MS
     ) {
       return;
     }
 
-    setIsLoading(companies.length === 0);
+    setIsLoading(!hasCompanies);
 
     try {
       const loaded = await fetchCompanies(options);
@@ -95,7 +101,9 @@ export function CompanyWorkspaceProvider({ children }) {
     } finally {
       setIsLoading(false);
     }
-  }, [companies.length, persistCompanyId]);
+    // Firma sayısı ref üzerinden okunur: aksi halde her liste güncellemesinde
+    // callback kimliği değişip boot efektini yeniden tetikler (mükerrer sorgu).
+  }, [persistCompanyId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,6 +120,9 @@ export function CompanyWorkspaceProvider({ children }) {
 
       const seeded = readSessionCompanies();
       if (seeded.length > 0) {
+        // Ref'i hemen güncelle: aynı tick'teki yenileme "boş liste" sanıp
+        // gereksiz yükleme ekranı açmasın.
+        companiesCountRef.current = seeded.length;
         setCompanies(seeded);
         setSelectedCompanyIdState(readStoredCompanyId());
         setIsLoading(false);

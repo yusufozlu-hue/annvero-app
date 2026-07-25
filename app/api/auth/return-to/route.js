@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import {
   ANNVERO_RETURN_TO_COOKIE,
+  ANNVERO_RETURN_TO_HINT_COOKIE,
   getReturnToCookieOptions,
+  getReturnToHintCookieOptions,
   getSafeNextPath,
 } from "@/src/utils/authRedirect";
 
@@ -27,6 +29,25 @@ export async function POST(request) {
     safe,
     getReturnToCookieOptions()
   );
+  response.cookies.set(
+    ANNVERO_RETURN_TO_HINT_COOKIE,
+    "1",
+    getReturnToHintCookieOptions()
+  );
+  return response;
+}
+
+function clearReturnToCookies(response) {
+  response.cookies.set(
+    ANNVERO_RETURN_TO_COOKIE,
+    "",
+    getReturnToCookieOptions({ clear: true })
+  );
+  response.cookies.set(
+    ANNVERO_RETURN_TO_HINT_COOKIE,
+    "",
+    getReturnToHintCookieOptions({ clear: true })
+  );
   return response;
 }
 
@@ -36,21 +57,9 @@ export async function POST(request) {
 export async function GET(request) {
   const raw = request.cookies.get(ANNVERO_RETURN_TO_COOKIE)?.value;
   const path = getSafeNextPath(raw, "/dashboard");
-  const response = NextResponse.json({ ok: true, path });
-  response.cookies.set(
-    ANNVERO_RETURN_TO_COOKIE,
-    "",
-    getReturnToCookieOptions({ clear: true })
-  );
-  return response;
+  return clearReturnToCookies(NextResponse.json({ ok: true, path }));
 }
 
 export async function DELETE() {
-  const response = NextResponse.json({ ok: true });
-  response.cookies.set(
-    ANNVERO_RETURN_TO_COOKIE,
-    "",
-    getReturnToCookieOptions({ clear: true })
-  );
-  return response;
+  return clearReturnToCookies(NextResponse.json({ ok: true }));
 }

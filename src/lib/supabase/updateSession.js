@@ -3,7 +3,9 @@ import { NextResponse } from "next/server";
 import { isPlatformAdmin } from "@/src/lib/auth/admin";
 import {
   ANNVERO_RETURN_TO_COOKIE,
+  ANNVERO_RETURN_TO_HINT_COOKIE,
   getReturnToCookieOptions,
+  getReturnToHintCookieOptions,
   getSafeNextPath,
 } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
@@ -62,6 +64,13 @@ function setReturnToCookie(response, path) {
     ANNVERO_RETURN_TO_COOKIE,
     safe,
     getReturnToCookieOptions()
+  );
+  // İstemci "özel dönüş yolu var mı?" bilgisini bu marker ile okur;
+  // yol değeri httpOnly cookie'de kalır.
+  response.cookies.set(
+    ANNVERO_RETURN_TO_HINT_COOKIE,
+    "1",
+    getReturnToHintCookieOptions()
   );
   return response;
 }

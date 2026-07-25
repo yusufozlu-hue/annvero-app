@@ -91,6 +91,48 @@ test("çıkış ve giriş client session cache temizler", () => {
   assert.match(clearer, /ANNVERO_ROLE_STORAGE_KEY/);
 });
 
+test("cache temizligi acik allowlist; toplu silme ve hatirlanan e-posta silme yok", () => {
+  const clearer = read("src/lib/auth/clearClientSession.js");
+  // Toplu temizlik yok: kullanicilar arasi sizinti allowlist ile onlenir.
+  assert.doesNotMatch(clearer, /localStorage\.clear\(\)/);
+  assert.doesNotMatch(clearer, /sessionStorage\.clear\(\)/);
+  assert.doesNotMatch(clearer, /caches\.(open|keys|delete)/);
+  assert.doesNotMatch(clearer, /Object\.keys\(/);
+  // Hatirlanan e-posta ve sifre yoneticisi anahtarlari allowlist disinda.
+  assert.doesNotMatch(clearer, /annvero_remembered_email/);
+  assert.doesNotMatch(clearer, /ANNVERO_REMEMBERED_EMAIL_KEY/);
+  // Kullanici-scoped anahtarlar allowlist icinde kalir.
+  for (const key of [
+    "ANNVERO_USERS_CACHE_KEY",
+    "ANNVERO_SELECTED_COMPANY_KEY",
+    "COMPANIES_SESSION_STORAGE_KEY",
+  ]) {
+    assert.ok(clearer.includes(key), `${key} allowlist'te yok`);
+  }
+});
+
+test("login submit yolunda cache temizligi dinamik import beklemez", () => {
+  const login = read("app/login/LoginForm.tsx");
+  assert.match(
+    login,
+    /import \{ clearClientSessionCaches \} from "@\/src\/lib\/auth\/clearClientSession";/
+  );
+  assert.doesNotMatch(login, /await import\(\s*\n?\s*"@\/src\/lib\/auth\/clearClientSession"/);
+});
+
+test("firma sorgusu mukerrer calismaz", () => {
+  const companies = read("src/utils/companies.js");
+  const context = read("src/contexts/CompanyWorkspaceContext.jsx");
+  assert.match(companies, /companiesFetchInFlight/);
+  assert.match(companies, /return companiesFetchInFlight;/);
+  // Kullanici degisiminde eski sorgu sonucu yeni kullaniciya verilmez.
+  assert.match(companies, /companiesFetchGeneration \+= 1;/);
+  assert.match(companies, /if \(generation !== companiesFetchGeneration\) return \[\];/);
+  // refreshCompanies kimligi liste uzunlugu degisince yeniden olusmamali.
+  assert.match(context, /companiesCountRef/);
+  assert.doesNotMatch(context, /\}, \[companies\.length, persistCompanyId\]\);/);
+});
+
 test("auth/me unauthenticated önceki profil cache'ini tutmaz", () => {
   const src = read("src/lib/auth/authMeClient.js");
   assert.match(src, /data\?\.authenticated/);

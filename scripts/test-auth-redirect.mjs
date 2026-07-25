@@ -9,10 +9,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ANNVERO_RETURN_TO_COOKIE,
+  ANNVERO_RETURN_TO_HINT_COOKIE,
   RETURN_TO_COOKIE_MAX_AGE_SEC,
   buildLoginUrl,
   getReturnToCookieOptions,
+  getReturnToHintCookieOptions,
   getSafeNextPath,
+  hasReturnToHint,
 } from "../src/utils/authRedirect.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -81,6 +84,68 @@ test("return-to proxy getUser atlar; yol guvenli sanitize", () => {
   assert.match(route, /getSafeNextPath/);
   assert.equal(getSafeNextPath("javascript:alert(1)"), "/dashboard");
   assert.equal(getSafeNextPath("/dashboard/ofis-takip"), "/dashboard/ofis-takip");
+});
+
+test("return-to hint cookie yalnizca isaret tasir; yol tasimaz", () => {
+  assert.equal(ANNVERO_RETURN_TO_HINT_COOKIE, "annvero_return_to_hint");
+  const hint = getReturnToHintCookieOptions();
+  assert.equal(hint.httpOnly, false);
+  assert.equal(hint.sameSite, "lax");
+  assert.equal(hint.path, "/");
+  assert.equal(getReturnToHintCookieOptions({ clear: true }).maxAge, 0);
+
+  const session = read("src/lib/supabase/updateSession.js");
+  const route = read("app/api/auth/return-to/route.js");
+  const callback = read("app/auth/callback/route.js");
+  // Marker her zaman httpOnly yol cookie'siyle birlikte yazilir/silinir.
+  assert.match(session, /ANNVERO_RETURN_TO_HINT_COOKIE,\s*\n\s*"1"/);
+  assert.match(route, /ANNVERO_RETURN_TO_HINT_COOKIE,\s*\n\s*"1"/);
+  assert.match(route, /clearReturnToCookies/);
+  assert.match(callback, /ANNVERO_RETURN_TO_HINT_COOKIE/);
+  // Marker degeri hicbir yerde yol olarak kullanilmaz.
+  assert.doesNotMatch(route, /getSafeNextPath\([^)]*HINT/);
+});
+
+test("hasReturnToHint yalnizca marker cookie varliginda true", () => {
+  const originalDocument = globalThis.document;
+  try {
+    globalThis.document = { cookie: "" };
+    assert.equal(hasReturnToHint(), false);
+    globalThis.document = { cookie: "sb-access-token=x; other=1" };
+    assert.equal(hasReturnToHint(), false);
+    globalThis.document = { cookie: "annvero_return_to_hint_other=1" };
+    assert.equal(hasReturnToHint(), false);
+    globalThis.document = { cookie: "a=1; annvero_return_to_hint=1" };
+    assert.equal(hasReturnToHint(), true);
+  } finally {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  }
+});
+
+test("login: hint yoksa return-to endpoint cagrilmaz", () => {
+  const form = read("app/login/LoginForm.tsx");
+  assert.match(
+    form,
+    /if \(!hasReturnToHint\(\)\) return DEFAULT_POST_LOGIN_PATH;/
+  );
+  // Hedef yine getSafeNextPath ile dogrulanir.
+  assert.match(form, /getSafeNextPath\(data\?\.path, DEFAULT_POST_LOGIN_PATH\)/);
+});
+
+test("login prefetch: yalnizca oturum cerezi dogrulandiktan sonra", () => {
+  const form = read("app/login/LoginForm.tsx");
+  const hintOkIndex = form.indexOf('markAuthPerf("cookie_hint", { ok: true');
+  const prefetchIndex = form.indexOf("router.prefetch(");
+  assert.ok(hintOkIndex > 0, "cookie_hint ok isareti bulunamadi");
+  assert.ok(prefetchIndex > hintOkIndex, "prefetch auth oncesinde calisiyor");
+  // Prefetch beklenmez ve hata login'i durdurmaz.
+  assert.doesNotMatch(form, /await router\.prefetch/);
+  assert.match(form, /router\.prefetch\(DEFAULT_POST_LOGIN_PATH\)/);
+  // Tek navigation: yalnizca router.replace.
+  assert.equal(form.match(/router\.replace\(/g)?.length, 2);
+  assert.doesNotMatch(form, /window\.location\.replace/);
+  assert.doesNotMatch(form, /router\.refresh\(/);
 });
 
 if (!process.exitCode) {

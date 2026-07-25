@@ -5,6 +5,11 @@
 
 export const ANNVERO_RETURN_TO_COOKIE = "annvero_return_to";
 /**
+ * Yalnız "özel dönüş yolu var mı?" işareti — path/token/e-posta taşımaz.
+ * httpOnly değildir (istemci okur); gerçek yol httpOnly cookie'de kalır.
+ */
+export const ANNVERO_RETURN_TO_HINT_COOKIE = "annvero_return_to_hint";
+/**
  * "Beni hatırla" tek tercih kaynağı: yalnız normalize edilmiş e-posta.
  * Şifre / token / session / yetki bilgisi kesinlikle yazılmaz.
  * Kayıt varsa tercih açık, yoksa kapalı sayılır (ayrı bayrak tutulmaz).
@@ -162,4 +167,29 @@ export function getReturnToCookieOptions({
     path: "/",
     maxAge: clear ? 0 : maxAge,
   };
+}
+
+/** Marker cookie: httpOnly değil (istemci okur), değer yalnız "1". */
+export function getReturnToHintCookieOptions({
+  maxAge = RETURN_TO_COOKIE_MAX_AGE_SEC,
+  clear = false,
+} = {}) {
+  return {
+    ...getReturnToCookieOptions({ maxAge, clear }),
+    httpOnly: false,
+  };
+}
+
+/** İstemci: özel dönüş yolu işareti var mı? Değer yolu içermez. */
+export function hasReturnToHint() {
+  if (typeof document === "undefined") return false;
+  try {
+    return document.cookie
+      .split(";")
+      .some(
+        (part) => part.split("=")[0]?.trim() === ANNVERO_RETURN_TO_HINT_COOKIE
+      );
+  } catch {
+    return false;
+  }
 }
