@@ -312,6 +312,14 @@ assertPartition("/dashboard", "Dashboard");
     "root theme script panel path'lerinde dark zorlamalı"
   );
   assert.ok(shellSrc.includes('bg-[var(--annvero-bg)]'));
+  assert.ok(
+    shellSrc.includes("<Suspense fallback={<ModuleRouteSkeleton />}>"),
+    "client route chunk beklerken görünür modül iskeleti olmalı"
+  );
+  assert.ok(shellSrc.includes("data-annvero-module-skeleton"));
+  assert.ok(shellSrc.includes('aria-busy="true"'));
+  assert.ok(!shellSrc.includes("fallback={null}"));
+  assert.ok(!shellSrc.includes("animate-pulse"));
 }
 
 console.log("PASS annvero-nav-active-group + prefetch contention");
