@@ -135,10 +135,10 @@ test("login: hint yoksa return-to endpoint cagrilmaz", () => {
 
 test("login prefetch: yalnizca oturum cerezi dogrulandiktan sonra", () => {
   const form = read("app/login/LoginForm.tsx");
-  const hintOkIndex = form.indexOf('markAuthPerf("cookie_hint", { ok: true');
+  const cookieGateIndex = form.indexOf("if (!hasSupabaseAuthCookieHint())");
   const prefetchIndex = form.indexOf("router.prefetch(");
-  assert.ok(hintOkIndex > 0, "cookie_hint ok isareti bulunamadi");
-  assert.ok(prefetchIndex > hintOkIndex, "prefetch auth oncesinde calisiyor");
+  assert.ok(cookieGateIndex > 0, "fail-closed cookie kontrolu bulunamadi");
+  assert.ok(prefetchIndex > cookieGateIndex, "prefetch auth oncesinde calisiyor");
   // Prefetch beklenmez ve hata login'i durdurmaz.
   assert.doesNotMatch(form, /await router\.prefetch/);
   assert.match(form, /router\.prefetch\(DEFAULT_POST_LOGIN_PATH\)/);

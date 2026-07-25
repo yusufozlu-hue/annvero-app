@@ -23,13 +23,6 @@ import {
   writeRememberedEmail,
 } from "@/src/utils/authRedirect";
 import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
-import {
-  armAuthPerfDiagnosticsFromQuery,
-  markAuthPerf,
-  markAuthPerfNavigationStart,
-  startAuthPerfRun,
-} from "@/src/lib/auth/loginPerfDiagnostics";
-import LoginPerfDebugPanel from "@/src/components/LoginPerfDebugPanel";
 
 const CONFIG_MISSING_MESSAGE = "Supabase bağlantı bilgileri eksik";
 const CONFIG_MISSING_PRODUCTION_MESSAGE =
@@ -216,7 +209,6 @@ export default function LoginForm() {
     let cancelled = false;
 
     const boot = async () => {
-      armAuthPerfDiagnosticsFromQuery();
       // Storage erişimi yalnız client'ta (useEffect) — SSR/hydration güvenli.
       const { email: storedEmail, optedOut } = readRememberedEmailState();
       const origin = window.location.origin;
@@ -316,9 +308,7 @@ export default function LoginForm() {
     const normalizedEmail = email.trim().toLowerCase();
 
     try {
-      startAuthPerfRun({ route: "/login" });
       clearClientSessionCaches();
-      markAuthPerf("cache_cleared", { once: true });
 
       // Önce mevcut client ile resmi signOut (cookie storage temizliği);
       // elle session JSON → document.cookie kopyası yok.
@@ -342,7 +332,6 @@ export default function LoginForm() {
         });
 
       if (signInError) {
-        markAuthPerf("supabase_login", { ok: false, err: "signin_error" });
         logLoginError(signInError);
         if (isNetworkError(signInError)) {
           logNetworkError("signInWithPassword", signInError, {
@@ -357,10 +346,7 @@ export default function LoginForm() {
         return;
       }
 
-      markAuthPerf("supabase_login", { ok: true });
-
       if (!signInData.session || !signInData.user) {
-        markAuthPerf("session_missing", { ok: false, err: "no_session" });
         setError("Giriş başarısız: Oturum oluşturulamadı");
         setIsLoading(false);
         submitLock.current = false;
@@ -375,7 +361,6 @@ export default function LoginForm() {
           // ignore
         }
         clearClientAuthStorage();
-        markAuthPerf("cookie_hint", { ok: false, err: "no_cookie" });
         setError(
           "Giriş başarısız: Oturum çerezi yazılamadı. Tarayıcı çerezlerini kontrol edin."
         );
@@ -383,8 +368,6 @@ export default function LoginForm() {
         submitLock.current = false;
         return;
       }
-
-      markAuthPerf("cookie_hint", { ok: true, once: true });
 
       // Yalnız route kodu/RSC hazırlığı; oturum çerezi yazıldıktan sonra
       // başlatılır, beklenmez ve hatası girişi engellemez.
@@ -423,13 +406,6 @@ export default function LoginForm() {
       }
 
       const redirectTarget = await consumeReturnToPath();
-      markAuthPerf("return_to", {
-        ok: true,
-        route: typeof redirectTarget === "string" ? redirectTarget : "",
-      });
-      markAuthPerfNavigationStart(
-        typeof redirectTarget === "string" ? redirectTarget : ""
-      );
       // Soft replace: tam document reload yok; cookie zaten signIn ile yazıldı.
       // Ek soft-refresh çağrısı yok — çift iş / titreme yaratır.
       router.replace(redirectTarget);
@@ -451,7 +427,6 @@ export default function LoginForm() {
 
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-x-hidden bg-[#05070c] px-4 py-10 text-white">
-      <LoginPerfDebugPanel />
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(56,189,248,0.08),_transparent_55%),radial-gradient(ellipse_at_bottom,_rgba(99,102,241,0.06),_transparent_50%)]"

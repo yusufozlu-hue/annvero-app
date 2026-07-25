@@ -1,21 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import AnnveroSidebar from "@/src/components/AnnveroSidebar";
 import AnnveroTopbar from "@/src/components/AnnveroTopbar";
 import { CompanyWorkspaceProvider } from "@/src/contexts/CompanyWorkspaceContext";
 import { UserRoleProvider, useUserRole } from "@/src/hooks/useUserRole";
 import { annveroPageBg } from "@/src/styles/annveroDesign";
-import { markAuthPerf } from "@/src/lib/auth/loginPerfDiagnostics";
 
 function AnnveroAppShellInner({ children }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const { userAccess, loading } = useUserRole();
-
-  useEffect(() => {
-    markAuthPerf("shell_ready", { once: true });
-  }, []);
 
   const mainOffsetClass = sidebarCollapsed ? "lg:ml-[72px]" : "lg:ml-[302px]";
   const showBanner = !loading && userAccess?.showAccessWarning === true;

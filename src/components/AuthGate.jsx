@@ -16,12 +16,6 @@ import {
 import { hasSupabaseAuthCookieHint } from "@/src/lib/supabase/client";
 import { buildLoginUrl } from "@/src/utils/authRedirect";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
-import {
-  armAuthPerfDiagnosticsFromQuery,
-  markAuthPerf,
-  markAuthPerfDocumentLoad,
-} from "@/src/lib/auth/loginPerfDiagnostics";
-import LoginPerfDebugPanel from "@/src/components/LoginPerfDebugPanel";
 
 const SESSION_CHECK_TIMEOUT_MS = 2500;
 const REVERIFY_TIMEOUT_MS = 4000;
@@ -53,30 +47,13 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
   });
 
   useEffect(() => {
-    armAuthPerfDiagnosticsFromQuery();
-    markAuthPerfDocumentLoad(pathname || "");
-    markAuthPerf("auth_gate_mount", { route: pathname || "", once: true });
     const syncLogout = () => setLogoutActive(isLogoutInProgress());
     syncLogout();
     window.addEventListener(ANNVERO_LOGOUT_IN_PROGRESS_EVENT, syncLogout);
     return () => {
       window.removeEventListener(ANNVERO_LOGOUT_IN_PROGRESS_EVENT, syncLogout);
     };
-  }, [pathname]);
-
-  useEffect(() => {
-    if (status === "authenticated") {
-      markAuthPerf("auth_gate_ready", {
-        route: pathname || "",
-        once: true,
-      });
-    } else if (status === "loading") {
-      markAuthPerf("auth_gate_loading", {
-        route: pathname || "",
-        once: true,
-      });
-    }
-  }, [status, pathname]);
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -192,36 +169,16 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
   }, [status, pathname, router, logoutActive]);
 
   if (logoutActive || isLogoutInProgress()) {
-    return (
-      <>
-        <LoginPerfDebugPanel />
-        <AuthLoadingScreen message="Çıkış yapılıyor..." />
-      </>
-    );
+    return <AuthLoadingScreen message="Çıkış yapılıyor..." />;
   }
 
   if (status === "loading") {
-    return (
-      <>
-        <LoginPerfDebugPanel />
-        <AuthLoadingScreen />
-      </>
-    );
+    return <AuthLoadingScreen />;
   }
 
   if (status === "unauthenticated") {
-    return (
-      <>
-        <LoginPerfDebugPanel />
-        <AuthLoadingScreen message="Giriş sayfasına yönlendiriliyor..." />
-      </>
-    );
+    return <AuthLoadingScreen message="Giriş sayfasına yönlendiriliyor..." />;
   }
 
-  return (
-    <>
-      <LoginPerfDebugPanel />
-      {children}
-    </>
-  );
+  return children;
 }

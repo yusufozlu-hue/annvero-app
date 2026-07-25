@@ -241,20 +241,23 @@ test("Beni Hatirla yalniz e-posta saklar; sifre yazmaz", () => {
   );
 });
 
-test("auth perf diagnostigi staging + debug anahtari ister; hassas veri yok", () => {
-  const diag = read("src/lib/auth/loginPerfDiagnostics.js");
+test("gecici performans teshis kodu kaldirildi", () => {
   const login = read("app/login/LoginForm.tsx");
   const gate = read("src/components/AuthGate.jsx");
-  assert.match(diag, /auth_perf/);
-  assert.match(diag, /annvero\.com/);
-  assert.match(diag, /sessionStorage/);
-  assert.doesNotMatch(diag, /localStorage/);
-  assert.doesNotMatch(diag, /fetch\(/);
-  assert.match(login, /startAuthPerfRun/);
-  assert.match(login, /markAuthPerf\("supabase_login"/);
-  assert.match(gate, /markAuthPerfDocumentLoad/);
-  assert.doesNotMatch(diag, /localStorage\.setItem/);
-  assert.doesNotMatch(diag, /document\.cookie\s*=/);
+  const shell = read("src/components/AnnveroAppShell.jsx");
+  const context = read("src/contexts/CompanyWorkspaceContext.jsx");
+  for (const src of [login, gate, shell, context]) {
+    assert.doesNotMatch(src, /loginPerfDiagnostics|LoginPerfDebugPanel/);
+    assert.doesNotMatch(src, /markAuthPerf|startAuthPerfRun|auth_perf/);
+  }
+  assert.equal(
+    fs.existsSync(path.join(root, "src/lib/auth/loginPerfDiagnostics.js")),
+    false
+  );
+  assert.equal(
+    fs.existsSync(path.join(root, "src/components/LoginPerfDebugPanel.jsx")),
+    false
+  );
 });
 if (!process.exitCode) {
   console.log("\nAll auth security gate tests passed.");
