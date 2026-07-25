@@ -148,9 +148,15 @@ test("giris ve cikis yonlendirmeleri uzak cagrilarda asili kalmaz", () => {
   const login = read("app/login/LoginForm.tsx");
   const gate = read("src/components/AuthGate.jsx");
   const logoutProg = read("src/lib/auth/logoutInProgress.js");
+  const session = read("src/lib/supabase/updateSession.js");
+  assert.match(login, /RETURN_TO_BUDGET_MS/);
   assert.match(login, /controller\.abort\(\)/);
-  assert.match(login, /window\.location\.replace\(redirectTarget\)/);
+  assert.match(login, /router\.replace\(redirectTarget\)/);
+  assert.doesNotMatch(login, /router\.refresh\(\)/);
+  assert.doesNotMatch(login, /window\.location\.replace\(redirectTarget\)/);
   assert.doesNotMatch(login, /await existing\.auth\.signOut/);
+  assert.match(session, /\/api\/auth\/return-to/);
+  assert.match(session, /shouldSkipSessionRefresh/);
   assert.match(bar, /SIGN_OUT_GLOBAL_TIMEOUT_MS/);
   assert.match(bar, /signOut\(\{ scope: "global" \}\)/);
   assert.match(bar, /signOut\(\{ scope: "local" \}\)/);
@@ -162,6 +168,19 @@ test("giris ve cikis yonlendirmeleri uzak cagrilarda asili kalmaz", () => {
   assert.match(gate, /isLogoutInProgress/);
   assert.match(gate, /Çıkış yapılıyor/);
   assert.match(gate, /logoutActive \|\| isLogoutInProgress\(\)/);
+});
+
+test("return-to login kritik yolunu 1s bloklamaz; open redirect kapali", () => {
+  const login = read("app/login/LoginForm.tsx");
+  const route = read("app/api/auth/return-to/route.js");
+  assert.match(login, /RETURN_TO_BUDGET_MS\s*=\s*100/);
+  assert.doesNotMatch(login, /setTimeout\(\s*\(\)\s*=>\s*controller\.abort\(\),\s*1000\)/);
+  assert.match(login, /DEFAULT_POST_LOGIN_PATH/);
+  assert.match(route, /getSafeNextPath/);
+  assert.match(route, /ANNVERO_RETURN_TO_COOKIE/);
+  assert.equal(getSafeNextPath("https://evil.com"), "/dashboard");
+  assert.equal(getSafeNextPath("//evil.com"), "/dashboard");
+  assert.equal(getSafeNextPath("/muhasebe/banka"), "/muhasebe/banka");
 });
 
 test("Beni Hatirla yalniz e-posta saklar; sifre yazmaz", () => {

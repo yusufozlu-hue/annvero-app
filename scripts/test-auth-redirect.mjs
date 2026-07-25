@@ -4,6 +4,9 @@
  */
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   ANNVERO_RETURN_TO_COOKIE,
   RETURN_TO_COOKIE_MAX_AGE_SEC,
@@ -11,6 +14,12 @@ import {
   getReturnToCookieOptions,
   getSafeNextPath,
 } from "../src/utils/authRedirect.js";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function read(rel) {
+  return fs.readFileSync(path.join(root, rel), "utf8");
+}
 
 function test(name, fn) {
   try {
@@ -63,6 +72,15 @@ test("return-to cookie options", () => {
   assert.equal(opts.maxAge, 600);
   const cleared = getReturnToCookieOptions({ clear: true });
   assert.equal(cleared.maxAge, 0);
+});
+
+test("return-to proxy getUser atlar; yol guvenli sanitize", () => {
+  const session = read("src/lib/supabase/updateSession.js");
+  const route = read("app/api/auth/return-to/route.js");
+  assert.match(session, /pathname === "\/api\/auth\/return-to"/);
+  assert.match(route, /getSafeNextPath/);
+  assert.equal(getSafeNextPath("javascript:alert(1)"), "/dashboard");
+  assert.equal(getSafeNextPath("/dashboard/ofis-takip"), "/dashboard/ofis-takip");
 });
 
 if (!process.exitCode) {

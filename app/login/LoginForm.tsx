@@ -47,9 +47,20 @@ function logLoginError(error: unknown) {
   }
 }
 
+/** Login kritik yolunu 1s bloklamamak için üst süre; aşılırsa güvenli /dashboard. */
+const RETURN_TO_BUDGET_MS = 100;
+const DEFAULT_POST_LOGIN_PATH = "/dashboard";
+
+/**
+ * Return-to httpOnly cookie'yi okur (GET siler). Open-redirect: getSafeNextPath.
+ * Timeout/hata → varsayılan ANNVERO route; cookie DELETE best-effort.
+ */
 async function consumeReturnToPath(): Promise<string> {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 1000);
+  const timeoutId = window.setTimeout(
+    () => controller.abort(),
+    RETURN_TO_BUDGET_MS
+  );
   try {
     const res = await fetch("/api/auth/return-to", {
       credentials: "include",
@@ -58,14 +69,21 @@ async function consumeReturnToPath(): Promise<string> {
     });
     if (res.ok) {
       const data = (await res.json()) as { path?: string };
-      return getSafeNextPath(data?.path, "/dashboard");
+      return getSafeNextPath(data?.path, DEFAULT_POST_LOGIN_PATH);
     }
   } catch {
-    // fallback
+    // abort / network → güvenli varsayılan
   } finally {
     window.clearTimeout(timeoutId);
   }
-  return "/dashboard";
+
+  void fetch("/api/auth/return-to", {
+    method: "DELETE",
+    credentials: "include",
+    keepalive: true,
+  }).catch(() => undefined);
+
+  return DEFAULT_POST_LOGIN_PATH;
 }
 
 function EyeIcon({ open }: { open: boolean }) {
@@ -402,7 +420,9 @@ export default function LoginForm() {
       markAuthPerfNavigationStart(
         typeof redirectTarget === "string" ? redirectTarget : ""
       );
-      window.location.replace(redirectTarget);
+      // Soft replace: tam document reload yok; cookie zaten signIn ile yazıldı.
+      // Ek soft-refresh çağrısı yok — çift iş / titreme yaratır.
+      router.replace(redirectTarget);
       return;
     } catch (caughtError) {
       logLoginError(caughtError);

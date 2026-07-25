@@ -29,11 +29,17 @@ function isAdminPath(pathname) {
   return pathname.startsWith("/admin");
 }
 
-/** HMAC webhook: getUser/refresh yok (fail-closed auth ayrı). */
+/**
+ * getUser/refresh atlanır:
+ * - HMAC webhook (ayrı fail-closed auth)
+ * - return-to: yalnız httpOnly cookie oku/yaz + getSafeNextPath; oturum doğrulaması gerekmez.
+ *   Login kritik yolunda getUser beklemesi ~1s abort'a çarpıyordu.
+ */
 function shouldSkipSessionRefresh(pathname) {
   return (
     pathname === "/api/automation/webhook" ||
-    pathname.startsWith("/api/automation/webhook/")
+    pathname.startsWith("/api/automation/webhook/") ||
+    pathname === "/api/auth/return-to"
   );
 }
 
