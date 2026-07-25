@@ -60,7 +60,7 @@ export default function RootLayout({
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var k='annvero_theme_v1';var t=localStorage.getItem(k);if(t!=='light'&&t!=='dark')t='dark';document.documentElement.dataset.annveroTheme=t;}catch(e){document.documentElement.dataset.annveroTheme='dark';}})();`,
+            __html: `(function(){try{var p=location.pathname||'';var app=/^\\/(dashboard|muhasebe|admin|ai-ofis-asistani|evrak-havuzu|otomasyon|ofis-takip|ik-personel|ticaret-sicil|sistem-loglari|platform)(\\/|$)/.test(p);if(app){document.documentElement.dataset.annveroTheme='dark';return;}var k='annvero_theme_v1';var t=localStorage.getItem(k);if(t!=='light'&&t!=='dark')t='dark';document.documentElement.dataset.annveroTheme=t;}catch(e){document.documentElement.dataset.annveroTheme='dark';}})();`,
           }}
         />
       </head>
