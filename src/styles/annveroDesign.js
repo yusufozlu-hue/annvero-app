@@ -27,10 +27,10 @@ export const annveroPageBg =
   "min-h-screen w-full max-w-full overflow-x-hidden bg-[var(--annvero-bg)] text-[var(--annvero-text)]";
 
 /** Expanded office sidebar width (CSS var: --annvero-sidebar-width). */
-export const annveroShellSidebarWidth = "302px";
+export const annveroShellSidebarWidth = "276px";
 
 /** Collapsed office sidebar width (CSS var: --annvero-sidebar-collapsed-width). */
-export const annveroShellSidebarCollapsedWidth = "72px";
+export const annveroShellSidebarCollapsedWidth = "68px";
 
 export const annveroTableScrollWrap =
   "annvero-table-scroll max-w-full min-w-0 overflow-x-auto rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)]";

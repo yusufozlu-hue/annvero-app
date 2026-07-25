@@ -18,7 +18,7 @@ Kurumsal ofis paneli için temel görsel dil. Referans ruhu (koyu premium panel,
 - **Geometri:** `--annvero-radius-sm|md|lg|xl`, `--annvero-space-*`, `--annvero-shadow-*`
 - **Motion:** `--annvero-motion-fast` (160ms), `--annvero-motion-menu` (200ms), `--annvero-motion-ease`
 - **Katman:** `--annvero-z-overlay`, `--annvero-z-sidebar`, `--annvero-z-tooltip`
-- **Sidebar:** `--annvero-sidebar-width` (302px), `--annvero-sidebar-collapsed-width` (72px)
+- **Sidebar:** `--annvero-sidebar-width` (276px), `--annvero-sidebar-collapsed-width` (68px)
 
 Bileşenlerde rastgele hex/radius kullanmayın; bu token’lardan tüketin.
 

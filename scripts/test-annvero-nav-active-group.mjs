@@ -266,6 +266,10 @@ assertPartition("/dashboard", "Dashboard");
   assert.ok(sidebarSrc.includes("annvero-sidebar-label"));
   assert.ok(sidebarSrc.includes('aria-current={itemActive ? "page"'));
   assert.ok(!sidebarSrc.includes("height: auto"));
+  // Native browser tooltip üretmesin; yalnız daraltılmış CSS tip + aria-label.
+  assert.ok(!/\btitle=/.test(sidebarSrc), "sidebar title= attribute olmamalı");
+  assert.ok(sidebarSrc.includes("aria-label"));
+  assert.ok(sidebarSrc.includes("data-tip"));
 }
 
 console.log("PASS annvero-nav-active-group + prefetch contention");
