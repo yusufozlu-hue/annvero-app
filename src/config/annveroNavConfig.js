@@ -146,6 +146,22 @@ export const ANNVERO_NAV_IDLE_PREFETCH_PRIORITY = [
   "/dashboard",
 ];
 
+/**
+ * Shell hazır olduktan sonra requestIdleCallback ile SIRAYLA ısıtılacak
+ * dashboard + en sık kullanılan ana merkezler. Yalnız kullanıcının görme
+ * yetkisi olan (visibleNavGroups) hedefler ısıtılır; liste bununla kesişir.
+ */
+export const ANNVERO_NAV_WARM_PRIORITY = [
+  "/dashboard",
+  "/muhasebe",
+  "/muhasebe/e-defter-kontrol",
+  "/ik-personel",
+  "/ticaret-sicil",
+];
+
+/** Idle warm üst sınırı: dashboard + 4 ana merkez. */
+export const ANNVERO_NAV_WARM_LIMIT = 5;
+
 export const ANNVERO_SELECTED_COMPANY_KEY = "annvero_selected_company_v1";
 export const ANNVERO_FAVORITE_COMPANIES_KEY = "annvero_favorite_companies_v1";
 export const ANNVERO_RECENT_COMPANIES_KEY = "annvero_recent_companies_v1";

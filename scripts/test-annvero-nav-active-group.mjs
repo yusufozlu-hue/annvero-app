@@ -14,6 +14,8 @@ import {
 import {
   ANNVERO_NAV_GROUPS,
   ANNVERO_NAV_IDLE_PREFETCH_PRIORITY,
+  ANNVERO_NAV_WARM_LIMIT,
+  ANNVERO_NAV_WARM_PRIORITY,
 } from "../src/config/annveroNavConfig.js";
 
 function wait(ms) {
@@ -240,7 +242,7 @@ assertPartition("/muhasebe/adat-hesaplama", "Finansal Analiz Merkezi");
 assertPartition("/otomasyon/tetikleyiciler", "Otomasyon Merkezi");
 assertPartition("/dashboard", "Dashboard");
 
-// Kaynak doğrulama: sidebar viewport/hover/idle toplu prefetch yapmamalı
+// Warm-on-intent: hedefli tek prefetch + kontrollü idle; hover fırtınası yok.
 {
   const fs = await import("node:fs");
   const path = await import("node:path");
@@ -252,11 +254,21 @@ assertPartition("/dashboard", "Dashboard");
   );
   assert.ok(sidebarSrc.includes("prefetch={false}"));
   assert.ok(!sidebarSrc.includes("prefetch={true}"));
-  assert.ok(!sidebarSrc.includes("resolveIdlePrefetchOrder"));
+  // Hover fırtınası ve toplu prefetch YASAK.
   assert.ok(!sidebarSrc.includes("enqueueMany"));
   assert.ok(!sidebarSrc.includes("HOVER_PREFETCH_DELAY_MS"));
   assert.ok(!sidebarSrc.includes("onWarmHref"));
   assert.ok(!sidebarSrc.includes("onMouseEnter"));
+  assert.ok(!sidebarSrc.includes("onPointerEnter"));
+  // Intent + kontrollü idle warm ZORUNLU.
+  assert.ok(sidebarSrc.includes("resolveIdlePrefetchOrder"));
+  assert.ok(sidebarSrc.includes("ANNVERO_NAV_WARM_PRIORITY"));
+  assert.ok(sidebarSrc.includes("requestIdleCallback"));
+  assert.ok(sidebarSrc.includes("saveData"));
+  assert.ok(sidebarSrc.includes("onFocus"));
+  assert.ok(sidebarSrc.includes("isNavigationPending"));
+  // Tek route, tek prefetch (prioritize) — toplu değil.
+  assert.ok(sidebarSrc.includes("prioritize"));
   // Modül Link'leri tıklanınca açılır; hover ile router.prefetch yok.
   const linkPrefetchFalse =
     sidebarSrc.match(/<Link[\s\S]*?prefetch=\{false\}/g) || [];
@@ -312,14 +324,39 @@ assertPartition("/dashboard", "Dashboard");
     "root theme script panel path'lerinde dark zorlamalı"
   );
   assert.ok(shellSrc.includes('bg-[var(--annvero-bg)]'));
-  assert.ok(
-    shellSrc.includes("<Suspense fallback={<ModuleRouteSkeleton />}>"),
-    "client route chunk beklerken görünür modül iskeleti olmalı"
-  );
-  assert.ok(shellSrc.includes("data-annvero-module-skeleton"));
-  assert.ok(shellSrc.includes('aria-busy="true"'));
+  // Etkisiz tam-main Suspense skeleton kaldırıldı (soft-nav'da hiç görünmüyordu).
+  assert.ok(!shellSrc.includes("ModuleRouteSkeleton"));
+  assert.ok(!shellSrc.includes("data-annvero-module-skeleton"));
+  assert.ok(!shellSrc.includes("<Suspense"));
   assert.ok(!shellSrc.includes("fallback={null}"));
   assert.ok(!shellSrc.includes("animate-pulse"));
+}
+
+// Idle warm sırası: yalnız yetkili (görünür) merkezler; limit ve aktif hariç.
+{
+  const warmAll = resolveIdlePrefetchOrder(
+    ANNVERO_NAV_WARM_PRIORITY,
+    ANNVERO_NAV_GROUPS,
+    { maxItems: ANNVERO_NAV_WARM_LIMIT, excludePath: "/dashboard" }
+  );
+  assert.ok(warmAll.length <= ANNVERO_NAV_WARM_LIMIT);
+  assert.ok(!warmAll.includes("/dashboard"), "aktif path ısıtılmaz");
+  assert.ok(warmAll.includes("/muhasebe"));
+  assert.ok(warmAll.includes("/muhasebe/e-defter-kontrol"));
+
+  // Yetkisiz kullanıcı: Ticaret Sicil grubu görünmüyorsa ısıtılmaz.
+  const withoutTicaret = ANNVERO_NAV_GROUPS.filter(
+    (g) => g.title !== "Ticaret Sicil Merkezi"
+  );
+  const warmLimited = resolveIdlePrefetchOrder(
+    ANNVERO_NAV_WARM_PRIORITY,
+    withoutTicaret,
+    { maxItems: ANNVERO_NAV_WARM_LIMIT }
+  );
+  assert.ok(
+    !warmLimited.includes("/ticaret-sicil"),
+    "görünmeyen merkez prefetch edilmez"
+  );
 }
 
 console.log("PASS annvero-nav-active-group + prefetch contention");

@@ -2,9 +2,20 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import BuildVersionBadge from "@/app/components/BuildVersionBadge";
-import { ANNVERO_NAV_GROUPS } from "@/src/config/annveroNavConfig";
+import {
+  ANNVERO_NAV_GROUPS,
+  ANNVERO_NAV_WARM_LIMIT,
+  ANNVERO_NAV_WARM_PRIORITY,
+} from "@/src/config/annveroNavConfig";
 import { canSeeNavGroup, canSeeNavItem } from "@/src/config/annveroRoles";
 import { canAccessCoreTestCenter, isDevelopmentEnvironment } from "@/src/lib/dev/coreTestCenterAccess";
 import { useUserRole } from "@/src/hooks/useUserRole";
@@ -14,7 +25,10 @@ import {
   normalizeMenuPath,
   partitionNavGroupsByActive,
 } from "@/src/utils/annveroNavActiveGroup";
-import { createNavPrefetchController } from "@/src/utils/annveroNavPrefetch";
+import {
+  createNavPrefetchController,
+  resolveIdlePrefetchOrder,
+} from "@/src/utils/annveroNavPrefetch";
 
 const ICON_MAP = {
   Dashboard: "M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z",
@@ -79,6 +93,7 @@ function NavSubItem({
   pendingHref,
   onNavIntent,
   onNavPrime,
+  onNavFocus,
 }) {
   const itemActive = isMenuItemActive(item.href, pathname);
   const pending = normalizeMenuPath(pendingHref) === normalizeMenuPath(item.href);
@@ -88,6 +103,7 @@ function NavSubItem({
       prefetch={false}
       onClick={(e) => onNavIntent?.(e, item.href)}
       onPointerDown={() => onNavPrime?.(item.href)}
+      onFocus={() => onNavFocus?.(item.href)}
       aria-label={`${group.title}: ${item.label}`}
       aria-current={itemActive ? "page" : undefined}
       className={`group/item relative flex min-h-[40px] items-center justify-between rounded-[var(--annvero-radius-sm)] py-1.5 pl-7 pr-2.5 text-[12px] font-medium transition-colors duration-[var(--annvero-motion-fast)] ${navLinkClass(
@@ -133,6 +149,7 @@ function SidebarGroup({
   onToggleOnly,
   onNavIntent,
   onNavPrime,
+  onNavFocus,
   collapsed,
 }) {
   const landingHref = group.href || group.items?.[0]?.href || "";
@@ -151,6 +168,7 @@ function SidebarGroup({
           prefetch={false}
           onClick={(e) => onNavIntent?.(e, href)}
           onPointerDown={() => onNavPrime?.(href)}
+          onFocus={() => onNavFocus?.(href)}
           data-tip={group.title}
           aria-label={group.title}
           aria-current={itemActive ? "page" : undefined}
@@ -187,6 +205,7 @@ function SidebarGroup({
           aria-label={group.title}
           onClick={(e) => onNavIntent?.(e, landingHref)}
           onPointerDown={() => onNavPrime?.(landingHref)}
+          onFocus={() => onNavFocus?.(landingHref)}
           className="annvero-sidebar-tip flex min-h-[40px] min-w-0 flex-1 items-center gap-2.5 rounded-[var(--annvero-radius-sm)] px-1.5 py-1.5"
         >
           <MenuIcon groupTitle={group.title} />
@@ -221,6 +240,7 @@ function SidebarGroup({
                 pendingHref={pendingHref}
                 onNavIntent={onNavIntent}
                 onNavPrime={onNavPrime}
+                onNavFocus={onNavFocus}
               />
             ))}
           </div>
@@ -318,9 +338,91 @@ export default function AnnveroSidebar({
     if (nav) nav.scrollTop = 0;
   }, [pathname, activeTitle]);
 
+  // Intent ısıtma: tek route, tek prefetch, dedup (controller.done Set'i).
+  // Navigasyon sürerken ve aktif path için ısıtma yapılmaz.
+  const warmHref = useCallback(
+    (href) => {
+      const ctl = prefetchRef.current;
+      if (!ctl || !href) return;
+      const key = normalizeMenuPath(href);
+      if (!key || key === "/") return;
+      if (ctl.isNavigationPending) return;
+      if (normalizeMenuPath(pathname) === key) return;
+      if (ctl.has(href)) return;
+      ctl.prioritize(href);
+    },
+    [pathname]
+  );
+
+  // Shell hazır olduktan sonra dashboard + en sık kullanılan ana merkezleri
+  // requestIdleCallback ile SIRAYLA ısıt. Yalnız yetkili (visibleNavGroups)
+  // hedefler; saveData/yavaş bağlantıda ve navigasyon sırasında durur.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const ctl = prefetchRef.current;
+    if (!ctl) return undefined;
+
+    const conn =
+      navigator.connection ||
+      navigator.mozConnection ||
+      navigator.webkitConnection ||
+      null;
+    if (conn?.saveData) return undefined;
+    if (conn?.effectiveType && /(^|-)2g$/.test(conn.effectiveType)) {
+      return undefined;
+    }
+
+    const order = resolveIdlePrefetchOrder(
+      ANNVERO_NAV_WARM_PRIORITY,
+      visibleNavGroups,
+      { maxItems: ANNVERO_NAV_WARM_LIMIT, excludePath: pathname }
+    );
+    if (!order.length) return undefined;
+
+    const ric =
+      window.requestIdleCallback ||
+      ((cb) => window.setTimeout(() => cb({ timeRemaining: () => 12 }), 240));
+    const cic = window.cancelIdleCallback || window.clearTimeout;
+
+    let index = 0;
+    let handle = null;
+    let cancelled = false;
+
+    const step = () => {
+      if (cancelled) return;
+      // Kullanıcı navigasyonunda ısıtmayı beklet (aynı anda tek iş).
+      if (ctl.isNavigationPending) {
+        handle = ric(step);
+        return;
+      }
+      if (index >= order.length) return;
+      const href = order[index++];
+      if (!ctl.has(href)) ctl.prioritize(href);
+      handle = ric(step);
+    };
+
+    handle = ric(step);
+    return () => {
+      cancelled = true;
+      if (handle != null) cic(handle);
+    };
+  }, [visibleNavGroups, pathname]);
+
   const scrollNavToTop = () => {
     navRef.current?.scrollTo({ top: 0 });
   };
+
+  // Grup açıldığında yalnız o grubun ana/ilk hedefini bir kez ısıt.
+  const toggleGroup = useCallback(
+    (title) => {
+      const willOpen = openMenu !== title;
+      setOpenMenu(willOpen ? title : "");
+      if (!willOpen) return;
+      const group = visibleNavGroups.find((g) => g.title === title);
+      warmHref(group?.href || group?.items?.[0]?.href);
+    },
+    [openMenu, visibleNavGroups, warmHref]
+  );
 
   const onNavPrime = (href) => {
     const target = normalizeMenuPath(href);
@@ -409,6 +511,7 @@ export default function AnnveroSidebar({
                       pendingHref={pendingHref}
                       onNavIntent={onNavIntent}
                       onNavPrime={onNavPrime}
+                      onNavFocus={warmHref}
                     />
                   ))}
                 </div>
@@ -424,9 +527,8 @@ export default function AnnveroSidebar({
               pendingHref={pendingHref}
               showDivider={index > 0}
               collapsed={collapsed}
-              onToggleOnly={(title) =>
-                setOpenMenu((current) => (current === title ? "" : title))
-              }
+              onToggleOnly={toggleGroup}
+              onNavFocus={warmHref}
               onNavIntent={onNavIntent}
               onNavPrime={onNavPrime}
             />

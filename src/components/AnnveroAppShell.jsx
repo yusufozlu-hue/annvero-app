@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import AnnveroSidebar from "@/src/components/AnnveroSidebar";
 import AnnveroTopbar from "@/src/components/AnnveroTopbar";
 import { CompanyWorkspaceProvider } from "@/src/contexts/CompanyWorkspaceContext";
@@ -10,43 +10,6 @@ import {
   readSidebarCollapsedPreference,
   writeSidebarCollapsedPreference,
 } from "@/src/styles/annveroDesign";
-
-function ModuleRouteSkeleton() {
-  return (
-    <section
-      data-annvero-module-skeleton
-      aria-busy="true"
-      aria-label="Modül yükleniyor"
-      className="w-full space-y-5"
-    >
-      <div className="space-y-2">
-        <div className="h-7 w-52 rounded-lg bg-[var(--annvero-surface-2)]" />
-        <div className="h-4 w-full max-w-xl rounded-md bg-[var(--annvero-surface)]" />
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {Array.from({ length: 4 }, (_, index) => (
-          <div
-            key={index}
-            className="min-h-28 rounded-[var(--annvero-radius-lg)] border border-[var(--annvero-border)] bg-[var(--annvero-surface)] p-4"
-          >
-            <div className="h-4 w-24 rounded-md bg-[var(--annvero-surface-2)]" />
-            <div className="mt-5 h-7 w-16 rounded-md bg-[var(--annvero-surface-2)]" />
-          </div>
-        ))}
-      </div>
-
-      <div className="min-h-64 rounded-[var(--annvero-radius-lg)] border border-[var(--annvero-border)] bg-[var(--annvero-surface)] p-5">
-        <div className="h-5 w-40 rounded-md bg-[var(--annvero-surface-2)]" />
-        <div className="mt-5 grid gap-3">
-          <div className="h-12 rounded-lg bg-[var(--annvero-surface-2)]" />
-          <div className="h-12 rounded-lg bg-[var(--annvero-surface-2)]" />
-          <div className="h-12 rounded-lg bg-[var(--annvero-surface-2)]" />
-        </div>
-      </div>
-    </section>
-  );
-}
 
 function AnnveroAppShellInner({ children }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -128,7 +91,7 @@ function AnnveroAppShellInner({ children }) {
           ) : null}
 
           <main className="flex w-full min-w-0 max-w-full flex-1 flex-col overflow-x-hidden bg-[var(--annvero-bg)] px-4 pb-8 pt-4 sm:px-6 lg:px-8">
-            <Suspense fallback={<ModuleRouteSkeleton />}>{children}</Suspense>
+            {children}
           </main>
         </div>
       </div>
