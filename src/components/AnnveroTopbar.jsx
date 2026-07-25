@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AuthUserBar from "@/src/components/AuthUserBar";
-import { ANNVERO_THEME_KEY } from "@/src/config/annveroNavConfig";
 import { useCompanyList } from "@/app/(annvero)/muhasebe/hooks/useCompanyList";
 import {
   loadFavoriteCompanyIds,
@@ -37,7 +36,6 @@ export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState([]);
   const [recentIds, setRecentIds] = useState([]);
-  const [theme, setTheme] = useState("dark");
   const [notificationCount, setNotificationCount] = useState(0);
   const [highlightIndex, setHighlightIndex] = useState(-1);
 
@@ -50,18 +48,14 @@ export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
     const timer = window.setTimeout(() => {
       setFavoriteIds(loadFavoriteCompanyIds());
       setRecentIds(loadRecentCompanyIds());
-      try {
-        setTheme(localStorage.getItem(ANNVERO_THEME_KEY) || "dark");
-      } catch {
-        setTheme("dark");
-      }
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
 
+  // Tam açık tema desteği hazır olana kadar panel her zaman koyu kalır.
   useEffect(() => {
-    document.documentElement.dataset.annveroTheme = theme;
-  }, [theme]);
+    document.documentElement.dataset.annveroTheme = "dark";
+  }, []);
 
   const closeDropdown = useCallback(() => {
     setDropdownOpen(false);
@@ -239,13 +233,6 @@ export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
     event.preventDefault();
     setFavoriteIds(toggleFavoriteCompanyId(companyId));
   }, []);
-
-  const toggleTheme = () => {
-    const next = theme === "dark" ? "light" : "dark";
-    setTheme(next);
-    localStorage.setItem(ANNVERO_THEME_KEY, next);
-    document.documentElement.dataset.annveroTheme = next;
-  };
 
   const handleListKeyDown = (event) => {
     if (!flatOptions.length) return;
@@ -460,15 +447,6 @@ export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
               </span>
             ) : null}
           </Link>
-
-          <button
-            type="button"
-            onClick={toggleTheme}
-            className="rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] p-2.5 text-[var(--annvero-text-muted)] transition hover:border-[var(--annvero-accent)] hover:text-[var(--annvero-accent)]"
-            title={theme === "dark" ? "Açık tema" : "Koyu tema"}
-          >
-            {theme === "dark" ? "☀" : "☾"}
-          </button>
 
           <div className="hidden sm:block">
             <AuthUserBar variant="embedded" showAdminLink />

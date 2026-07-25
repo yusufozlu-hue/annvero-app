@@ -469,9 +469,3 @@ body {
     transition: none !important;
   }
 }
-
-/* Soft-nav: main içeriği tek katmanda boyansın; blur/transparency flash yok. */
-.annvero-shell-main,
-.annvero-route-pending {
-  background-color: var(--annvero-bg);
-}

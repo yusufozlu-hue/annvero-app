@@ -24,6 +24,12 @@ function AnnveroAppShellInner({ children }) {
     return () => window.clearTimeout(timer);
   }, []);
 
+  // Operasyon paneli: tam açık tema hazır olana kadar koyu temayı zorla.
+  // Marketing sayfaları (annvero.com) bu layout'u kullanmaz.
+  useEffect(() => {
+    document.documentElement.dataset.annveroTheme = "dark";
+  }, []);
+
   useEffect(() => {
     if (!mobileMenuOpen) return undefined;
     const onKeyDown = (event) => {
@@ -69,7 +75,7 @@ function AnnveroAppShellInner({ children }) {
         ) : null}
 
         <div
-          className={`annvero-shell-main relative flex min-h-screen min-w-0 flex-col overflow-x-hidden bg-[var(--annvero-bg)] transition-[margin] duration-[var(--annvero-motion-menu)] ease-[var(--annvero-motion-ease)] ${mainOffsetClass}`}
+          className={`relative flex min-h-screen min-w-0 flex-col overflow-x-hidden bg-[var(--annvero-bg)] transition-[margin] duration-[var(--annvero-motion-menu)] ease-[var(--annvero-motion-ease)] ${mainOffsetClass}`}
         >
           <AnnveroTopbar
             onMenuToggle={() => setMobileMenuOpen((v) => !v)}
@@ -84,7 +90,7 @@ function AnnveroAppShellInner({ children }) {
             </div>
           ) : null}
 
-          <main className="relative isolate flex w-full min-w-0 max-w-full flex-1 flex-col overflow-x-hidden bg-[var(--annvero-bg)] px-4 pb-8 pt-4 sm:px-6 lg:px-8">
+          <main className="flex w-full min-w-0 max-w-full flex-1 flex-col overflow-x-hidden bg-[var(--annvero-bg)] px-4 pb-8 pt-4 sm:px-6 lg:px-8">
             {children}
           </main>
         </div>

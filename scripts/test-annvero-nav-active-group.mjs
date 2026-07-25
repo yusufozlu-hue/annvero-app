@@ -272,16 +272,16 @@ assertPartition("/dashboard", "Dashboard");
   assert.ok(sidebarSrc.includes("data-tip"));
 }
 
-// Soft-nav flash koruması: opak loading fallback + topbar blur yok.
+// Soft-nav: boş loading fallback yok; eski içerik yeni route hazır olana kadar kalsın.
+// Panel teması: tam açık tema hazır olana kadar koyu zorunlu; tema düğmesi yok.
 {
   const fs = await import("node:fs");
   const path = await import("node:path");
   const { fileURLToPath } = await import("node:url");
   const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const loadingSrc = fs.readFileSync(
-    path.join(root, "app/(annvero)/loading.jsx"),
-    "utf8"
-  );
+  const loadingPath = path.join(root, "app/(annvero)/loading.jsx");
+  assert.ok(!fs.existsSync(loadingPath), "app/(annvero)/loading.jsx olmamalı");
+
   const topbarSrc = fs.readFileSync(
     path.join(root, "src/components/AnnveroTopbar.jsx"),
     "utf8"
@@ -290,10 +290,27 @@ assertPartition("/dashboard", "Dashboard");
     path.join(root, "src/components/AnnveroAppShell.jsx"),
     "utf8"
   );
-  assert.ok(loadingSrc.includes("annvero-route-pending"));
-  assert.ok(loadingSrc.includes("bg-[var(--annvero-bg)]"));
+  const layoutSrc = fs.readFileSync(path.join(root, "app/layout.tsx"), "utf8");
+  const globalsSrc = fs.readFileSync(path.join(root, "app/globals.css"), "utf8");
+
+  assert.ok(!globalsSrc.includes("annvero-route-pending"));
+  assert.ok(!globalsSrc.includes("annvero-shell-main"));
   assert.ok(!topbarSrc.includes("backdrop-blur-xl"));
-  assert.ok(shellSrc.includes("isolate"));
+  assert.ok(topbarSrc.includes('bg-[var(--annvero-shell)]'));
+  assert.ok(!topbarSrc.includes("toggleTheme"));
+  assert.ok(!topbarSrc.includes("Açık tema"));
+  assert.ok(
+    topbarSrc.includes('dataset.annveroTheme = "dark"'),
+    "topbar koyu temayı zorlamalı"
+  );
+  assert.ok(
+    shellSrc.includes('dataset.annveroTheme = "dark"'),
+    "app shell koyu temayı zorlamalı"
+  );
+  assert.ok(
+    layoutSrc.includes("dashboard|muhasebe|admin"),
+    "root theme script panel path'lerinde dark zorlamalı"
+  );
   assert.ok(shellSrc.includes('bg-[var(--annvero-bg)]'));
 }
 
