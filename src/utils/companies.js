@@ -112,11 +112,17 @@ export function readLegacyCompaniesFromStorage() {
 
 let companiesFetchCache = null;
 let companiesFetchCacheAt = 0;
+/** @type {Promise<unknown[]> | null} */
+let companiesFetchInFlight = null;
+/** Kullanıcı/oturum değişiminde artar; eski sorgu sonucu yeni kullanıcıya verilmez. */
+let companiesFetchGeneration = 0;
 const COMPANIES_FETCH_CACHE_MS = 60_000;
 
 export function invalidateCompaniesCache() {
   companiesFetchCache = null;
   companiesFetchCacheAt = 0;
+  companiesFetchInFlight = null;
+  companiesFetchGeneration += 1;
 }
 
 /** Çıkış / kullanıcı değişimi — bellek + session firma önbelleği. */
@@ -173,8 +179,30 @@ export async function fetchCompanies(options = {}) {
     return companiesFetchCache;
   }
 
+  // Aynı anda başlatılan istekler tek sorguya bağlanır (force dahil).
+  // Önbellek geçersiz kılındığında in-flight de sıfırlanır; bu yüzden
+  // buraya yalnız aynı oturuma ait istekler düşer.
+  if (companiesFetchInFlight) {
+    return companiesFetchInFlight;
+  }
+
+  const generation = companiesFetchGeneration;
+  const pending = runCompaniesQuery(generation).finally(() => {
+    if (companiesFetchInFlight === pending) companiesFetchInFlight = null;
+  });
+  companiesFetchInFlight = pending;
+
+  return pending;
+}
+
+/** Elevated listing: /api/companies üzerinden (ff5f68f); client tablo sorgusu yok. */
+async function runCompaniesQuery(generation) {
   try {
     const data = await fetchCompanyRecords();
+
+    // Sorgu sırasında çıkış/kullanıcı değişimi olduysa sonucu ne döndür ne de
+    // önbelleğe yaz — önceki kullanıcının listesi yeni kullanıcıya geçmesin.
+    if (generation !== companiesFetchGeneration) return [];
 
     const companies = (data || [])
       .map(formatCompanyFromSupabaseRow)

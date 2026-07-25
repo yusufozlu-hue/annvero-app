@@ -3,7 +3,9 @@ import { NextResponse } from "next/server";
 import { isPlatformAdmin } from "@/src/lib/auth/admin";
 import {
   ANNVERO_RETURN_TO_COOKIE,
+  ANNVERO_RETURN_TO_HINT_COOKIE,
   getReturnToCookieOptions,
+  getReturnToHintCookieOptions,
   getSafeNextPath,
 } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
@@ -29,11 +31,17 @@ function isAdminPath(pathname) {
   return pathname.startsWith("/admin");
 }
 
-/** HMAC webhook: getUser/refresh yok (fail-closed auth ayrı). */
+/**
+ * getUser/refresh atlanır:
+ * - HMAC webhook (ayrı fail-closed auth)
+ * - return-to: yalnız httpOnly cookie oku/yaz + getSafeNextPath; oturum doğrulaması gerekmez.
+ *   Login kritik yolunda getUser beklemesi ~1s abort'a çarpıyordu.
+ */
 function shouldSkipSessionRefresh(pathname) {
   return (
     pathname === "/api/automation/webhook" ||
-    pathname.startsWith("/api/automation/webhook/")
+    pathname.startsWith("/api/automation/webhook/") ||
+    pathname === "/api/auth/return-to"
   );
 }
 
@@ -56,6 +64,13 @@ function setReturnToCookie(response, path) {
     ANNVERO_RETURN_TO_COOKIE,
     safe,
     getReturnToCookieOptions()
+  );
+  // İstemci "özel dönüş yolu var mı?" bilgisini bu marker ile okur;
+  // yol değeri httpOnly cookie'de kalır.
+  response.cookies.set(
+    ANNVERO_RETURN_TO_HINT_COOKIE,
+    "1",
+    getReturnToHintCookieOptions()
   );
   return response;
 }

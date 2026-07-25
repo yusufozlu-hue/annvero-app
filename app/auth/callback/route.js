@@ -2,7 +2,9 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
   ANNVERO_RETURN_TO_COOKIE,
+  ANNVERO_RETURN_TO_HINT_COOKIE,
   getReturnToCookieOptions,
+  getReturnToHintCookieOptions,
   getSafeNextPath,
 } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "@/src/lib/supabase/config";
@@ -102,6 +104,11 @@ export async function GET(request) {
     ANNVERO_RETURN_TO_COOKIE,
     "",
     getReturnToCookieOptions({ clear: true })
+  );
+  response.cookies.set(
+    ANNVERO_RETURN_TO_HINT_COOKIE,
+    "",
+    getReturnToHintCookieOptions({ clear: true })
   );
   return response;
 }
