@@ -130,7 +130,32 @@ test("firma sorgusu mukerrer calismaz", () => {
   assert.match(companies, /if \(generation !== companiesFetchGeneration\) return \[\];/);
   // refreshCompanies kimligi liste uzunlugu degisince yeniden olusmamali.
   assert.match(context, /companiesCountRef/);
+  assert.match(context, /publishEpochRef/);
   assert.doesNotMatch(context, /\}, \[companies\.length, persistCompanyId\]\);/);
+});
+
+test("firma sorgusu auth\/me ile paralel; ham sonuc UI'a yazilmaz", () => {
+  const context = read("src/contexts/CompanyWorkspaceContext.jsx");
+  // Boot authenticated\/roleLoading beklemez; cookie hint + fetchCompanies.
+  assert.match(context, /hasSupabaseAuthCookieHint/);
+  assert.match(context, /rawCompaniesRef/);
+  assert.match(context, /publishFilteredCompanies/);
+  assert.match(context, /canAccessCompanyRef\.current/);
+  // Ham liste setCompanies'e yazilmadan once filtrelenir.
+  assert.match(
+    context,
+    /const filtered = \(Array\.isArray\(rawList\) \? rawList : \[\]\)\.filter/
+  );
+  assert.match(context, /writeSessionCompanies\(filtered\)/);
+  // Profil hatasinda ham veri atilir.
+  assert.match(context, /discardHeldRaw/);
+  // Boot efekti authenticated'a bagli degil (paralel).
+  assert.doesNotMatch(
+    context,
+    /}, \[authenticated, refreshCompanies\]\);/
+  );
+  // Topbar profil bitene kadar loading.
+  assert.match(context, /isLoading: isLoading \|\| roleLoading/);
 });
 
 test("auth/me unauthenticated önceki profil cache'ini tutmaz", () => {
@@ -146,10 +171,30 @@ test("useUserRole ağ hatasında localStorage'dan authenticated üretmez", () =>
   assert.match(src, /emitAuthInvalid/);
 });
 
-test("CompanyWorkspace oturum yokken firma seed etmez", () => {
+test("CompanyWorkspace profil olmadan firma UI yayinlamaz", () => {
   const src = read("src/contexts/CompanyWorkspaceContext.jsx");
-  assert.match(src, /if \(!authenticated\)/);
+  assert.match(src, /if \(!authenticatedRef\.current\)/);
+  assert.match(src, /discardHeldRaw/);
   assert.match(src, /setCompanies\(\[\]\)/);
+  // Yetki oncesi sessionStorage seed UI'a yazilmaz.
+  assert.doesNotMatch(src, /readSessionCompanies\(\)/);
+  assert.match(src, /SessionStorage seed UI'a yazılmaz/);
+});
+
+test("dashboard ilk bundle beyanname motorunu statik cekmez", () => {
+  const page = read("app/(annvero)/dashboard/page.tsx");
+  assert.doesNotMatch(
+    page,
+    /import\s*\{[^}]*buildDeclarationDashboardStats[^}]*\}\s*from\s*["']@\/src\/utils\/beyannameTahakkukEngine["']/
+  );
+  assert.doesNotMatch(
+    page,
+    /from\s*["']@\/src\/utils\/beyannameTahakkukEngine["']/
+  );
+  assert.match(page, /import\("@\/src\/utils\/beyannameTahakkukEngine"\)/);
+  assert.match(page, /buildDeclarationDashboardStats/);
+  assert.match(page, /loadDeclarationAccrualRecords/);
+  assert.match(page, /emptyDeclarationStats/);
 });
 
 test("fetchCompanies oturumsuz localStorage sızdırmaz", () => {

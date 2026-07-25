@@ -1,13 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAdminAccess } from "@/src/hooks/useAdminAccess";
 import MevzuatHapNotlariDashboardCard from "@/src/components/MevzuatHapNotlariDashboardCard";
-import {
-  buildDeclarationDashboardStats,
-  loadDeclarationAccrualRecords,
-} from "@/src/utils/beyannameTahakkukEngine";
 import { annveroPanelClass } from "@/src/styles/annveroDesign";
 
 type KpiCard = {
@@ -37,6 +33,14 @@ const emptyLearningStats: DashboardLearningStats = {
   learnedRules: null,
   learnedToday: null,
   highConfidenceMatches: null,
+};
+
+/** İlk paint: ağır motor yüklenmeden güvenli boş KPI (hydration uyumlu). */
+const emptyDeclarationStats: DeclarationDashboardStats = {
+  pending: 0,
+  paidThisMonth: 0,
+  underpaidWarnings: 0,
+  lateFeeFindings: 0,
 };
 
 const riskItems = [
@@ -70,9 +74,29 @@ const quickActions = [
 export default function DashboardPage() {
   const { isAdmin } = useAdminAccess();
   const learningStats = emptyLearningStats;
-  const [declarationStats] = useState<DeclarationDashboardStats>(() =>
-    buildDeclarationDashboardStats(loadDeclarationAccrualRecords())
-  );
+  const [declarationStats, setDeclarationStats] =
+    useState<DeclarationDashboardStats>(emptyDeclarationStats);
+
+  // beyannameTahakkukEngine + Luca/banka zinciri ilk shell bundle'ında olmasın.
+  // Aynı mevcut fonksiyonlar; yalnız ilk paint sonrasında yüklenir.
+  useEffect(() => {
+    let cancelled = false;
+
+    void import("@/src/utils/beyannameTahakkukEngine")
+      .then((mod) => {
+        if (cancelled) return;
+        setDeclarationStats(
+          mod.buildDeclarationDashboardStats(mod.loadDeclarationAccrualRecords())
+        );
+      })
+      .catch(() => {
+        // Import/hesaplama hatası dashboard'u engellemez; boş KPI kalır.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const kpiCards = useMemo<KpiCard[]>(
     () => [
