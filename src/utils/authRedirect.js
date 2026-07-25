@@ -5,12 +5,13 @@
 
 export const ANNVERO_RETURN_TO_COOKIE = "annvero_return_to";
 /**
- * Oturum çerezi süresi tercihi: yalnız "1" | "0".
- * E-posta/şifre/token yazılmaz. Checkbox ile senkron tutulur.
+ * "Beni hatırla" tek tercih kaynağı: yalnız normalize edilmiş e-posta.
+ * Şifre / token / session / yetki bilgisi kesinlikle yazılmaz.
+ * Kayıt varsa tercih açık, yoksa kapalı sayılır (ayrı bayrak tutulmaz).
  */
-export const ANNVERO_REMEMBER_ME_KEY = "annvero_remember_me";
-/** Yalnız normalize edilmiş e-posta; şifre/token/session yazılmaz. */
 export const ANNVERO_REMEMBERED_EMAIL_KEY = "annvero_remembered_email";
+/** Geriye uyum: eski boolean bayrağı okunmaz, yalnız temizlenir. */
+const LEGACY_REMEMBER_ME_KEY = "annvero_remember_me";
 export const RETURN_TO_COOKIE_MAX_AGE_SEC = 60 * 10; // 10 dakika
 
 export function normalizeRememberedEmail(email) {
@@ -18,41 +19,61 @@ export function normalizeRememberedEmail(email) {
   return email.trim().toLowerCase();
 }
 
-export function readRememberedEmail() {
-  if (typeof window === "undefined") return "";
+function dropLegacyRememberFlag() {
   try {
-    const raw = window.localStorage.getItem(ANNVERO_REMEMBERED_EMAIL_KEY);
-    if (raw == null || raw === "") return "";
-    return normalizeRememberedEmail(raw);
-  } catch {
-    return "";
-  }
-}
-
-export function writeRememberedEmail(email) {
-  if (typeof window === "undefined") return;
-  const normalized = normalizeRememberedEmail(email);
-  if (!normalized) {
-    clearRememberedEmail();
-    return;
-  }
-  try {
-    window.localStorage.setItem(ANNVERO_REMEMBERED_EMAIL_KEY, normalized);
-    // Tek tercih modeli: e-posta kayıtlıysa çerez süresi de kalıcı.
-    window.localStorage.setItem(ANNVERO_REMEMBER_ME_KEY, "1");
+    window.localStorage.removeItem(LEGACY_REMEMBER_ME_KEY);
   } catch {
     // ignore
   }
+}
+
+/**
+ * Tek anahtar, üç durum:
+ *  - anahtar yok        → tercih belirtilmemiş (varsayılan: hatırla açık)
+ *  - anahtar ""         → kullanıcı bilinçli olarak hatırlamayı kapattı
+ *  - anahtar "a@b.com"  → yalnız e-posta hatırlanıyor
+ * Yalnız client; SSR'de nötr değer döner (hydration güvenli).
+ */
+export function readRememberedEmailState() {
+  if (typeof window === "undefined") {
+    return { email: "", optedOut: false };
+  }
+  dropLegacyRememberFlag();
+  try {
+    const raw = window.localStorage.getItem(ANNVERO_REMEMBERED_EMAIL_KEY);
+    if (raw == null) return { email: "", optedOut: false };
+
+    const normalized = normalizeRememberedEmail(raw);
+    if (!normalized) return { email: "", optedOut: true };
+
+    if (raw !== normalized) {
+      window.localStorage.setItem(ANNVERO_REMEMBERED_EMAIL_KEY, normalized);
+    }
+    return { email: normalized, optedOut: false };
+  } catch {
+    return { email: "", optedOut: false };
+  }
+}
+
+export function readRememberedEmail() {
+  return readRememberedEmailState().email;
+}
+
+/** Boş değer "hatırlamayı kapat" işaretidir. Dönüş: saklanan e-posta. */
+export function writeRememberedEmail(email) {
+  if (typeof window === "undefined") return "";
+  const normalized = normalizeRememberedEmail(email);
+  dropLegacyRememberFlag();
+  try {
+    window.localStorage.setItem(ANNVERO_REMEMBERED_EMAIL_KEY, normalized);
+  } catch {
+    // Storage kapalıysa giriş akışı etkilenmez.
+  }
+  return normalized;
 }
 
 export function clearRememberedEmail() {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(ANNVERO_REMEMBERED_EMAIL_KEY);
-    window.localStorage.setItem(ANNVERO_REMEMBER_ME_KEY, "0");
-  } catch {
-    // ignore
-  }
+  return writeRememberedEmail("");
 }
 
 const ALLOWED_PREFIXES = [

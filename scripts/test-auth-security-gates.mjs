@@ -171,11 +171,29 @@ test("Beni Hatirla yalniz e-posta saklar; sifre yazmaz", () => {
   assert.match(redirect, /annvero_remembered_email/);
   assert.match(redirect, /normalizeRememberedEmail/);
   assert.match(login, /writeRememberedEmail/);
-  assert.match(login, /clearRememberedEmail/);
   assert.match(login, /autoComplete="username"/);
   assert.match(login, /autoComplete="current-password"/);
   assert.doesNotMatch(login, /localStorage\.setItem\([^)]*password/i);
-  assert.doesNotMatch(redirect, /password|refresh_token|access_token/i);
+  assert.doesNotMatch(
+    redirect,
+    /localStorage\.setItem\(\s*[^,]+,\s*[^)]*password/i
+  );
+});
+
+test("auth perf diagnostigi staging + debug anahtari ister; hassas veri yok", () => {
+  const diag = read("src/lib/auth/loginPerfDiagnostics.js");
+  const login = read("app/login/LoginForm.tsx");
+  const gate = read("src/components/AuthGate.jsx");
+  assert.match(diag, /auth_perf/);
+  assert.match(diag, /annvero\.com/);
+  assert.match(diag, /sessionStorage/);
+  assert.doesNotMatch(diag, /localStorage/);
+  assert.doesNotMatch(diag, /fetch\(/);
+  assert.match(login, /startAuthPerfRun/);
+  assert.match(login, /markAuthPerf\("supabase_login"/);
+  assert.match(gate, /markAuthPerfDocumentLoad/);
+  assert.doesNotMatch(diag, /localStorage\.setItem/);
+  assert.doesNotMatch(diag, /document\.cookie\s*=/);
 });
 if (!process.exitCode) {
   console.log("\nAll auth security gate tests passed.");

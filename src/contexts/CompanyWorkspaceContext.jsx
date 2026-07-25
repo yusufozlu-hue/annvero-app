@@ -22,6 +22,7 @@ import {
   syncSelectedCompanyId,
   writeSessionCompanies,
 } from "@/src/utils/companies";
+import { markAuthPerf } from "@/src/lib/auth/loginPerfDiagnostics";
 
 const CompanyWorkspaceContext = createContext(null);
 
@@ -88,6 +89,9 @@ export function CompanyWorkspaceProvider({ children }) {
         }
         return synced;
       });
+      markAuthPerf("companies_ready", { ok: true, once: true });
+    } catch {
+      markAuthPerf("companies_ready", { ok: false, err: "fetch_fail", once: true });
     } finally {
       setIsLoading(false);
     }

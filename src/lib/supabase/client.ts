@@ -1,6 +1,6 @@
 import { createBrowserClient } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { ANNVERO_REMEMBER_ME_KEY } from "@/src/utils/authRedirect";
+import { readRememberedEmailState } from "@/src/utils/authRedirect";
 import { getSupabaseConfig } from "./config";
 import {
   clearSupabaseAuthCookieHints,
@@ -11,30 +11,16 @@ import {
 let browserClient: SupabaseClient | null = null;
 let browserClientRemember: boolean | null = null;
 
+/**
+ * Tercih tek kaynaktan (annvero_remembered_email): kayıtlı e-posta varsa
+ * kalıcı çerez; kullanıcı hatırlamayı kapattıysa oturum çerezi; hiç tercih
+ * yoksa mevcut varsayılan (kalıcı) korunur. Ayrı boolean bayrak tutulmaz.
+ */
 function readRememberPreference(): boolean {
   if (typeof window === "undefined") return true;
-  try {
-    const raw = window.localStorage.getItem(ANNVERO_REMEMBER_ME_KEY);
-    if (raw == null) return true;
-    return raw === "1";
-  } catch {
-    return true;
-  }
-}
-
-export function setRememberMePreference(remember: boolean) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(ANNVERO_REMEMBER_ME_KEY, remember ? "1" : "0");
-  } catch {
-    // ignore
-  }
-  // Tercih değişince yalnız kendi referansımızı sıfırla; yeni client
-  // bir sonraki getSupabaseBrowserClient çağrısında isSingleton:false ile yenilenir.
-  if (browserClientRemember !== null && browserClientRemember !== remember) {
-    browserClient = null;
-    browserClientRemember = null;
-  }
+  const { email, optedOut } = readRememberedEmailState();
+  if (email) return true;
+  return !optedOut;
 }
 
 export function resetSupabaseBrowserClient() {
@@ -60,11 +46,12 @@ export function getSupabaseBrowserClient(options?: {
     return null;
   }
 
-  if (typeof options?.rememberMe === "boolean") {
-    setRememberMePreference(options.rememberMe);
-  }
-
-  const remember = readRememberPreference();
+  // Giriş anında checkbox açıkça iletilir; sonraki çağrılarda kayıtlı
+  // e-posta tercihinden türetilir.
+  const remember =
+    typeof options?.rememberMe === "boolean"
+      ? options.rememberMe
+      : readRememberPreference();
 
   if (browserClient && browserClientRemember === remember) {
     return browserClient;

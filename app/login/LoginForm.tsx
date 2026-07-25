@@ -15,15 +15,19 @@ import {
   clearClientAuthStorage,
   getSupabaseBrowserClient,
   hasSupabaseAuthCookieHint,
-  setRememberMePreference,
 } from "@/src/lib/supabase/client";
 import {
-  ANNVERO_REMEMBER_ME_KEY,
-  clearRememberedEmail,
   getSafeNextPath,
-  readRememberedEmail,
+  readRememberedEmailState,
   writeRememberedEmail,
 } from "@/src/utils/authRedirect";
+import {
+  armAuthPerfDiagnosticsFromQuery,
+  markAuthPerf,
+  markAuthPerfNavigationStart,
+  startAuthPerfRun,
+} from "@/src/lib/auth/loginPerfDiagnostics";
+import LoginPerfDebugPanel from "@/src/components/LoginPerfDebugPanel";
 
 const CONFIG_MISSING_MESSAGE = "Supabase bağlantı bilgileri eksik";
 const CONFIG_MISSING_PRODUCTION_MESSAGE =
@@ -40,23 +44,6 @@ function logLoginError(error: unknown) {
   console.error("LOGIN ERROR:", error);
   if (isNetworkError(error)) {
     logNetworkError("login", error);
-  }
-}
-
-/**
- * Eski annvero_remember_me ("1"|"0") yalnız oturum çerezi süresi içindi.
- * Yeni model: kayıtlı e-posta varsa hatırla açık; yoksa legacy bayrağa düş.
- * Çelişki bırakmamak için e-posta varken bayrak her zaman açık sayılır.
- */
-function readInitialRememberMe(): boolean {
-  if (typeof window === "undefined") return true;
-  try {
-    if (readRememberedEmail()) return true;
-    const raw = window.localStorage.getItem(ANNVERO_REMEMBER_ME_KEY);
-    if (raw == null) return true;
-    return raw === "1";
-  } catch {
-    return true;
   }
 }
 
@@ -206,19 +193,17 @@ export default function LoginForm() {
     let cancelled = false;
 
     const boot = async () => {
-      const storedEmail = readRememberedEmail();
-      const remember = readInitialRememberMe();
+      armAuthPerfDiagnosticsFromQuery();
+      // Storage erişimi yalnız client'ta (useEffect) — SSR/hydration güvenli.
+      const { email: storedEmail, optedOut } = readRememberedEmailState();
       const origin = window.location.origin;
       const params = new URLSearchParams(window.location.search);
       const debug = params.get("debug") === "1";
 
       if (cancelled) return;
-      if (storedEmail) {
-        setEmail(storedEmail);
-        setRememberMe(true);
-      } else {
-        setRememberMe(remember);
-      }
+      // Yalnız e-posta doldurulur; şifre hiçbir koşulda uygulamadan gelmez.
+      if (storedEmail) setEmail(storedEmail);
+      setRememberMe(Boolean(storedEmail) || !optedOut);
       setPageOrigin(origin);
       setShowDebug(debug);
 
@@ -305,12 +290,15 @@ export default function LoginForm() {
       return;
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
+
     try {
-      setRememberMePreference(rememberMe);
+      startAuthPerfRun({ route: "/login" });
       const { clearClientSessionCaches } = await import(
         "@/src/lib/auth/clearClientSession"
       );
       clearClientSessionCaches();
+      markAuthPerf("cache_cleared", { once: true });
 
       // Önce mevcut client ile resmi signOut (cookie storage temizliği);
       // elle session JSON → document.cookie kopyası yok.
@@ -325,6 +313,8 @@ export default function LoginForm() {
         return;
       }
 
+      // Auth çağrısında mevcut davranış korunur (yalnız trim); küçük harfe
+      // çevirme sadece "beni hatırla" kaydı için kullanılır.
       const { data: signInData, error: signInError } =
         await supabase.auth.signInWithPassword({
           email: email.trim(),
@@ -332,6 +322,7 @@ export default function LoginForm() {
         });
 
       if (signInError) {
+        markAuthPerf("supabase_login", { ok: false, err: "signin_error" });
         logLoginError(signInError);
         if (isNetworkError(signInError)) {
           logNetworkError("signInWithPassword", signInError, {
@@ -346,7 +337,10 @@ export default function LoginForm() {
         return;
       }
 
+      markAuthPerf("supabase_login", { ok: true });
+
       if (!signInData.session || !signInData.user) {
+        markAuthPerf("session_missing", { ok: false, err: "no_session" });
         setError("Giriş başarısız: Oturum oluşturulamadı");
         setIsLoading(false);
         submitLock.current = false;
@@ -361,6 +355,7 @@ export default function LoginForm() {
           // ignore
         }
         clearClientAuthStorage();
+        markAuthPerf("cookie_hint", { ok: false, err: "no_cookie" });
         setError(
           "Giriş başarısız: Oturum çerezi yazılamadı. Tarayıcı çerezlerini kontrol edin."
         );
@@ -369,12 +364,11 @@ export default function LoginForm() {
         return;
       }
 
-      // Yalnız e-posta; şifre/token/session yazılmaz.
-      if (rememberMe) {
-        writeRememberedEmail(email);
-      } else {
-        clearRememberedEmail();
-      }
+      markAuthPerf("cookie_hint", { ok: true, once: true });
+
+      // Yalnız normalize edilmiş e-posta; şifre/token/session yazılmaz.
+      // Checkbox kapalıysa boş değer yazılır → eski kayıt silinir.
+      writeRememberedEmail(rememberMe ? normalizedEmail : "");
 
       // Kritik yol: return-to → yönlendir. me / login-event bekletmez.
       const loginEventBody = JSON.stringify({
@@ -401,6 +395,13 @@ export default function LoginForm() {
       }
 
       const redirectTarget = await consumeReturnToPath();
+      markAuthPerf("return_to", {
+        ok: true,
+        route: typeof redirectTarget === "string" ? redirectTarget : "",
+      });
+      markAuthPerfNavigationStart(
+        typeof redirectTarget === "string" ? redirectTarget : ""
+      );
       window.location.replace(redirectTarget);
       return;
     } catch (caughtError) {
@@ -420,6 +421,7 @@ export default function LoginForm() {
 
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-x-hidden bg-[#05070c] px-4 py-10 text-white">
+      <LoginPerfDebugPanel />
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(56,189,248,0.08),_transparent_55%),radial-gradient(ellipse_at_bottom,_rgba(99,102,241,0.06),_transparent_50%)]"
@@ -502,6 +504,7 @@ export default function LoginForm() {
             <label className="flex cursor-pointer items-center gap-2 text-zinc-300">
               <input
                 type="checkbox"
+                name="remember-email"
                 checked={rememberMe}
                 disabled={isLoading}
                 onChange={(event) => setRememberMe(event.target.checked)}
