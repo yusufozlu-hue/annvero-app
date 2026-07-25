@@ -143,16 +143,39 @@ test("open redirect hâlâ kapalı", () => {
   assert.equal(getSafeNextPath("http://localhost:3000/x"), "/dashboard");
 });
 
-test("giriÅŸ ve Ã§Ä±kÄ±ÅŸ yÃ¶nlendirmeleri uzak Ã§aÄŸrÄ±larda asÄ±lÄ± kalmaz", () => {
+test("giris ve cikis yonlendirmeleri uzak cagrilarda asili kalmaz", () => {
   const bar = read("src/components/AuthUserBar.jsx");
   const login = read("app/login/LoginForm.tsx");
+  const gate = read("src/components/AuthGate.jsx");
+  const logoutProg = read("src/lib/auth/logoutInProgress.js");
   assert.match(login, /controller\.abort\(\)/);
   assert.match(login, /window\.location\.replace\(redirectTarget\)/);
   assert.doesNotMatch(login, /await existing\.auth\.signOut/);
-  assert.match(bar, /SIGN_OUT_TIMEOUT_MS/);
+  assert.match(bar, /SIGN_OUT_GLOBAL_TIMEOUT_MS/);
+  assert.match(bar, /signOut\(\{ scope: "global" \}\)/);
   assert.match(bar, /signOut\(\{ scope: "local" \}\)/);
+  assert.match(bar, /beginLogoutInProgress/);
   assert.match(bar, /keepalive: true/);
   assert.match(bar, /window\.location\.replace\("https:\/\/annvero\.com\/"\)/);
+  assert.match(logoutProg, /logoutInProgress/);
+  assert.doesNotMatch(logoutProg, /localStorage\.|sessionStorage\./);
+  assert.match(gate, /isLogoutInProgress/);
+  assert.match(gate, /Çıkış yapılıyor/);
+  assert.match(gate, /logoutActive \|\| isLogoutInProgress\(\)/);
+});
+
+test("Beni Hatirla yalniz e-posta saklar; sifre yazmaz", () => {
+  const login = read("app/login/LoginForm.tsx");
+  const redirect = read("src/utils/authRedirect.js");
+  assert.match(redirect, /ANNVERO_REMEMBERED_EMAIL_KEY/);
+  assert.match(redirect, /annvero_remembered_email/);
+  assert.match(redirect, /normalizeRememberedEmail/);
+  assert.match(login, /writeRememberedEmail/);
+  assert.match(login, /clearRememberedEmail/);
+  assert.match(login, /autoComplete="username"/);
+  assert.match(login, /autoComplete="current-password"/);
+  assert.doesNotMatch(login, /localStorage\.setItem\([^)]*password/i);
+  assert.doesNotMatch(redirect, /password|refresh_token|access_token/i);
 });
 if (!process.exitCode) {
   console.log("\nAll auth security gate tests passed.");

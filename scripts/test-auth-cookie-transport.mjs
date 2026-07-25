@@ -80,6 +80,15 @@ test("login cookie hint fail-closed; logout storage clear", () => {
   const bar = read("src/components/AuthUserBar.jsx");
   assert.match(bar, /clearClientAuthStorage/);
   assert.match(bar, /signOut/);
+  assert.match(bar, /beginLogoutInProgress/);
+  assert.match(bar, /signOut\(\{ scope: "global" \}\)/);
+});
+
+test("AuthGate logout sirasinda /login yonlendirmez", () => {
+  const src = read("src/components/AuthGate.jsx");
+  assert.match(src, /isLogoutInProgress/);
+  assert.match(src, /logoutActive \|\| isLogoutInProgress\(\)/);
+  assert.match(src, /Çıkış yapılıyor/);
 });
 
 test("AuthGate bellek-only oturumu cookie olmadan kabul etmez", () => {

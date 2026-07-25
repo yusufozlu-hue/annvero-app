@@ -19,7 +19,10 @@ import {
 } from "@/src/lib/supabase/client";
 import {
   ANNVERO_REMEMBER_ME_KEY,
+  clearRememberedEmail,
   getSafeNextPath,
+  readRememberedEmail,
+  writeRememberedEmail,
 } from "@/src/utils/authRedirect";
 
 const CONFIG_MISSING_MESSAGE = "Supabase bağlantı bilgileri eksik";
@@ -40,9 +43,15 @@ function logLoginError(error: unknown) {
   }
 }
 
+/**
+ * Eski annvero_remember_me ("1"|"0") yalnız oturum çerezi süresi içindi.
+ * Yeni model: kayıtlı e-posta varsa hatırla açık; yoksa legacy bayrağa düş.
+ * Çelişki bırakmamak için e-posta varken bayrak her zaman açık sayılır.
+ */
 function readInitialRememberMe(): boolean {
   if (typeof window === "undefined") return true;
   try {
+    if (readRememberedEmail()) return true;
     const raw = window.localStorage.getItem(ANNVERO_REMEMBER_ME_KEY);
     if (raw == null) return true;
     return raw === "1";
@@ -197,13 +206,19 @@ export default function LoginForm() {
     let cancelled = false;
 
     const boot = async () => {
+      const storedEmail = readRememberedEmail();
       const remember = readInitialRememberMe();
       const origin = window.location.origin;
       const params = new URLSearchParams(window.location.search);
       const debug = params.get("debug") === "1";
 
       if (cancelled) return;
-      setRememberMe(remember);
+      if (storedEmail) {
+        setEmail(storedEmail);
+        setRememberMe(true);
+      } else {
+        setRememberMe(remember);
+      }
       setPageOrigin(origin);
       setShowDebug(debug);
 
@@ -354,6 +369,13 @@ export default function LoginForm() {
         return;
       }
 
+      // Yalnız e-posta; şifre/token/session yazılmaz.
+      if (rememberMe) {
+        writeRememberedEmail(email);
+      } else {
+        clearRememberedEmail();
+      }
+
       // Kritik yol: return-to → yönlendir. me / login-event bekletmez.
       const loginEventBody = JSON.stringify({
         source: "password_login",
@@ -439,7 +461,7 @@ export default function LoginForm() {
               type="email"
               name="email"
               value={email}
-              autoComplete="email"
+              autoComplete="username"
               required
               disabled={isConfigMissing || isLoading}
               onChange={(event) => setEmail(event.target.value)}

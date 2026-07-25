@@ -4,8 +4,56 @@
  */
 
 export const ANNVERO_RETURN_TO_COOKIE = "annvero_return_to";
+/**
+ * Oturum çerezi süresi tercihi: yalnız "1" | "0".
+ * E-posta/şifre/token yazılmaz. Checkbox ile senkron tutulur.
+ */
 export const ANNVERO_REMEMBER_ME_KEY = "annvero_remember_me";
+/** Yalnız normalize edilmiş e-posta; şifre/token/session yazılmaz. */
+export const ANNVERO_REMEMBERED_EMAIL_KEY = "annvero_remembered_email";
 export const RETURN_TO_COOKIE_MAX_AGE_SEC = 60 * 10; // 10 dakika
+
+export function normalizeRememberedEmail(email) {
+  if (!email || typeof email !== "string") return "";
+  return email.trim().toLowerCase();
+}
+
+export function readRememberedEmail() {
+  if (typeof window === "undefined") return "";
+  try {
+    const raw = window.localStorage.getItem(ANNVERO_REMEMBERED_EMAIL_KEY);
+    if (raw == null || raw === "") return "";
+    return normalizeRememberedEmail(raw);
+  } catch {
+    return "";
+  }
+}
+
+export function writeRememberedEmail(email) {
+  if (typeof window === "undefined") return;
+  const normalized = normalizeRememberedEmail(email);
+  if (!normalized) {
+    clearRememberedEmail();
+    return;
+  }
+  try {
+    window.localStorage.setItem(ANNVERO_REMEMBERED_EMAIL_KEY, normalized);
+    // Tek tercih modeli: e-posta kayıtlıysa çerez süresi de kalıcı.
+    window.localStorage.setItem(ANNVERO_REMEMBER_ME_KEY, "1");
+  } catch {
+    // ignore
+  }
+}
+
+export function clearRememberedEmail() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(ANNVERO_REMEMBERED_EMAIL_KEY);
+    window.localStorage.setItem(ANNVERO_REMEMBER_ME_KEY, "0");
+  } catch {
+    // ignore
+  }
+}
 
 const ALLOWED_PREFIXES = [
   "/dashboard",
