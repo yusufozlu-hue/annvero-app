@@ -272,4 +272,29 @@ assertPartition("/dashboard", "Dashboard");
   assert.ok(sidebarSrc.includes("data-tip"));
 }
 
+// Soft-nav flash koruması: opak loading fallback + topbar blur yok.
+{
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const loadingSrc = fs.readFileSync(
+    path.join(root, "app/(annvero)/loading.jsx"),
+    "utf8"
+  );
+  const topbarSrc = fs.readFileSync(
+    path.join(root, "src/components/AnnveroTopbar.jsx"),
+    "utf8"
+  );
+  const shellSrc = fs.readFileSync(
+    path.join(root, "src/components/AnnveroAppShell.jsx"),
+    "utf8"
+  );
+  assert.ok(loadingSrc.includes("annvero-route-pending"));
+  assert.ok(loadingSrc.includes("bg-[var(--annvero-bg)]"));
+  assert.ok(!topbarSrc.includes("backdrop-blur-xl"));
+  assert.ok(shellSrc.includes("isolate"));
+  assert.ok(shellSrc.includes('bg-[var(--annvero-bg)]'));
+}
+
 console.log("PASS annvero-nav-active-group + prefetch contention");

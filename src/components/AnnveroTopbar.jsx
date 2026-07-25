@@ -285,7 +285,7 @@ export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
   let optionIndex = 0;
 
   return (
-    <header className="sticky top-0 z-30 border-b border-[var(--annvero-border)] bg-[color-mix(in_srgb,var(--annvero-shell)_92%,transparent)] px-4 py-3 backdrop-blur-xl sm:px-6">
+    <header className="sticky top-0 z-30 border-b border-[var(--annvero-border)] bg-[var(--annvero-shell)] px-4 py-3 sm:px-6">
       <div className="flex flex-wrap items-center gap-3 lg:gap-4">
         <button
           type="button"
