@@ -65,6 +65,7 @@ test("proxy API dahil matcher — webhook skip", () => {
   assert.match(proxy, /updateSession/);
   const session = read("src/lib/supabase/updateSession.js");
   assert.match(session, /shouldSkipSessionRefresh|automation\/webhook/);
+  assert.match(session, /\/api\/auth\/return-to/);
   assert.match(session, /pathname === "\/login"/);
   assert.match(session, /setAll\(cookiesToSet\)/);
   assert.match(session, /getSupabaseSsrCookieOptions/);
@@ -74,12 +75,26 @@ test("login cookie hint fail-closed; logout storage clear", () => {
   const login = read("app/login/LoginForm.tsx");
   assert.match(login, /hasSupabaseAuthCookieHint/);
   assert.match(login, /signOut\(\s*\{\s*scope:\s*"local"/);
-  assert.match(login, /window\.location\.replace\(redirectTarget\)/);
+  assert.match(login, /router\.replace\(redirectTarget\)/);
+  assert.doesNotMatch(login, /router\.refresh\(\)/);
+  assert.doesNotMatch(
+    login,
+    /window\.location\.replace\(redirectTarget\)/
+  );
   assert.doesNotMatch(login, /document\.cookie\s*=\s*`[^`]*access_token/);
 
   const bar = read("src/components/AuthUserBar.jsx");
   assert.match(bar, /clearClientAuthStorage/);
   assert.match(bar, /signOut/);
+  assert.match(bar, /beginLogoutInProgress/);
+  assert.match(bar, /signOut\(\{ scope: "global" \}\)/);
+});
+
+test("AuthGate logout sirasinda /login yonlendirmez", () => {
+  const src = read("src/components/AuthGate.jsx");
+  assert.match(src, /isLogoutInProgress/);
+  assert.match(src, /logoutActive \|\| isLogoutInProgress\(\)/);
+  assert.match(src, /Çıkış yapılıyor/);
 });
 
 test("AuthGate bellek-only oturumu cookie olmadan kabul etmez", () => {

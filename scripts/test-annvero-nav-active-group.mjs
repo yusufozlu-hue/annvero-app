@@ -240,7 +240,7 @@ assertPartition("/muhasebe/adat-hesaplama", "Finansal Analiz Merkezi");
 assertPartition("/otomasyon/tetikleyiciler", "Otomasyon Merkezi");
 assertPartition("/dashboard", "Dashboard");
 
-// Kaynak doğrulama: sidebar viewport/idle toplu prefetch yapmamalı
+// Kaynak doğrulama: sidebar viewport/hover/idle toplu prefetch yapmamalı
 {
   const fs = await import("node:fs");
   const path = await import("node:path");
@@ -254,7 +254,13 @@ assertPartition("/dashboard", "Dashboard");
   assert.ok(!sidebarSrc.includes("prefetch={true}"));
   assert.ok(!sidebarSrc.includes("resolveIdlePrefetchOrder"));
   assert.ok(!sidebarSrc.includes("enqueueMany"));
-  assert.ok(sidebarSrc.includes("HOVER_PREFETCH_DELAY_MS"));
+  assert.ok(!sidebarSrc.includes("HOVER_PREFETCH_DELAY_MS"));
+  assert.ok(!sidebarSrc.includes("onWarmHref"));
+  assert.ok(!sidebarSrc.includes("onMouseEnter"));
+  // Modül Link'leri tıklanınca açılır; hover ile router.prefetch yok.
+  const linkPrefetchFalse =
+    sidebarSrc.match(/<Link[\s\S]*?prefetch=\{false\}/g) || [];
+  assert.ok(linkPrefetchFalse.length >= 3, "sidebar Link'lerinde prefetch={false}");
 }
 
 console.log("PASS annvero-nav-active-group + prefetch contention");

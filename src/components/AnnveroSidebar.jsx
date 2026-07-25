@@ -17,9 +17,6 @@ import {
 } from "@/src/utils/annveroNavActiveGroup";
 import { createNavPrefetchController } from "@/src/utils/annveroNavPrefetch";
 
-/** Hover/focus intent: tek route prefetch (ms). */
-const HOVER_PREFETCH_DELAY_MS = 140;
-
 const ICON_MAP = {
   Dashboard: "M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z",
   "Muhasebe Merkezi": "M7 4h10v16H7zM9 8h6M9 12h6M9 16h4",
@@ -78,7 +75,6 @@ function NavSubItem({
   pathname,
   pendingHref,
   onNavIntent,
-  onWarmHref,
   onNavPrime,
 }) {
   const itemActive = isMenuItemActive(item.href, pathname);
@@ -89,8 +85,6 @@ function NavSubItem({
       prefetch={false}
       onClick={(e) => onNavIntent?.(e, item.href)}
       onPointerDown={() => onNavPrime?.(item.href)}
-      onMouseEnter={() => onWarmHref?.(item.href)}
-      onFocus={() => onWarmHref?.(item.href)}
       title={`${group.title} · ${item.label}`}
       className={`group/item relative flex items-center justify-between rounded-lg py-2 pl-8 pr-3 text-[13px] transition-colors duration-100 ${navLinkClass(
         { active: itemActive, pending }
@@ -140,7 +134,6 @@ function SidebarGroup({
   showDivider,
   onToggleOnly,
   onNavIntent,
-  onWarmHref,
   onNavPrime,
   collapsed,
 }) {
@@ -165,8 +158,6 @@ function SidebarGroup({
           prefetch={false}
           onClick={(e) => onNavIntent?.(e, href)}
           onPointerDown={() => onNavPrime?.(href)}
-          onMouseEnter={() => onWarmHref?.(href)}
-          onFocus={() => onWarmHref?.(href)}
           title={group.title}
           className={`group mb-1 flex items-center gap-3 rounded-xl px-2.5 py-2.5 transition-colors duration-150 ${
             itemActive || pending
@@ -196,8 +187,6 @@ function SidebarGroup({
           title={group.title}
           onClick={(e) => onNavIntent?.(e, landingHref)}
           onPointerDown={() => onNavPrime?.(landingHref)}
-          onMouseEnter={() => onWarmHref?.(landingHref)}
-          onFocus={() => onWarmHref?.(landingHref)}
           className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1.5 py-1.5"
         >
           <MenuIcon title={group.title} />
@@ -233,7 +222,6 @@ function SidebarGroup({
               pathname={pathname}
               pendingHref={pendingHref}
               onNavIntent={onNavIntent}
-              onWarmHref={onWarmHref}
               onNavPrime={onNavPrime}
             />
           ))}
@@ -257,7 +245,6 @@ export default function AnnveroSidebar({
   const [pendingHref, setPendingHref] = useState("");
   const [, startTransition] = useTransition();
   const prefetchRef = useRef(null);
-  const hoverPrefetchTimerRef = useRef(null);
   const navRef = useRef(null);
   const routerRef = useRef(router);
 
@@ -268,7 +255,7 @@ export default function AnnveroSidebar({
     routerRef.current = router;
   }, [router]);
 
-  // Prefetch controller — yalnız hover/focus/click intent; idle toplu yükleme yok.
+  // Prefetch controller — yalnız tıklama/pointer intent; hover/idle toplu yükleme yok.
   useEffect(() => {
     if (prefetchRef.current == null) {
       prefetchRef.current = createNavPrefetchController({
@@ -276,12 +263,6 @@ export default function AnnveroSidebar({
         isDev,
       });
     }
-    return () => {
-      if (hoverPrefetchTimerRef.current != null) {
-        clearTimeout(hoverPrefetchTimerRef.current);
-        hoverPrefetchTimerRef.current = null;
-      }
-    };
   }, [isDev]);
 
   const coreTestVisible = canAccessCoreTestCenter({
@@ -358,25 +339,6 @@ export default function AnnveroSidebar({
   // ana sayfa etkilenmez.
   const scrollNavToTop = () => {
     navRef.current?.scrollTo({ top: 0 });
-  };
-
-  const onWarmHref = (href) => {
-    if (typeof window === "undefined") return;
-    // Mobilde hover prefetch yok — dokunuşta beginNavigation yeter.
-    if (window.matchMedia("(hover: none)").matches) return;
-    if (prefetchRef.current?.isNavigationPending) return;
-    const target = normalizeMenuPath(href);
-    const current = normalizeMenuPath(pathname);
-    if (!target || target === current) return;
-
-    if (hoverPrefetchTimerRef.current != null) {
-      clearTimeout(hoverPrefetchTimerRef.current);
-    }
-    hoverPrefetchTimerRef.current = setTimeout(() => {
-      hoverPrefetchTimerRef.current = null;
-      if (prefetchRef.current?.isNavigationPending) return;
-      prefetchRef.current?.enqueue(href, { front: true });
-    }, HOVER_PREFETCH_DELAY_MS);
   };
 
   const onNavPrime = (href) => {
@@ -469,7 +431,6 @@ export default function AnnveroSidebar({
                   pathname={pathname}
                   pendingHref={pendingHref}
                   onNavIntent={onNavIntent}
-                  onWarmHref={onWarmHref}
                   onNavPrime={onNavPrime}
                 />
               ))}
@@ -489,7 +450,6 @@ export default function AnnveroSidebar({
                 setOpenMenu((current) => (current === title ? "" : title))
               }
               onNavIntent={onNavIntent}
-              onWarmHref={onWarmHref}
               onNavPrime={onNavPrime}
             />
           ))}

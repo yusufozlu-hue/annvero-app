@@ -91,6 +91,73 @@ test("çıkış ve giriş client session cache temizler", () => {
   assert.match(clearer, /ANNVERO_ROLE_STORAGE_KEY/);
 });
 
+test("cache temizligi acik allowlist; toplu silme ve hatirlanan e-posta silme yok", () => {
+  const clearer = read("src/lib/auth/clearClientSession.js");
+  // Toplu temizlik yok: kullanicilar arasi sizinti allowlist ile onlenir.
+  assert.doesNotMatch(clearer, /localStorage\.clear\(\)/);
+  assert.doesNotMatch(clearer, /sessionStorage\.clear\(\)/);
+  assert.doesNotMatch(clearer, /caches\.(open|keys|delete)/);
+  assert.doesNotMatch(clearer, /Object\.keys\(/);
+  // Hatirlanan e-posta ve sifre yoneticisi anahtarlari allowlist disinda.
+  assert.doesNotMatch(clearer, /annvero_remembered_email/);
+  assert.doesNotMatch(clearer, /ANNVERO_REMEMBERED_EMAIL_KEY/);
+  // Kullanici-scoped anahtarlar allowlist icinde kalir.
+  for (const key of [
+    "ANNVERO_USERS_CACHE_KEY",
+    "ANNVERO_SELECTED_COMPANY_KEY",
+    "COMPANIES_SESSION_STORAGE_KEY",
+  ]) {
+    assert.ok(clearer.includes(key), `${key} allowlist'te yok`);
+  }
+});
+
+test("login submit yolunda cache temizligi dinamik import beklemez", () => {
+  const login = read("app/login/LoginForm.tsx");
+  assert.match(
+    login,
+    /import \{ clearClientSessionCaches \} from "@\/src\/lib\/auth\/clearClientSession";/
+  );
+  assert.doesNotMatch(login, /await import\(\s*\n?\s*"@\/src\/lib\/auth\/clearClientSession"/);
+});
+
+test("firma sorgusu mukerrer calismaz", () => {
+  const companies = read("src/utils/companies.js");
+  const context = read("src/contexts/CompanyWorkspaceContext.jsx");
+  assert.match(companies, /companiesFetchInFlight/);
+  assert.match(companies, /return companiesFetchInFlight;/);
+  // Kullanici degisiminde eski sorgu sonucu yeni kullaniciya verilmez.
+  assert.match(companies, /companiesFetchGeneration \+= 1;/);
+  assert.match(companies, /if \(generation !== companiesFetchGeneration\) return \[\];/);
+  // refreshCompanies kimligi liste uzunlugu degisince yeniden olusmamali.
+  assert.match(context, /companiesCountRef/);
+  assert.match(context, /publishEpochRef/);
+  assert.doesNotMatch(context, /\}, \[companies\.length, persistCompanyId\]\);/);
+});
+
+test("firma sorgusu auth\/me ile paralel; ham sonuc UI'a yazilmaz", () => {
+  const context = read("src/contexts/CompanyWorkspaceContext.jsx");
+  // Boot authenticated\/roleLoading beklemez; cookie hint + fetchCompanies.
+  assert.match(context, /hasSupabaseAuthCookieHint/);
+  assert.match(context, /rawCompaniesRef/);
+  assert.match(context, /publishFilteredCompanies/);
+  assert.match(context, /canAccessCompanyRef\.current/);
+  // Ham liste setCompanies'e yazilmadan once filtrelenir.
+  assert.match(
+    context,
+    /const filtered = \(Array\.isArray\(rawList\) \? rawList : \[\]\)\.filter/
+  );
+  assert.match(context, /writeSessionCompanies\(filtered\)/);
+  // Profil hatasinda ham veri atilir.
+  assert.match(context, /discardHeldRaw/);
+  // Boot efekti authenticated'a bagli degil (paralel).
+  assert.doesNotMatch(
+    context,
+    /}, \[authenticated, refreshCompanies\]\);/
+  );
+  // Topbar profil bitene kadar loading.
+  assert.match(context, /isLoading: isLoading \|\| roleLoading/);
+});
+
 test("auth/me unauthenticated önceki profil cache'ini tutmaz", () => {
   const src = read("src/lib/auth/authMeClient.js");
   assert.match(src, /data\?\.authenticated/);
@@ -104,16 +171,38 @@ test("useUserRole ağ hatasında localStorage'dan authenticated üretmez", () =>
   assert.match(src, /emitAuthInvalid/);
 });
 
-test("CompanyWorkspace oturum yokken firma seed etmez", () => {
+test("CompanyWorkspace profil olmadan firma UI yayinlamaz", () => {
   const src = read("src/contexts/CompanyWorkspaceContext.jsx");
-  assert.match(src, /if \(!authenticated\)/);
+  assert.match(src, /if \(!authenticatedRef\.current\)/);
+  assert.match(src, /discardHeldRaw/);
   assert.match(src, /setCompanies\(\[\]\)/);
+  // Yetki oncesi sessionStorage seed UI'a yazilmaz.
+  assert.doesNotMatch(src, /readSessionCompanies\(\)/);
+  assert.match(src, /SessionStorage seed UI'a yazılmaz/);
+});
+
+test("dashboard ilk bundle beyanname motorunu statik cekmez", () => {
+  const page = read("app/(annvero)/dashboard/page.tsx");
+  assert.doesNotMatch(
+    page,
+    /import\s*\{[^}]*buildDeclarationDashboardStats[^}]*\}\s*from\s*["']@\/src\/utils\/beyannameTahakkukEngine["']/
+  );
+  assert.doesNotMatch(
+    page,
+    /from\s*["']@\/src\/utils\/beyannameTahakkukEngine["']/
+  );
+  assert.match(page, /import\("@\/src\/utils\/beyannameTahakkukEngine"\)/);
+  assert.match(page, /buildDeclarationDashboardStats/);
+  assert.match(page, /loadDeclarationAccrualRecords/);
+  assert.match(page, /emptyDeclarationStats/);
 });
 
 test("fetchCompanies oturumsuz localStorage sızdırmaz", () => {
   const src = read("src/utils/companies.js");
   assert.match(src, /fetchCompanyRecords/);
   assert.match(src, /clearCompaniesClientCache/);
+  // Elevated listing (ff5f68f): doğrudan client .from("companies") yok.
+  assert.doesNotMatch(src, /\.from\(["']companies["']\)/);
   assert.doesNotMatch(
     src,
     /catch \(error\) \{\s*console\.error\("Firma listesi[\s\S]*readRawCompaniesFromStorage/
@@ -154,16 +243,80 @@ test("open redirect hâlâ kapalı", () => {
   assert.equal(getSafeNextPath("http://localhost:3000/x"), "/dashboard");
 });
 
-test("giriÅŸ ve Ã§Ä±kÄ±ÅŸ yÃ¶nlendirmeleri uzak Ã§aÄŸrÄ±larda asÄ±lÄ± kalmaz", () => {
+test("giris ve cikis yonlendirmeleri uzak cagrilarda asili kalmaz", () => {
   const bar = read("src/components/AuthUserBar.jsx");
   const login = read("app/login/LoginForm.tsx");
+  const gate = read("src/components/AuthGate.jsx");
+  const logoutProg = read("src/lib/auth/logoutInProgress.js");
+  const session = read("src/lib/supabase/updateSession.js");
+  assert.match(login, /RETURN_TO_BUDGET_MS/);
   assert.match(login, /controller\.abort\(\)/);
-  assert.match(login, /window\.location\.replace\(redirectTarget\)/);
+  assert.match(login, /router\.replace\(redirectTarget\)/);
+  assert.doesNotMatch(login, /router\.refresh\(\)/);
+  assert.doesNotMatch(login, /window\.location\.replace\(redirectTarget\)/);
   assert.doesNotMatch(login, /await existing\.auth\.signOut/);
+  assert.match(session, /\/api\/auth\/return-to/);
+  assert.match(session, /shouldSkipSessionRefresh/);
+  assert.match(bar, /SIGN_OUT_GLOBAL_TIMEOUT_MS/);
   assert.match(bar, /SIGN_OUT_TIMEOUT_MS/);
+  assert.match(bar, /signOut\(\{ scope: "global" \}\)/);
   assert.match(bar, /signOut\(\{ scope: "local" \}\)/);
+  assert.match(bar, /beginLogoutInProgress/);
   assert.match(bar, /keepalive: true/);
   assert.match(bar, /window\.location\.replace\("https:\/\/annvero\.com\/"\)/);
+  assert.match(logoutProg, /logoutInProgress/);
+  assert.doesNotMatch(logoutProg, /localStorage\.|sessionStorage\./);
+  assert.match(gate, /isLogoutInProgress/);
+  assert.match(gate, /Çıkış yapılıyor/);
+  assert.match(gate, /logoutActive \|\| isLogoutInProgress\(\)/);
+});
+
+test("return-to login kritik yolunu 1s bloklamaz; open redirect kapali", () => {
+  const login = read("app/login/LoginForm.tsx");
+  const route = read("app/api/auth/return-to/route.js");
+  assert.match(login, /RETURN_TO_BUDGET_MS\s*=\s*100/);
+  assert.doesNotMatch(login, /setTimeout\(\s*\(\)\s*=>\s*controller\.abort\(\),\s*1000\)/);
+  assert.match(login, /DEFAULT_POST_LOGIN_PATH/);
+  assert.match(route, /getSafeNextPath/);
+  assert.match(route, /ANNVERO_RETURN_TO_COOKIE/);
+  assert.equal(getSafeNextPath("https://evil.com"), "/dashboard");
+  assert.equal(getSafeNextPath("//evil.com"), "/dashboard");
+  assert.equal(getSafeNextPath("/muhasebe/banka"), "/muhasebe/banka");
+});
+
+test("Beni Hatirla yalniz e-posta saklar; sifre yazmaz", () => {
+  const login = read("app/login/LoginForm.tsx");
+  const redirect = read("src/utils/authRedirect.js");
+  assert.match(redirect, /ANNVERO_REMEMBERED_EMAIL_KEY/);
+  assert.match(redirect, /annvero_remembered_email/);
+  assert.match(redirect, /normalizeRememberedEmail/);
+  assert.match(login, /writeRememberedEmail/);
+  assert.match(login, /autoComplete="username"/);
+  assert.match(login, /autoComplete="current-password"/);
+  assert.doesNotMatch(login, /localStorage\.setItem\([^)]*password/i);
+  assert.doesNotMatch(
+    redirect,
+    /localStorage\.setItem\(\s*[^,]+,\s*[^)]*password/i
+  );
+});
+
+test("gecici performans teshis kodu kaldirildi", () => {
+  const login = read("app/login/LoginForm.tsx");
+  const gate = read("src/components/AuthGate.jsx");
+  const shell = read("src/components/AnnveroAppShell.jsx");
+  const context = read("src/contexts/CompanyWorkspaceContext.jsx");
+  for (const src of [login, gate, shell, context]) {
+    assert.doesNotMatch(src, /loginPerfDiagnostics|LoginPerfDebugPanel/);
+    assert.doesNotMatch(src, /markAuthPerf|startAuthPerfRun|auth_perf/);
+  }
+  assert.equal(
+    fs.existsSync(path.join(root, "src/lib/auth/loginPerfDiagnostics.js")),
+    false
+  );
+  assert.equal(
+    fs.existsSync(path.join(root, "src/components/LoginPerfDebugPanel.jsx")),
+    false
+  );
 });
 if (!process.exitCode) {
   console.log("\nAll auth security gate tests passed.");

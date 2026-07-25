@@ -15,12 +15,14 @@ import {
   clearClientAuthStorage,
   getSupabaseBrowserClient,
   hasSupabaseAuthCookieHint,
-  setRememberMePreference,
 } from "@/src/lib/supabase/client";
 import {
-  ANNVERO_REMEMBER_ME_KEY,
   getSafeNextPath,
+  hasReturnToHint,
+  readRememberedEmailState,
+  writeRememberedEmail,
 } from "@/src/utils/authRedirect";
+import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
 
 const CONFIG_MISSING_MESSAGE = "Supabase bağlantı bilgileri eksik";
 const CONFIG_MISSING_PRODUCTION_MESSAGE =
@@ -40,20 +42,23 @@ function logLoginError(error: unknown) {
   }
 }
 
-function readInitialRememberMe(): boolean {
-  if (typeof window === "undefined") return true;
-  try {
-    const raw = window.localStorage.getItem(ANNVERO_REMEMBER_ME_KEY);
-    if (raw == null) return true;
-    return raw === "1";
-  } catch {
-    return true;
-  }
-}
+/** Login kritik yolunu 1s bloklamamak için üst süre; aşılırsa güvenli /dashboard. */
+const RETURN_TO_BUDGET_MS = 100;
+const DEFAULT_POST_LOGIN_PATH = "/dashboard";
 
+/**
+ * Return-to httpOnly cookie'yi okur (GET siler). Open-redirect: getSafeNextPath.
+ * Timeout/hata → varsayılan ANNVERO route; cookie DELETE best-effort.
+ * Marker cookie yoksa özel hedef de yoktur → endpoint hiç çağrılmaz.
+ */
 async function consumeReturnToPath(): Promise<string> {
+  if (!hasReturnToHint()) return DEFAULT_POST_LOGIN_PATH;
+
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 1000);
+  const timeoutId = window.setTimeout(
+    () => controller.abort(),
+    RETURN_TO_BUDGET_MS
+  );
   try {
     const res = await fetch("/api/auth/return-to", {
       credentials: "include",
@@ -62,14 +67,21 @@ async function consumeReturnToPath(): Promise<string> {
     });
     if (res.ok) {
       const data = (await res.json()) as { path?: string };
-      return getSafeNextPath(data?.path, "/dashboard");
+      return getSafeNextPath(data?.path, DEFAULT_POST_LOGIN_PATH);
     }
   } catch {
-    // fallback
+    // abort / network → güvenli varsayılan
   } finally {
     window.clearTimeout(timeoutId);
   }
-  return "/dashboard";
+
+  void fetch("/api/auth/return-to", {
+    method: "DELETE",
+    credentials: "include",
+    keepalive: true,
+  }).catch(() => undefined);
+
+  return DEFAULT_POST_LOGIN_PATH;
 }
 
 function EyeIcon({ open }: { open: boolean }) {
@@ -197,13 +209,16 @@ export default function LoginForm() {
     let cancelled = false;
 
     const boot = async () => {
-      const remember = readInitialRememberMe();
+      // Storage erişimi yalnız client'ta (useEffect) — SSR/hydration güvenli.
+      const { email: storedEmail, optedOut } = readRememberedEmailState();
       const origin = window.location.origin;
       const params = new URLSearchParams(window.location.search);
       const debug = params.get("debug") === "1";
 
       if (cancelled) return;
-      setRememberMe(remember);
+      // Yalnız e-posta doldurulur; şifre hiçbir koşulda uygulamadan gelmez.
+      if (storedEmail) setEmail(storedEmail);
+      setRememberMe(Boolean(storedEmail) || !optedOut);
       setPageOrigin(origin);
       setShowDebug(debug);
 
@@ -290,11 +305,9 @@ export default function LoginForm() {
       return;
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
+
     try {
-      setRememberMePreference(rememberMe);
-      const { clearClientSessionCaches } = await import(
-        "@/src/lib/auth/clearClientSession"
-      );
       clearClientSessionCaches();
 
       // Önce mevcut client ile resmi signOut (cookie storage temizliği);
@@ -310,6 +323,8 @@ export default function LoginForm() {
         return;
       }
 
+      // Auth çağrısında mevcut davranış korunur (yalnız trim); küçük harfe
+      // çevirme sadece "beni hatırla" kaydı için kullanılır.
       const { data: signInData, error: signInError } =
         await supabase.auth.signInWithPassword({
           email: email.trim(),
@@ -354,6 +369,18 @@ export default function LoginForm() {
         return;
       }
 
+      // Yalnız route kodu/RSC hazırlığı; oturum çerezi yazıldıktan sonra
+      // başlatılır, beklenmez ve hatası girişi engellemez.
+      try {
+        router.prefetch(DEFAULT_POST_LOGIN_PATH);
+      } catch {
+        // prefetch best-effort
+      }
+
+      // Yalnız normalize edilmiş e-posta; şifre/token/session yazılmaz.
+      // Checkbox kapalıysa boş değer yazılır → eski kayıt silinir.
+      writeRememberedEmail(rememberMe ? normalizedEmail : "");
+
       // Kritik yol: return-to → yönlendir. me / login-event bekletmez.
       const loginEventBody = JSON.stringify({
         source: "password_login",
@@ -379,7 +406,9 @@ export default function LoginForm() {
       }
 
       const redirectTarget = await consumeReturnToPath();
-      window.location.replace(redirectTarget);
+      // Soft replace: tam document reload yok; cookie zaten signIn ile yazıldı.
+      // Ek soft-refresh çağrısı yok — çift iş / titreme yaratır.
+      router.replace(redirectTarget);
       return;
     } catch (caughtError) {
       logLoginError(caughtError);
@@ -439,7 +468,7 @@ export default function LoginForm() {
               type="email"
               name="email"
               value={email}
-              autoComplete="email"
+              autoComplete="username"
               required
               disabled={isConfigMissing || isLoading}
               onChange={(event) => setEmail(event.target.value)}
@@ -480,6 +509,7 @@ export default function LoginForm() {
             <label className="flex cursor-pointer items-center gap-2 text-zinc-300">
               <input
                 type="checkbox"
+                name="remember-email"
                 checked={rememberMe}
                 disabled={isLoading}
                 onChange={(event) => setRememberMe(event.target.checked)}

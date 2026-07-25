@@ -9,6 +9,10 @@ import {
   setCachedAuthStatus,
 } from "@/src/components/authGateCache";
 import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
+import {
+  ANNVERO_LOGOUT_IN_PROGRESS_EVENT,
+  isLogoutInProgress,
+} from "@/src/lib/auth/logoutInProgress";
 import { hasSupabaseAuthCookieHint } from "@/src/lib/supabase/client";
 import { buildLoginUrl } from "@/src/utils/authRedirect";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
@@ -28,16 +32,28 @@ function withTimeout(promise, ms) {
 /**
  * hasAuthCookie yalnız ilk paint ipucudur — yetki kaynağı değildir.
  * getSession timeout sonrası getUser ile yeniden doğrulanır; başarısızsa /login.
+ * Logout devam ederken /login yönlendirmesi yapılmaz.
  */
 export default function AuthGate({ children, hasAuthCookie = false }) {
   const router = useRouter();
   const pathname = usePathname();
+  const [logoutActive, setLogoutActive] = useState(() => isLogoutInProgress());
   const [status, setStatus] = useState(() => {
+    if (isLogoutInProgress()) return "loading";
     const cached = getCachedAuthStatus();
     if (cached !== "loading") return cached;
     if (hasAuthCookie) return "authenticated";
     return "loading";
   });
+
+  useEffect(() => {
+    const syncLogout = () => setLogoutActive(isLogoutInProgress());
+    syncLogout();
+    window.addEventListener(ANNVERO_LOGOUT_IN_PROGRESS_EVENT, syncLogout);
+    return () => {
+      window.removeEventListener(ANNVERO_LOGOUT_IN_PROGRESS_EVENT, syncLogout);
+    };
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -49,6 +65,10 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
     };
 
     const markUnauthenticated = () => {
+      if (isLogoutInProgress()) {
+        if (isMounted) setLogoutActive(true);
+        return;
+      }
       clearClientSessionCaches();
       applyStatus("unauthenticated");
     };
@@ -61,12 +81,20 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
     }
 
     const verifySession = async () => {
+      if (isLogoutInProgress()) {
+        if (isMounted) setLogoutActive(true);
+        return;
+      }
       try {
         const { data } = await withTimeout(
           supabase.auth.getSession(),
           SESSION_CHECK_TIMEOUT_MS
         );
         if (!isMounted) return;
+        if (isLogoutInProgress()) {
+          setLogoutActive(true);
+          return;
+        }
         // Bellek/localStorage-only oturum: API cookie yoksa fail-closed.
         if (data.session && hasSupabaseAuthCookieHint()) {
           applyStatus("authenticated");
@@ -78,12 +106,20 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
         }
         markUnauthenticated();
       } catch {
+        if (isLogoutInProgress()) {
+          if (isMounted) setLogoutActive(true);
+          return;
+        }
         try {
           const { data } = await withTimeout(
             supabase.auth.getUser(),
             REVERIFY_TIMEOUT_MS
           );
           if (!isMounted) return;
+          if (isLogoutInProgress()) {
+            setLogoutActive(true);
+            return;
+          }
           if (data.user && hasSupabaseAuthCookieHint()) {
             applyStatus("authenticated");
             return;
@@ -100,6 +136,10 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (isLogoutInProgress()) {
+        if (isMounted) setLogoutActive(true);
+        return;
+      }
       if (session && hasSupabaseAuthCookieHint()) applyStatus("authenticated");
       else markUnauthenticated();
     });
@@ -115,6 +155,7 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
   }, [hasAuthCookie]);
 
   useEffect(() => {
+    if (logoutActive || isLogoutInProgress()) return;
     if (status !== "unauthenticated") return;
 
     void fetch("/api/auth/return-to", {
@@ -125,7 +166,11 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
     }).catch(() => {});
 
     router.replace(buildLoginUrl());
-  }, [status, pathname, router]);
+  }, [status, pathname, router, logoutActive]);
+
+  if (logoutActive || isLogoutInProgress()) {
+    return <AuthLoadingScreen message="Çıkış yapılıyor..." />;
+  }
 
   if (status === "loading") {
     return <AuthLoadingScreen />;
