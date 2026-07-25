@@ -8,7 +8,6 @@ import { ANNVERO_NAV_GROUPS } from "@/src/config/annveroNavConfig";
 import { canSeeNavGroup, canSeeNavItem } from "@/src/config/annveroRoles";
 import { canAccessCoreTestCenter, isDevelopmentEnvironment } from "@/src/lib/dev/coreTestCenterAccess";
 import { useUserRole } from "@/src/hooks/useUserRole";
-import { annveroShellSidebarWidth } from "@/src/styles/annveroDesign";
 import {
   findBestActiveGroup,
   isMenuItemActive,
@@ -36,7 +35,7 @@ const ICON_MAP = {
 function MenuIcon({ title }) {
   const path = ICON_MAP[title] || "M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0";
   return (
-    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--annvero-accent-soft)] text-[var(--annvero-accent)] ring-1 ring-[var(--annvero-border)]">
+    <span className="annvero-sidebar-icon" aria-hidden>
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d={path} />
       </svg>
@@ -48,7 +47,7 @@ function ChevronIcon({ open }) {
   return (
     <svg
       viewBox="0 0 20 20"
-      className={`h-4 w-4 shrink-0 text-[var(--annvero-shell-muted)] transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+      className={`h-4 w-4 shrink-0 text-[var(--annvero-shell-muted)] transition-transform duration-[var(--annvero-motion-fast)] ${open ? "rotate-180" : ""}`}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.8"
@@ -59,14 +58,18 @@ function ChevronIcon({ open }) {
   );
 }
 
+function SidebarLabel({ children, className = "" }) {
+  return <span className={`annvero-sidebar-label ${className}`.trim()}>{children}</span>;
+}
+
 function navLinkClass({ active, pending }) {
   if (active) {
-    return "bg-[var(--annvero-active)] font-semibold text-[var(--annvero-text)] before:bg-[var(--annvero-accent)]";
+    return "annvero-sidebar-sub--active before:bg-[var(--annvero-accent)]";
   }
   if (pending) {
     return "bg-[var(--annvero-hover)] font-medium text-[var(--annvero-text)] before:bg-[var(--annvero-accent)] opacity-90";
   }
-  return "text-[var(--annvero-shell-muted)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)] before:bg-[var(--annvero-border)] group-hover/item:before:bg-[var(--annvero-accent)]";
+  return "text-[var(--annvero-shell-muted)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)] before:bg-[var(--annvero-border)]";
 }
 
 function NavSubItem({
@@ -86,7 +89,8 @@ function NavSubItem({
       onClick={(e) => onNavIntent?.(e, item.href)}
       onPointerDown={() => onNavPrime?.(item.href)}
       title={`${group.title} · ${item.label}`}
-      className={`group/item relative flex items-center justify-between rounded-lg py-2 pl-8 pr-3 text-[13px] transition-colors duration-100 ${navLinkClass(
+      aria-current={itemActive ? "page" : undefined}
+      className={`group/item relative flex items-center justify-between rounded-[var(--annvero-radius-md)] py-2 pl-8 pr-3 text-[13px] transition-colors duration-[var(--annvero-motion-fast)] ${navLinkClass(
         { active: itemActive, pending }
       )} before:absolute before:left-3 before:top-1/2 before:h-1.5 before:w-1.5 before:-translate-y-1/2 before:rounded-full before:content-['']`}
     >
@@ -102,25 +106,21 @@ function NavSubItem({
 
 // Operasyon Paneli başlığının hemen altında SABİT kalan aktif ana modül
 // başlığı. Yalnız başlık pinlenir (alt menüler kaydırılabilir alandadır).
-// ÖNEMLİ: Bu bir <Link> DEĞİL, salt bir <button>'dır. Aynı (aktif) route'a
-// tekrar navigasyon/prefetch yapmaz; yalnızca kaydırılabilir nav alanını
-// en üste döndürür (onScrollTop). Böylece self-referential prefetch/navigation
-// döngüsü (sürekli yükleniyor) oluşmaz.
-function PinnedActiveHeader({ group, collapsed, onScrollTop }) {
+// ÖNEMLİ: Bu bir <Link> DEĞİL, salt bir <button>'dır.
+function PinnedActiveHeader({ group, onScrollTop }) {
   return (
     <button
       type="button"
       onClick={onScrollTop}
+      data-tip={group.title}
       title={group.title}
       aria-label={`${group.title} · alt menüleri göster`}
-      className="group flex w-full items-center gap-3 rounded-xl bg-[var(--annvero-active)] px-2.5 py-2.5 text-left text-[var(--annvero-text)] shadow-sm ring-1 ring-[var(--annvero-accent)]/35"
+      className="annvero-sidebar-tip annvero-sidebar-item--active group flex w-full items-center gap-3 rounded-[var(--annvero-radius-lg)] px-2.5 py-2.5 text-left"
     >
       <MenuIcon title={group.title} />
-      {!collapsed ? (
-        <span className="flex-1 text-[15px] font-bold tracking-tight">
-          {group.title}
-        </span>
-      ) : null}
+      <SidebarLabel className="flex-1 text-[15px] font-bold tracking-tight text-white">
+        {group.title}
+      </SidebarLabel>
     </button>
   );
 }
@@ -128,7 +128,6 @@ function PinnedActiveHeader({ group, collapsed, onScrollTop }) {
 function SidebarGroup({
   group,
   open,
-  active,
   pathname,
   pendingHref,
   showDivider,
@@ -137,15 +136,10 @@ function SidebarGroup({
   onNavPrime,
   collapsed,
 }) {
-  const headerClass = active
-    ? "bg-[var(--annvero-active)] text-[var(--annvero-text)] shadow-sm ring-1 ring-[var(--annvero-accent)]/35"
-    : pendingHref &&
-        normalizeMenuPath(pendingHref) ===
-          normalizeMenuPath(group.href || group.items?.[0]?.href || "")
-      ? "bg-[var(--annvero-hover)] text-[var(--annvero-text)] ring-1 ring-[var(--annvero-accent)]/20"
-      : "text-[var(--annvero-shell-text)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)]";
-
   const landingHref = group.href || group.items?.[0]?.href || "";
+  const pendingLanding =
+    pendingHref &&
+    normalizeMenuPath(pendingHref) === normalizeMenuPath(landingHref);
 
   if (!group.items?.length) {
     const href = group.href || "/dashboard";
@@ -159,74 +153,80 @@ function SidebarGroup({
           onClick={(e) => onNavIntent?.(e, href)}
           onPointerDown={() => onNavPrime?.(href)}
           title={group.title}
-          className={`group mb-1 flex items-center gap-3 rounded-xl px-2.5 py-2.5 transition-colors duration-150 ${
+          data-tip={group.title}
+          aria-current={itemActive ? "page" : undefined}
+          className={`annvero-sidebar-tip group mb-1 flex items-center gap-3 rounded-[var(--annvero-radius-lg)] px-2.5 py-2.5 transition-colors duration-[var(--annvero-motion-fast)] ${
             itemActive || pending
-              ? "bg-[var(--annvero-active)] text-[var(--annvero-text)] shadow-sm ring-1 ring-[var(--annvero-accent)]/35"
+              ? "annvero-sidebar-item--active"
               : "text-[var(--annvero-shell-text)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)]"
           }`}
         >
           <MenuIcon title={group.title} />
-          {!collapsed ? (
-            <span className="flex-1 text-[15px] font-bold tracking-tight">{group.title}</span>
-          ) : null}
+          <SidebarLabel className="flex-1 text-[15px] font-bold tracking-tight">
+            {group.title}
+          </SidebarLabel>
         </Link>
       </div>
     );
   }
 
+  const headerClass = pendingLanding
+    ? "bg-[var(--annvero-hover)] text-[var(--annvero-text)] ring-1 ring-[var(--annvero-accent)]/20"
+    : "text-[var(--annvero-shell-text)] hover:bg-[var(--annvero-hover)] hover:text-[var(--annvero-text)]";
+
   return (
     <div
-      className={showDivider ? "border-t border-[var(--annvero-shell-separator)] pt-2" : ""}
+      className={`annvero-sidebar-group ${showDivider ? "border-t border-[var(--annvero-shell-separator)] pt-2" : ""}`}
     >
       <div
-        className={`group mb-1 flex w-full items-center gap-1 rounded-xl px-1 py-1 transition-colors duration-150 ${headerClass}`}
+        className={`annvero-sidebar-group-header group mb-1 flex w-full items-center gap-1 rounded-[var(--annvero-radius-lg)] px-1 py-1 transition-colors duration-[var(--annvero-motion-fast)] ${headerClass}`}
       >
         <Link
           href={landingHref}
           prefetch={false}
           title={group.title}
+          data-tip={group.title}
           onClick={(e) => onNavIntent?.(e, landingHref)}
           onPointerDown={() => onNavPrime?.(landingHref)}
-          className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1.5 py-1.5"
+          className="annvero-sidebar-tip flex min-w-0 flex-1 items-center gap-3 rounded-[var(--annvero-radius-md)] px-1.5 py-1.5"
         >
           <MenuIcon title={group.title} />
-          {!collapsed ? (
-            <span className="flex-1 text-left text-[15px] font-bold tracking-tight">
-              {group.title}
-            </span>
-          ) : null}
+          <SidebarLabel className="flex-1 text-left text-[15px] font-bold tracking-tight">
+            {group.title}
+          </SidebarLabel>
         </Link>
-        {!collapsed ? (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onToggleOnly?.(group.title);
-            }}
-            aria-label={open ? `${group.title} menüsünü kapat` : `${group.title} menüsünü aç`}
-            aria-expanded={open}
-            className="rounded-lg p-2 text-[var(--annvero-shell-muted)] hover:bg-[var(--annvero-hover)]"
-          >
-            <ChevronIcon open={open} />
-          </button>
-        ) : null}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onToggleOnly?.(group.title);
+          }}
+          aria-label={open ? `${group.title} menüsünü kapat` : `${group.title} menüsünü aç`}
+          aria-expanded={open}
+          className={`rounded-[var(--annvero-radius-md)] p-2 text-[var(--annvero-shell-muted)] hover:bg-[var(--annvero-hover)] ${collapsed ? "pointer-events-none absolute opacity-0" : ""}`}
+          tabIndex={collapsed ? -1 : 0}
+        >
+          <ChevronIcon open={open} />
+        </button>
       </div>
-      {open && !collapsed ? (
-        <div className="mb-2 space-y-0.5 border-b border-[var(--annvero-shell-separator)] pb-2 pl-2">
-          {group.items.map((item) => (
-            <NavSubItem
-              key={`${group.title}-${item.label}`}
-              group={group}
-              item={item}
-              pathname={pathname}
-              pendingHref={pendingHref}
-              onNavIntent={onNavIntent}
-              onNavPrime={onNavPrime}
-            />
-          ))}
+      <div className="annvero-nav-panel" data-open={open && !collapsed ? "true" : "false"}>
+        <div className="annvero-nav-panel__inner">
+          <div className="mb-2 space-y-0.5 border-b border-[var(--annvero-shell-separator)] pb-2 pl-2">
+            {group.items.map((item) => (
+              <NavSubItem
+                key={`${group.title}-${item.label}`}
+                group={group}
+                item={item}
+                pathname={pathname}
+                pendingHref={pendingHref}
+                onNavIntent={onNavIntent}
+                onNavPrime={onNavPrime}
+              />
+            ))}
+          </div>
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }
@@ -250,7 +250,6 @@ export default function AnnveroSidebar({
 
   const isDev = isDevelopmentEnvironment();
 
-  // Router referansını render sırasında ref'e yazmadan güncel tut.
   useEffect(() => {
     routerRef.current = router;
   }, [router]);
@@ -289,29 +288,20 @@ export default function AnnveroSidebar({
     }).filter(Boolean);
   }, [role, coreTestVisible, isDev]);
 
-  // Aktif ana grubu (üstte sabit) diğer gruplardan (kaydırılabilir) ayır.
   const { activeGroup, otherGroups } = useMemo(
     () => partitionNavGroupsByActive(visibleNavGroups, pathname),
     [visibleNavGroups, pathname]
   );
-  // Alt menülü grubun otomatik açılması / başlık vurgusu için (yalnız items'lı gruplar).
   const activeGroupTitle = activeGroup?.items?.length ? activeGroup.title : "";
-  // Aktif ana grup (alt menülü veya menüsüz) — üstte sabit alana pinlenir.
   const activeTitle = activeGroup?.title || "";
 
   // Aktif route'un grubunu otomatik aç. Effect yerine render sırasında
-  // "önceki değeri hatırla" desenini kullanır; böylece set-state-in-effect
-  // oluşmaz ve grup yalnızca aktif grup değiştiğinde bir kez açılır
-  // (kullanıcının elle açıp kapatması korunur).
+  // "önceki değeri hatırla" deseni; kullanıcının elle açıp kapatması korunur.
   if (activeTitle && activeTitle !== autoOpenedGroup) {
     setAutoOpenedGroup(activeTitle);
-    // Alt menülü aktif grup açılır; alt menüsüz grupta (activeGroupTitle === "")
-    // tüm gruplar kapanır (yalnız aktif grup açık kalsın).
     setOpenMenu(activeGroupTitle);
   }
 
-  // Hedefe ulaşıldığında bekleyen (pending) durumu render sırasında temizle;
-  // completeNavigation gibi harici yan etki effect içinde kalır.
   if (
     pendingHref &&
     normalizeMenuPath(pathname) === normalizeMenuPath(pendingHref)
@@ -321,22 +311,14 @@ export default function AnnveroSidebar({
 
   useEffect(() => {
     prefetchRef.current?.setActivePath(pathname);
-    // Controller içindeki navigation-pending durumunu senkronla. completeNavigation
-    // kendi içinde navigationPending + hedef eşleşmesini kontrol eder (güvenli/no-op).
     prefetchRef.current?.completeNavigation(pathname);
   }, [pathname]);
 
-  // Route (veya aktif grup) değişince kaydırılabilir nav alanını YALNIZCA bir
-  // kez en üste getir; böylece aktif modülün alt menüleri görünür olur.
-  // Yalnız sidebar nav kaydırılır; ana sayfanın scroll'una dokunulmaz.
   useEffect(() => {
     const nav = navRef.current;
     if (nav) nav.scrollTop = 0;
   }, [pathname, activeTitle]);
 
-  // Sabit aktif başlığa tıklanınca YALNIZCA kaydırılabilir nav alanını en üste
-  // getir; böylece aktif modülün alt menüleri tekrar görünür. Navigasyon yok,
-  // ana sayfa etkilenmez.
   const scrollNavToTop = () => {
     navRef.current?.scrollTo({ top: 0 });
   };
@@ -345,7 +327,6 @@ export default function AnnveroSidebar({
     const target = normalizeMenuPath(href);
     const current = normalizeMenuPath(pathname);
     if (!target || target === current) return;
-    // pointerDown: idle kuyruğu hemen durdur, hedefe öncelik ver
     setPendingHref(href);
     prefetchRef.current?.beginNavigation(href);
   };
@@ -360,7 +341,6 @@ export default function AnnveroSidebar({
       onMobileClose?.();
       return;
     }
-    // Click: pending + pause (pointerDown kaçarsa da güvence)
     setPendingHref(href);
     prefetchRef.current?.beginNavigation(href);
     const best = findBestActiveGroup(visibleNavGroups, href);
@@ -372,76 +352,75 @@ export default function AnnveroSidebar({
     });
   };
 
-  const width = collapsed ? "72px" : annveroShellSidebarWidth;
-
   return (
     <aside
-      style={{ width }}
-      className={`fixed inset-y-0 left-0 z-40 border-r border-[var(--annvero-shell-border)] bg-[var(--annvero-shell)] shadow-xl backdrop-blur-xl transition-all duration-200 lg:translate-x-0 ${
-        mobileOpen ? "translate-x-0" : "-translate-x-full"
-      }`}
+      id="annvero-office-sidebar"
+      aria-label="Operasyon menüsü"
+      className={`annvero-sidebar fixed inset-y-0 left-0 lg:translate-x-0 ${
+        collapsed ? "annvero-sidebar--collapsed" : ""
+      } ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}
     >
       <div className="flex h-full flex-col">
-        <div className="border-b border-[var(--annvero-border)] bg-[var(--annvero-surface)] px-4 py-5">
+        <div className="annvero-sidebar-brand shrink-0 px-4 py-5">
           <div className="flex items-center justify-between gap-2">
-            {!collapsed ? (
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.32em] text-[var(--annvero-accent)]">
-                  ANNVERO
-                </p>
-                <h1 className="mt-1 text-lg font-bold text-[var(--annvero-text)]">Operasyon Paneli</h1>
-              </div>
-            ) : (
-              <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--annvero-accent-soft)] text-lg font-black text-[var(--annvero-accent)] ring-1 ring-[var(--annvero-border)]">
-                A
-              </div>
-            )}
-            {!collapsed ? (
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--annvero-accent-soft)] text-lg font-black text-[var(--annvero-accent)] ring-1 ring-[var(--annvero-border)]">
-                A
-              </div>
-            ) : null}
+            <div className="min-w-0">
+              <p className="annvero-sidebar-label text-[10px] font-bold uppercase tracking-[0.32em] text-[var(--annvero-accent)]">
+                ANNVERO
+              </p>
+              <h1 className="annvero-sidebar-label mt-1 text-lg font-bold text-[var(--annvero-text)]">
+                Operasyon Paneli
+              </h1>
+            </div>
+            <div
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--annvero-radius-xl)] bg-[var(--annvero-accent-soft)] text-lg font-black text-[var(--annvero-accent)] ring-1 ring-[var(--annvero-border)]"
+              aria-hidden
+            >
+              A
+            </div>
           </div>
         </div>
 
-        {/* Yalnız aktif ana modül BAŞLIĞI sabit; alt menüler kaydırılabilir
-            alandadır. Ölçeklenebilir: alt menü sayısı artsa da sabit alan
-            büyümez. Scroll edilse bile başlık kaybolmaz. */}
         {activeGroup ? (
           <div className="shrink-0 border-b border-[var(--annvero-shell-separator)] px-2 pt-3 pb-2">
             <PinnedActiveHeader
               group={activeGroup}
-              collapsed={collapsed}
               onScrollTop={scrollNavToTop}
             />
           </div>
         ) : null}
 
-        {/* Tek kaydırma alanı: önce aktif modülün alt menüleri, ardından
-            ayırıcı ve diğer ana modüller. Aktif modül burada tekrar
-            gösterilmez; diğerleri orijinal göreli sıralarını korur. */}
-        <nav ref={navRef} className="sidebar-premium-nav min-h-0 flex-1 overflow-y-auto px-2 py-3">
-          {!collapsed && activeGroup?.items?.length ? (
-            <div className="mb-2 space-y-0.5 border-b border-[var(--annvero-shell-separator)] pb-2 pl-2">
-              {activeGroup.items.map((item) => (
-                <NavSubItem
-                  key={`${activeGroup.title}-${item.label}`}
-                  group={activeGroup}
-                  item={item}
-                  pathname={pathname}
-                  pendingHref={pendingHref}
-                  onNavIntent={onNavIntent}
-                  onNavPrime={onNavPrime}
-                />
-              ))}
+        <nav
+          ref={navRef}
+          className="annvero-sidebar-scroll sidebar-premium-nav min-h-0 flex-1 overflow-y-auto px-2 py-3"
+          aria-label="Ana navigasyon"
+        >
+          <div
+            className="annvero-nav-panel"
+            data-open={!collapsed && activeGroup?.items?.length ? "true" : "false"}
+          >
+            <div className="annvero-nav-panel__inner">
+              {activeGroup?.items?.length ? (
+                <div className="mb-2 space-y-0.5 border-b border-[var(--annvero-shell-separator)] pb-2 pl-2">
+                  {activeGroup.items.map((item) => (
+                    <NavSubItem
+                      key={`${activeGroup.title}-${item.label}`}
+                      group={activeGroup}
+                      item={item}
+                      pathname={pathname}
+                      pendingHref={pendingHref}
+                      onNavIntent={onNavIntent}
+                      onNavPrime={onNavPrime}
+                    />
+                  ))}
+                </div>
+              ) : null}
             </div>
-          ) : null}
+          </div>
           {otherGroups.map((group, index) => (
             <SidebarGroup
               key={group.title}
               group={group}
               open={openMenu === group.title}
-              active={activeGroupTitle === group.title}
               pathname={pathname}
               pendingHref={pendingHref}
               showDivider={index > 0}
@@ -455,29 +434,25 @@ export default function AnnveroSidebar({
           ))}
         </nav>
 
-        {!collapsed ? (
-          <div className="border-t border-[var(--annvero-border)] p-4">
-            <BuildVersionBadge className="mb-3" />
-            <button
-              type="button"
-              onClick={onToggleCollapse}
-              className="hidden w-full rounded-xl border border-[var(--annvero-border)] px-3 py-2 text-xs font-semibold text-[var(--annvero-text-muted)] transition hover:bg-[var(--annvero-hover)] lg:block"
-            >
-              Menüyü daralt
-            </button>
+        <div className="shrink-0 border-t border-[var(--annvero-border)] p-2 lg:p-4">
+          <div className="annvero-sidebar-label mb-3 w-full">
+            <BuildVersionBadge />
           </div>
-        ) : (
-          <div className="border-t border-[var(--annvero-border)] p-2">
-            <button
-              type="button"
-              onClick={onToggleCollapse}
-              title="Menüyü genişlet"
-              className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--annvero-border)] text-[var(--annvero-text-muted)] hover:bg-[var(--annvero-hover)]"
-            >
-              →
-            </button>
-          </div>
-        )}
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title={collapsed ? "Menüyü genişlet" : "Menüyü daralt"}
+            data-tip={collapsed ? "Menüyü genişlet" : "Menüyü daralt"}
+            aria-label={collapsed ? "Menüyü genişlet" : "Menüyü daralt"}
+            aria-pressed={collapsed}
+            className="annvero-sidebar-tip hidden w-full items-center justify-center gap-2 rounded-[var(--annvero-radius-lg)] border border-[var(--annvero-border)] px-3 py-2 text-xs font-semibold text-[var(--annvero-text-muted)] transition hover:bg-[var(--annvero-hover)] lg:flex"
+          >
+            <span aria-hidden>{collapsed ? "→" : "←"}</span>
+            <SidebarLabel>
+              {collapsed ? "Menüyü genişlet" : "Menüyü daralt"}
+            </SidebarLabel>
+          </button>
+        </div>
       </div>
     </aside>
   );

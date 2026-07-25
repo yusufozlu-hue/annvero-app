@@ -23,7 +23,7 @@ function sortCompaniesTr(list, getLabel) {
   );
 }
 
-export default function AnnveroTopbar({ onMenuToggle }) {
+export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
   const {
     companies,
     selectedCompanyId,
@@ -290,6 +290,9 @@ export default function AnnveroTopbar({ onMenuToggle }) {
         <button
           type="button"
           onClick={onMenuToggle}
+          aria-label="Operasyon menüsünü aç veya kapat"
+          aria-expanded={menuOpen}
+          aria-controls="annvero-office-sidebar"
           className="rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] px-3 py-2 text-sm font-semibold text-[var(--annvero-text)] lg:hidden"
         >
           Menü

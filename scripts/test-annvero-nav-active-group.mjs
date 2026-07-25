@@ -261,6 +261,11 @@ assertPartition("/dashboard", "Dashboard");
   const linkPrefetchFalse =
     sidebarSrc.match(/<Link[\s\S]*?prefetch=\{false\}/g) || [];
   assert.ok(linkPrefetchFalse.length >= 3, "sidebar Link'lerinde prefetch={false}");
+  // Design System V1: ölçülebilir alt menü paneli + daraltma etiketi animasyonu.
+  assert.ok(sidebarSrc.includes("annvero-nav-panel"));
+  assert.ok(sidebarSrc.includes("annvero-sidebar-label"));
+  assert.ok(sidebarSrc.includes('aria-current={itemActive ? "page"'));
+  assert.ok(!sidebarSrc.includes("height: auto"));
 }
 
 console.log("PASS annvero-nav-active-group + prefetch contention");
