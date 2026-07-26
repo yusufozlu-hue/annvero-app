@@ -7,6 +7,30 @@ import {
 } from "@/src/utils/cloudStorage/folderSchema";
 import { emptyCloudStorageBinding } from "@/src/utils/cloudStorage/types";
 
+const CHECK_ERROR_MESSAGES = Object.freeze({
+  MISSING_COMPANY_ID: "Firma seçilmedi.",
+  FOLDER_BINDING_MISSING: "Önce firma Drive klasörünü oluşturun.",
+  DRIVE_CONNECTION_MISSING: "Google Drive bağlantısı bulunamadı.",
+  ROOT_FOLDER_INVALID: "Firma Drive kök klasörü geçersiz veya silinmiş.",
+  ROOT_COMPANY_MISMATCH: "Drive kök klasörü bu firmaya bağlı değil.",
+  DRIVE_API_ERROR: "Google Drive klasör yapısı okunamadı.",
+  STRUCTURE_MISMATCH: "Klasör yapısı beklenen şema ile uyuşmuyor.",
+  FORBIDDEN: "Bu firmaya erişim yetkiniz yok.",
+});
+
+function friendlyApiError(body, fallback = "İşlem başarısız.") {
+  const code = body?.code || "";
+  if (code && CHECK_ERROR_MESSAGES[code]) return CHECK_ERROR_MESSAGES[code];
+  if (typeof body?.message === "string" && body.message.trim()) return body.message;
+  if (typeof body?.error === "string" && body.error.trim()) {
+    if (/google drive işlemi başarısız/i.test(body.error)) {
+      return "İşlem tamamlanamadı. Bağlantıyı ve klasör kaydını kontrol edin.";
+    }
+    return body.error;
+  }
+  return fallback;
+}
+
 /**
  * Firma Yönetimi — gerçek Google Drive OAuth / metadata senkronizasyonu.
  */
@@ -16,9 +40,10 @@ export default function CloudStorageCompanyPanel({
   onNotify,
 }) {
   const [busy, setBusy] = useState("");
-  const [showTree, setShowTree] = useState(false);
+  const [showExpectedTree, setShowExpectedTree] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [lastSyncStats, setLastSyncStats] = useState(null);
+  const [structureCheck, setStructureCheck] = useState(null);
   const [localError, setLocalError] = useState("");
   const [errorCompanyId, setErrorCompanyId] = useState(company?.id);
   const [binding, setBinding] = useState(() => ({
@@ -36,6 +61,10 @@ export default function CloudStorageCompanyPanel({
   useEffect(() => {
     let active = true;
     if (!company?.id) return undefined;
+    // Defer clear: avoid sync setState in effect (react-hooks/set-state-in-effect).
+    void Promise.resolve().then(() => {
+      if (active) setStructureCheck(null);
+    });
     Promise.all([
       fetch("/api/google-drive/connection", { cache: "no-store" }).then((r) => r.json()),
       fetch(`/api/google-drive/folders?companyId=${encodeURIComponent(company.id)}`, { cache: "no-store" }).then((r) => r.json()),
@@ -65,7 +94,12 @@ export default function CloudStorageCompanyPanel({
       headers: { "content-type": "application/json", ...(options.headers || {}) },
     });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || "Google Drive işlemi başarısız.");
+    if (!response.ok) {
+      const err = new Error(friendlyApiError(body));
+      err.code = body?.code || "";
+      err.body = body;
+      throw err;
+    }
     return body;
   }
 
@@ -121,6 +155,16 @@ export default function CloudStorageCompanyPanel({
             : "Bekliyor",
     },
   ];
+
+  const checkTone = structureCheck
+    ? structureCheck.ok
+      ? "ok"
+      : structureCheck.missingPaths?.length
+        ? "missing"
+        : structureCheck.extraPaths?.length
+          ? "extra"
+          : "missing"
+    : null;
 
   return (
     <div className="space-y-6">
@@ -179,6 +223,7 @@ export default function CloudStorageCompanyPanel({
               });
               setBinding((prev) => ({ ...prev, rootFolderId: result.rootFolderId,
                 rootFolderName: result.rootFolderName, folderStructureVersion: result.folderStructureVersion }));
+              setStructureCheck(null);
               notify(
                 result.createdFolderCount
                   ? `Klasör yapısı oluşturuldu (${result.createdFolderCount} yeni)`
@@ -208,11 +253,33 @@ export default function CloudStorageCompanyPanel({
 
         <button
           type="button"
-          disabled={!binding.rootFolderId}
-          onClick={() => setShowTree((v) => !v)}
+          disabled={Boolean(busy) || !binding.rootFolderId}
+          onClick={() =>
+            void run("check", async () => {
+              const result = await api(
+                `/api/google-drive/folders/check?companyId=${encodeURIComponent(company.id)}`
+              );
+              setStructureCheck(result);
+              notify(
+                result.ok
+                  ? "Klasör yapısı şema ile uyumlu"
+                  : friendlyApiError(result, "Klasör yapısı uyuşmuyor"),
+                result.ok ? "success" : "error"
+              );
+            })
+          }
           className="rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
         >
-          {showTree ? "Ağacı Gizle" : "Klasör Yapısını Kontrol Et"}
+          {busy === "check" ? "Kontrol ediliyor…" : "Klasör Yapısını Kontrol Et"}
+        </button>
+
+        <button
+          type="button"
+          disabled={!binding.rootFolderId}
+          onClick={() => setShowExpectedTree((v) => !v)}
+          className="rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
+        >
+          {showExpectedTree ? "Beklenen Şemayı Gizle" : "Beklenen Şemayı Göster"}
         </button>
 
         <button
@@ -246,7 +313,6 @@ export default function CloudStorageCompanyPanel({
       {binding.rootFolderId ? (
         <p className="text-xs text-slate-500">
           Yapı sürümü: {binding.folderStructureVersion || FOLDER_STRUCTURE_VERSION}
-          {/* folder ID teknik; baskın değil */}
           <span className="ml-2 opacity-60">· teknik kimlik gizli tutulur</span>
         </p>
       ) : null}
@@ -255,6 +321,66 @@ export default function CloudStorageCompanyPanel({
         <p className="text-xs text-slate-400">
           Son senkronizasyon: Drive’da {lastSyncStats.remoteCount} belge bulundu.
         </p>
+      ) : null}
+
+      {structureCheck ? (
+        <div
+          className={
+            checkTone === "ok"
+              ? "rounded-xl border border-emerald-700/60 bg-emerald-950/30 p-4"
+              : checkTone === "extra"
+                ? "rounded-xl border border-amber-700/60 bg-amber-950/30 p-4"
+                : "rounded-xl border border-rose-700/60 bg-rose-950/30 p-4"
+          }
+        >
+          <p
+            className={
+              checkTone === "ok"
+                ? "text-sm font-medium text-emerald-100"
+                : checkTone === "extra"
+                  ? "text-sm font-medium text-amber-100"
+                  : "text-sm font-medium text-rose-100"
+            }
+          >
+            {structureCheck.ok
+              ? "Tam uyumlu — klasör yapısı şema ile eşleşiyor."
+              : structureCheck.missingPaths?.length
+                ? "Eksik klasörler bulundu."
+                : "Beklenmeyen (fazla) klasörler bulundu."}
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            Şema {structureCheck.schemaVersion} · beklenen {structureCheck.expectedCount} ·
+            Drive’da {structureCheck.existingCount}
+            {" · "}
+            _ANNVERO kökte: {structureCheck.annveroAtRoot ? "var" : "yok"}
+          </p>
+
+          {structureCheck.missingPaths?.length ? (
+            <div className="mt-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-rose-200/90">
+                Eksik yollar
+              </p>
+              <ul className="mt-1 max-h-40 space-y-0.5 overflow-y-auto text-sm text-rose-100/90">
+                {structureCheck.missingPaths.map((path) => (
+                  <li key={`missing-${path}`}>• {path}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {structureCheck.extraPaths?.length ? (
+            <div className="mt-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-amber-200/90">
+                Fazla yollar
+              </p>
+              <ul className="mt-1 max-h-40 space-y-0.5 overflow-y-auto text-sm text-amber-100/90">
+                {structureCheck.extraPaths.map((path) => (
+                  <li key={`extra-${path}`}>• {path}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       {showDisconnectConfirm ? (
@@ -310,6 +436,7 @@ export default function CloudStorageCompanyPanel({
                     setBinding(emptyCloudStorageBinding());
                     setCompany({ ...company, cloudStorage: emptyCloudStorageBinding() });
                     setLastSyncStats(null);
+                    setStructureCheck(null);
                     setShowDisconnectConfirm(false);
                     notify("Bulut bağlantısı kaldırıldı", "success");
                   })
@@ -323,7 +450,7 @@ export default function CloudStorageCompanyPanel({
         </div>
       ) : null}
 
-      {showTree ? (
+      {showExpectedTree ? (
         <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
           <p className="mb-3 text-sm font-medium text-slate-200">
             Beklenen klasör ağacı (şema {FOLDER_STRUCTURE_VERSION})

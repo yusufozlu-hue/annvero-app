@@ -148,3 +148,44 @@ export function planFolderCreations(existingPaths = []) {
 export function isAnnveroSystemFolderName(name) {
   return String(name || "").trim() === ANNVERO_SYSTEM_FOLDER;
 }
+
+function normalizeFolderPath(path) {
+  return String(path || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "")
+    .trim();
+}
+
+/**
+ * Salt okunur şema karşılaştırması (Drive/DB yazmaz).
+ * @param {Iterable<string>} existingPaths kök altı göreli klasör yolları
+ * @param {{ annveroAtRoot?: boolean }} [options]
+ */
+export function compareCompanyFolderStructure(existingPaths = [], options = {}) {
+  const desired = buildCompanyFolderPathList();
+  const desiredSet = new Set(desired);
+  const existing = new Set(
+    [...existingPaths].map(normalizeFolderPath).filter(Boolean)
+  );
+  const missingPaths = desired.filter((path) => !existing.has(path));
+  const extraPaths = [...existing]
+    .filter((path) => !desiredSet.has(path))
+    .sort((a, b) => a.localeCompare(b, "tr"));
+  const annveroAtRoot =
+    typeof options.annveroAtRoot === "boolean"
+      ? options.annveroAtRoot
+      : existing.has(ANNVERO_SYSTEM_FOLDER);
+  const ok =
+    missingPaths.length === 0 && extraPaths.length === 0 && annveroAtRoot === true;
+
+  return {
+    ok,
+    schemaVersion: FOLDER_STRUCTURE_VERSION,
+    expectedCount: desired.length,
+    existingCount: existing.size,
+    missingPaths,
+    extraPaths,
+    annveroAtRoot,
+    code: ok ? "OK" : "STRUCTURE_MISMATCH",
+  };
+}

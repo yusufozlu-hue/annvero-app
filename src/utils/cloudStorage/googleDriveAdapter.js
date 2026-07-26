@@ -1,5 +1,10 @@
 import "server-only";
-import { buildCompanyFolderPathList, FOLDER_STRUCTURE_VERSION } from "./folderSchema";
+import {
+  ANNVERO_SYSTEM_FOLDER,
+  buildCompanyFolderPathList,
+  compareCompanyFolderStructure,
+  FOLDER_STRUCTURE_VERSION,
+} from "./folderSchema";
 import { buildAnnveroDriveMetadata, buildAnnveroSystemTxt } from "./metadata";
 
 const API = "https://www.googleapis.com/drive/v3";
@@ -140,4 +145,81 @@ export async function listGoogleDriveMetadata({ accessToken, rootFolderId }) {
     fileSize: file.size ? Number(file.size) : null, fileHash: file.md5Checksum || null,
     lastModifiedAt: file.modifiedTime || null,
   }));
+}
+
+/**
+ * Salt okunur: kök altındaki klasör yollarını listeler.
+ * `_ANNVERO` yalnız kök varlık olarak kaydedilir; içine inilmez.
+ * Dosya oluşturma/silme/yeniden adlandırma yok.
+ */
+export async function listGoogleDriveFolderPaths({ accessToken, rootFolderId }) {
+  if (!rootFolderId) throw new Error("Firma Drive kök klasörü bulunamadı.");
+  const paths = new Set();
+  let annveroAtRoot = false;
+  const queue = [{ id: rootFolderId, path: "" }];
+
+  while (queue.length) {
+    const { id, path } = queue.shift();
+    const children = await listFiles(
+      accessToken,
+      `'${escapeQuery(id)}' in parents and trashed = false and mimeType = '${FOLDER_MIME}'`,
+      "files(id,name,mimeType)"
+    );
+    for (const child of children) {
+      const childPath = path ? `${path}/${child.name}` : child.name;
+      if (path === "" && child.name === ANNVERO_SYSTEM_FOLDER) {
+        annveroAtRoot = true;
+        paths.add(childPath);
+        continue;
+      }
+      paths.add(childPath);
+      queue.push({ id: child.id, path: childPath });
+    }
+  }
+
+  return {
+    paths: [...paths],
+    annveroAtRoot,
+  };
+}
+
+/**
+ * Salt okunur yapı doğrulama.
+ * Kök kimliği appProperties.annveroCompanyId ile doğrulanır (ada güvenilmez).
+ */
+export async function verifyGoogleDriveFolderStructure({
+  accessToken,
+  companyId,
+  rootFolderId,
+}) {
+  if (!rootFolderId) {
+    const err = new Error("Firma Drive kök klasörü bulunamadı.");
+    err.code = "FOLDER_BINDING_MISSING";
+    throw err;
+  }
+
+  const root = await driveFetch(
+    accessToken,
+    `${API}/files/${encodeURIComponent(rootFolderId)}?fields=id,name,mimeType,trashed,appProperties`
+  );
+
+  if (!root || root.trashed || root.mimeType !== FOLDER_MIME) {
+    const err = new Error("Firma Drive kök klasörü geçersiz veya silinmiş.");
+    err.code = "ROOT_FOLDER_INVALID";
+    throw err;
+  }
+
+  const boundCompanyId = String(root.appProperties?.annveroCompanyId || "");
+  if (!boundCompanyId || boundCompanyId !== String(companyId)) {
+    const err = new Error("Drive kök klasörü bu firmaya bağlı değil.");
+    err.code = "ROOT_COMPANY_MISMATCH";
+    throw err;
+  }
+
+  const { paths, annveroAtRoot } = await listGoogleDriveFolderPaths({
+    accessToken,
+    rootFolderId,
+  });
+
+  return compareCompanyFolderStructure(paths, { annveroAtRoot });
 }

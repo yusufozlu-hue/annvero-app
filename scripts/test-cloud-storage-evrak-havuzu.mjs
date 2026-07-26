@@ -9,6 +9,7 @@ import {
   BEYANNAME_SUBFOLDERS,
   buildCompanyFolderPathList,
   buildCompanyFolderTree,
+  compareCompanyFolderStructure,
   planFolderCreations,
   FOLDER_STRUCTURE_VERSION,
 } from "@/src/utils/cloudStorage/folderSchema.js";
@@ -336,6 +337,61 @@ await test("sync + company actions entegrasyonu", async () => {
   assert.equal(second.pass.stats.missing, 1);
 });
 
+await test("folder structure compare: tam uyumlu", () => {
+  const desired = buildCompanyFolderPathList();
+  const result = compareCompanyFolderStructure(desired, { annveroAtRoot: true });
+  assert.equal(result.ok, true);
+  assert.equal(result.code, "OK");
+  assert.equal(result.schemaVersion, FOLDER_STRUCTURE_VERSION);
+  assert.equal(result.expectedCount, desired.length);
+  assert.equal(result.existingCount, desired.length);
+  assert.deepEqual(result.missingPaths, []);
+  assert.deepEqual(result.extraPaths, []);
+  assert.equal(result.annveroAtRoot, true);
+});
+
+await test("folder structure compare: eksik klasör", () => {
+  const desired = buildCompanyFolderPathList();
+  const existing = desired.filter((p) => p !== "01 - Hesap Planı");
+  const result = compareCompanyFolderStructure(existing);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "STRUCTURE_MISMATCH");
+  assert.ok(result.missingPaths.includes("01 - Hesap Planı"));
+  assert.equal(result.extraPaths.length, 0);
+});
+
+await test("folder structure compare: fazla klasör", () => {
+  const desired = buildCompanyFolderPathList();
+  const result = compareCompanyFolderStructure([
+    ...desired,
+    "98 - Diğer Evraklar/Özel",
+  ]);
+  assert.equal(result.ok, false);
+  assert.ok(result.extraPaths.includes("98 - Diğer Evraklar/Özel"));
+  assert.equal(result.missingPaths.length, 0);
+});
+
+await test("folder structure compare: aynı isim farklı parent", () => {
+  const result = compareCompanyFolderStructure([
+    ANNVERO_SYSTEM_FOLDER,
+    "02 - Beyannameler",
+    "02 - Beyannameler/MUHSGK",
+    "03 - Tahakkuk Fişleri",
+  ]);
+  assert.ok(result.missingPaths.includes("03 - Tahakkuk Fişleri/MUHSGK"));
+  assert.ok(!result.missingPaths.includes("02 - Beyannameler/MUHSGK"));
+});
+
+await test("folder structure compare: _ANNVERO kök yok", () => {
+  const desired = buildCompanyFolderPathList().filter(
+    (p) => p !== ANNVERO_SYSTEM_FOLDER
+  );
+  const result = compareCompanyFolderStructure(desired, { annveroAtRoot: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.annveroAtRoot, false);
+  assert.ok(result.missingPaths.includes(ANNVERO_SYSTEM_FOLDER));
+});
+
 // Canlı sync route: hash-dedup motoru + pasif firma kilidi + _ANNVERO koruması.
 {
   const fs = await import("node:fs");
@@ -350,8 +406,19 @@ await test("sync + company actions entegrasyonu", async () => {
     path.join(root, "app/api/google-drive/folders/route.js"),
     "utf8"
   );
+  const checkSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/folders/check/route.js"),
+    "utf8"
+  );
   const adapterSrc = fs.readFileSync(
     path.join(root, "src/utils/cloudStorage/googleDriveAdapter.js"),
+    "utf8"
+  );
+  const panelSrc = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/components/CloudStorageCompanyPanel.jsx"
+    ),
     "utf8"
   );
   assert.ok(syncSrc.includes("runMetadataSyncPass"), "canlı sync hash-dedup kullanmalı");
@@ -364,6 +431,43 @@ await test("sync + company actions entegrasyonu", async () => {
     adapterSrc.includes('ensureTextFile(accessToken, systemId, "metadata.json"'),
     "_ANNVERO sistem dosyası yalnız yoksa eklenir"
   );
+
+  assert.ok(checkSrc.includes("assertCompanyAccess"), "check: firma erişim zorunlu");
+  assert.ok(checkSrc.includes("verifyGoogleDriveFolderStructure"), "check: doğrulama");
+  assert.ok(checkSrc.includes("missingPaths") && checkSrc.includes("extraPaths"));
+  assert.ok(checkSrc.includes("annveroAtRoot"));
+  assert.doesNotMatch(checkSrc, /\.upsert\(/, "check DB upsert yok");
+  assert.doesNotMatch(checkSrc, /\.insert\(/, "check DB insert yok");
+  assert.doesNotMatch(checkSrc, /\.update\(/, "check DB update yok");
+  assert.doesNotMatch(checkSrc, /\.delete\(/, "check DB delete yok");
+  assert.ok(!checkSrc.includes("ensureGoogleDriveFolderTree"), "check create çağırmaz");
+  assert.ok(!checkSrc.includes("createFolder"), "check createFolder yok");
+  assert.ok(!checkSrc.includes("renameDriveFile"), "check rename yok");
+
+  assert.ok(adapterSrc.includes("listGoogleDriveFolderPaths"));
+  assert.ok(adapterSrc.includes("verifyGoogleDriveFolderStructure"));
+  assert.ok(adapterSrc.includes("annveroCompanyId"), "kök firma ID doğrulaması");
+  const listFnStart = adapterSrc.indexOf(
+    "export async function listGoogleDriveFolderPaths"
+  );
+  const listFnEnd = adapterSrc.indexOf(
+    "export async function verifyGoogleDriveFolderStructure"
+  );
+  assert.ok(listFnStart >= 0 && listFnEnd > listFnStart);
+  const listFn = adapterSrc.slice(listFnStart, listFnEnd);
+  assert.ok(listFn.includes("continue"), "_ANNVERO sonrası continue");
+  assert.ok(listFn.includes("annveroAtRoot = true"), "_ANNVERO kök bayrağı");
+  assert.ok(
+    listFn.includes("child.name === ANNVERO_SYSTEM_FOLDER"),
+    "_ANNVERO yalnız kökte işaretlenir"
+  );
+
+  assert.ok(
+    panelSrc.includes("/api/google-drive/folders/check"),
+    "UI check endpoint çağırır"
+  );
+  assert.ok(panelSrc.includes("Beklenen Şemayı Göster"), "şema butonu ayrı");
+  assert.ok(panelSrc.includes('busy === "check"'), "check loading engeli");
 }
 
 if (process.exitCode) {
