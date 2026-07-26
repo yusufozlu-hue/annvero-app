@@ -152,6 +152,7 @@ export default function CompanyManagement() {
   const [contactsSectionOpen, setContactsSectionOpen] = useState(true);
   const [expandedContactDetails, setExpandedContactDetails] = useState({});
   const [companySearchQuery, setCompanySearchQuery] = useState("");
+  const [cloudStorageBusy, setCloudStorageBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -1177,7 +1178,8 @@ export default function CompanyManagement() {
       <div key={c.id} className="flex items-stretch gap-1">
         <button
           onClick={() => selectCompany(c.id)}
-          className={`min-w-0 flex-1 rounded-lg px-4 py-2 text-left text-sm transition-colors ${visualClass}`}
+          disabled={cloudStorageBusy && !isSelected}
+          className={`min-w-0 flex-1 rounded-lg px-4 py-2 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${visualClass}`}
         >
           <div className="truncate font-medium">{c.companyName}</div>
           {isPassive && (
@@ -1490,6 +1492,7 @@ export default function CompanyManagement() {
                 company={company}
                 setCompany={setCompany}
                 onNotify={showToast}
+                onBusyChange={setCloudStorageBusy}
               />
             )}
 

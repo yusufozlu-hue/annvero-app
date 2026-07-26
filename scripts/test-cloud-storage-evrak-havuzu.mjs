@@ -23,6 +23,19 @@ import {
   validateUploadFileType,
 } from "@/src/utils/cloudStorage/uploadPolicy.js";
 import {
+  DUPLICATE_USER_MESSAGE,
+  isUploadUiLocked,
+  phaseAfterSyncResult,
+  phaseAfterUploadResults,
+  shouldRunSyncAfterUploadResults,
+  UPLOAD_PHASE,
+  UPLOADED_AND_INDEXED_MESSAGE,
+  UPLOADED_INDEXING_MESSAGE,
+  UPLOADED_SYNC_FAILED_MESSAGE,
+  uploadButtonLabel,
+  uploadPhaseLiveMessage,
+} from "@/src/utils/cloudStorage/uploadFlow.js";
+import {
   buildStandardDocumentFileName,
   parseStandardDocumentFileName,
 } from "@/src/utils/cloudStorage/fileNaming.js";
@@ -465,6 +478,68 @@ await test("upload sonrası sync hash ile indeksler", () => {
   assert.ok(dup.stats.skippedDuplicates >= 1 || dup.skippedDuplicates?.length >= 1);
 });
 
+await test("upload flow: başarılı → syncing → completed", () => {
+  assert.equal(uploadButtonLabel(UPLOAD_PHASE.UPLOADING), "Drive’a yükleniyor…");
+  assert.equal(
+    phaseAfterUploadResults(["success"]),
+    UPLOAD_PHASE.SYNCING
+  );
+  assert.equal(shouldRunSyncAfterUploadResults(["success"]), true);
+  assert.equal(phaseAfterSyncResult({ ok: true }), UPLOAD_PHASE.COMPLETED);
+  assert.equal(uploadButtonLabel(UPLOAD_PHASE.COMPLETED), "Dosya seç");
+  assert.equal(
+    uploadPhaseLiveMessage(UPLOAD_PHASE.SYNCING),
+    UPLOADED_INDEXING_MESSAGE
+  );
+  assert.equal(
+    uploadPhaseLiveMessage(UPLOAD_PHASE.COMPLETED),
+    UPLOADED_AND_INDEXED_MESSAGE
+  );
+});
+
+await test("upload flow: duplicate → sync yok, idle buton", () => {
+  assert.equal(shouldRunSyncAfterUploadResults(["duplicate"]), false);
+  assert.equal(phaseAfterUploadResults(["duplicate"]), UPLOAD_PHASE.DUPLICATE);
+  assert.equal(uploadButtonLabel(UPLOAD_PHASE.DUPLICATE), "Dosya seç");
+  assert.equal(uploadPhaseLiveMessage(UPLOAD_PHASE.DUPLICATE), DUPLICATE_USER_MESSAGE);
+  assert.equal(isUploadUiLocked(UPLOAD_PHASE.DUPLICATE), false);
+});
+
+await test("upload flow: error → tekrar dene", () => {
+  assert.equal(phaseAfterUploadResults(["error"]), UPLOAD_PHASE.ERROR);
+  assert.equal(uploadButtonLabel(UPLOAD_PHASE.ERROR), "Tekrar dene");
+  assert.equal(isUploadUiLocked(UPLOAD_PHASE.ERROR), false);
+});
+
+await test("upload flow: sync error mesajı", () => {
+  assert.equal(phaseAfterSyncResult({ ok: false }), UPLOAD_PHASE.ERROR);
+  assert.equal(
+    uploadPhaseLiveMessage(UPLOAD_PHASE.ERROR, { syncError: true }),
+    UPLOADED_SYNC_FAILED_MESSAGE
+  );
+});
+
+await test("upload flow: karışık çoklu → tek sync; hepsi duplicate → sıfır sync", () => {
+  assert.equal(
+    shouldRunSyncAfterUploadResults(["success", "duplicate", "error"]),
+    true
+  );
+  assert.equal(
+    phaseAfterUploadResults(["success", "duplicate"]),
+    UPLOAD_PHASE.SYNCING
+  );
+  assert.equal(
+    shouldRunSyncAfterUploadResults(["duplicate", "duplicate"]),
+    false
+  );
+  assert.equal(
+    phaseAfterUploadResults(["duplicate", "duplicate"]),
+    UPLOAD_PHASE.DUPLICATE
+  );
+  assert.equal(isUploadUiLocked(UPLOAD_PHASE.UPLOADING), true);
+  assert.equal(isUploadUiLocked(UPLOAD_PHASE.SYNCING), true);
+});
+
 // Canlı sync route: hash-dedup motoru + pasif firma kilidi + _ANNVERO koruması.
 {
   const fs = await import("node:fs");
@@ -570,6 +645,12 @@ await test("upload sonrası sync hash ile indeksler", () => {
   assert.ok(panelSrc.includes("ANNVERO’dan Drive’a Evrak Yükle") || panelSrc.includes("ANNVERO'dan Drive'a Evrak Yükle"));
   assert.ok(panelSrc.includes("DRIVE_UPLOAD_MAX_LABEL") || panelSrc.includes("4 MB"));
   assert.ok(panelSrc.includes("runAutoSync") || panelSrc.includes("/api/google-drive/sync"));
+  assert.ok(panelSrc.includes("uploadPhase") || panelSrc.includes("UPLOAD_PHASE"));
+  assert.ok(panelSrc.includes("shouldRunSyncAfterUploadResults"));
+  assert.ok(panelSrc.includes("aria-live"));
+  assert.ok(panelSrc.includes("DUPLICATE_USER_MESSAGE") || panelSrc.includes("Mükerrer — daha önce"));
+  assert.ok(panelSrc.includes("uploadButtonLabel"));
+  assert.ok(panelSrc.includes("onBusyChange"));
 }
 
 if (process.exitCode) {

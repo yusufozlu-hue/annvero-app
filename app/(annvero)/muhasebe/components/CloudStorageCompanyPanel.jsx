@@ -14,6 +14,19 @@ import {
   DRIVE_UPLOAD_MAX_BYTES,
   DRIVE_UPLOAD_MAX_LABEL,
 } from "@/src/utils/cloudStorage/uploadPolicy";
+import {
+  DUPLICATE_USER_MESSAGE,
+  isUploadUiLocked,
+  phaseAfterSyncResult,
+  phaseAfterUploadResults,
+  shouldRunSyncAfterUploadResults,
+  UPLOAD_PHASE,
+  UPLOADED_AND_INDEXED_MESSAGE,
+  UPLOADED_INDEXING_MESSAGE,
+  UPLOADED_SYNC_FAILED_MESSAGE,
+  uploadButtonLabel,
+  uploadPhaseLiveMessage,
+} from "@/src/utils/cloudStorage/uploadFlow";
 
 const CHECK_ERROR_MESSAGES = Object.freeze({
   MISSING_COMPANY_ID: "Firma seçilmedi.",
@@ -31,7 +44,7 @@ const CHECK_ERROR_MESSAGES = Object.freeze({
   MIME_EXTENSION_MISMATCH: "Dosya uzantısı ile içerik türü uyuşmuyor.",
   EMPTY_FILE: "Boş dosya yüklenemez.",
   PAYLOAD_TOO_LARGE: `Dosya çok büyük. En fazla ${DRIVE_UPLOAD_MAX_LABEL} yükleyebilirsiniz.`,
-  DUPLICATE_CONTENT: "Bu dosya daha önce yüklendi (içerik mükerrer).",
+  DUPLICATE_CONTENT: DUPLICATE_USER_MESSAGE,
   DRIVE_UPLOAD_FAILED: "Dosya Google Drive’a yüklenemedi.",
   TARGET_FOLDER_MISSING: "Hedef klasör Drive’da bulunamadı. Önce klasör yapısını oluşturun.",
   MISSING_FILE: "Yüklenecek dosya bulunamadı.",
@@ -74,6 +87,7 @@ export default function CloudStorageCompanyPanel({
   company,
   setCompany,
   onNotify,
+  onBusyChange,
 }) {
   const [busy, setBusy] = useState("");
   const [showExpectedTree, setShowExpectedTree] = useState(false);
@@ -87,6 +101,8 @@ export default function CloudStorageCompanyPanel({
   }));
   const [uploadFolder, setUploadFolder] = useState(DRIVE_UPLOAD_DEFAULT_FOLDER);
   const [uploadItems, setUploadItems] = useState([]);
+  const [uploadPhase, setUploadPhase] = useState(UPLOAD_PHASE.IDLE);
+  const [uploadSyncFailed, setUploadSyncFailed] = useState(false);
 
   const folderTree = useMemo(() => buildCompanyFolderTree(), []);
   const uploadTargets = useMemo(() => buildUploadTargetPathList(), []);
@@ -99,6 +115,20 @@ export default function CloudStorageCompanyPanel({
     Boolean(binding.rootFolderId) &&
     company?.isActive !== false;
 
+  const uploadLocked = isUploadUiLocked(uploadPhase) || Boolean(busy);
+  const uploadLiveMessage = uploadPhaseLiveMessage(uploadPhase, {
+    syncError: uploadSyncFailed,
+  });
+
+  useEffect(() => {
+    if (typeof onBusyChange === "function") {
+      onBusyChange(uploadLocked);
+    }
+    return () => {
+      if (typeof onBusyChange === "function") onBusyChange(false);
+    };
+  }, [uploadLocked, onBusyChange]);
+
   const notify = (message, type = "success") => {
     if (typeof onNotify === "function") onNotify(message, type);
   };
@@ -110,6 +140,8 @@ export default function CloudStorageCompanyPanel({
       if (active) {
         setStructureCheck(null);
         setUploadItems([]);
+        setUploadPhase(UPLOAD_PHASE.IDLE);
+        setUploadSyncFailed(false);
       }
     });
     Promise.all([
@@ -189,7 +221,7 @@ export default function CloudStorageCompanyPanel({
   };
 
   const handleUploadFiles = async (fileList) => {
-    if (busy || !uploadEnabled) return;
+    if (uploadLocked || !uploadEnabled) return;
     const files = Array.from(fileList || []);
     if (!files.length) return;
 
@@ -204,17 +236,30 @@ export default function CloudStorageCompanyPanel({
           : "",
       file,
     }));
-    setUploadItems(items);
 
-    await run("upload", async () => {
-      let uploadedOrDuplicate = 0;
-      for (const item of items) {
-        if (item.status === "error") continue;
+    setUploadItems(items);
+    setUploadSyncFailed(false);
+    setUploadPhase(UPLOAD_PHASE.UPLOADING);
+    setErrorCompanyId(company?.id);
+    setLocalError("");
+    setBusy("upload");
+
+    const resultStatuses = items.map((item) => item.status);
+
+    try {
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        if (item.status === "error") {
+          resultStatuses[index] = "error";
+          continue;
+        }
+
         setUploadItems((prev) =>
           prev.map((row) =>
             row.id === item.id ? { ...row, status: "uploading", message: "" } : row
           )
         );
+
         try {
           if (!item.file.size) {
             throw Object.assign(new Error(CHECK_ERROR_MESSAGES.EMPTY_FILE), {
@@ -230,21 +275,23 @@ export default function CloudStorageCompanyPanel({
             body: form,
           });
           const body = await response.json().catch(() => ({}));
+
           if (response.status === 409 && body?.code === "DUPLICATE_CONTENT") {
-            uploadedOrDuplicate += 1;
+            resultStatuses[index] = "duplicate";
             setUploadItems((prev) =>
               prev.map((row) =>
                 row.id === item.id
                   ? {
                       ...row,
                       status: "duplicate",
-                      message: friendlyApiError(body, CHECK_ERROR_MESSAGES.DUPLICATE_CONTENT),
+                      message: DUPLICATE_USER_MESSAGE,
                     }
                   : row
               )
             );
             continue;
           }
+
           if (!response.ok) {
             throw Object.assign(new Error(friendlyApiError(body)), {
               code: body?.code || "",
@@ -252,15 +299,21 @@ export default function CloudStorageCompanyPanel({
               status: response.status,
             });
           }
-          uploadedOrDuplicate += 1;
+
+          resultStatuses[index] = "success";
           setUploadItems((prev) =>
             prev.map((row) =>
               row.id === item.id
-                ? { ...row, status: "success", message: body.message || "Yüklendi" }
+                ? {
+                    ...row,
+                    status: "success",
+                    message: UPLOADED_INDEXING_MESSAGE,
+                  }
                 : row
             )
           );
         } catch (error) {
+          resultStatuses[index] = "error";
           setUploadItems((prev) =>
             prev.map((row) =>
               row.id === item.id
@@ -275,14 +328,58 @@ export default function CloudStorageCompanyPanel({
         }
       }
 
-      if (uploadedOrDuplicate > 0) {
+      const nextPhase = phaseAfterUploadResults(resultStatuses);
+
+      if (!shouldRunSyncAfterUploadResults(resultStatuses)) {
+        setUploadPhase(nextPhase);
+        if (nextPhase === UPLOAD_PHASE.DUPLICATE) {
+          notify(DUPLICATE_USER_MESSAGE, "error");
+        } else if (nextPhase === UPLOAD_PHASE.ERROR) {
+          notify("Yükleme başarısız. Tekrar deneyebilirsiniz.", "error");
+        }
+        return;
+      }
+
+      // En az bir yeni dosya yüklendi → tek sync
+      setUploadPhase(UPLOAD_PHASE.SYNCING);
+      setBusy("sync");
+      try {
         const syncResult = await runAutoSync();
+        setUploadPhase(phaseAfterSyncResult({ ok: true }));
+        setUploadSyncFailed(false);
+        setUploadItems((prev) =>
+          prev.map((row) =>
+            row.status === "success"
+              ? { ...row, message: UPLOADED_AND_INDEXED_MESSAGE }
+              : row
+          )
+        );
         notify(
-          `Yükleme tamamlandı. Drive’da ${syncResult.stats?.remoteCount ?? 0} belge indekslendi.`,
+          `${UPLOADED_AND_INDEXED_MESSAGE} Drive’da ${syncResult.stats?.remoteCount ?? 0} belge.`,
           "success"
         );
+      } catch (syncError) {
+        setUploadSyncFailed(true);
+        setUploadPhase(phaseAfterSyncResult({ ok: false }));
+        setUploadItems((prev) =>
+          prev.map((row) =>
+            row.status === "success"
+              ? { ...row, message: UPLOADED_SYNC_FAILED_MESSAGE }
+              : row
+          )
+        );
+        const message = syncError?.message || UPLOADED_SYNC_FAILED_MESSAGE;
+        setLocalError(message);
+        notify(message, "error");
       }
-    });
+    } catch (error) {
+      setUploadPhase(UPLOAD_PHASE.ERROR);
+      const message = error?.message || "Yükleme başarısız.";
+      setLocalError(message);
+      notify(message, "error");
+    } finally {
+      setBusy("");
+    }
   };
 
   const statusCards = [
@@ -496,7 +593,7 @@ export default function CloudStorageCompanyPanel({
             Hedef klasör
             <select
               value={uploadFolder}
-              disabled={!uploadEnabled || Boolean(busy)}
+              disabled={!uploadEnabled || uploadLocked}
               onChange={(event) => setUploadFolder(event.target.value)}
               className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 disabled:opacity-50"
             >
@@ -507,13 +604,19 @@ export default function CloudStorageCompanyPanel({
               ))}
             </select>
           </label>
-          <label className="inline-flex cursor-pointer items-center justify-center rounded-lg bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-50">
-            {busy === "upload" ? "Yükleniyor…" : "Dosya seç"}
+          <label
+            className={`inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium text-white ${
+              !uploadEnabled || uploadLocked
+                ? "cursor-not-allowed bg-sky-900/60 opacity-60"
+                : "cursor-pointer bg-sky-700 hover:bg-sky-600"
+            }`}
+          >
+            {uploadButtonLabel(uploadPhase)}
             <input
               type="file"
               multiple
               accept={DRIVE_UPLOAD_ACCEPT}
-              disabled={!uploadEnabled || Boolean(busy)}
+              disabled={!uploadEnabled || uploadLocked}
               className="hidden"
               onChange={(event) => {
                 const list = event.target.files;
@@ -527,6 +630,14 @@ export default function CloudStorageCompanyPanel({
           Boyut sınırı: {DRIVE_UPLOAD_MAX_LABEL} / dosya. Varsayılan hedef:{" "}
           {DRIVE_UPLOAD_DEFAULT_FOLDER}.
         </p>
+        <p className="sr-only" aria-live="polite" aria-atomic="true">
+          {uploadLiveMessage}
+        </p>
+        {uploadLiveMessage ? (
+          <p className="mt-2 text-xs text-slate-300" aria-hidden="true">
+            {uploadLiveMessage}
+          </p>
+        ) : null}
 
         {uploadItems.length ? (
           <ul className="mt-3 max-h-48 space-y-1 overflow-y-auto text-sm">
@@ -681,6 +792,8 @@ export default function CloudStorageCompanyPanel({
                     setLastSyncStats(null);
                     setStructureCheck(null);
                     setUploadItems([]);
+                    setUploadPhase(UPLOAD_PHASE.IDLE);
+                    setUploadSyncFailed(false);
                     setShowDisconnectConfirm(false);
                     notify("Bulut bağlantısı kaldırıldı", "success");
                   })
