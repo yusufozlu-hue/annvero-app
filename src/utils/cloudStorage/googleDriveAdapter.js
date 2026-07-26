@@ -116,34 +116,40 @@ export async function ensureGoogleDriveFolderTree({ accessToken, companyId, comp
 /**
  * Metadata listesi: _ANNVERO altındaki tüm dosyalar indeks dışı.
  * Sistem dosyalarına dokunulmaz; yalnız okuma.
+ * sourcePath: klasör yolu + dosya adı (Evraklar sekmesi için).
  */
 export async function listGoogleDriveMetadata({ accessToken, rootFolderId }) {
   if (!rootFolderId) throw new Error("Firma Drive kök klasörü bulunamadı.");
-  const queue = [rootFolderId];
+  const queue = [{ id: rootFolderId, path: "" }];
   const systemFolderIds = new Set();
   const files = [];
   while (queue.length) {
-    const parentId = queue.shift();
+    const { id: parentId, path } = queue.shift();
     const underSystem = systemFolderIds.has(parentId);
     const children = await listFiles(accessToken, `'${escapeQuery(parentId)}' in parents and trashed = false`);
     for (const child of children) {
       if (child.mimeType === FOLDER_MIME) {
-        if (underSystem || child.name === "_ANNVERO") {
+        if (underSystem || child.name === "_ANNVERO" || child.name === ANNVERO_SYSTEM_FOLDER) {
           systemFolderIds.add(child.id);
         }
-        queue.push(child.id);
+        const childPath = path ? `${path}/${child.name}` : child.name;
+        queue.push({ id: child.id, path: childPath });
         continue;
       }
       if (underSystem) continue;
       if (["metadata.json", "ANNVERO_SYSTEM.txt"].includes(child.name)) continue;
-      files.push(child);
+      files.push({ file: child, folderPath: path });
     }
   }
-  return files.map((file) => ({
-    providerFileId: file.id, parentFolderId: file.parents?.[0] || null,
-    fileName: file.name, mimeType: file.mimeType || null,
-    fileSize: file.size ? Number(file.size) : null, fileHash: file.md5Checksum || null,
+  return files.map(({ file, folderPath }) => ({
+    providerFileId: file.id,
+    parentFolderId: file.parents?.[0] || null,
+    fileName: file.name,
+    mimeType: file.mimeType || null,
+    fileSize: file.size ? Number(file.size) : null,
+    fileHash: file.md5Checksum || null,
     lastModifiedAt: file.modifiedTime || null,
+    sourcePath: folderPath ? `${folderPath}/${file.name}` : file.name,
   }));
 }
 

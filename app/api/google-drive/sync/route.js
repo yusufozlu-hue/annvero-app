@@ -19,6 +19,7 @@ function rowFromDb(row) {
     mimeType: row.mime_type,
     fileSize: row.file_size,
     fileHash: row.file_hash,
+    sourcePath: row.source_path || "",
     lastModifiedAt: row.last_modified_at,
     indexedAt: row.indexed_at,
     parseStatus: row.parse_status,
@@ -35,6 +36,7 @@ function rowToDb(row, companyId) {
     mime_type: row.mimeType || null,
     file_size: row.fileSize ?? null,
     file_hash: row.fileHash || null,
+    source_path: row.sourcePath || null,
     last_modified_at: row.lastModifiedAt || null,
     indexed_at: row.indexedAt || new Date().toISOString(),
     parse_status: row.parseStatus || "indexed",
@@ -85,7 +87,7 @@ export async function POST(request) {
   const { data: indexed, error: indexError } = await supabase
     .from("document_index")
     .select(
-      "id,company_id,provider,provider_file_id,parent_folder_id,file_name,mime_type,file_size,file_hash,last_modified_at,indexed_at,parse_status"
+      "id,company_id,provider,provider_file_id,parent_folder_id,file_name,mime_type,file_size,file_hash,source_path,last_modified_at,indexed_at,parse_status"
     )
     .eq("company_id", companyId)
     .eq("provider", "google_drive");

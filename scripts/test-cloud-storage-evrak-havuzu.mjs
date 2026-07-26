@@ -36,6 +36,13 @@ import {
   uploadPhaseLiveMessage,
 } from "@/src/utils/cloudStorage/uploadFlow.js";
 import {
+  buildDocumentOpenPath,
+  buildPublicDocumentList,
+  filterDocumentsForCompanyList,
+  isAnnveroSystemDocument,
+  toPublicDocumentListItem,
+} from "@/src/utils/cloudStorage/documentList.js";
+import {
   buildStandardDocumentFileName,
   parseStandardDocumentFileName,
 } from "@/src/utils/cloudStorage/fileNaming.js";
@@ -540,6 +547,78 @@ await test("upload flow: karışık çoklu → tek sync; hepsi duplicate → sı
   assert.equal(isUploadUiLocked(UPLOAD_PHASE.SYNCING), true);
 });
 
+await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", () => {
+  const companyId = "114f98b5-0411-45c5-a7c6-8061c9f06699";
+  const rows = [
+    {
+      id: "1",
+      companyId,
+      fileName: "a.pdf",
+      mimeType: "application/pdf",
+      sourcePath: "98 - Diğer Evraklar/a.pdf",
+      parseStatus: "indexed",
+      providerFileId: "drive-secret-1",
+      fileHash: "hash-secret",
+      provider: "google_drive",
+    },
+    {
+      id: "2",
+      companyId,
+      fileName: "metadata.json",
+      sourcePath: "_ANNVERO/metadata.json",
+      parseStatus: "indexed",
+      providerFileId: "sys",
+    },
+    {
+      id: "3",
+      companyId,
+      fileName: "gone.pdf",
+      sourcePath: "02 - Beyannameler/gone.pdf",
+      parseStatus: "missing",
+      providerFileId: "gone",
+    },
+    {
+      id: "4",
+      companyId: "other-company",
+      fileName: "other.pdf",
+      parseStatus: "indexed",
+      providerFileId: "x",
+    },
+    {
+      id: "5",
+      companyId,
+      fileName: "soft.pdf",
+      parseStatus: "soft_deleted",
+      providerFileId: "s",
+    },
+  ];
+  const filtered = filterDocumentsForCompanyList(rows, { companyId });
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].id, "1");
+  assert.equal(isAnnveroSystemDocument(rows[1]), true);
+
+  const pub = toPublicDocumentListItem(rows[0], {
+    companyId,
+    lastSyncAt: "2026-07-26T12:00:00.000Z",
+  });
+  assert.equal(pub.fileName, "a.pdf");
+  assert.equal(pub.fileType, "PDF");
+  assert.equal(pub.folderPath, "98 - Diğer Evraklar");
+  assert.equal(pub.source, "Google Drive");
+  assert.equal(pub.statusLabel, "Aktif");
+  assert.equal(pub.openPath, buildDocumentOpenPath("1", companyId));
+  assert.equal(pub.providerFileId, undefined);
+  assert.equal(pub.fileHash, undefined);
+  assert.doesNotMatch(JSON.stringify(pub), /drive-secret|hash-secret/);
+
+  const withMissing = filterDocumentsForCompanyList(rows, {
+    companyId,
+    includeMissing: true,
+  });
+  assert.equal(withMissing.length, 2);
+  assert.equal(buildPublicDocumentList(rows, { companyId }).length, 1);
+});
+
 // Canlı sync route: hash-dedup motoru + pasif firma kilidi + _ANNVERO koruması.
 {
   const fs = await import("node:fs");
@@ -573,12 +652,58 @@ await test("upload flow: karışık çoklu → tek sync; hepsi duplicate → sı
     ),
     "utf8"
   );
+  const filesListSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/files/route.js"),
+    "utf8"
+  );
+  const filesOpenSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/files/[id]/open/route.js"),
+    "utf8"
+  );
+  const docsPanelSrc = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/components/CloudDocumentsPanel.jsx"
+    ),
+    "utf8"
+  );
+  const companyMgmtSrc = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/components/CompanyManagement.jsx"
+    ),
+    "utf8"
+  );
   assert.ok(syncSrc.includes("runMetadataSyncPass"), "canlı sync hash-dedup kullanmalı");
   assert.ok(syncSrc.includes("skippedDuplicates") || syncSrc.includes("pass.stats"));
   assert.ok(syncSrc.includes("isActive"), "pasif firma sync engeli");
+  assert.ok(syncSrc.includes("source_path"), "sync source_path yazar");
   assert.ok(foldersSrc.includes("isActive"), "pasif firma klasör engeli");
-  assert.ok(adapterSrc.includes('child.name === "_ANNVERO"'), "_ANNVERO indeks dışı");
+  assert.ok(adapterSrc.includes('child.name === "_ANNVERO"') || adapterSrc.includes("ANNVERO_SYSTEM_FOLDER"), "_ANNVERO indeks dışı");
+  assert.ok(adapterSrc.includes("sourcePath"), "metadata listesi sourcePath");
   assert.ok(adapterSrc.includes("renameDriveFile"), "firma adı → görünür klasör adı");
+  assert.ok(filesListSrc.includes("assertCompanyAccess"), "files list yetki");
+  assert.ok(filesListSrc.includes("document_index"), "files list document_index");
+  assert.ok(filesListSrc.includes("buildPublicDocumentList"), "public DTO");
+  assert.doesNotMatch(filesListSrc, /provider_file_id/, "list provider_file_id seçmez");
+  assert.doesNotMatch(filesListSrc, /file_hash/, "list file_hash seçmez");
+  assert.ok(filesOpenSrc.includes("assertCompanyAccess"), "open yetki");
+  assert.ok(filesOpenSrc.includes("NextResponse.redirect"), "open redirect");
+  assert.ok(filesOpenSrc.includes("provider_file_id"), "open sunucuda id kullanır");
+  assert.ok(docsPanelSrc.includes("/api/google-drive/files?companyId="));
+  assert.ok(docsPanelSrc.includes("Drive’da Aç") || docsPanelSrc.includes("Drive'da Aç"));
+  assert.ok(docsPanelSrc.includes("aria-live"));
+  assert.ok(!docsPanelSrc.includes("setCompany("), "setCompany çağırmaz");
+  assert.ok(!docsPanelSrc.includes("localStorage"), "localStorage kullanmaz");
+  assert.ok(companyMgmtSrc.includes("CloudDocumentsPanel"), "Evraklar CloudDocumentsPanel");
+  assert.ok(
+    companyMgmtSrc.includes('key={company.id') || companyMgmtSrc.includes('key={company.id ||'),
+    "firma değişince panel remount"
+  );
+  assert.ok(
+    companyMgmtSrc.includes('activeTab === "ticaretDocuments"'),
+    "Evraklar sekmesi"
+  );
   assert.ok(
     adapterSrc.includes('ensureTextFile(accessToken, systemId, "metadata.json"'),
     "_ANNVERO sistem dosyası yalnız yoksa eklenir"

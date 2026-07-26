@@ -60,6 +60,15 @@ const CloudStorageCompanyPanel = dynamic(
     ),
   }
 );
+const CloudDocumentsPanel = dynamic(
+  () => import("./CloudDocumentsPanel"),
+  {
+    ssr: false,
+    loading: () => (
+      <p className="px-1 py-6 text-sm text-slate-500">Evraklar yükleniyor…</p>
+    ),
+  }
+);
 const EMPLOYEE_PAGE_SIZE = 20;
 
 const COMPANY_TAB_SAVE_MESSAGES = {
@@ -2592,12 +2601,10 @@ export default function CompanyManagement() {
             )}
 
             {activeTab === "ticaretDocuments" && (
-              <TicaretSicilCompanyPanel
+              <CloudDocumentsPanel
+                key={company.id || "no-company"}
                 companyId={company.id}
-                companyName={company.companyName}
-                companyAddress={company.address}
-                companyTaxNumber={company.taxNumber}
-                view="documents"
+                onNotify={showToast}
               />
             )}
 
