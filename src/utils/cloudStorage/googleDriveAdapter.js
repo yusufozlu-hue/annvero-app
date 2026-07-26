@@ -223,3 +223,125 @@ export async function verifyGoogleDriveFolderStructure({
 
   return compareCompanyFolderStructure(paths, { annveroAtRoot });
 }
+
+/**
+ * Kökten parent zinciri ile klasör yolunu çözer (global isim araması yok).
+ */
+export async function resolveDriveFolderPathFromRoot({
+  accessToken,
+  rootFolderId,
+  targetFolderPath,
+}) {
+  const parts = String(targetFolderPath || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "")
+    .split("/")
+    .filter(Boolean);
+  if (!parts.length) {
+    const err = new Error("Hedef klasör yolu geçersiz.");
+    err.code = "INVALID_TARGET_PATH";
+    throw err;
+  }
+  let parentId = rootFolderId;
+  for (const part of parts) {
+    const child = await findChild(accessToken, parentId, part, FOLDER_MIME);
+    if (!child) {
+      const err = new Error("Hedef klasör Drive’da bulunamadı.");
+      err.code = "TARGET_FOLDER_MISSING";
+      throw err;
+    }
+    parentId = child.id;
+  }
+  return parentId;
+}
+
+/**
+ * Aynı firma + içerik hash’i için mevcut Drive dosyası (appProperties).
+ */
+export async function findDriveFileByCompanyContentHash({
+  accessToken,
+  companyId,
+  contentHash,
+}) {
+  const q = [
+    "trashed = false",
+    `appProperties has { key='annveroCompanyId' and value='${escapeQuery(companyId)}' }`,
+    `appProperties has { key='annveroContentHash' and value='${escapeQuery(contentHash)}' }`,
+  ].join(" and ");
+  const files = await listFiles(
+    accessToken,
+    q,
+    "files(id,name,mimeType,size,appProperties,modifiedTime,webViewLink)"
+  );
+  return files[0] || null;
+}
+
+/**
+ * Binary dosyayı Drive’a yükler (multipart). App-created → drive.file görünür.
+ */
+export async function uploadGoogleDriveBinaryFile({
+  accessToken,
+  parentFolderId,
+  fileName,
+  mimeType,
+  bytes,
+  appProperties,
+}) {
+  const boundary = `annvero_${crypto.randomUUID()}`;
+  const metadata = JSON.stringify({
+    name: fileName,
+    parents: [parentFolderId],
+    appProperties: appProperties || undefined,
+  });
+  const metaPart = Buffer.from(
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`,
+    "utf8"
+  );
+  const mediaHeader = Buffer.from(
+    `--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`,
+    "utf8"
+  );
+  const closer = Buffer.from(`\r\n--${boundary}--`, "utf8");
+  const body = Buffer.concat([
+    metaPart,
+    mediaHeader,
+    Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes),
+    closer,
+  ]);
+
+  return driveFetch(
+    accessToken,
+    `${UPLOAD_API}/files?uploadType=multipart&fields=id,name,mimeType,size,appProperties,modifiedTime,webViewLink`,
+    {
+      method: "POST",
+      headers: { "content-type": `multipart/related; boundary=${boundary}` },
+      body,
+    }
+  );
+}
+
+/**
+ * Kök klasörün firma bağını doğrular (ada güvenmez).
+ */
+export async function assertDriveRootBelongsToCompany({
+  accessToken,
+  rootFolderId,
+  companyId,
+}) {
+  const root = await driveFetch(
+    accessToken,
+    `${API}/files/${encodeURIComponent(rootFolderId)}?fields=id,name,mimeType,trashed,appProperties`
+  );
+  if (!root || root.trashed || root.mimeType !== FOLDER_MIME) {
+    const err = new Error("Firma Drive kök klasörü geçersiz veya silinmiş.");
+    err.code = "ROOT_FOLDER_INVALID";
+    throw err;
+  }
+  const bound = String(root.appProperties?.annveroCompanyId || "");
+  if (!bound || bound !== String(companyId)) {
+    const err = new Error("Drive kök klasörü bu firmaya bağlı değil.");
+    err.code = "ROOT_COMPANY_MISMATCH";
+    throw err;
+  }
+  return root;
+}

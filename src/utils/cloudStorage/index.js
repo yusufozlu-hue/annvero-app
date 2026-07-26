@@ -8,6 +8,7 @@ export * from "./fileNaming.js";
 export * from "./metadata.js";
 export * from "./documentIndex.js";
 export * from "./syncEngine.js";
+export * from "./uploadPolicy.js";
 export {
   createMockDriveAdapter,
   mockDriveAdapter,

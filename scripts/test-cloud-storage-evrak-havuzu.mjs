@@ -14,6 +14,15 @@ import {
   FOLDER_STRUCTURE_VERSION,
 } from "@/src/utils/cloudStorage/folderSchema.js";
 import {
+  assertUploadTargetPath,
+  buildUploadTargetPathList,
+  DRIVE_UPLOAD_DEFAULT_FOLDER,
+  DRIVE_UPLOAD_MAX_BYTES,
+  sanitizeUploadFileName,
+  validateUploadFileSize,
+  validateUploadFileType,
+} from "@/src/utils/cloudStorage/uploadPolicy.js";
+import {
   buildStandardDocumentFileName,
   parseStandardDocumentFileName,
 } from "@/src/utils/cloudStorage/fileNaming.js";
@@ -392,6 +401,70 @@ await test("folder structure compare: _ANNVERO kök yok", () => {
   assert.ok(result.missingPaths.includes(ANNVERO_SYSTEM_FOLDER));
 });
 
+await test("upload policy: hedef path ve _ANNVERO reddi", () => {
+  const targets = buildUploadTargetPathList();
+  assert.ok(targets.includes(DRIVE_UPLOAD_DEFAULT_FOLDER));
+  assert.ok(!targets.includes(ANNVERO_SYSTEM_FOLDER));
+  assert.ok(!targets.some((p) => p.startsWith(`${ANNVERO_SYSTEM_FOLDER}/`)));
+  assert.equal(assertUploadTargetPath(ANNVERO_SYSTEM_FOLDER).ok, false);
+  assert.equal(assertUploadTargetPath(`${ANNVERO_SYSTEM_FOLDER}/x`).code, "SYSTEM_FOLDER_FORBIDDEN");
+  assert.equal(assertUploadTargetPath("bilinmeyen/klasor").code, "INVALID_TARGET_PATH");
+  assert.equal(assertUploadTargetPath("98 - Diğer Evraklar").ok, true);
+  assert.equal(assertUploadTargetPath("02 - Beyannameler/MUHSGK").ok, true);
+});
+
+await test("upload policy: MIME/uzantı ve boyut", () => {
+  assert.equal(validateUploadFileType({ fileName: "a.pdf", mimeType: "application/pdf" }).ok, true);
+  assert.equal(validateUploadFileType({ fileName: "a.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).ok, true);
+  assert.equal(validateUploadFileType({ fileName: "a.xml", mimeType: "application/xml" }).ok, true);
+  assert.equal(validateUploadFileType({ fileName: "a.png", mimeType: "image/png" }).ok, true);
+  assert.equal(validateUploadFileType({ fileName: "a.exe", mimeType: "application/octet-stream" }).ok, false);
+  assert.equal(
+    validateUploadFileType({ fileName: "a.pdf", mimeType: "image/png" }).code,
+    "MIME_EXTENSION_MISMATCH"
+  );
+  assert.equal(validateUploadFileSize(0).code, "EMPTY_FILE");
+  assert.equal(validateUploadFileSize(DRIVE_UPLOAD_MAX_BYTES + 1).status, 413);
+  assert.equal(validateUploadFileSize(12).ok, true);
+  assert.equal(sanitizeUploadFileName("../../x y.pdf"), "x y.pdf");
+  assert.ok(!sanitizeUploadFileName("evil\\path.xlsx").includes("\\"));
+});
+
+await test("upload sonrası sync hash ile indeksler", () => {
+  const remote = [
+    {
+      providerFileId: "up1",
+      fileName: "ADH.pdf",
+      fileHash: "sha-content-1",
+      mimeType: "application/pdf",
+      parentFolderId: "folder-98",
+    },
+  ];
+  const pass = runMetadataSyncPass({
+    companyId: "114f98b5-0411-45c5-a7c6-8061c9f06699",
+    provider: "google_drive",
+    remoteFiles: remote,
+    existingIndex: [],
+  });
+  assert.equal(pass.stats.created, 1);
+  assert.equal(pass.stats.remoteCount, 1);
+  const dup = runMetadataSyncPass({
+    companyId: "114f98b5-0411-45c5-a7c6-8061c9f06699",
+    provider: "google_drive",
+    remoteFiles: [
+      ...remote,
+      {
+        providerFileId: "up2",
+        fileName: "ADH-kopya.pdf",
+        fileHash: "sha-content-1",
+        mimeType: "application/pdf",
+      },
+    ],
+    existingIndex: pass.created,
+  });
+  assert.ok(dup.stats.skippedDuplicates >= 1 || dup.skippedDuplicates?.length >= 1);
+});
+
 // Canlı sync route: hash-dedup motoru + pasif firma kilidi + _ANNVERO koruması.
 {
   const fs = await import("node:fs");
@@ -408,6 +481,10 @@ await test("folder structure compare: _ANNVERO kök yok", () => {
   );
   const checkSrc = fs.readFileSync(
     path.join(root, "app/api/google-drive/folders/check/route.js"),
+    "utf8"
+  );
+  const uploadSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/files/upload/route.js"),
     "utf8"
   );
   const adapterSrc = fs.readFileSync(
@@ -468,6 +545,31 @@ await test("folder structure compare: _ANNVERO kök yok", () => {
   );
   assert.ok(panelSrc.includes("Beklenen Şemayı Göster"), "şema butonu ayrı");
   assert.ok(panelSrc.includes('busy === "check"'), "check loading engeli");
+
+  // Upload route güvenlik / mükerrer / mutation sınırları
+  assert.ok(uploadSrc.includes("assertCompanyAccess"), "upload yetki");
+  assert.ok(uploadSrc.includes("isCompanyActive") || uploadSrc.includes("isActive"), "pasif firma");
+  assert.ok(uploadSrc.includes("assertDriveRootBelongsToCompany"), "kök firma ID");
+  assert.ok(uploadSrc.includes("assertUploadTargetPath"), "schema path");
+  assert.ok(uploadSrc.includes("SYSTEM_FOLDER_FORBIDDEN") || uploadSrc.includes("assertUploadTargetPath"));
+  assert.ok(uploadSrc.includes("findDriveFileByCompanyContentHash"), "hash mükerrer");
+  assert.ok(uploadSrc.includes("annveroContentHash"), "appProperties hash");
+  assert.ok(uploadSrc.includes("DUPLICATE_CONTENT"), "409 duplicate");
+  assert.ok(uploadSrc.includes("PAYLOAD_TOO_LARGE"), "413");
+  assert.ok(uploadSrc.includes("sha256") || uploadSrc.includes("createHash"), "sha256");
+  assert.doesNotMatch(uploadSrc, /from\("document_index"\)[\s\S]{0,80}\.upsert/, "upload document_index yazmaz");
+  assert.ok(!uploadSrc.includes("ensureGoogleDriveFolderTree"), "upload klasör oluşturmaz");
+  assert.ok(uploadSrc.includes("resolveDriveFolderPathFromRoot"), "parent zinciri");
+  assert.ok(adapterSrc.includes("uploadGoogleDriveBinaryFile"), "binary upload");
+  assert.ok(adapterSrc.includes("findDriveFileByCompanyContentHash"));
+  // Mükerrer bulunduğunda create çağrılmadan dönülür — sıra: find → upload
+  const findIdx = uploadSrc.indexOf("findDriveFileByCompanyContentHash");
+  const uploadIdx = uploadSrc.indexOf("uploadGoogleDriveBinaryFile");
+  assert.ok(findIdx >= 0 && uploadIdx > findIdx, "hash kontrolü create'den önce");
+  assert.ok(panelSrc.includes("/api/google-drive/files/upload"), "UI upload");
+  assert.ok(panelSrc.includes("ANNVERO’dan Drive’a Evrak Yükle") || panelSrc.includes("ANNVERO'dan Drive'a Evrak Yükle"));
+  assert.ok(panelSrc.includes("DRIVE_UPLOAD_MAX_LABEL") || panelSrc.includes("4 MB"));
+  assert.ok(panelSrc.includes("runAutoSync") || panelSrc.includes("/api/google-drive/sync"));
 }
 
 if (process.exitCode) {
