@@ -336,6 +336,36 @@ await test("sync + company actions entegrasyonu", async () => {
   assert.equal(second.pass.stats.missing, 1);
 });
 
+// Canlı sync route: hash-dedup motoru + pasif firma kilidi + _ANNVERO koruması.
+{
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const syncSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/sync/route.js"),
+    "utf8"
+  );
+  const foldersSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/folders/route.js"),
+    "utf8"
+  );
+  const adapterSrc = fs.readFileSync(
+    path.join(root, "src/utils/cloudStorage/googleDriveAdapter.js"),
+    "utf8"
+  );
+  assert.ok(syncSrc.includes("runMetadataSyncPass"), "canlı sync hash-dedup kullanmalı");
+  assert.ok(syncSrc.includes("skippedDuplicates") || syncSrc.includes("pass.stats"));
+  assert.ok(syncSrc.includes("isActive"), "pasif firma sync engeli");
+  assert.ok(foldersSrc.includes("isActive"), "pasif firma klasör engeli");
+  assert.ok(adapterSrc.includes('child.name === "_ANNVERO"'), "_ANNVERO indeks dışı");
+  assert.ok(adapterSrc.includes("renameDriveFile"), "firma adı → görünür klasör adı");
+  assert.ok(
+    adapterSrc.includes('ensureTextFile(accessToken, systemId, "metadata.json"'),
+    "_ANNVERO sistem dosyası yalnız yoksa eklenir"
+  );
+}
+
 if (process.exitCode) {
   console.error("\nCloud storage tests failed.");
   process.exit(1);

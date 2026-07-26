@@ -58,15 +58,32 @@ async function ensureTextFile(accessToken, parentId, name, content, mimeType) {
   return true;
 }
 
+async function renameDriveFile(accessToken, fileId, name) {
+  return driveFetch(accessToken, `${API}/files/${encodeURIComponent(fileId)}?fields=id,name,webViewLink`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
+/**
+ * Firma kökü appProperties.annveroCompanyId ile bulunur — ad değişince yalnız
+ * görünen ad güncellenir; klasör kimliği korunur. _ANNVERO içeriği yazılmaz
+ * (yalnız yoksa metadata/sistem dosyası eklenir).
+ */
 export async function ensureGoogleDriveFolderTree({ accessToken, companyId, companyName }) {
+  const displayName = String(companyName || "ANNVERO Firma").slice(0, 120);
   const rootQuery = `mimeType = '${FOLDER_MIME}' and trashed = false and appProperties has { key='annveroCompanyId' and value='${escapeQuery(companyId)}' }`;
-  let root = (await listFiles(accessToken, rootQuery))[0];
+  let root = (await listFiles(accessToken, rootQuery, "files(id,name,webViewLink,appProperties)"))[0];
   let createdFolderCount = 0;
   if (!root) {
-    root = await createFolder(accessToken, String(companyName || "ANNVERO Firma").slice(0, 120), null, {
+    root = await createFolder(accessToken, displayName, null, {
       annveroCompanyId: String(companyId), annveroFolderVersion: FOLDER_STRUCTURE_VERSION,
     });
     createdFolderCount += 1;
+  } else if (root.name !== displayName) {
+    // Firma adı değişti: kimlik aynı, yalnız görünür klasör adı.
+    root = await renameDriveFile(accessToken, root.id, displayName);
   }
   const ids = new Map([["", root.id]]);
   for (const path of buildCompanyFolderPathList()) {
@@ -85,25 +102,39 @@ export async function ensureGoogleDriveFolderTree({ accessToken, companyId, comp
   await ensureTextFile(accessToken, systemId, "metadata.json", JSON.stringify(metadata, null, 2), "application/json");
   await ensureTextFile(accessToken, systemId, "ANNVERO_SYSTEM.txt", buildAnnveroSystemTxt(metadata), "text/plain; charset=UTF-8");
   return {
-    rootFolderId: root.id, rootFolderName: root.name || companyName,
+    rootFolderId: root.id, rootFolderName: root.name || displayName,
     rootFolderUrl: root.webViewLink || `https://drive.google.com/drive/folders/${root.id}`,
     folderStructureVersion: FOLDER_STRUCTURE_VERSION, createdFolderCount,
   };
 }
 
+/**
+ * Metadata listesi: _ANNVERO altındaki tüm dosyalar indeks dışı.
+ * Sistem dosyalarına dokunulmaz; yalnız okuma.
+ */
 export async function listGoogleDriveMetadata({ accessToken, rootFolderId }) {
   if (!rootFolderId) throw new Error("Firma Drive kök klasörü bulunamadı.");
   const queue = [rootFolderId];
+  const systemFolderIds = new Set();
   const files = [];
   while (queue.length) {
     const parentId = queue.shift();
+    const underSystem = systemFolderIds.has(parentId);
     const children = await listFiles(accessToken, `'${escapeQuery(parentId)}' in parents and trashed = false`);
     for (const child of children) {
-      if (child.mimeType === FOLDER_MIME) queue.push(child.id);
-      else files.push(child);
+      if (child.mimeType === FOLDER_MIME) {
+        if (underSystem || child.name === "_ANNVERO") {
+          systemFolderIds.add(child.id);
+        }
+        queue.push(child.id);
+        continue;
+      }
+      if (underSystem) continue;
+      if (["metadata.json", "ANNVERO_SYSTEM.txt"].includes(child.name)) continue;
+      files.push(child);
     }
   }
-  return files.filter((file) => !["metadata.json", "ANNVERO_SYSTEM.txt"].includes(file.name)).map((file) => ({
+  return files.map((file) => ({
     providerFileId: file.id, parentFolderId: file.parents?.[0] || null,
     fileName: file.name, mimeType: file.mimeType || null,
     fileSize: file.size ? Number(file.size) : null, fileHash: file.md5Checksum || null,

@@ -33,10 +33,17 @@ export async function POST(request) {
   const { supabase, guard } = getApiSupabase("google-drive-folders", "company_cloud_folders");
   if (guard) return guard;
   const [{ data: company, error: companyError }, token] = await Promise.all([
-    supabase.from("companies").select("id,company_name").eq("id", companyId).single(),
+    supabase.from("companies").select("id,company_name,data").eq("id", companyId).single(),
     getValidGoogleAccessToken(session.user.id),
   ]);
   if (companyError || !company) return NextResponse.json({ error: "Firma bulunamadı." }, { status: 404 });
+  // Pasif firmaların mevcut arşivine dokunma / yeni klasör açma.
+  if (company.data?.isActive === false) {
+    return NextResponse.json(
+      { error: "Pasif firmalar için Drive klasörü oluşturulmaz." },
+      { status: 409 }
+    );
+  }
   const result = await ensureGoogleDriveFolderTree({
     accessToken: token.accessToken, companyId, companyName: company.company_name,
   });
