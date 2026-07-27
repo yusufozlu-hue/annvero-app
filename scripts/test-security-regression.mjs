@@ -49,6 +49,12 @@ import { assertCriticalHumanApproval, CRITICAL_OPERATIONS } from "../src/lib/sec
 import { validateUploadFile } from "../src/lib/security/uploadGuard.js";
 import { getSafeNextPath } from "../src/utils/authRedirect.js";
 import {
+  isAllowedInviteOrigin,
+  isAllowedInviteCallbackUrl,
+  buildStagingInviteCallbackUrl,
+  ANNVERO_STAGING_SAFE_INVITE_ORIGIN,
+} from "../src/config/annveroInviteRedirects.js";
+import {
   computeWebhookSignature,
   resetWebhookReplayStore,
   rememberWebhookEvent,
@@ -1086,6 +1092,25 @@ test("path traversal ve open redirect engellenir", () => {
 });
 
 test("auth invite redirect allowlist + URL token cleanup (staging)", () => {
+  assert.equal(
+    isAllowedInviteOrigin(ANNVERO_STAGING_SAFE_INVITE_ORIGIN),
+    true
+  );
+  assert.equal(isAllowedInviteOrigin("http://localhost:3000"), false);
+  assert.equal(isAllowedInviteOrigin("https://evil.example"), false);
+  assert.equal(
+    isAllowedInviteCallbackUrl(buildStagingInviteCallbackUrl()),
+    true
+  );
+  assert.equal(
+    isAllowedInviteCallbackUrl(`${ANNVERO_STAGING_SAFE_INVITE_ORIGIN}/login`),
+    false
+  );
+  assert.equal(
+    isAllowedInviteCallbackUrl("http://localhost:3000/auth/callback"),
+    false
+  );
+
   const inviteRedirectsSrc = fs.readFileSync(
     path.join(root, "src/config/annveroInviteRedirects.js"),
     "utf8"
@@ -1094,28 +1119,45 @@ test("auth invite redirect allowlist + URL token cleanup (staging)", () => {
     inviteRedirectsSrc,
     /annvero-staging-git-feature-dri-52eed5-yusufozlu-4225s-projects\.vercel\.app/
   );
+  assert.match(inviteRedirectsSrc, /\/auth\/callback/);
 
   const profileServiceSrc = fs.readFileSync(
     path.join(root, "src/lib/auth/profileService.js"),
     "utf8"
   );
-  // Staging'ı asla localhost / unknown origin üzerinden callback yapmaz.
   assert.match(
     profileServiceSrc,
     /if \(appEnv === "staging"\)[\s\S]*return ANNVERO_STAGING_SAFE_INVITE_ORIGIN/
   );
+  assert.match(profileServiceSrc, /resolveInviteCallbackUrl/);
+  assert.doesNotMatch(
+    profileServiceSrc,
+    /console\.(info|log|error|warn)[\s\S]{0,200}action_link/i
+  );
+  assert.doesNotMatch(profileServiceSrc, /\.schema\(["']auth["']\)/);
+
+  const provisionSrc = fs.readFileSync(
+    path.join(root, "scripts/staging/provision-adh-pilot-viewer.mjs"),
+    "utf8"
+  );
+  assert.match(provisionSrc, /auth\.admin\.deleteUser/);
+  assert.match(provisionSrc, /ANNVERO_KNOWN_PROJECT_REFS\.production/);
+  assert.doesNotMatch(provisionSrc, /\.schema\(["']auth["']\)/);
+  assert.doesNotMatch(provisionSrc, /\.from\(["']refresh_tokens["']\)/);
+  assert.doesNotMatch(provisionSrc, /\.from\(["']sessions["']\)/);
+  assert.match(provisionSrc, /annvero_company_members/);
+  assert.match(provisionSrc, /buildStagingInviteCallbackUrl/);
 
   const authGateSrc = fs.readFileSync(
     path.join(root, "src/components/AuthGate.jsx"),
     "utf8"
   );
   assert.match(authGateSrc, /replaceState\(/);
-  // Token pattern'ları var, ama loglanmamalı.
   assert.match(authGateSrc, /access_token=/);
   assert.match(authGateSrc, /refresh_token/);
   assert.doesNotMatch(
     authGateSrc,
-    /console\\.(log|error|warn)[\\s\\S]{0,400}(access_token|refresh_token)/i
+    /console\.(log|error|warn)[\s\S]{0,400}(access_token|refresh_token)/i
   );
 });
 
