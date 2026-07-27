@@ -1159,6 +1159,23 @@ test("auth invite redirect allowlist + URL token cleanup (staging)", () => {
     authGateSrc,
     /console\.(log|error|warn)[\s\S]{0,400}(access_token|refresh_token)/i
   );
+
+  const authCallbackSrc = fs.readFileSync(
+    path.join(root, "app/auth/callback/AuthCallbackClient.tsx"),
+    "utf8"
+  );
+  assert.match(authCallbackSrc, /exchangeCodeForSession/);
+  assert.match(authCallbackSrc, /verifyOtp/);
+  assert.match(authCallbackSrc, /setSession/);
+  assert.match(authCallbackSrc, /stripSensitiveAuthParamsFromUrl/);
+  assert.doesNotMatch(
+    authCallbackSrc,
+    /console\.(log|error|warn)[\s\S]{0,200}(access_token|refresh_token)/i
+  );
+  assert.equal(
+    fs.existsSync(path.join(root, "app/auth/callback/route.js")),
+    false
+  );
 });
 
 test("migration 024 restrictive deny + no DROP POLICY + rate limit RPC", () => {

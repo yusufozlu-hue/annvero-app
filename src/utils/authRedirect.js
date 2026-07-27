@@ -193,3 +193,43 @@ export function hasReturnToHint() {
     return false;
   }
 }
+
+const RETURN_TO_BUDGET_MS = 100;
+
+/**
+ * Return-to httpOnly cookie'yi okur (GET siler). Open-redirect: getSafeNextPath.
+ * Marker cookie yoksa özel hedef de yoktur → endpoint hiç çağrılmaz.
+ */
+export async function consumeReturnToPathClient(
+  defaultPath = "/dashboard",
+  budgetMs = RETURN_TO_BUDGET_MS
+) {
+  if (typeof window === "undefined") return defaultPath;
+  if (!hasReturnToHint()) return defaultPath;
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), budgetMs);
+  try {
+    const res = await fetch("/api/auth/return-to", {
+      credentials: "include",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return getSafeNextPath(data?.path, defaultPath);
+    }
+  } catch {
+    // abort / network → güvenli varsayılan
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+
+  void fetch("/api/auth/return-to", {
+    method: "DELETE",
+    credentials: "include",
+    keepalive: true,
+  }).catch(() => undefined);
+
+  return defaultPath;
+}

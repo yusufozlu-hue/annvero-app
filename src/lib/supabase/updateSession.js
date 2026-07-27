@@ -88,8 +88,6 @@ export async function updateSession(request) {
     return NextResponse.next({ request });
   }
 
-  // Public /login: asla Supabase getUser / token refresh bekleme.
-  // Oturumlu yönlendirme istemci tarafında; ?next= istemci + return-to API.
   if (pathname === "/login") {
     const legacyNext = searchParams.get("next");
     if (legacyNext) {
@@ -100,6 +98,10 @@ export async function updateSession(request) {
       setReturnToCookie(response, legacyNext);
       return response;
     }
+    return NextResponse.next({ request });
+  }
+
+  if (pathname === "/auth/callback" || pathname === "/auth/set-password") {
     return NextResponse.next({ request });
   }
 
