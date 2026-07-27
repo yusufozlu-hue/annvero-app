@@ -15,6 +15,8 @@ import {
   getServerSupabaseAdminGuardResponse,
   logSupabaseQueryError,
 } from "@/src/lib/supabase/serverAdmin";
+import { resolveAnnveroAppEnv } from "@/src/lib/security/envGuard";
+import { ANNVERO_STAGING_SAFE_INVITE_ORIGIN } from "@/src/config/annveroInviteRedirects";
 import {
   mapProfileRow,
   mapProfileToRecord,
@@ -318,6 +320,13 @@ function isLocalHostUrl(value) {
 function getSiteUrl(redirectTo = "") {
   const productionFallback = "https://www.annvero.com";
   const isProd = process.env.NODE_ENV === "production";
+  const appEnv = resolveAnnveroAppEnv();
+
+  // Staging / Vercel Preview için davet callback origin'i kesin whitelist.
+  // Amaç: localhost/unknown origin üzerinden token sızıntısını engellemek.
+  if (appEnv === "staging") {
+    return ANNVERO_STAGING_SAFE_INVITE_ORIGIN;
+  }
 
   if (redirectTo) {
     const cleaned = redirectTo.replace(/\/$/, "");

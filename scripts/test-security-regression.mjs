@@ -1063,6 +1063,8 @@ test("immutable S3 secondary key + Object Lock COMPLIANCE doğrulama", async () 
 test("path traversal ve open redirect engellenir", () => {
   assert.equal(getSafeNextPath("https://evil.com"), "/dashboard");
   assert.equal(getSafeNextPath("//evil.com"), "/dashboard");
+  assert.equal(getSafeNextPath("http://localhost:3000"), "/dashboard");
+  assert.equal(getSafeNextPath("http://127.0.0.1:3000"), "/dashboard");
   assert.equal(getSafeNextPath("/muhasebe/banka"), "/muhasebe/banka");
 
   const bad = validateUploadFile({
@@ -1081,6 +1083,40 @@ test("path traversal ve open redirect engellenir", () => {
     size: 10,
   });
   assert.equal(exe.ok, false);
+});
+
+test("auth invite redirect allowlist + URL token cleanup (staging)", () => {
+  const inviteRedirectsSrc = fs.readFileSync(
+    path.join(root, "src/config/annveroInviteRedirects.js"),
+    "utf8"
+  );
+  assert.match(
+    inviteRedirectsSrc,
+    /annvero-staging-git-feature-dri-52eed5-yusufozlu-4225s-projects\.vercel\.app/
+  );
+
+  const profileServiceSrc = fs.readFileSync(
+    path.join(root, "src/lib/auth/profileService.js"),
+    "utf8"
+  );
+  // Staging'ı asla localhost / unknown origin üzerinden callback yapmaz.
+  assert.match(
+    profileServiceSrc,
+    /if \(appEnv === "staging"\)[\s\S]*return ANNVERO_STAGING_SAFE_INVITE_ORIGIN/
+  );
+
+  const authGateSrc = fs.readFileSync(
+    path.join(root, "src/components/AuthGate.jsx"),
+    "utf8"
+  );
+  assert.match(authGateSrc, /replaceState\(/);
+  // Token pattern'ları var, ama loglanmamalı.
+  assert.match(authGateSrc, /access_token=/);
+  assert.match(authGateSrc, /refresh_token/);
+  assert.doesNotMatch(
+    authGateSrc,
+    /console\\.(log|error|warn)[\\s\\S]{0,400}(access_token|refresh_token)/i
+  );
 });
 
 test("migration 024 restrictive deny + no DROP POLICY + rate limit RPC", () => {

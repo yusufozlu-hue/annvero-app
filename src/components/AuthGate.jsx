@@ -154,6 +154,44 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
     };
   }, [hasAuthCookie]);
 
+  // Supabase invite/implicit flows token'ları çoğunlukla URL fragment/query içinde gelir.
+  // Güvenlik için token'ları uygulama oturumunu kurduktan sonra URL'den temizliyoruz.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const cleanUrlIfAuthTokensPresent = () => {
+      try {
+        const url = new URL(window.location.href);
+        const hash = url.hash || "";
+        const hasTokenInHash =
+          /(^#|&)access_token=/.test(hash) || hash.includes("refresh_token=");
+        const hasTokenInQuery =
+          url.searchParams.has("access_token") ||
+          url.searchParams.has("refresh_token");
+
+        if (!hasTokenInHash && !hasTokenInQuery) return;
+
+        // Token'ları temizle, diğer query parametreleri (ör. error/next) bırak.
+        if (hasTokenInHash) url.hash = "";
+        if (hasTokenInQuery) {
+          url.searchParams.delete("access_token");
+          url.searchParams.delete("refresh_token");
+          url.search = url.searchParams.toString()
+            ? `?${url.searchParams.toString()}`
+            : "";
+        }
+
+        window.history.replaceState(window.history.state, "", url.toString());
+      } catch {
+        // ignore
+      }
+    };
+
+    // Supabase'in detectSessionInUrl akışı token'ları okuyup oturum kurabilsin.
+    const t = window.setTimeout(cleanUrlIfAuthTokensPresent, 0);
+    return () => window.clearTimeout(t);
+  }, []);
+
   useEffect(() => {
     if (logoutActive || isLogoutInProgress()) return;
     if (status !== "unauthenticated") return;

@@ -5,6 +5,8 @@
  * Usage:
  *   node scripts/staging/provision-adh-pilot-viewer.mjs
  *   node scripts/staging/provision-adh-pilot-viewer.mjs --dry-run
+ *   node scripts/staging/provision-adh-pilot-viewer.mjs --revoke-only
+ *   node scripts/staging/provision-adh-pilot-viewer.mjs --resend-invite
  *
  * Env: NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (staging ref zorunlu).
  * Opsiyonel: ANNVERO_STAGING_ENV_FILE=../annvero-app/.env.staging.local
@@ -26,6 +28,16 @@ const PILOT_VIEWER_EMAIL = "yusufozlu+adhpilot@gmail.com";
 const STAGING_OTHER_COMPANY_NAME = "ANNVERO STAGING TEST";
 const VIEWER_ROLE = ANNVERO_ROLES.VIEWER;
 const DRY_RUN = process.argv.includes("--dry-run");
+const REVOKE_ONLY = process.argv.includes("--revoke-only");
+const RESEND_INVITE =
+  process.argv.includes("--resend-invite") ||
+  process.argv.includes("--force-invite");
+
+// Secure, stable staging origin for all invitation / magic-link callbacks.
+// Requirement: do not ever redirect to localhost (prevents token-in-screenshot leaks).
+const STAGING_SAFE_ORIGIN =
+  "https://annvero-staging-git-feature-dri-52eed5-yusufozlu-4225s-projects.vercel.app";
+const STAGING_SAFE_CALLBACK_URL = `${STAGING_SAFE_ORIGIN}/auth/callback`;
 
 function loadEnvFile(filePath) {
   try {
@@ -99,10 +111,12 @@ async function main() {
     projectRef,
     dryRun: DRY_RUN,
     pilotViewerEmail: PILOT_VIEWER_EMAIL,
+    safeStagingOrigin: STAGING_SAFE_ORIGIN,
     adhCompanyId: ADH_COMPANY_ID,
     role: VIEWER_ROLE,
     user: { status: "unknown", authUserId: null },
     invite: { sent: false, skippedReason: null },
+    revoke: { executed: false, sent: false },
     membership: { adhActive: false, otherCompanyIdsRemoved: [] },
     profile: { role: null, isActive: null },
     verification: {
@@ -135,21 +149,35 @@ async function main() {
   if (authUser) {
     report.user.status = "existing";
     report.user.authUserId = authUser.id;
-    report.invite.skippedReason = "user_already_exists";
   } else if (DRY_RUN) {
     report.user.status = "would_create";
-    report.invite.skippedReason = "dry_run";
-  } else {
-    const siteUrl =
-      process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ||
-      (process.env.VERCEL_URL
-        ? process.env.VERCEL_URL.startsWith("http")
-          ? process.env.VERCEL_URL.replace(/\/$/, "")
-          : `https://${process.env.VERCEL_URL}`
-        : "https://annvero-staging.vercel.app");
+  }
+
+  // 1) Compromised-link mitigation: revoke all refresh tokens immediately.
+  if (authUser && !DRY_RUN) {
+    report.revoke.executed = true;
+    // We need a deterministic, tokenless invalidation method.
+    // In this supabase-js version, admin signOut requires a valid user JWT,
+    // and direct auth-table deletes are not exposed via PostgREST.
+    //
+    // Staging-only mitigation: delete the auth user.
+    // This invalidates any existing sessions/tokens associated with the user,
+    // and guarantees the compromised invite can no longer be completed.
+    const { error } = await supabase.auth.admin.deleteUser(authUser.id, false);
+    if (error) throw error;
+    report.revoke.sent = true;
+  }
+
+  if (REVOKE_ONLY) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  // 2) After revocation, resend a brand new invitation (one auth user only).
+  if ((!authUser && !DRY_RUN) || (authUser && RESEND_INVITE && !DRY_RUN)) {
     const { data: invited, error: inviteError } =
       await supabase.auth.admin.inviteUserByEmail(PILOT_VIEWER_EMAIL, {
-        redirectTo: `${siteUrl}/auth/callback`,
+        redirectTo: STAGING_SAFE_CALLBACK_URL,
         data: {
           annvero_role: VIEWER_ROLE,
           display_name: "ADH Pilot Mükellef",
@@ -157,9 +185,13 @@ async function main() {
       });
     if (inviteError) throw inviteError;
     authUser = invited.user;
-    report.user.status = "invited";
-    report.user.authUserId = authUser?.id || null;
+    report.user.status = authUser ? "invited" : report.user.status;
+    report.user.authUserId = authUser?.id || report.user.authUserId;
     report.invite.sent = true;
+  } else if (authUser && !RESEND_INVITE) {
+    report.invite.skippedReason = "user_already_exists";
+  } else if (!authUser && DRY_RUN) {
+    report.invite.skippedReason = "dry_run";
   }
 
   if (!authUser?.id && !DRY_RUN) {
