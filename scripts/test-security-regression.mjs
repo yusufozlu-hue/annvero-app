@@ -1955,7 +1955,6 @@ test("ADH Drive: goruntuleme admin route ve nav kapalı", () => {
 
 for (const { name, fn } of __securityTestQueue) {
   try {
-    // eslint-disable-next-line no-await-in-loop
     await fn();
     console.log(`PASS  ${name}`);
   } catch (error) {
