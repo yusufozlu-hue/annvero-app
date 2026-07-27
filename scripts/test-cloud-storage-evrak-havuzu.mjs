@@ -690,6 +690,18 @@ await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", 
   assert.ok(filesOpenSrc.includes("assertCompanyAccess"), "open yetki");
   assert.ok(filesOpenSrc.includes("NextResponse.redirect"), "open redirect");
   assert.ok(filesOpenSrc.includes("provider_file_id"), "open sunucuda id kullanır");
+  const connectionSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/connection/route.js"),
+    "utf8"
+  );
+  assert.ok(
+    connectionSrc.includes("isManagementUser") && connectionSrc.includes("DELETE"),
+    "connection DELETE yönetim zorunlu"
+  );
+  assert.ok(
+    foldersSrc.includes("isManagementUser") && foldersSrc.includes("POST"),
+    "folders POST yönetim zorunlu"
+  );
   assert.ok(docsPanelSrc.includes("/api/google-drive/files?companyId="));
   assert.ok(docsPanelSrc.includes("Drive’da Aç") || docsPanelSrc.includes("Drive'da Aç"));
   assert.ok(docsPanelSrc.includes("aria-live"));

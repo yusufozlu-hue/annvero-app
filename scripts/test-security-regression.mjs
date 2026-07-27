@@ -25,7 +25,7 @@ import {
   normalizeCompanyIds,
 } from "../src/lib/auth/companyAccessPolicy.js";
 import { mapProfileRow } from "../src/lib/supabase/userProfilesSchema.js";
-import { ANNVERO_ROLES } from "../src/config/annveroRoles.js";
+import { ANNVERO_ROLES, canAccessRoute, canSeeNavGroup } from "../src/config/annveroRoles.js";
 import {
   assertSafeSupabaseProjectRef,
   ANNVERO_KNOWN_PROJECT_REFS,
@@ -66,6 +66,14 @@ import {
 } from "../src/lib/security/rateLimitDurable.js";
 import { buildJobFromWebhookPayload } from "../src/utils/n8nOtomasyonEngine.js";
 import { isRecoveryApiEnabled } from "../src/lib/recovery/recoveryGate.js";
+import {
+  filterDocumentsForCompanyList,
+  isAnnveroSystemDocument,
+} from "../src/utils/cloudStorage/documentList.js";
+import { canAccessCompany } from "../src/lib/auth/permissions.js";
+
+const ADH_COMPANY_ID = "114f98b5-0411-45c5-a7c6-8061c9f06699";
+const OTHER_COMPANY_ID = "00000000-0000-4000-8000-eeeeeeeeee01";
 
 /** next/server'siz privilege strip (requestGuards ile aynı mantık) */
 function stripClientPrivilegeClaims(body = {}) {
@@ -1769,6 +1777,144 @@ test("GİB encryption key guard: missing → sanitize 503 (secret/config ayrınt
   // Ham env hata mesajı istemciye yazılmamalı
   assert.doesNotMatch(src, /error:\s*error\b/);
   assert.doesNotMatch(src, /\{\s*error\s*\}/);
+});
+
+test("ADH Drive: goruntuleme yalnız atanmış firmaya erişir", () => {
+  const access = createUserAccess({
+    role: ANNVERO_ROLES.VIEWER,
+    companyIds: [ADH_COMPANY_ID],
+    companyIdsSource: "membership",
+    isActive: true,
+  });
+  assert.equal(access.canAccessCompany(ADH_COMPANY_ID), true);
+  assert.equal(access.canAccessCompany(OTHER_COMPANY_ID), false);
+  assert.equal(access.isManagementUser, false);
+
+  const allow = access.canAccessCompany(ADH_COMPANY_ID);
+  const deny = access.canAccessCompany(OTHER_COMPANY_ID);
+  assert.equal(allow, true);
+  assert.equal(deny, false);
+  assert.equal(
+    canAccessCompany(ANNVERO_ROLES.VIEWER, OTHER_COMPANY_ID, [ADH_COMPANY_ID]),
+    false
+  );
+});
+
+test("ADH Drive: metadata company_ids spoof yetki vermez", () => {
+  const spoofed = createUserAccess(
+    mergeProfileWithAuth(
+      { id: "user-1", email: "pilot@example.com", user_metadata: { company_ids: [OTHER_COMPANY_ID] } },
+      {
+        id: "user-1",
+        email: "pilot@example.com",
+        role: ANNVERO_ROLES.VIEWER,
+        companyIds: [ADH_COMPANY_ID],
+        companyIdsSource: "membership",
+        isActive: true,
+      }
+    )
+  );
+  assert.equal(spoofed.canAccessCompany(OTHER_COMPANY_ID), false);
+  assert.equal(spoofed.canAccessCompany(ADH_COMPANY_ID), true);
+});
+
+test("ADH Drive: üyelik kaldırılınca erişim fail-closed", () => {
+  const noMembership = createUserAccess({
+    role: ANNVERO_ROLES.VIEWER,
+    companyIds: [],
+    companyIdsSource: "membership",
+    isActive: true,
+  });
+  assert.equal(noMembership.canAccessCompany(ADH_COMPANY_ID), false);
+  assert.equal(
+    canAccessCompany(ANNVERO_ROLES.VIEWER, ADH_COMPANY_ID, []),
+    false
+  );
+});
+
+test("ADH Drive: admin mevcut yetkilerini korur", () => {
+  withAdminEnv("admin@annvero.test", () => {
+    const adminAccess = createUserAccess({
+      role: ANNVERO_ROLES.ADMIN,
+      companyIds: [],
+      companyIdsSource: "elevated_trusted",
+      isPlatformAdmin: true,
+      isManagementUser: true,
+      isActive: true,
+      email: "admin@annvero.test",
+    });
+    assert.equal(adminAccess.canAccessCompany(ADH_COMPANY_ID), true);
+    assert.equal(adminAccess.canAccessCompany(OTHER_COMPANY_ID), true);
+    assert.equal(adminAccess.isManagementUser, true);
+  });
+});
+
+test("ADH Drive: API route tenant guard + mükellef yönetim engeli (statik)", () => {
+  const driveRoutes = [
+    "app/api/google-drive/files/route.js",
+    "app/api/google-drive/files/upload/route.js",
+    "app/api/google-drive/files/[id]/open/route.js",
+    "app/api/google-drive/sync/route.js",
+    "app/api/google-drive/folders/check/route.js",
+    "app/api/google-drive/folders/route.js",
+    "app/api/google-drive/oauth/start/route.js",
+  ];
+  for (const rel of driveRoutes) {
+    const src = fs.readFileSync(path.join(root, rel), "utf8");
+    assert.match(src, /assertCompanyAccess/, `${rel} assertCompanyAccess`);
+  }
+
+  const foldersPost = extractExportAsyncHandler(
+    fs.readFileSync(path.join(root, "app/api/google-drive/folders/route.js"), "utf8"),
+    "POST"
+  );
+  assert.match(foldersPost, /isManagementUser/, "folders POST yönetim zorunlu");
+
+  const connectionDelete = extractExportAsyncHandler(
+    fs.readFileSync(path.join(root, "app/api/google-drive/connection/route.js"), "utf8"),
+    "DELETE"
+  );
+  assert.match(connectionDelete, /isManagementUser/, "connection DELETE yönetim zorunlu");
+
+  const companiesPost = extractExportAsyncHandler(
+    fs.readFileSync(path.join(root, "app/api/companies/route.js"), "utf8"),
+    "POST"
+  );
+  assert.match(companiesPost, /requireManagementUser/, "companies POST yönetim zorunlu");
+
+  const companiesDelete = extractExportAsyncHandler(
+    fs.readFileSync(path.join(root, "app/api/companies/route.js"), "utf8"),
+    "DELETE"
+  );
+  assert.match(companiesDelete, /requireManagementUser/, "companies DELETE yönetim zorunlu");
+});
+
+test("ADH Drive: _ANNVERO belgeleri listelenmez", () => {
+  const rows = [
+    {
+      companyId: ADH_COMPANY_ID,
+      fileName: "ok.pdf",
+      sourcePath: "98 - Diğer Evraklar/ok.pdf",
+      parseStatus: "indexed",
+    },
+    {
+      companyId: ADH_COMPANY_ID,
+      fileName: "metadata.json",
+      sourcePath: "_ANNVERO/metadata.json",
+      parseStatus: "indexed",
+    },
+  ];
+  assert.equal(isAnnveroSystemDocument(rows[1]), true);
+  assert.equal(
+    filterDocumentsForCompanyList(rows, { companyId: ADH_COMPANY_ID }).length,
+    1
+  );
+});
+
+test("ADH Drive: goruntuleme admin route ve nav kapalı", () => {
+  assert.equal(canAccessRoute(ANNVERO_ROLES.VIEWER, "/admin"), false);
+  assert.equal(canAccessRoute(ANNVERO_ROLES.VIEWER, "/sistem-loglari"), false);
+  assert.equal(canSeeNavGroup(ANNVERO_ROLES.VIEWER, "Sistem Yönetimi"), false);
 });
 
 for (const { name, fn } of __securityTestQueue) {

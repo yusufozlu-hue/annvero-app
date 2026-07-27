@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { assertCompanyAccess, getApiSupabase, requireApiSession } from "@/src/lib/auth/apiGuard";
+import { assertCompanyAccess, getApiSupabase, jsonForbidden, requireApiSession } from "@/src/lib/auth/apiGuard";
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import { getValidGoogleAccessToken } from "@/src/lib/googleDrive/connectionStore";
 import { ensureGoogleDriveFolderTree } from "@/src/utils/cloudStorage/googleDriveAdapter";
@@ -25,6 +25,9 @@ export async function GET(request) {
 export async function POST(request) {
   const session = await requireApiSession();
   if (session.error) return session.error;
+  if (!session.access?.isManagementUser) {
+    return jsonForbidden("Bu işlem için yönetim yetkisi gerekli.");
+  }
   const limited = enforceRateLimit(request, session, "google-drive-folders", { limit: 10, windowMs: 300_000 });
   if (limited) return limited;
   const { companyId } = await request.json();

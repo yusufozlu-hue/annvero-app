@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireApiSession } from "@/src/lib/auth/apiGuard";
+import { jsonForbidden, requireApiSession } from "@/src/lib/auth/apiGuard";
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import { disconnectGoogleDrive, getGoogleDriveConnection } from "@/src/lib/googleDrive/connectionStore";
 import { sanitizeConnectionPublicView } from "@/src/lib/googleDrive/tokenPolicy";
@@ -27,6 +27,9 @@ export async function GET(request) {
 export async function DELETE(request) {
   const checked = await guard(request, "delete");
   if (checked.response) return checked.response;
+  if (!checked.session.access?.isManagementUser) {
+    return jsonForbidden("Bu işlem için yönetim yetkisi gerekli.");
+  }
   await disconnectGoogleDrive(checked.session.user.id);
   return NextResponse.json({ ok: true });
 }
