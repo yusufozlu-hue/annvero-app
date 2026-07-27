@@ -17,6 +17,7 @@ import {
   hasSupabaseAuthCookieHint,
 } from "@/src/lib/supabase/client";
 import { getAuthCallbackErrorMessage } from "@/src/lib/auth/authCallback";
+import { resolveAuthHomePathForUser } from "@/src/config/annveroTaxpayerPortal";
 import {
   consumeReturnToPathClient,
   readRememberedEmailState,
@@ -42,7 +43,10 @@ function logLoginError(error: unknown) {
   }
 }
 
+/** Ofis personeli varsayılanı; mükellef resolveAuthHomePathForUser ile /mukellef. */
 const DEFAULT_POST_LOGIN_PATH = "/dashboard";
+
+/** Ofis personeli varsayılanı resolveAuthHomePathForUser ile; mükellef → /mukellef. */
 
 function EyeIcon({ open }: { open: boolean }) {
   if (open) {
@@ -238,7 +242,9 @@ export default function LoginForm() {
         ]);
         const session = sessionResult.data.session;
         if (cancelled || !session) return;
-        const target = await consumeReturnToPathClient(DEFAULT_POST_LOGIN_PATH);
+        const defaultPath =
+          resolveAuthHomePathForUser(session.user) || DEFAULT_POST_LOGIN_PATH;
+        const target = await consumeReturnToPathClient(defaultPath);
         if (!cancelled) router.replace(target);
       } catch {
         // Form görünür kalsın; kullanıcı manuel giriş yapabilir
@@ -334,8 +340,10 @@ export default function LoginForm() {
 
       // Yalnız route kodu/RSC hazırlığı; oturum çerezi yazıldıktan sonra
       // başlatılır, beklenmez ve hatası girişi engellemez.
+      const defaultPath =
+        resolveAuthHomePathForUser(signInData.user) || DEFAULT_POST_LOGIN_PATH;
       try {
-        router.prefetch(DEFAULT_POST_LOGIN_PATH);
+        router.prefetch(defaultPath);
       } catch {
         // prefetch best-effort
       }
@@ -368,7 +376,7 @@ export default function LoginForm() {
         // fire-and-forget
       }
 
-      const redirectTarget = await consumeReturnToPathClient(DEFAULT_POST_LOGIN_PATH);
+      const redirectTarget = await consumeReturnToPathClient(defaultPath);
       // Soft replace: tam document reload yok; cookie zaten signIn ile yazıldı.
       // Ek soft-refresh çağrısı yok — çift iş / titreme yaratır.
       router.replace(redirectTarget);

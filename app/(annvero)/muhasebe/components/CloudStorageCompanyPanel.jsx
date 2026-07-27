@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useUserRole } from "@/src/hooks/useUserRole";
 import {
   buildCompanyFolderTree,
   FOLDER_STRUCTURE_VERSION,
@@ -89,6 +90,7 @@ export default function CloudStorageCompanyPanel({
   onNotify,
   onBusyChange,
 }) {
+  const { isManagementUser } = useUserRole();
   const [busy, setBusy] = useState("");
   const [showExpectedTree, setShowExpectedTree] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
@@ -466,38 +468,42 @@ export default function CloudStorageCompanyPanel({
       )}
 
       <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={Boolean(busy)}
-          onClick={() => { window.location.assign(`/api/google-drive/oauth/start?companyId=${encodeURIComponent(company.id)}`); }}
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
-        >
-          {busy === "connect" ? "Hazırlanıyor…" : "Google Drive’ı Bağla"}
-        </button>
+        {isManagementUser ? (
+          <button
+            type="button"
+            disabled={Boolean(busy)}
+            onClick={() => { window.location.assign(`/api/google-drive/oauth/start?companyId=${encodeURIComponent(company.id)}`); }}
+            className="rounded-lg bg-sky-700 px-4 py-2 text-sm font-medium hover:bg-sky-600 disabled:opacity-50"
+          >
+            {busy === "connect" ? "Hazırlanıyor…" : "Google Drive’ı Bağla"}
+          </button>
+        ) : null}
 
-        <button
-          type="button"
-          disabled={Boolean(busy) || binding.connectionStatus !== "connected"}
-          onClick={() =>
-            void run("folders", async () => {
-              const { result } = await api("/api/google-drive/folders", {
-                method: "POST", body: JSON.stringify({ companyId: company.id }),
-              });
-              setBinding((prev) => ({ ...prev, rootFolderId: result.rootFolderId,
-                rootFolderName: result.rootFolderName, folderStructureVersion: result.folderStructureVersion }));
-              setStructureCheck(null);
-              notify(
-                result.createdFolderCount
-                  ? `Klasör yapısı oluşturuldu (${result.createdFolderCount} yeni)`
-                  : "Klasör yapısı zaten güncel (idempotent)",
-                "success"
-              );
-            })
-          }
-          className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium hover:bg-emerald-600 disabled:opacity-50"
-        >
-          {busy === "folders" ? "Hazırlanıyor…" : "Firma Klasörünü Oluştur"}
-        </button>
+        {isManagementUser ? (
+          <button
+            type="button"
+            disabled={Boolean(busy) || binding.connectionStatus !== "connected"}
+            onClick={() =>
+              void run("folders", async () => {
+                const { result } = await api("/api/google-drive/folders", {
+                  method: "POST", body: JSON.stringify({ companyId: company.id }),
+                });
+                setBinding((prev) => ({ ...prev, rootFolderId: result.rootFolderId,
+                  rootFolderName: result.rootFolderName, folderStructureVersion: result.folderStructureVersion }));
+                setStructureCheck(null);
+                notify(
+                  result.createdFolderCount
+                    ? `Klasör yapısı oluşturuldu (${result.createdFolderCount} yeni)`
+                    : "Klasör yapısı zaten güncel (idempotent)",
+                  "success"
+                );
+              })
+            }
+            className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium hover:bg-emerald-600 disabled:opacity-50"
+          >
+            {busy === "folders" ? "Hazırlanıyor…" : "Firma Klasörünü Oluştur"}
+          </button>
+        ) : null}
 
         <button
           type="button"
@@ -513,27 +519,29 @@ export default function CloudStorageCompanyPanel({
           Klasörü Aç
         </button>
 
-        <button
-          type="button"
-          disabled={Boolean(busy) || !binding.rootFolderId}
-          onClick={() =>
-            void run("check", async () => {
-              const result = await api(
-                `/api/google-drive/folders/check?companyId=${encodeURIComponent(company.id)}`
-              );
-              setStructureCheck(result);
-              notify(
-                result.ok
-                  ? "Klasör yapısı şema ile uyumlu"
-                  : friendlyApiError(result, "Klasör yapısı uyuşmuyor"),
-                result.ok ? "success" : "error"
-              );
-            })
-          }
-          className="rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
-        >
-          {busy === "check" ? "Kontrol ediliyor…" : "Klasör Yapısını Kontrol Et"}
-        </button>
+        {isManagementUser ? (
+          <button
+            type="button"
+            disabled={Boolean(busy) || !binding.rootFolderId}
+            onClick={() =>
+              void run("check", async () => {
+                const result = await api(
+                  `/api/google-drive/folders/check?companyId=${encodeURIComponent(company.id)}`
+                );
+                setStructureCheck(result);
+                notify(
+                  result.ok
+                    ? "Klasör yapısı şema ile uyumlu"
+                    : friendlyApiError(result, "Klasör yapısı uyuşmuyor"),
+                  result.ok ? "success" : "error"
+                );
+              })
+            }
+            className="rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
+          >
+            {busy === "check" ? "Kontrol ediliyor…" : "Klasör Yapısını Kontrol Et"}
+          </button>
+        ) : null}
 
         <button
           type="button"
@@ -544,28 +552,32 @@ export default function CloudStorageCompanyPanel({
           {showExpectedTree ? "Beklenen Şemayı Gizle" : "Beklenen Şemayı Göster"}
         </button>
 
-        <button
-          type="button"
-          disabled={Boolean(busy) || !binding.rootFolderId}
-          onClick={() =>
-            void run("sync", async () => {
-              await runAutoSync();
-              notify("Senkronizasyon tamamlandı", "success");
-            })
-          }
-          className="rounded-lg border border-sky-700 bg-sky-950 px-4 py-2 text-sm font-medium text-sky-100 hover:bg-sky-900 disabled:opacity-50"
-        >
-          {busy === "sync" ? "Hazırlanıyor…" : "Senkronizasyonu Yenile"}
-        </button>
+        {isManagementUser ? (
+          <button
+            type="button"
+            disabled={Boolean(busy) || !binding.rootFolderId}
+            onClick={() =>
+              void run("sync", async () => {
+                await runAutoSync();
+                notify("Senkronizasyon tamamlandı", "success");
+              })
+            }
+            className="rounded-lg border border-sky-700 bg-sky-950 px-4 py-2 text-sm font-medium text-sky-100 hover:bg-sky-900 disabled:opacity-50"
+          >
+            {busy === "sync" ? "Hazırlanıyor…" : "Senkronizasyonu Yenile"}
+          </button>
+        ) : null}
 
-        <button
-          type="button"
-          disabled={Boolean(busy) || binding.connectionStatus !== "connected"}
-          onClick={() => setShowDisconnectConfirm(true)}
-          className="rounded-lg border border-rose-700/70 bg-rose-950/50 px-4 py-2 text-sm font-medium text-rose-100 hover:bg-rose-900/60 disabled:opacity-50"
-        >
-          Bağlantıyı Kaldır
-        </button>
+        {isManagementUser ? (
+          <button
+            type="button"
+            disabled={Boolean(busy) || binding.connectionStatus !== "connected"}
+            onClick={() => setShowDisconnectConfirm(true)}
+            className="rounded-lg border border-rose-700/70 bg-rose-950/50 px-4 py-2 text-sm font-medium text-rose-100 hover:bg-rose-900/60 disabled:opacity-50"
+          >
+            Bağlantıyı Kaldır
+          </button>
+        ) : null}
       </div>
 
       <div

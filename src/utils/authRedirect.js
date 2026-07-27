@@ -82,6 +82,7 @@ export function clearRememberedEmail() {
 }
 
 const ALLOWED_PREFIXES = [
+  "/mukellef",
   "/dashboard",
   "/muhasebe",
   "/ofis-takip",
@@ -95,6 +96,7 @@ const ALLOWED_PREFIXES = [
   "/hesaplama-araclari",
   "/ticaret-sicil",
   "/mevzuat-hap-notlari",
+  "/auth/set-password",
 ];
 
 function decodePathSafely(value) {

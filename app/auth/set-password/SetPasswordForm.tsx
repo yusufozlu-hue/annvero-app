@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import AnnveroLogo from "@/app/components/AnnveroLogo";
 import AuthLoadingScreen from "@/src/components/AuthLoadingScreen";
 import { buildLoginErrorRedirect } from "@/src/lib/auth/authCallback";
+import { resolveAuthHomePathForUser } from "@/src/config/annveroTaxpayerPortal";
 import {
   getSupabaseBrowserClient,
   hasSupabaseAuthCookieHint,
@@ -94,7 +95,10 @@ export default function SetPasswordForm() {
         // best-effort
       }
 
-      const target = await consumeReturnToPathClient();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const defaultPath =
+        resolveAuthHomePathForUser(sessionData.session?.user) || "/dashboard";
+      const target = await consumeReturnToPathClient(defaultPath);
       router.replace(target);
     } catch {
       setError("Şifre kaydedilemedi. Lütfen tekrar deneyin.");

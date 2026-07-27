@@ -17,6 +17,10 @@ import {
   ANNVERO_NAV_WARM_PRIORITY,
 } from "@/src/config/annveroNavConfig";
 import { canSeeNavGroup, canSeeNavItem } from "@/src/config/annveroRoles";
+import {
+  isTaxpayerRole,
+  TAXPAYER_NAV_GROUPS,
+} from "@/src/config/annveroTaxpayerPortal";
 import { canAccessCoreTestCenter, isDevelopmentEnvironment } from "@/src/lib/dev/coreTestCenterAccess";
 import { useUserRole } from "@/src/hooks/useUserRole";
 import {
@@ -44,6 +48,11 @@ const ICON_MAP = {
   "Finansal Analiz Merkezi": "M4 19V5M4 19h16M8 15l3-4 3 2 4-6",
   "Hesaplama Araçları": "M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2 4h2v2H9V7Zm4 0h2v2h-2V7ZM9 11h2v2H9v-2Zm4 0h2v2h-2v-2ZM9 15h2v2H9v-2Zm4 0h2v2h-2v-2Z",
   "Sistem Yönetimi": "M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm8.7 4a7.1 7.1 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7.3 7.3 0 0 0-1.7-1L16 2h-4l-.5 2.9a7.3 7.3 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.1 7.1 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.3 7.3 0 0 0 1.7 1L12 22h4l.5-2.9a7.3 7.3 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6a7.1 7.1 0 0 0 .1-1Z",
+  "Ana Sayfa": "M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z",
+  "Evrak Yükle": "M12 3v12m0 0 4-4m-4 4-4-4M5 19h14",
+  "Evraklarım": "M7 3h7l5 5v13H7V3Zm7 0v5h5M9 12h6M9 16h4",
+  Bildirimler: "M12 22a2 2 0 0 0 2-2H10a2 2 0 0 0 2 2Zm6-6V11a6 6 0 1 0-12 0v5l-2 2h16l-2-2Z",
+  Profil: "M16 11a4 4 0 1 0-8 0M4 20a8 8 0 0 1 16 0",
 };
 
 function MenuIcon({ groupTitle }) {
@@ -291,6 +300,9 @@ export default function AnnveroSidebar({
   });
 
   const visibleNavGroups = useMemo(() => {
+    if (isTaxpayerRole(role)) {
+      return TAXPAYER_NAV_GROUPS;
+    }
     return ANNVERO_NAV_GROUPS.map((group) => {
       if (!canSeeNavGroup(role, group.title)) return null;
       if (!group.items?.length) return group;

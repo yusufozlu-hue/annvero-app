@@ -14,8 +14,14 @@ import {
   resolveDriveFolderPathFromRoot,
   uploadGoogleDriveBinaryFile,
 } from "@/src/utils/cloudStorage/googleDriveAdapter";
+import { classifyUploadTarget } from "@/src/utils/cloudStorage/documentClassify.js";
+import { validateDocumentCompanyMatch } from "@/src/utils/cloudStorage/companyContentMatch.js";
+import { buildUploadIdempotencyKey } from "@/src/utils/cloudStorage/syncRetry.js";
+import { runCompanyDriveSync } from "@/src/utils/cloudStorage/runCompanyDriveSync";
+import { DOCUMENT_PARSE_STATUS } from "@/src/utils/cloudStorage/types.js";
 import {
   assertUploadTargetPath,
+  DRIVE_UPLOAD_DEFAULT_FOLDER,
   DRIVE_UPLOAD_MAX_BYTES,
   DRIVE_UPLOAD_SCHEMA_VERSION,
   sanitizeUploadFileName,
@@ -83,11 +89,61 @@ function publicFileMeta({
   };
 }
 
+function publicClassification(classification) {
+  if (!classification) return null;
+  return {
+    targetFolderPath: classification.targetFolderPath,
+    documentType: classification.documentType,
+    confidence: classification.confidence,
+    needsReview: Boolean(classification.needsReview),
+    reason: classification.reason,
+  };
+}
+
+function publicContentMatch(match) {
+  if (!match) return null;
+  return {
+    status: match.status,
+    confidence: match.confidence,
+    reasons: Array.isArray(match.reasons) ? match.reasons.slice(0, 12) : [],
+    quarantine: Boolean(match.quarantine),
+  };
+}
+
+async function upsertIndexRow(supabase, row) {
+  const { error } = await supabase.from("document_index").upsert(row, {
+    onConflict: "company_id,provider_file_id",
+  });
+  if (error) throw error;
+}
+
+async function patchParseStatusByProviderFileId(
+  supabase,
+  companyId,
+  providerFileId,
+  parseStatus
+) {
+  if (!providerFileId || !parseStatus) return;
+  await supabase
+    .from("document_index")
+    .update({ parse_status: parseStatus })
+    .eq("company_id", companyId)
+    .eq("provider_file_id", providerFileId);
+}
+
+async function patchParseStatusByHash(supabase, companyId, contentHash, parseStatus) {
+  if (!contentHash || !parseStatus) return;
+  await supabase
+    .from("document_index")
+    .update({ parse_status: parseStatus })
+    .eq("company_id", companyId)
+    .eq("file_hash", contentHash)
+    .neq("parse_status", DOCUMENT_PARSE_STATUS.SOFT_DELETED);
+}
+
 /**
  * POST /api/google-drive/files/upload
- * multipart/form-data: companyId, targetFolderPath, file
- * Drive’a app-created yükleme — drive.file kapsamında görünür.
- * DB’ye yazmaz; indeksleme sync ile yapılır.
+ * multipart/form-data: companyId, targetFolderPath?, file
  */
 export async function POST(request) {
   const session = await requireApiSession();
@@ -112,7 +168,7 @@ export async function POST(request) {
   }
 
   const companyId = String(form.get("companyId") || "").trim();
-  const targetFolderPathRaw = String(form.get("targetFolderPath") || "").trim();
+  let targetFolderPathRaw = String(form.get("targetFolderPath") || "").trim();
   const file = form.get("file");
 
   if (!companyId) return jsonError("MISSING_COMPANY_ID", 400);
@@ -123,12 +179,6 @@ export async function POST(request) {
   const access = assertCompanyAccess(session.access, companyId, { required: true });
   if (!access.ok) return access.response;
 
-  const pathCheck = assertUploadTargetPath(targetFolderPathRaw);
-  if (!pathCheck.ok) {
-    return jsonError(pathCheck.code, 400);
-  }
-  const targetFolderPath = pathCheck.path;
-
   const originalName = String(file.name || "evrak");
   const safeName = sanitizeUploadFileName(originalName);
   const typeCheck = validateUploadFileType({
@@ -136,6 +186,21 @@ export async function POST(request) {
     mimeType: file.type || "",
   });
   if (!typeCheck.ok) return jsonError(typeCheck.code, 415);
+
+  const classification = classifyUploadTarget({
+    fileName: safeName,
+    mimeType: typeCheck.mimeType,
+  });
+
+  if (!targetFolderPathRaw) {
+    targetFolderPathRaw = classification.targetFolderPath;
+  }
+
+  const pathCheck = assertUploadTargetPath(targetFolderPathRaw);
+  if (!pathCheck.ok) {
+    return jsonError(pathCheck.code, 400);
+  }
+  let targetFolderPath = pathCheck.path;
 
   const buffer = Buffer.from(await file.arrayBuffer());
   const sizeCheck = validateUploadFileSize(buffer.byteLength);
@@ -166,6 +231,36 @@ export async function POST(request) {
   if (folderError || !folder?.root_folder_id) {
     return jsonError("FOLDER_BINDING_MISSING", 409);
   }
+
+  const contentMatch = validateDocumentCompanyMatch({
+    fileName: safeName,
+    mimeType: typeCheck.mimeType,
+    buffer,
+    company,
+  });
+
+  let parseStatusHint = null;
+  const quarantine =
+    Boolean(contentMatch.quarantine) || contentMatch.status === "mismatch";
+
+  if (quarantine) {
+    targetFolderPath = DRIVE_UPLOAD_DEFAULT_FOLDER;
+    const qPath = assertUploadTargetPath(targetFolderPath);
+    if (!qPath.ok) return jsonError(qPath.code, 400);
+    targetFolderPath = qPath.path;
+    parseStatusHint = DOCUMENT_PARSE_STATUS.QUARANTINE;
+  } else if (
+    contentMatch.status === "pending" ||
+    classification.needsReview
+  ) {
+    parseStatusHint = DOCUMENT_PARSE_STATUS.CONTENT_PENDING;
+  }
+
+  const idempotencyKey = buildUploadIdempotencyKey({
+    companyId,
+    contentHash,
+    targetFolderPath,
+  });
 
   let token;
   try {
@@ -200,6 +295,10 @@ export async function POST(request) {
             targetFolderPath,
             duplicate: true,
           }),
+          classification: publicClassification(classification),
+          contentMatch: publicContentMatch(contentMatch),
+          parseStatus: parseStatusHint,
+          idempotencyKey,
         },
         { status: 409 }
       );
@@ -211,24 +310,122 @@ export async function POST(request) {
       targetFolderPath,
     });
 
-    await uploadGoogleDriveBinaryFile({
+    const appProperties = {
+      annveroCompanyId: String(companyId),
+      annveroContentHash: contentHash,
+      annveroSchemaVersion: DRIVE_UPLOAD_SCHEMA_VERSION,
+    };
+    if (quarantine) {
+      appProperties.annveroQuarantine = "1";
+      appProperties.annveroParseStatus = DOCUMENT_PARSE_STATUS.QUARANTINE;
+    } else if (parseStatusHint === DOCUMENT_PARSE_STATUS.CONTENT_PENDING) {
+      appProperties.annveroNeedsReview = "1";
+      appProperties.annveroParseStatus = DOCUMENT_PARSE_STATUS.CONTENT_PENDING;
+    }
+
+    const uploaded = await uploadGoogleDriveBinaryFile({
       accessToken: token.accessToken,
       parentFolderId,
       fileName: safeName,
       mimeType: typeCheck.mimeType,
       bytes: buffer,
-      appProperties: {
-        annveroCompanyId: String(companyId),
-        annveroContentHash: contentHash,
-        annveroSchemaVersion: DRIVE_UPLOAD_SCHEMA_VERSION,
-      },
+      appProperties,
     });
 
-    // Başarılı Drive yüklemesi — document_index’e yazılmaz (sync indeksler).
+    const providerFileId = uploaded?.id ? String(uploaded.id) : "";
+    const sourcePath = `${targetFolderPath}/${safeName}`;
+    const now = new Date().toISOString();
+
+    if (quarantine && providerFileId) {
+      try {
+        await upsertIndexRow(supabase, {
+          company_id: companyId,
+          provider: "google_drive",
+          provider_file_id: providerFileId,
+          parent_folder_id: parentFolderId || null,
+          file_name: safeName,
+          mime_type: typeCheck.mimeType,
+          file_size: sizeCheck.size,
+          file_hash: contentHash,
+          source_path: sourcePath,
+          parse_status: DOCUMENT_PARSE_STATUS.QUARANTINE,
+          indexed_at: now,
+        });
+      } catch {
+        // İndeks yazılamasa bile Drive yüklemesi geçerli; sync sonra dener.
+      }
+    }
+
+    let syncResult = null;
+    let syncTriggered = false;
+    try {
+      syncResult = await runCompanyDriveSync({
+        supabase,
+        accessToken: token.accessToken,
+        companyId,
+        rootFolderId: folder.root_folder_id,
+        writeSyncEvents: true,
+        extraEvents: [
+          {
+            eventType: "upload_triggered_sync",
+            status: "ok",
+            providerFileId: providerFileId || null,
+            errorMessage: `idemp:${createHash("sha256")
+              .update(idempotencyKey)
+              .digest("hex")
+              .slice(0, 16)}`,
+          },
+        ],
+      });
+      syncTriggered = true;
+
+      if (
+        parseStatusHint === DOCUMENT_PARSE_STATUS.CONTENT_PENDING &&
+        !quarantine
+      ) {
+        try {
+          if (providerFileId) {
+            await patchParseStatusByProviderFileId(
+              supabase,
+              companyId,
+              providerFileId,
+              DOCUMENT_PARSE_STATUS.CONTENT_PENDING
+            );
+          } else {
+            await patchParseStatusByHash(
+              supabase,
+              companyId,
+              contentHash,
+              DOCUMENT_PARSE_STATUS.CONTENT_PENDING
+            );
+          }
+        } catch {
+          // patch başarısız — liste sync sonrası indexed gösterebilir
+        }
+      }
+
+      if (quarantine && providerFileId) {
+        try {
+          await patchParseStatusByProviderFileId(
+            supabase,
+            companyId,
+            providerFileId,
+            DOCUMENT_PARSE_STATUS.QUARANTINE
+          );
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      syncTriggered = false;
+    }
+
     return NextResponse.json({
       ok: true,
-      code: "UPLOADED",
-      message: "Dosya Drive’a yüklendi.",
+      code: quarantine ? "UPLOADED_QUARANTINE" : "UPLOADED",
+      message: quarantine
+        ? "Dosya inceleme klasörüne yüklendi."
+        : "Dosya Drive’a yüklendi.",
       file: publicFileMeta({
         fileName: safeName,
         mimeType: typeCheck.mimeType,
@@ -237,6 +434,20 @@ export async function POST(request) {
         targetFolderPath,
         duplicate: false,
       }),
+      classification: publicClassification(classification),
+      contentMatch: publicContentMatch(contentMatch),
+      parseStatus: parseStatusHint || DOCUMENT_PARSE_STATUS.INDEXED,
+      needsReview: Boolean(
+        classification.needsReview ||
+          parseStatusHint === DOCUMENT_PARSE_STATUS.CONTENT_PENDING ||
+          quarantine
+      ),
+      idempotencyKey,
+      sync: {
+        triggered: syncTriggered,
+        stats: syncResult?.stats || null,
+        lastSyncAt: syncResult?.lastSyncAt || null,
+      },
     });
   } catch (error) {
     const code = error?.code;

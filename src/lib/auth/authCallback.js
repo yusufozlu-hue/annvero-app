@@ -3,6 +3,7 @@
  * Token değerleri loglanmaz; yalnız mod/tür bilgisi işlenir.
  */
 
+import { resolveAuthHomePathForUser } from "@/src/config/annveroTaxpayerPortal";
 import { getSafeNextPath } from "@/src/utils/authRedirect";
 
 export const AUTH_CALLBACK_OTP_TYPES = Object.freeze([
@@ -185,7 +186,8 @@ export function resolvePostAuthPath({
   if (requiresPasswordSetup(authType, user)) {
     return "/auth/set-password";
   }
-  return getSafeNextPath(nextPath, "/dashboard");
+  const defaultHome = resolveAuthHomePathForUser(user);
+  return getSafeNextPath(nextPath, defaultHome);
 }
 
 export function getAuthCallbackErrorMessage(errorCode = "") {

@@ -27,6 +27,12 @@ export const DOCUMENT_PARSE_STATUS = {
   MISSING: "missing",
   SOFT_DELETED: "soft_deleted",
   ERROR: "error",
+  /** Firma eşleşmesi şüpheli — varsayılan mükellef listesinde gizlenir */
+  QUARANTINE: "quarantine",
+  /** OCR / içerik henüz doğrulanmadı (görsel vb.) */
+  CONTENT_PENDING: "content_pending",
+  /** Manuel inceleme gerekli */
+  REVIEW_REQUIRED: "review_required",
 };
 
 export const DOCUMENT_CATEGORY = {

@@ -142,7 +142,7 @@ test("login prefetch: yalnizca oturum cerezi dogrulandiktan sonra", () => {
   assert.ok(prefetchIndex > cookieGateIndex, "prefetch auth oncesinde calisiyor");
   // Prefetch beklenmez ve hata login'i durdurmaz.
   assert.doesNotMatch(form, /await router\.prefetch/);
-  assert.match(form, /router\.prefetch\(DEFAULT_POST_LOGIN_PATH\)/);
+  assert.match(form, /router\.prefetch\(defaultPath\)/);
   // Tek navigation: yalnizca router.replace.
   assert.equal(form.match(/router\.replace\(/g)?.length, 2);
   assert.doesNotMatch(form, /window\.location\.replace/);

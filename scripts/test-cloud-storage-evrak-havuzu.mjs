@@ -674,10 +674,29 @@ await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", 
     ),
     "utf8"
   );
-  assert.ok(syncSrc.includes("runMetadataSyncPass"), "canlı sync hash-dedup kullanmalı");
-  assert.ok(syncSrc.includes("skippedDuplicates") || syncSrc.includes("pass.stats"));
+  const syncEngineRunnerSrc = fs.readFileSync(
+    path.join(root, "src/utils/cloudStorage/runCompanyDriveSync.js"),
+    "utf8"
+  );
+  assert.ok(
+    syncSrc.includes("runCompanyDriveSync") || syncSrc.includes("runMetadataSyncPass"),
+    "canlı sync hash-dedup kullanmalı"
+  );
+  assert.ok(
+    syncEngineRunnerSrc.includes("runMetadataSyncPass"),
+    "sync runner hash-dedup motoru"
+  );
+  assert.ok(
+    syncSrc.includes("skippedDuplicates") ||
+      syncEngineRunnerSrc.includes("skippedDuplicates") ||
+      syncSrc.includes("pass.stats") ||
+      syncSrc.includes("result.stats")
+  );
   assert.ok(syncSrc.includes("isActive"), "pasif firma sync engeli");
-  assert.ok(syncSrc.includes("source_path"), "sync source_path yazar");
+  assert.ok(
+    syncSrc.includes("source_path") || syncEngineRunnerSrc.includes("source_path"),
+    "sync source_path yazar"
+  );
   assert.ok(foldersSrc.includes("isActive"), "pasif firma klasör engeli");
   assert.ok(adapterSrc.includes('child.name === "_ANNVERO"') || adapterSrc.includes("ANNVERO_SYSTEM_FOLDER"), "_ANNVERO indeks dışı");
   assert.ok(adapterSrc.includes("sourcePath"), "metadata listesi sourcePath");
@@ -769,7 +788,16 @@ await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", 
   assert.ok(uploadSrc.includes("DUPLICATE_CONTENT"), "409 duplicate");
   assert.ok(uploadSrc.includes("PAYLOAD_TOO_LARGE"), "413");
   assert.ok(uploadSrc.includes("sha256") || uploadSrc.includes("createHash"), "sha256");
-  assert.doesNotMatch(uploadSrc, /from\("document_index"\)[\s\S]{0,80}\.upsert/, "upload document_index yazmaz");
+  // Quarantine yolu document_index upsert eder; sınıflandırma + içerik eşleşmesi zorunlu
+  assert.ok(uploadSrc.includes("classifyUploadTarget"), "upload classify");
+  assert.ok(uploadSrc.includes("validateDocumentCompanyMatch"), "upload content match");
+  assert.ok(uploadSrc.includes("runCompanyDriveSync"), "upload sonrası sync");
+  assert.ok(uploadSrc.includes("buildUploadIdempotencyKey"), "idempotency");
+  assert.ok(
+    uploadSrc.includes("quarantine") || uploadSrc.includes("QUARANTINE"),
+    "quarantine yolu"
+  );
+  assert.ok(uploadSrc.includes("from(\"document_index\")"), "quarantine index yazımı");
   assert.ok(!uploadSrc.includes("ensureGoogleDriveFolderTree"), "upload klasör oluşturmaz");
   assert.ok(uploadSrc.includes("resolveDriveFolderPathFromRoot"), "parent zinciri");
   assert.ok(adapterSrc.includes("uploadGoogleDriveBinaryFile"), "binary upload");

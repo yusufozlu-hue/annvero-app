@@ -5,10 +5,18 @@
 
 import { ANNVERO_SYSTEM_FOLDER, DOCUMENT_PARSE_STATUS } from "./types.js";
 
-/** Varsayılan Evraklar görünümü: aktif belgeler (eksik/soft-deleted hariç). */
+/** Varsayılan Evraklar görünümü: aktif + inceleme bekleyen (karantina / silinen hariç). */
 export const DEFAULT_LIST_PARSE_STATUSES = Object.freeze([
   DOCUMENT_PARSE_STATUS.INDEXED,
   DOCUMENT_PARSE_STATUS.PENDING,
+  DOCUMENT_PARSE_STATUS.CONTENT_PENDING,
+  DOCUMENT_PARSE_STATUS.REVIEW_REQUIRED,
+]);
+
+/** Mükellef varsayılan listesinde asla gösterilmez. */
+export const TAXPAYER_EXCLUDED_PARSE_STATUSES = Object.freeze([
+  DOCUMENT_PARSE_STATUS.QUARANTINE,
+  DOCUMENT_PARSE_STATUS.SOFT_DELETED,
 ]);
 
 export const DOCUMENT_STATUS_LABELS = Object.freeze({
@@ -17,6 +25,9 @@ export const DOCUMENT_STATUS_LABELS = Object.freeze({
   [DOCUMENT_PARSE_STATUS.MISSING]: "Drive’da yok",
   [DOCUMENT_PARSE_STATUS.SOFT_DELETED]: "Silindi",
   [DOCUMENT_PARSE_STATUS.ERROR]: "Hata",
+  [DOCUMENT_PARSE_STATUS.QUARANTINE]: "Karantina",
+  [DOCUMENT_PARSE_STATUS.CONTENT_PENDING]: "İçerik bekleniyor",
+  [DOCUMENT_PARSE_STATUS.REVIEW_REQUIRED]: "İnceleme gerekli",
 });
 
 export const PROVIDER_LABELS = Object.freeze({
@@ -44,6 +55,7 @@ export function isAnnveroSystemDocument(row = {}) {
 
 /**
  * Firma listesi filtresi — yalnız seçili companyId + durum + sistem dışı.
+ * Quarantine / soft_deleted varsayılan olarak hariç (mükellef listesi).
  */
 export function filterDocumentsForCompanyList(
   rows = [],
@@ -51,6 +63,7 @@ export function filterDocumentsForCompanyList(
     companyId,
     statuses = DEFAULT_LIST_PARSE_STATUSES,
     includeMissing = false,
+    includeQuarantine = false,
   } = {}
 ) {
   const wanted = new Set(
@@ -58,6 +71,9 @@ export function filterDocumentsForCompanyList(
       ? [...statuses, DOCUMENT_PARSE_STATUS.MISSING]
       : statuses
   );
+  if (includeQuarantine) {
+    wanted.add(DOCUMENT_PARSE_STATUS.QUARANTINE);
+  }
   const cid = String(companyId || "");
   return (Array.isArray(rows) ? rows : []).filter((row) => {
     if (cid && String(row.companyId || row.company_id || "") !== cid) {
@@ -66,6 +82,12 @@ export function filterDocumentsForCompanyList(
     if (isAnnveroSystemDocument(row)) return false;
     const status = row.parseStatus || row.parse_status || "";
     if (status === DOCUMENT_PARSE_STATUS.SOFT_DELETED) return false;
+    if (
+      status === DOCUMENT_PARSE_STATUS.QUARANTINE &&
+      !includeQuarantine
+    ) {
+      return false;
+    }
     return wanted.has(status);
   });
 }
