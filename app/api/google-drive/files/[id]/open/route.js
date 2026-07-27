@@ -69,7 +69,11 @@ export async function GET(request, context) {
   }
   if (!row.provider_file_id) {
     return NextResponse.json(
-      { error: "Drive bağlantısı eksik." },
+      {
+        error:
+          "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
+        code: "OFFICE_CONNECTION_PENDING",
+      },
       { status: 409 }
     );
   }

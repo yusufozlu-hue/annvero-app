@@ -1,6 +1,7 @@
 /**
  * POST /api/google-drive/sync
  * Firma erişimli metadata sync. force/full yalnız yönetim.
+ * Token: oturum kullanıcısı değil — firma-bound connection.
  */
 
 import { NextResponse } from "next/server";
@@ -10,7 +11,11 @@ import {
   requireApiSession,
 } from "@/src/lib/auth/apiGuard";
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
-import { getValidGoogleAccessToken } from "@/src/lib/googleDrive/connectionStore";
+import {
+  COMPANY_DRIVE_ERROR,
+  COMPANY_DRIVE_USER_MESSAGES,
+  resolveCompanyDriveConnection,
+} from "@/src/lib/googleDrive/resolveCompanyDriveConnection";
 import { runCompanyDriveSync } from "@/src/utils/cloudStorage/runCompanyDriveSync";
 
 export const runtime = "nodejs";
@@ -54,16 +59,11 @@ export async function POST(request) {
   const { supabase, guard } = getApiSupabase("google-drive-sync", "document_index");
   if (guard) return guard;
 
-  const [{ accessToken }, { data: company, error: companyError }, { data: folder, error: folderError }] =
-    await Promise.all([
-      getValidGoogleAccessToken(session.user.id),
-      supabase.from("companies").select("id,data").eq("id", companyId).single(),
-      supabase
-        .from("company_cloud_folders")
-        .select("root_folder_id")
-        .eq("company_id", companyId)
-        .single(),
-    ]);
+  const { data: company, error: companyError } = await supabase
+    .from("companies")
+    .select("id,data")
+    .eq("id", companyId)
+    .single();
 
   if (companyError || !company) {
     return NextResponse.json({ error: "Firma bulunamadı." }, { status: 404 });
@@ -74,18 +74,28 @@ export async function POST(request) {
       { status: 409 }
     );
   }
-  if (folderError || !folder?.root_folder_id) {
+
+  let drive;
+  try {
+    drive = await resolveCompanyDriveConnection(companyId);
+  } catch (error) {
+    const code = error?.code || COMPANY_DRIVE_ERROR.OFFICE_CONNECTION_PENDING;
     return NextResponse.json(
-      { error: "Önce firma Drive klasörünü oluşturun." },
+      {
+        error:
+          COMPANY_DRIVE_USER_MESSAGES[code] ||
+          COMPANY_DRIVE_USER_MESSAGES[COMPANY_DRIVE_ERROR.OFFICE_CONNECTION_PENDING],
+        code,
+      },
       { status: 409 }
     );
   }
 
   const result = await runCompanyDriveSync({
     supabase,
-    accessToken,
+    accessToken: drive.accessToken,
     companyId,
-    rootFolderId: folder.root_folder_id,
+    rootFolderId: drive.rootFolderId,
     writeSyncEvents: true,
     extraEvents: [
       {
@@ -98,6 +108,5 @@ export async function POST(request) {
 
   return NextResponse.json({
     stats: result.stats,
-    lastSyncAt: result.lastSyncAt,
   });
 }

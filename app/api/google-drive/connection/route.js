@@ -17,6 +17,11 @@ async function guard(request, action) {
 export async function GET(request) {
   const checked = await guard(request, "get");
   if (checked.response) return checked.response;
+  if (!checked.session.access?.isManagementUser) {
+    return jsonForbidden(
+      "Google Drive bağlantı durumu yalnız ofis yönetimi tarafından görüntülenir."
+    );
+  }
   const connection = await getGoogleDriveConnection(checked.session.user.id);
   return NextResponse.json({ connection: sanitizeConnectionPublicView(connection ? {
     status: connection.status, accountEmail: connection.account_email,

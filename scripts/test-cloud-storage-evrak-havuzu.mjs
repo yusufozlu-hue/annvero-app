@@ -641,6 +641,10 @@ await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", 
     path.join(root, "app/api/google-drive/files/upload/route.js"),
     "utf8"
   );
+  const resolverSrc = fs.readFileSync(
+    path.join(root, "src/lib/googleDrive/resolveCompanyDriveConnection.js"),
+    "utf8"
+  );
   const adapterSrc = fs.readFileSync(
     path.join(root, "src/utils/cloudStorage/googleDriveAdapter.js"),
     "utf8"
@@ -714,8 +718,14 @@ await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", 
     "utf8"
   );
   assert.ok(
-    connectionSrc.includes("isManagementUser") && connectionSrc.includes("DELETE"),
-    "connection DELETE yönetim zorunlu"
+    connectionSrc.includes("isManagementUser") &&
+      connectionSrc.includes("DELETE") &&
+      connectionSrc.includes("GET"),
+    "connection GET/DELETE yönetim zorunlu"
+  );
+  assert.ok(
+    connectionSrc.match(/export async function GET[\s\S]*isManagementUser/),
+    "connection GET yönetim"
   );
   assert.ok(
     foldersSrc.includes("isManagementUser") && foldersSrc.includes("POST"),
@@ -780,7 +790,19 @@ await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", 
   // Upload route güvenlik / mükerrer / mutation sınırları
   assert.ok(uploadSrc.includes("assertCompanyAccess"), "upload yetki");
   assert.ok(uploadSrc.includes("isCompanyActive") || uploadSrc.includes("isActive"), "pasif firma");
-  assert.ok(uploadSrc.includes("assertDriveRootBelongsToCompany"), "kök firma ID");
+  assert.ok(uploadSrc.includes("resolveCompanyDriveConnection"), "firma-bound resolver");
+  assert.ok(
+    uploadSrc.includes("Ofis bağlantısı hazırlanıyor"),
+    "ofis bağlantı mesajı"
+  );
+  assert.doesNotMatch(
+    uploadSrc,
+    /getValidGoogleAccessToken\s*\(\s*session/,
+    "upload session-user token kullanmaz"
+  );
+  assert.ok(resolverSrc.includes("assertDriveRootBelongsToCompany"), "kök firma ID");
+  assert.ok(checkSrc.includes("resolveCompanyDriveConnection"), "check firma-bound");
+  assert.ok(syncSrc.includes("resolveCompanyDriveConnection"), "sync firma-bound");
   assert.ok(uploadSrc.includes("assertUploadTargetPath"), "schema path");
   assert.ok(uploadSrc.includes("SYSTEM_FOLDER_FORBIDDEN") || uploadSrc.includes("assertUploadTargetPath"));
   assert.ok(uploadSrc.includes("findDriveFileByCompanyContentHash"), "hash mükerrer");

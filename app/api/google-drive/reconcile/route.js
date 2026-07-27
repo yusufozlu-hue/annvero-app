@@ -6,7 +6,10 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getApiSupabase } from "@/src/lib/auth/apiGuard";
-import { getValidGoogleAccessTokenByConnectionId } from "@/src/lib/googleDrive/connectionStore";
+import {
+  COMPANY_DRIVE_ERROR,
+  resolveCompanyDriveConnection,
+} from "@/src/lib/googleDrive/resolveCompanyDriveConnection";
 import { requiresStrictRuntimeSecrets } from "@/src/lib/security/envGuard";
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import { ANNVERO_SYSTEM_FOLDER } from "@/src/utils/cloudStorage/types.js";
@@ -95,32 +98,23 @@ async function reconcileOneCompany(supabase, companyId) {
     return { companyId, code: "COMPANY_INACTIVE", ok: false, skipped: true };
   }
 
-  const { data: folder, error: folderError } = await supabase
-    .from("company_cloud_folders")
-    .select("root_folder_id,connection_id")
-    .eq("company_id", companyId)
-    .maybeSingle();
-  if (folderError || !folder?.root_folder_id) {
-    return { companyId, code: "FOLDER_MISSING", ok: false, skipped: true };
-  }
-  if (!folder.connection_id) {
-    return { companyId, code: "CONNECTION_MISSING", ok: false, skipped: true };
-  }
-
-  let accessToken;
+  let drive;
   try {
-    const token = await getValidGoogleAccessTokenByConnectionId(folder.connection_id);
-    accessToken = token.accessToken;
-  } catch {
+    drive = await resolveCompanyDriveConnection(companyId);
+  } catch (error) {
+    const code = error?.code;
+    if (code === COMPANY_DRIVE_ERROR.FOLDER_BINDING_MISSING) {
+      return { companyId, code: "FOLDER_MISSING", ok: false, skipped: true };
+    }
     return { companyId, code: "CONNECTION_MISSING", ok: false, skipped: true };
   }
 
   try {
     const result = await runCompanyDriveSync({
       supabase,
-      accessToken,
+      accessToken: drive.accessToken,
       companyId,
-      rootFolderId: folder.root_folder_id,
+      rootFolderId: drive.rootFolderId,
       writeSyncEvents: true,
       extraEvents: [
         {

@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { assertCompanyAccess, requireApiSession } from "@/src/lib/auth/apiGuard";
+import {
+  assertCompanyAccess,
+  jsonForbidden,
+  requireApiSession,
+} from "@/src/lib/auth/apiGuard";
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import { buildGoogleAuthorizeUrl, createOAuthState } from "@/src/lib/googleDrive/oauth";
 import { isGoogleDriveOAuthConfigured } from "@/src/lib/googleDrive/tokenPolicy";
@@ -10,6 +14,9 @@ export const dynamic = "force-dynamic";
 export async function GET(request) {
   const session = await requireApiSession();
   if (session.error) return session.error;
+  if (!session.access?.isManagementUser) {
+    return jsonForbidden("Google Drive bağlantısı yalnız ofis yönetimi tarafından kurulur.");
+  }
   const limited = enforceRateLimit(request, session, "google-drive-oauth-start", { limit: 10, windowMs: 300_000 });
   if (limited) return limited;
   if (!isGoogleDriveOAuthConfigured()) return NextResponse.json({ error: "Google Drive OAuth yapılandırılmamış." }, { status: 503 });

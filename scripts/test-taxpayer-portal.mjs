@@ -224,6 +224,18 @@ await test("static: upload uses classifyUploadTarget; reconcile HMAC", () => {
     path.join(root, "app/api/google-drive/sync/route.js"),
     "utf8"
   );
+  const resolverSrc = fs.readFileSync(
+    path.join(root, "src/lib/googleDrive/resolveCompanyDriveConnection.js"),
+    "utf8"
+  );
+  const oauthStartSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/oauth/start/route.js"),
+    "utf8"
+  );
+  const connectionSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/connection/route.js"),
+    "utf8"
+  );
 
   assert.ok(uploadSrc.includes("classifyUploadTarget"));
   assert.ok(uploadSrc.includes("validateDocumentCompanyMatch"));
@@ -232,6 +244,10 @@ await test("static: upload uses classifyUploadTarget; reconcile HMAC", () => {
   assert.ok(uploadSrc.includes("assertCompanyAccess"));
   assert.ok(uploadSrc.includes("DRIVE_UPLOAD_DEFAULT_FOLDER"));
   assert.ok(uploadSrc.includes("quarantine") || uploadSrc.includes("QUARANTINE"));
+  assert.ok(uploadSrc.includes("resolveCompanyDriveConnection"));
+  assert.ok(uploadSrc.includes("OFFICE_CONNECTION_PENDING"));
+  assert.ok(uploadSrc.includes("Ofis bağlantısı hazırlanıyor"));
+  assert.doesNotMatch(uploadSrc, /getValidGoogleAccessToken\s*\(\s*session/);
   assert.doesNotMatch(uploadSrc, /SUPABASE_SERVICE_ROLE|client_secret|refresh_token\s*[:=]/);
 
   assert.ok(reconcileSrc.includes("x-annvero-reconcile-secret"));
@@ -239,13 +255,40 @@ await test("static: upload uses classifyUploadTarget; reconcile HMAC", () => {
   assert.ok(reconcileSrc.includes("CRON_SECRET"));
   assert.ok(reconcileSrc.includes("requiresStrictRuntimeSecrets"));
   assert.ok(reconcileSrc.includes("runCompanyDriveSync"));
+  assert.ok(reconcileSrc.includes("resolveCompanyDriveConnection"));
   assert.ok(reconcileSrc.includes("timingSafeEqual"));
   assert.doesNotMatch(reconcileSrc, /console\.log\([^)]*SECRET/);
 
   assert.ok(syncSrc.includes("isManagementUser"));
   assert.ok(syncSrc.includes("force") && syncSrc.includes("full"));
   assert.ok(syncSrc.includes("runCompanyDriveSync"));
+  assert.ok(syncSrc.includes("resolveCompanyDriveConnection"));
   assert.ok(syncSrc.includes("writeSyncEvents"));
+
+  assert.ok(resolverSrc.includes("company_cloud_folders"));
+  assert.ok(resolverSrc.includes("connection_id"));
+  assert.ok(resolverSrc.includes("getValidGoogleAccessTokenByConnectionId"));
+  assert.ok(resolverSrc.includes("assertDriveRootBelongsToCompany"));
+  assert.ok(resolverSrc.includes("CONNECTION_FOREIGN"));
+  assert.doesNotMatch(resolverSrc, /getValidGoogleAccessToken\s*\(/);
+
+  assert.ok(oauthStartSrc.includes("isManagementUser"));
+  assert.ok(connectionSrc.includes("isManagementUser"));
+  assert.match(
+    connectionSrc,
+    /export async function GET[\s\S]*isManagementUser/
+  );
+});
+
+await test("static: folders/check uses company-bound resolver", () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const checkSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/folders/check/route.js"),
+    "utf8"
+  );
+  assert.ok(checkSrc.includes("resolveCompanyDriveConnection"));
+  assert.ok(checkSrc.includes("Ofis bağlantısı hazırlanıyor"));
+  assert.doesNotMatch(checkSrc, /getValidGoogleAccessToken\s*\(\s*session/);
 });
 
 if (process.exitCode) {

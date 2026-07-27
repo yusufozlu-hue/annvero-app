@@ -1965,11 +1965,35 @@ test("ADH Drive: API route tenant guard + mükellef yönetim engeli (statik)", (
   );
   assert.match(foldersPost, /isManagementUser/, "folders POST yönetim zorunlu");
 
+  const oauthStart = extractExportAsyncHandler(
+    fs.readFileSync(path.join(root, "app/api/google-drive/oauth/start/route.js"), "utf8"),
+    "GET"
+  );
+  assert.match(oauthStart, /isManagementUser/, "oauth start yönetim zorunlu");
+
+  const connectionGet = extractExportAsyncHandler(
+    fs.readFileSync(path.join(root, "app/api/google-drive/connection/route.js"), "utf8"),
+    "GET"
+  );
+  assert.match(connectionGet, /isManagementUser/, "connection GET yönetim zorunlu");
+
   const connectionDelete = extractExportAsyncHandler(
     fs.readFileSync(path.join(root, "app/api/google-drive/connection/route.js"), "utf8"),
     "DELETE"
   );
   assert.match(connectionDelete, /isManagementUser/, "connection DELETE yönetim zorunlu");
+
+  const uploadSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/files/upload/route.js"),
+    "utf8"
+  );
+  assert.match(uploadSrc, /resolveCompanyDriveConnection/, "upload firma-bound resolver");
+  assert.doesNotMatch(
+    uploadSrc,
+    /getValidGoogleAccessToken\s*\(\s*session/,
+    "upload session-user token kullanmaz"
+  );
+  assert.match(uploadSrc, /Ofis bağlantısı hazırlanıyor/, "upload ofis mesajı");
 
   const companiesPost = extractExportAsyncHandler(
     fs.readFileSync(path.join(root, "app/api/companies/route.js"), "utf8"),
@@ -1982,6 +2006,35 @@ test("ADH Drive: API route tenant guard + mükellef yönetim engeli (statik)", (
     "DELETE"
   );
   assert.match(companiesDelete, /requireManagementUser/, "companies DELETE yönetim zorunlu");
+});
+
+test("ADH Drive: company-bound resolver cross-tenant / credential sızıntı engeli (statik)", () => {
+  const resolverSrc = fs.readFileSync(
+    path.join(root, "src/lib/googleDrive/resolveCompanyDriveConnection.js"),
+    "utf8"
+  );
+  assert.match(resolverSrc, /company_cloud_folders/);
+  assert.match(resolverSrc, /connection_id/);
+  assert.match(resolverSrc, /getValidGoogleAccessTokenByConnectionId/);
+  assert.match(resolverSrc, /assertDriveRootBelongsToCompany/);
+  assert.match(resolverSrc, /CONNECTION_FOREIGN/);
+  assert.match(resolverSrc, /ROOT_COMPANY_MISMATCH/);
+  assert.doesNotMatch(resolverSrc, /getValidGoogleAccessToken\s*\(/);
+  // public DTO token sızdırmaz (server return ile karıştırılmaz)
+  assert.match(resolverSrc, /publicCompanyDriveBindingStatus/);
+  assert.match(resolverSrc, /Teknik kimlikler istemciye verilmez/);
+  const publicDtoFn = resolverSrc.slice(
+    resolverSrc.indexOf("export function publicCompanyDriveBindingStatus")
+  );
+  assert.doesNotMatch(publicDtoFn, /accessToken/);
+  assert.doesNotMatch(publicDtoFn, /account_email/);
+  assert.doesNotMatch(publicDtoFn, /connectionId/);
+  const migration026 = fs.readFileSync(
+    path.join(root, "supabase/migrations/026_company_drive_connection_binding.sql"),
+    "utf8"
+  );
+  assert.match(migration026, /company_cloud_folders\.connection_id/);
+  assert.match(migration026, /idx_company_cloud_folders_connection/);
 });
 
 test("ADH Drive: _ANNVERO belgeleri listelenmez", () => {

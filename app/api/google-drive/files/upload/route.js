@@ -7,9 +7,11 @@ import {
 } from "@/src/lib/auth/apiGuard";
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import { enforceBodySizeLimit } from "@/src/lib/security/requestGuards";
-import { getValidGoogleAccessToken } from "@/src/lib/googleDrive/connectionStore";
 import {
-  assertDriveRootBelongsToCompany,
+  COMPANY_DRIVE_ERROR,
+  resolveCompanyDriveConnection,
+} from "@/src/lib/googleDrive/resolveCompanyDriveConnection";
+import {
   findDriveFileByCompanyContentHash,
   resolveDriveFolderPathFromRoot,
   uploadGoogleDriveBinaryFile,
@@ -38,10 +40,15 @@ const SAFE = Object.freeze({
   MISSING_FILE: "Yüklenecek dosya bulunamadı.",
   COMPANY_NOT_FOUND: "Firma bulunamadı.",
   COMPANY_INACTIVE: "Pasif firmalara evrak yüklenemez.",
-  FOLDER_BINDING_MISSING: "Önce firma Drive klasörünü oluşturun.",
-  DRIVE_CONNECTION_MISSING: "Google Drive bağlantısı bulunamadı.",
+  FOLDER_BINDING_MISSING:
+    "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
+  DRIVE_CONNECTION_MISSING:
+    "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
+  OFFICE_CONNECTION_PENDING:
+    "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
   ROOT_FOLDER_INVALID: "Firma Drive kök klasörü geçersiz veya silinmiş.",
   ROOT_COMPANY_MISMATCH: "Drive kök klasörü bu firmaya bağlı değil.",
+  CONNECTION_FOREIGN: "Firma depolama bağlantısı bu kayıtla eşleşmiyor.",
   TARGET_FOLDER_MISSING: "Hedef klasör Drive’da bulunamadı. Önce klasör yapısını oluşturun.",
   SYSTEM_FOLDER_FORBIDDEN: "Sistem klasörüne (_ANNVERO) dosya yüklenemez.",
   INVALID_TARGET_PATH: "Hedef klasör şema v1 izinli yollarından biri değil.",
@@ -216,20 +223,28 @@ export async function POST(request) {
   );
   if (guard) return guard;
 
-  const [{ data: company, error: companyError }, { data: folder, error: folderError }] =
-    await Promise.all([
-      supabase.from("companies").select("id,data").eq("id", companyId).single(),
-      supabase
-        .from("company_cloud_folders")
-        .select("root_folder_id")
-        .eq("company_id", companyId)
-        .maybeSingle(),
-    ]);
+  const [{ data: company, error: companyError }] = await Promise.all([
+    supabase.from("companies").select("id,data").eq("id", companyId).single(),
+  ]);
 
   if (companyError || !company) return jsonError("COMPANY_NOT_FOUND", 404);
   if (!isCompanyActive(company)) return jsonError("COMPANY_INACTIVE", 409);
-  if (folderError || !folder?.root_folder_id) {
-    return jsonError("FOLDER_BINDING_MISSING", 409);
+
+  let drive;
+  try {
+    drive = await resolveCompanyDriveConnection(companyId);
+  } catch (error) {
+    const code = error?.code;
+    if (
+      code === COMPANY_DRIVE_ERROR.FOLDER_BINDING_MISSING ||
+      code === COMPANY_DRIVE_ERROR.OFFICE_CONNECTION_PENDING ||
+      code === COMPANY_DRIVE_ERROR.ROOT_FOLDER_INVALID ||
+      code === COMPANY_DRIVE_ERROR.ROOT_COMPANY_MISMATCH ||
+      code === COMPANY_DRIVE_ERROR.CONNECTION_FOREIGN
+    ) {
+      return jsonError(code, 409);
+    }
+    return jsonError("OFFICE_CONNECTION_PENDING", 409);
   }
 
   const contentMatch = validateDocumentCompanyMatch({
@@ -262,22 +277,9 @@ export async function POST(request) {
     targetFolderPath,
   });
 
-  let token;
   try {
-    token = await getValidGoogleAccessToken(session.user.id);
-  } catch {
-    return jsonError("DRIVE_CONNECTION_MISSING", 409);
-  }
-
-  try {
-    await assertDriveRootBelongsToCompany({
-      accessToken: token.accessToken,
-      rootFolderId: folder.root_folder_id,
-      companyId,
-    });
-
     const existing = await findDriveFileByCompanyContentHash({
-      accessToken: token.accessToken,
+      accessToken: drive.accessToken,
       companyId,
       contentHash,
     });
@@ -305,8 +307,8 @@ export async function POST(request) {
     }
 
     const parentFolderId = await resolveDriveFolderPathFromRoot({
-      accessToken: token.accessToken,
-      rootFolderId: folder.root_folder_id,
+      accessToken: drive.accessToken,
+      rootFolderId: drive.rootFolderId,
       targetFolderPath,
     });
 
@@ -324,7 +326,7 @@ export async function POST(request) {
     }
 
     const uploaded = await uploadGoogleDriveBinaryFile({
-      accessToken: token.accessToken,
+      accessToken: drive.accessToken,
       parentFolderId,
       fileName: safeName,
       mimeType: typeCheck.mimeType,
@@ -361,9 +363,9 @@ export async function POST(request) {
     try {
       syncResult = await runCompanyDriveSync({
         supabase,
-        accessToken: token.accessToken,
+        accessToken: drive.accessToken,
         companyId,
-        rootFolderId: folder.root_folder_id,
+        rootFolderId: drive.rootFolderId,
         writeSyncEvents: true,
         extraEvents: [
           {

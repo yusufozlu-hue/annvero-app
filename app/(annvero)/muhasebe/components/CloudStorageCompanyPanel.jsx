@@ -31,10 +31,15 @@ import {
 
 const CHECK_ERROR_MESSAGES = Object.freeze({
   MISSING_COMPANY_ID: "Firma seçilmedi.",
-  FOLDER_BINDING_MISSING: "Önce firma Drive klasörünü oluşturun.",
-  DRIVE_CONNECTION_MISSING: "Google Drive bağlantısı bulunamadı.",
+  FOLDER_BINDING_MISSING:
+    "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
+  DRIVE_CONNECTION_MISSING:
+    "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
+  OFFICE_CONNECTION_PENDING:
+    "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
   ROOT_FOLDER_INVALID: "Firma Drive kök klasörü geçersiz veya silinmiş.",
   ROOT_COMPANY_MISMATCH: "Drive kök klasörü bu firmaya bağlı değil.",
+  CONNECTION_FOREIGN: "Firma depolama bağlantısı bu kayıtla eşleşmiyor.",
   DRIVE_API_ERROR: "Google Drive klasör yapısı okunamadı.",
   STRUCTURE_MISMATCH: "Klasör yapısı beklenen şema ile uyuşmuyor.",
   FORBIDDEN: "Bu firmaya erişim yetkiniz yok.",
