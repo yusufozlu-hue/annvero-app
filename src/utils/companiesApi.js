@@ -31,7 +31,7 @@ export async function saveCompanyRecord(payload) {
     throw new Error(formatApiError(body, "Firma kaydedilemedi."));
   }
 
-  return body.data;
+  return { data: body.data, driveArchive: body.driveArchive || null };
 }
 
 export async function deleteCompanyRecord(companyId) {

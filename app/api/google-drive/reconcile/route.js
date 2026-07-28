@@ -1,6 +1,7 @@
 /**
  * POST /api/google-drive/reconcile
  * HMAC shared-secret ile sistem reconcile — üretim schedule bu turda yok.
+ * Aktif + bağlantısız firmalar ensureCompanyDriveProvisioned ile tamamlanır.
  */
 
 import { timingSafeEqual } from "node:crypto";
@@ -10,6 +11,10 @@ import {
   COMPANY_DRIVE_ERROR,
   resolveCompanyDriveConnection,
 } from "@/src/lib/googleDrive/resolveCompanyDriveConnection";
+import {
+  ensureCompanyDriveProvisioned,
+  PROVISION_STATUS,
+} from "@/src/lib/googleDrive/ensureCompanyDriveProvisioned";
 import { requiresStrictRuntimeSecrets } from "@/src/lib/security/envGuard";
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import { ANNVERO_SYSTEM_FOLDER } from "@/src/utils/cloudStorage/types.js";
@@ -28,6 +33,7 @@ const SAFE = Object.freeze({
   FOLDER_MISSING: "Drive klasörü yok.",
   CONNECTION_MISSING: "Drive bağlantısı yok.",
   SYNC_FAILED: "Senkron başarısız.",
+  PROVISION_PENDING: "Bulut arşivi hazırlanıyor.",
 });
 
 function safeEqualSecret(provided, expected) {
@@ -85,6 +91,30 @@ function authorizeReconcile(request) {
   return { ok: true };
 }
 
+async function syncResolved(supabase, companyId, drive) {
+  const result = await runCompanyDriveSync({
+    supabase,
+    accessToken: drive.accessToken,
+    companyId,
+    rootFolderId: drive.rootFolderId,
+    writeSyncEvents: true,
+    extraEvents: [
+      {
+        eventType: "reconcile",
+        status: "ok",
+        errorMessage: null,
+      },
+    ],
+  });
+  return {
+    companyId,
+    ok: true,
+    code: "OK",
+    stats: result.stats,
+    lastSyncAt: result.lastSyncAt,
+  };
+}
+
 async function reconcileOneCompany(supabase, companyId) {
   const { data: company, error: companyError } = await supabase
     .from("companies")
@@ -103,34 +133,44 @@ async function reconcileOneCompany(supabase, companyId) {
     drive = await resolveCompanyDriveConnection(companyId);
   } catch (error) {
     const code = error?.code;
-    if (code === COMPANY_DRIVE_ERROR.FOLDER_BINDING_MISSING) {
-      return { companyId, code: "FOLDER_MISSING", ok: false, skipped: true };
+    if (
+      code === COMPANY_DRIVE_ERROR.FOLDER_BINDING_MISSING ||
+      code === COMPANY_DRIVE_ERROR.OFFICE_CONNECTION_PENDING
+    ) {
+      const provision = await ensureCompanyDriveProvisioned(companyId, {
+        dryRun: false,
+      });
+      if (
+        provision.status === PROVISION_STATUS.CREATED ||
+        provision.status === PROVISION_STATUS.ALREADY_READY
+      ) {
+        try {
+          drive = await resolveCompanyDriveConnection(companyId);
+        } catch {
+          return {
+            companyId,
+            code: "PROVISION_PENDING",
+            ok: false,
+            skipped: true,
+          };
+        }
+      } else if (provision.status === PROVISION_STATUS.INACTIVE_SKIPPED) {
+        return { companyId, code: "COMPANY_INACTIVE", ok: false, skipped: true };
+      } else {
+        return {
+          companyId,
+          code: "PROVISION_PENDING",
+          ok: false,
+          skipped: true,
+        };
+      }
+    } else {
+      return { companyId, code: "CONNECTION_MISSING", ok: false, skipped: true };
     }
-    return { companyId, code: "CONNECTION_MISSING", ok: false, skipped: true };
   }
 
   try {
-    const result = await runCompanyDriveSync({
-      supabase,
-      accessToken: drive.accessToken,
-      companyId,
-      rootFolderId: drive.rootFolderId,
-      writeSyncEvents: true,
-      extraEvents: [
-        {
-          eventType: "reconcile",
-          status: "ok",
-          errorMessage: null,
-        },
-      ],
-    });
-    return {
-      companyId,
-      ok: true,
-      code: "OK",
-      stats: result.stats,
-      lastSyncAt: result.lastSyncAt,
-    };
+    return await syncResolved(supabase, companyId, drive);
   } catch {
     return { companyId, code: "SYNC_FAILED", ok: false };
   }
@@ -167,30 +207,46 @@ export async function POST(request) {
       ok: result.ok,
       code: result.code,
       results: [result],
-      // Güvenli kodlar — secret / token yok
       skippedSystemFolder: ANNVERO_SYSTEM_FOLDER,
     });
   }
 
-  const { data: folders, error: foldersError } = await supabase
-    .from("company_cloud_folders")
-    .select("company_id,root_folder_id,connection_id")
-    .not("root_folder_id", "is", null);
+  const [{ data: folders, error: foldersError }, { data: companies, error: companiesError }] =
+    await Promise.all([
+      supabase
+        .from("company_cloud_folders")
+        .select("company_id,root_folder_id,connection_id")
+        .not("root_folder_id", "is", null),
+      supabase.from("companies").select("id,data"),
+    ]);
 
-  if (foldersError) {
+  if (foldersError || companiesError) {
     return NextResponse.json(
       { ok: false, code: "SYNC_FAILED", message: SAFE.SYNC_FAILED },
       { status: 500 }
     );
   }
 
-  const companyIds = [
-    ...new Set(
-      (folders || [])
-        .map((f) => String(f.company_id || "").trim())
-        .filter(Boolean)
-    ),
-  ];
+  const folderById = new Map(
+    (folders || []).map((f) => [String(f.company_id), f])
+  );
+
+  const companyIds = new Set();
+  for (const f of folders || []) {
+    const id = String(f.company_id || "").trim();
+    if (id) companyIds.add(id);
+  }
+  // Aktif + bağsız firmalar da reconcile ile hazırlanır (idempotent).
+  for (const company of companies || []) {
+    if (!isCompanyActive(company)) continue;
+    const id = String(company.id || "").trim();
+    if (!id) continue;
+    const folder = folderById.get(id);
+    const ready =
+      Boolean(folder?.root_folder_id) &&
+      Boolean(String(folder?.connection_id || "").trim());
+    if (!ready) companyIds.add(id);
+  }
 
   const results = [];
   let okCount = 0;

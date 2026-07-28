@@ -136,7 +136,37 @@ export async function POST(request) {
     afterState: saved,
   });
 
-  return NextResponse.json({ data: saved });
+  // Drive arşivi — firma kaydı korunsun; hata soft/pending.
+  let driveArchive = null;
+  try {
+    const {
+      ensureCompanyDriveProvisioned,
+      toPublicProvisionResult,
+      PROVISION_STATUS,
+    } = await import("@/src/lib/googleDrive/ensureCompanyDriveProvisioned");
+    const provision = await ensureCompanyDriveProvisioned(id, { dryRun: false });
+    driveArchive = toPublicProvisionResult(provision);
+    if (
+      provision.status === PROVISION_STATUS.DRIVE_ERROR ||
+      provision.status === PROVISION_STATUS.OFFICE_CONNECTION_PENDING
+    ) {
+      driveArchive = {
+        ...driveArchive,
+        message:
+          "Firma kaydedildi, bulut arşivi hazırlanıyor.",
+      };
+    }
+  } catch {
+    driveArchive = {
+      companyId: id,
+      companyName: companyName,
+      status: "DRIVE_ERROR",
+      label: "Hata",
+      message: "Firma kaydedildi, bulut arşivi hazırlanıyor.",
+    };
+  }
+
+  return NextResponse.json({ data: saved, driveArchive });
 }
 
 export async function DELETE(request) {

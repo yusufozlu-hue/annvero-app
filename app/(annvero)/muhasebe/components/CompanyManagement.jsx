@@ -60,6 +60,13 @@ const CloudStorageCompanyPanel = dynamic(
     ),
   }
 );
+const DriveBulkProvisionPanel = dynamic(
+  () => import("./DriveBulkProvisionPanel"),
+  {
+    ssr: false,
+    loading: () => null,
+  }
+);
 const CloudDocumentsPanel = dynamic(
   () => import("./CloudDocumentsPanel"),
   {
@@ -406,7 +413,7 @@ export default function CompanyManagement() {
     setIsSaving(true);
 
     try {
-      await saveCompanyRecord({
+      const saved = await saveCompanyRecord({
         id: normalized.id,
         company_name: normalized.companyName,
         data: normalized,
@@ -424,10 +431,18 @@ export default function CompanyManagement() {
       persistCompaniesToLocalStorage(updated);
       broadcastCompaniesRefresh();
 
-      showToast(
-        COMPANY_TAB_SAVE_MESSAGES[activeTab] || "Firma kaydedildi",
-        "success"
-      );
+      const driveStatus = saved?.driveArchive?.status;
+      if (
+        driveStatus === "DRIVE_ERROR" ||
+        driveStatus === "OFFICE_CONNECTION_PENDING"
+      ) {
+        showToast("Firma kaydedildi, bulut arşivi hazırlanıyor", "success");
+      } else {
+        showToast(
+          COMPANY_TAB_SAVE_MESSAGES[activeTab] || "Firma kaydedildi",
+          "success"
+        );
+      }
     } catch (error) {
       console.error("[CompanyManagement] saveCompany failed", {
         companyId: normalized.id,
@@ -1497,12 +1512,15 @@ export default function CompanyManagement() {
             )}
 
             {activeTab === "cloudStorage" && (
-              <CloudStorageCompanyPanel
-                company={company}
-                setCompany={setCompany}
-                onNotify={showToast}
-                onBusyChange={setCloudStorageBusy}
-              />
+              <div className="space-y-6">
+                <DriveBulkProvisionPanel onNotify={showToast} />
+                <CloudStorageCompanyPanel
+                  company={company}
+                  setCompany={setCompany}
+                  onNotify={showToast}
+                  onBusyChange={setCloudStorageBusy}
+                />
+              </div>
             )}
 
             {activeTab === "general" && (

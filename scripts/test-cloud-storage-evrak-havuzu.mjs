@@ -701,7 +701,7 @@ await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", 
     syncSrc.includes("source_path") || syncEngineRunnerSrc.includes("source_path"),
     "sync source_path yazar"
   );
-  assert.ok(foldersSrc.includes("isActive"), "pasif firma klasör engeli");
+  assert.ok(foldersSrc.includes("isActive") || resolverSrc.includes("isActive") || fs.readFileSync(path.join(root, "src/lib/googleDrive/ensureCompanyDriveProvisioned.js"), "utf8").includes("isActive"), "pasif firma klasör engeli");
   assert.ok(adapterSrc.includes('child.name === "_ANNVERO"') || adapterSrc.includes("ANNVERO_SYSTEM_FOLDER"), "_ANNVERO indeks dışı");
   assert.ok(adapterSrc.includes("sourcePath"), "metadata listesi sourcePath");
   assert.ok(adapterSrc.includes("renameDriveFile"), "firma adı → görünür klasör adı");
@@ -730,6 +730,28 @@ await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", 
   assert.ok(
     foldersSrc.includes("isManagementUser") && foldersSrc.includes("POST"),
     "folders POST yönetim zorunlu"
+  );
+  assert.ok(
+    foldersSrc.includes("ensureCompanyDriveProvisioned"),
+    "folders POST company-bound provision"
+  );
+  assert.doesNotMatch(
+    foldersSrc,
+    /getValidGoogleAccessToken\s*\(/,
+    "folders POST session-user token kullanmaz"
+  );
+
+  const provisionActiveSrc = fs.readFileSync(
+    path.join(root, "app/api/google-drive/folders/provision-active/route.js"),
+    "utf8"
+  );
+  assert.ok(provisionActiveSrc.includes("isManagementUser"), "provision-active yönetim");
+  assert.ok(provisionActiveSrc.includes("dryRun"), "provision-active dryRun");
+  assert.ok(provisionActiveSrc.includes("toPublicProvisionResult"), "provision public DTO");
+  assert.doesNotMatch(
+    provisionActiveSrc,
+    /accessToken|token_reference|_rootFolderId/,
+    "provision-active secret sızdırmaz"
   );
   assert.ok(docsPanelSrc.includes("/api/google-drive/files?companyId="));
   assert.ok(docsPanelSrc.includes("Drive’da Aç") || docsPanelSrc.includes("Drive'da Aç"));

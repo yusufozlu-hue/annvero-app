@@ -1964,6 +1964,46 @@ test("ADH Drive: API route tenant guard + mükellef yönetim engeli (statik)", (
     "POST"
   );
   assert.match(foldersPost, /isManagementUser/, "folders POST yönetim zorunlu");
+  assert.match(
+    foldersPost,
+    /ensureCompanyDriveProvisioned/,
+    "folders POST ensureCompanyDriveProvisioned"
+  );
+  assert.doesNotMatch(
+    foldersPost,
+    /getValidGoogleAccessToken\s*\(/,
+    "folders POST session token yok"
+  );
+
+  const provisionActive = extractExportAsyncHandler(
+    fs.readFileSync(
+      path.join(root, "app/api/google-drive/folders/provision-active/route.js"),
+      "utf8"
+    ),
+    "POST"
+  );
+  assert.match(provisionActive, /isManagementUser/, "provision-active yönetim zorunlu");
+  assert.match(provisionActive, /dryRun/, "provision-active dryRun");
+  assert.doesNotMatch(
+    provisionActive,
+    /accessToken|token_reference/,
+    "provision-active credential sızdırmaz"
+  );
+
+  const companiesPostSrc = fs.readFileSync(
+    path.join(root, "app/api/companies/route.js"),
+    "utf8"
+  );
+  assert.match(
+    companiesPostSrc,
+    /ensureCompanyDriveProvisioned/,
+    "companies POST otomatik provision"
+  );
+  assert.match(
+    companiesPostSrc,
+    /bulut arşivi hazırlanıyor/,
+    "companies POST soft drive hata mesajı"
+  );
 
   const oauthStart = extractExportAsyncHandler(
     fs.readFileSync(path.join(root, "app/api/google-drive/oauth/start/route.js"), "utf8"),
