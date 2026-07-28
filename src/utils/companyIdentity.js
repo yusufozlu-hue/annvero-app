@@ -90,12 +90,17 @@ export function shareSameStrongIdentity(a, b) {
 /**
  * Aynı normalize unvan grubunda, kimlikle ayrılamayan company_id’ler.
  * Farklı geçerli VKN/MERSIS’li eşler DUPLICATE_NAME_SKIPPED’e girmez.
+ * Pasif / duplicate_of kayıtlar aktif firmayı engellemez.
  */
 export function buildAmbiguousSameNameCompanyIdSet(companies = []) {
   const byName = new Map();
   for (const company of companies) {
     const id = String(company?.id || "").trim();
     if (!id) continue;
+    const data =
+      company?.data && typeof company.data === "object" ? company.data : company;
+    const active = data?.isActive !== false && company?.isActive !== false;
+    if (!active) continue;
     const key = normalizeCompanyTitleKey(companyTitleOf(company));
     if (!key) continue;
     const list = byName.get(key) || [];
