@@ -16,9 +16,10 @@ import {
   getSupabaseBrowserClient,
   hasSupabaseAuthCookieHint,
 } from "@/src/lib/supabase/client";
+import { getAuthCallbackErrorMessage } from "@/src/lib/auth/authCallback";
+import { resolveAuthHomePathForUser } from "@/src/config/annveroTaxpayerPortal";
 import {
-  getSafeNextPath,
-  hasReturnToHint,
+  consumeReturnToPathClient,
   readRememberedEmailState,
   writeRememberedEmail,
 } from "@/src/utils/authRedirect";
@@ -42,47 +43,10 @@ function logLoginError(error: unknown) {
   }
 }
 
-/** Login kritik yolunu 1s bloklamamak için üst süre; aşılırsa güvenli /dashboard. */
-const RETURN_TO_BUDGET_MS = 100;
+/** Ofis personeli varsayılanı; mükellef resolveAuthHomePathForUser ile /mukellef. */
 const DEFAULT_POST_LOGIN_PATH = "/dashboard";
 
-/**
- * Return-to httpOnly cookie'yi okur (GET siler). Open-redirect: getSafeNextPath.
- * Timeout/hata → varsayılan ANNVERO route; cookie DELETE best-effort.
- * Marker cookie yoksa özel hedef de yoktur → endpoint hiç çağrılmaz.
- */
-async function consumeReturnToPath(): Promise<string> {
-  if (!hasReturnToHint()) return DEFAULT_POST_LOGIN_PATH;
-
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(
-    () => controller.abort(),
-    RETURN_TO_BUDGET_MS
-  );
-  try {
-    const res = await fetch("/api/auth/return-to", {
-      credentials: "include",
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    if (res.ok) {
-      const data = (await res.json()) as { path?: string };
-      return getSafeNextPath(data?.path, DEFAULT_POST_LOGIN_PATH);
-    }
-  } catch {
-    // abort / network → güvenli varsayılan
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
-
-  void fetch("/api/auth/return-to", {
-    method: "DELETE",
-    credentials: "include",
-    keepalive: true,
-  }).catch(() => undefined);
-
-  return DEFAULT_POST_LOGIN_PATH;
-}
+/** Ofis personeli varsayılanı resolveAuthHomePathForUser ile; mükellef → /mukellef. */
 
 function EyeIcon({ open }: { open: boolean }) {
   if (open) {
@@ -238,9 +202,12 @@ export default function LoginForm() {
           window.history.replaceState({}, "", "/login");
         }
       } else if (params.has("error") || params.has("debug")) {
+        const errorCode = params.get("error") || "";
+        if (errorCode) {
+          setError(getAuthCallbackErrorMessage(errorCode));
+        }
         const clean = new URLSearchParams();
         if (debug) clean.set("debug", "1");
-        if (params.get("error")) clean.set("error", params.get("error") || "");
         const qs = clean.toString();
         window.history.replaceState({}, "", qs ? `/login?${qs}` : "/login");
       }
@@ -275,7 +242,9 @@ export default function LoginForm() {
         ]);
         const session = sessionResult.data.session;
         if (cancelled || !session) return;
-        const target = await consumeReturnToPath();
+        const defaultPath =
+          resolveAuthHomePathForUser(session.user) || DEFAULT_POST_LOGIN_PATH;
+        const target = await consumeReturnToPathClient(defaultPath);
         if (!cancelled) router.replace(target);
       } catch {
         // Form görünür kalsın; kullanıcı manuel giriş yapabilir
@@ -371,8 +340,10 @@ export default function LoginForm() {
 
       // Yalnız route kodu/RSC hazırlığı; oturum çerezi yazıldıktan sonra
       // başlatılır, beklenmez ve hatası girişi engellemez.
+      const defaultPath =
+        resolveAuthHomePathForUser(signInData.user) || DEFAULT_POST_LOGIN_PATH;
       try {
-        router.prefetch(DEFAULT_POST_LOGIN_PATH);
+        router.prefetch(defaultPath);
       } catch {
         // prefetch best-effort
       }
@@ -405,7 +376,7 @@ export default function LoginForm() {
         // fire-and-forget
       }
 
-      const redirectTarget = await consumeReturnToPath();
+      const redirectTarget = await consumeReturnToPathClient(defaultPath);
       // Soft replace: tam document reload yok; cookie zaten signIn ile yazıldı.
       // Ek soft-refresh çağrısı yok — çift iş / titreme yaratır.
       router.replace(redirectTarget);

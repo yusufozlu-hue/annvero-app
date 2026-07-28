@@ -15,6 +15,13 @@ import {
   getServerSupabaseAdminGuardResponse,
   logSupabaseQueryError,
 } from "@/src/lib/supabase/serverAdmin";
+import { resolveAnnveroAppEnv } from "@/src/lib/security/envGuard";
+import {
+  ANNVERO_STAGING_SAFE_INVITE_ORIGIN,
+  buildStagingInviteCallbackUrl,
+  isAllowedInviteCallbackUrl,
+  isLocalHostHostname,
+} from "@/src/config/annveroInviteRedirects";
 import {
   mapProfileRow,
   mapProfileToRecord,
@@ -303,39 +310,66 @@ export async function syncAnnveroUserMetadata(authUserId = "", profile = {}) {
 
 function isLocalHostUrl(value) {
   try {
-    const host = new URL(value).hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host === "[::1]"
-    );
+    return isLocalHostHostname(new URL(value).hostname);
   } catch {
     return /localhost|127\.0\.0\.1/i.test(String(value || ""));
   }
 }
 
+/**
+ * Davet / recovery redirect origin çözümü.
+ * Staging: yalnız sabit alias. Localhost asla production/staging callback olmaz.
+ */
 function getSiteUrl(redirectTo = "") {
   const productionFallback = "https://www.annvero.com";
   const isProd = process.env.NODE_ENV === "production";
+  const appEnv = resolveAnnveroAppEnv();
+
+  // Staging / Vercel Preview: yalnız allowlist origin.
+  if (appEnv === "staging") {
+    return ANNVERO_STAGING_SAFE_INVITE_ORIGIN;
+  }
 
   if (redirectTo) {
     const cleaned = redirectTo.replace(/\/$/, "");
-    if (isProd && isLocalHostUrl(cleaned)) return productionFallback;
+    if (isLocalHostUrl(cleaned)) {
+      return isProd ? productionFallback : cleaned;
+    }
     return cleaned;
   }
   if (process.env.NEXT_PUBLIC_SITE_URL) {
     const cleaned = process.env.NEXT_PUBLIC_SITE_URL.replace(/\/$/, "");
-    if (isProd && isLocalHostUrl(cleaned)) return productionFallback;
+    if (isLocalHostUrl(cleaned)) {
+      return isProd ? productionFallback : cleaned;
+    }
     return cleaned;
   }
   if (process.env.VERCEL_URL) {
     const url = process.env.VERCEL_URL;
     return url.startsWith("http") ? url.replace(/\/$/, "") : `https://${url}`;
   }
-  // Production'da asla localhost'a düşme.
   if (isProd) return productionFallback;
   return "http://localhost:3000";
+}
+
+function resolveInviteCallbackUrl(redirectTo = "") {
+  const appEnv = resolveAnnveroAppEnv();
+  if (appEnv === "staging") {
+    return buildStagingInviteCallbackUrl();
+  }
+
+  if (redirectTo && isAllowedInviteCallbackUrl(redirectTo)) {
+    return redirectTo.replace(/\/$/, "");
+  }
+
+  const siteUrl = getSiteUrl(redirectTo);
+  const callbackUrl = `${siteUrl}/auth/callback`;
+
+  // Staging dışı ortamda bile localhost callback'i production'a düşür.
+  if (isLocalHostUrl(callbackUrl) && process.env.NODE_ENV === "production") {
+    return `${getSiteUrl("")}/auth/callback`;
+  }
+  return callbackUrl;
 }
 
 export async function inviteAuthUser({
@@ -354,8 +388,7 @@ export async function inviteAuthUser({
     };
   }
 
-  const siteUrl = getSiteUrl(redirectTo);
-  const callbackUrl = `${siteUrl}/auth/callback`;
+  const callbackUrl = resolveInviteCallbackUrl(redirectTo);
 
   const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, {
     redirectTo: callbackUrl,
@@ -375,10 +408,9 @@ export async function sendPasswordRecoveryEmail(email = "", redirectTo = "") {
     return { sent: false, error: new Error("Supabase admin kullanılamıyor.") };
   }
 
-  const siteUrl = getSiteUrl(redirectTo);
-  const callbackUrl = `${siteUrl}/auth/callback`;
+  const callbackUrl = resolveInviteCallbackUrl(redirectTo);
 
-  const { data, error } = await supabase.auth.admin.generateLink({
+  const { error } = await supabase.auth.admin.generateLink({
     type: "recovery",
     email: String(email).trim().toLowerCase(),
     options: { redirectTo: callbackUrl },
@@ -386,12 +418,8 @@ export async function sendPasswordRecoveryEmail(email = "", redirectTo = "") {
 
   if (error) return { sent: false, error };
 
-  const actionLink = data?.properties?.action_link || "";
-  if (actionLink && process.env.NODE_ENV !== "production") {
-    console.info("[auth] recovery link (dev):", actionLink);
-  }
-
-  return { sent: true, error: null, actionLink };
+  // action_link değerini loglama — token sızıntısı riski.
+  return { sent: true, error: null };
 }
 
 export async function provisionProfileForUser(user) {

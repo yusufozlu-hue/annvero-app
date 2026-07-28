@@ -96,12 +96,12 @@ test("return-to hint cookie yalnizca isaret tasir; yol tasimaz", () => {
 
   const session = read("src/lib/supabase/updateSession.js");
   const route = read("app/api/auth/return-to/route.js");
-  const callback = read("app/auth/callback/route.js");
+  const callback = read("app/auth/callback/AuthCallbackClient.tsx");
   // Marker her zaman httpOnly yol cookie'siyle birlikte yazilir/silinir.
   assert.match(session, /ANNVERO_RETURN_TO_HINT_COOKIE,\s*\n\s*"1"/);
   assert.match(route, /ANNVERO_RETURN_TO_HINT_COOKIE,\s*\n\s*"1"/);
   assert.match(route, /clearReturnToCookies/);
-  assert.match(callback, /ANNVERO_RETURN_TO_HINT_COOKIE/);
+  assert.match(callback, /consumeReturnToPathClient/);
   // Marker degeri hicbir yerde yol olarak kullanilmaz.
   assert.doesNotMatch(route, /getSafeNextPath\([^)]*HINT/);
 });
@@ -125,12 +125,13 @@ test("hasReturnToHint yalnizca marker cookie varliginda true", () => {
 
 test("login: hint yoksa return-to endpoint cagrilmaz", () => {
   const form = read("app/login/LoginForm.tsx");
+  const redirect = read("src/utils/authRedirect.js");
   assert.match(
-    form,
-    /if \(!hasReturnToHint\(\)\) return DEFAULT_POST_LOGIN_PATH;/
+    redirect,
+    /if \(!hasReturnToHint\(\)\) return defaultPath;/
   );
-  // Hedef yine getSafeNextPath ile dogrulanir.
-  assert.match(form, /getSafeNextPath\(data\?\.path, DEFAULT_POST_LOGIN_PATH\)/);
+  assert.match(redirect, /getSafeNextPath\(data\?\.path, defaultPath\)/);
+  assert.match(form, /consumeReturnToPathClient/);
 });
 
 test("login prefetch: yalnizca oturum cerezi dogrulandiktan sonra", () => {
@@ -141,7 +142,7 @@ test("login prefetch: yalnizca oturum cerezi dogrulandiktan sonra", () => {
   assert.ok(prefetchIndex > cookieGateIndex, "prefetch auth oncesinde calisiyor");
   // Prefetch beklenmez ve hata login'i durdurmaz.
   assert.doesNotMatch(form, /await router\.prefetch/);
-  assert.match(form, /router\.prefetch\(DEFAULT_POST_LOGIN_PATH\)/);
+  assert.match(form, /router\.prefetch\(defaultPath\)/);
   // Tek navigation: yalnizca router.replace.
   assert.equal(form.match(/router\.replace\(/g)?.length, 2);
   assert.doesNotMatch(form, /window\.location\.replace/);

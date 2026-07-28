@@ -44,12 +44,7 @@ export async function getGoogleDriveConnection(userId, { includeToken = false } 
   return data;
 }
 
-export async function getValidGoogleAccessToken(userId) {
-  const connection = await getGoogleDriveConnection(userId, { includeToken: true });
-  if (!connection?.token_reference || connection.status !== "connected") {
-    throw new Error("Google Drive bağlantısı bulunamadı.");
-  }
-  const bundle = decryptGoogleDriveTokens(connection.token_reference);
+async function refreshAndPersistConnection(connection, bundle) {
   if (bundle.accessToken && Number(bundle.expiresAt || 0) > Date.now() + 60_000) {
     return { accessToken: bundle.accessToken, connection };
   }
@@ -62,13 +57,50 @@ export async function getValidGoogleAccessToken(userId) {
     tokenType: refreshed.token_type || bundle.tokenType,
     scope: refreshed.scope || bundle.scope,
   };
-  const { error } = await db().from(TABLE).update({
-    token_reference: encryptGoogleDriveTokens(next),
-    last_refresh_at: new Date().toISOString(),
-    status: "connected",
-  }).eq("id", connection.id).eq("user_id", userId);
+  const { error } = await db()
+    .from(TABLE)
+    .update({
+      token_reference: encryptGoogleDriveTokens(next),
+      last_refresh_at: new Date().toISOString(),
+      status: "connected",
+    })
+    .eq("id", connection.id);
   if (error) throw error;
-  return { accessToken: next.accessToken, connection: { ...connection, last_refresh_at: new Date().toISOString() } };
+  return {
+    accessToken: next.accessToken,
+    connection: { ...connection, last_refresh_at: new Date().toISOString() },
+  };
+}
+
+export async function getValidGoogleAccessToken(userId) {
+  const connection = await getGoogleDriveConnection(userId, { includeToken: true });
+  if (!connection?.token_reference || connection.status !== "connected") {
+    throw new Error("Google Drive bağlantısı bulunamadı.");
+  }
+  const bundle = decryptGoogleDriveTokens(connection.token_reference);
+  return refreshAndPersistConnection(connection, bundle);
+}
+
+/**
+ * Reconcile / sistem sync: connection_id üzerinden token (oturum gerekmez).
+ */
+export async function getValidGoogleAccessTokenByConnectionId(connectionId) {
+  const id = String(connectionId || "").trim();
+  if (!id) throw new Error("Google Drive bağlantısı bulunamadı.");
+  const { data: connection, error } = await db()
+    .from(TABLE)
+    .select(
+      "id,user_id,provider,account_email,status,connected_at,last_refresh_at,token_reference"
+    )
+    .eq("id", id)
+    .eq("provider", "google_drive")
+    .maybeSingle();
+  if (error) throw error;
+  if (!connection?.token_reference || connection.status !== "connected") {
+    throw new Error("Google Drive bağlantısı bulunamadı.");
+  }
+  const bundle = decryptGoogleDriveTokens(connection.token_reference);
+  return refreshAndPersistConnection(connection, bundle);
 }
 
 export async function disconnectGoogleDrive(userId) {

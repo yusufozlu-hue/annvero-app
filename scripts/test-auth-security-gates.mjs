@@ -226,7 +226,8 @@ test("public /login proxy'de getUser yok (updateSession early return)", () => {
   assert.match(proxy, /_next\/static/);
   const session = read("src/lib/supabase/updateSession.js");
   assert.match(session, /pathname === "\/login"/);
-  assert.match(session, /asla Supabase getUser/);
+  assert.match(session, /\/auth\/callback/);
+  assert.match(session, /\/auth\/set-password/);
 });
 
 test("SW login navigasyonunu bypass eder ve eski cache sürümü yükseltilir", () => {
@@ -246,11 +247,13 @@ test("open redirect hâlâ kapalı", () => {
 test("giris ve cikis yonlendirmeleri uzak cagrilarda asili kalmaz", () => {
   const bar = read("src/components/AuthUserBar.jsx");
   const login = read("app/login/LoginForm.tsx");
+  const redirect = read("src/utils/authRedirect.js");
   const gate = read("src/components/AuthGate.jsx");
   const logoutProg = read("src/lib/auth/logoutInProgress.js");
   const session = read("src/lib/supabase/updateSession.js");
-  assert.match(login, /RETURN_TO_BUDGET_MS/);
-  assert.match(login, /controller\.abort\(\)/);
+  assert.match(redirect, /RETURN_TO_BUDGET_MS/);
+  assert.match(redirect, /controller\.abort\(\)/);
+  assert.match(login, /consumeReturnToPathClient/);
   assert.match(login, /router\.replace\(redirectTarget\)/);
   assert.doesNotMatch(login, /router\.refresh\(\)/);
   assert.doesNotMatch(login, /window\.location\.replace\(redirectTarget\)/);
@@ -273,10 +276,12 @@ test("giris ve cikis yonlendirmeleri uzak cagrilarda asili kalmaz", () => {
 
 test("return-to login kritik yolunu 1s bloklamaz; open redirect kapali", () => {
   const login = read("app/login/LoginForm.tsx");
+  const redirect = read("src/utils/authRedirect.js");
   const route = read("app/api/auth/return-to/route.js");
-  assert.match(login, /RETURN_TO_BUDGET_MS\s*=\s*100/);
+  assert.match(redirect, /RETURN_TO_BUDGET_MS\s*=\s*100/);
   assert.doesNotMatch(login, /setTimeout\(\s*\(\)\s*=>\s*controller\.abort\(\),\s*1000\)/);
   assert.match(login, /DEFAULT_POST_LOGIN_PATH/);
+  assert.match(login, /consumeReturnToPathClient/);
   assert.match(route, /getSafeNextPath/);
   assert.match(route, /ANNVERO_RETURN_TO_COOKIE/);
   assert.equal(getSafeNextPath("https://evil.com"), "/dashboard");

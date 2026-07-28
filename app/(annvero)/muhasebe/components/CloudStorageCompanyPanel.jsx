@@ -1,11 +1,90 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useUserRole } from "@/src/hooks/useUserRole";
 import {
   buildCompanyFolderTree,
   FOLDER_STRUCTURE_VERSION,
 } from "@/src/utils/cloudStorage/folderSchema";
 import { emptyCloudStorageBinding } from "@/src/utils/cloudStorage/types";
+import {
+  buildUploadTargetPathList,
+  DRIVE_UPLOAD_ACCEPT,
+  DRIVE_UPLOAD_ACCEPT_HINT,
+  DRIVE_UPLOAD_DEFAULT_FOLDER,
+  DRIVE_UPLOAD_MAX_BYTES,
+  DRIVE_UPLOAD_MAX_LABEL,
+} from "@/src/utils/cloudStorage/uploadPolicy";
+import {
+  DUPLICATE_USER_MESSAGE,
+  isUploadUiLocked,
+  phaseAfterSyncResult,
+  phaseAfterUploadResults,
+  shouldRunSyncAfterUploadResults,
+  UPLOAD_PHASE,
+  UPLOADED_AND_INDEXED_MESSAGE,
+  UPLOADED_INDEXING_MESSAGE,
+  UPLOADED_SYNC_FAILED_MESSAGE,
+  uploadButtonLabel,
+  uploadPhaseLiveMessage,
+} from "@/src/utils/cloudStorage/uploadFlow";
+
+const CHECK_ERROR_MESSAGES = Object.freeze({
+  MISSING_COMPANY_ID: "Firma seçilmedi.",
+  FOLDER_BINDING_MISSING:
+    "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
+  DRIVE_CONNECTION_MISSING:
+    "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
+  OFFICE_CONNECTION_PENDING:
+    "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
+  ROOT_FOLDER_INVALID: "Firma Drive kök klasörü geçersiz veya silinmiş.",
+  ROOT_COMPANY_MISMATCH: "Drive kök klasörü bu firmaya bağlı değil.",
+  CONNECTION_FOREIGN: "Firma depolama bağlantısı bu kayıtla eşleşmiyor.",
+  DRIVE_API_ERROR: "Google Drive klasör yapısı okunamadı.",
+  STRUCTURE_MISMATCH: "Klasör yapısı beklenen şema ile uyuşmuyor.",
+  FORBIDDEN: "Bu firmaya erişim yetkiniz yok.",
+  COMPANY_INACTIVE: "Pasif firmalara evrak yüklenemez.",
+  SYSTEM_FOLDER_FORBIDDEN: "Sistem klasörüne (_ANNVERO) dosya yüklenemez.",
+  INVALID_TARGET_PATH: "Hedef klasör şema v1 izinli yollarından biri değil.",
+  UNSUPPORTED_FILE_TYPE: "Desteklenmeyen dosya türü. PDF, Excel, XML veya görsel yükleyin.",
+  MIME_EXTENSION_MISMATCH: "Dosya uzantısı ile içerik türü uyuşmuyor.",
+  EMPTY_FILE: "Boş dosya yüklenemez.",
+  PAYLOAD_TOO_LARGE: `Dosya çok büyük. En fazla ${DRIVE_UPLOAD_MAX_LABEL} yükleyebilirsiniz.`,
+  DUPLICATE_CONTENT: DUPLICATE_USER_MESSAGE,
+  DRIVE_UPLOAD_FAILED: "Dosya Google Drive’a yüklenemedi.",
+  TARGET_FOLDER_MISSING: "Hedef klasör Drive’da bulunamadı. Önce klasör yapısını oluşturun.",
+  MISSING_FILE: "Yüklenecek dosya bulunamadı.",
+});
+
+function friendlyApiError(body, fallback = "İşlem başarısız.") {
+  const code = body?.code || "";
+  if (code && CHECK_ERROR_MESSAGES[code]) return CHECK_ERROR_MESSAGES[code];
+  if (typeof body?.message === "string" && body.message.trim()) return body.message;
+  if (typeof body?.error === "string" && body.error.trim()) {
+    if (/google drive işlemi başarısız/i.test(body.error)) {
+      return "İşlem tamamlanamadı. Bağlantıyı ve klasör kaydını kontrol edin.";
+    }
+    return body.error;
+  }
+  return fallback;
+}
+
+function uploadStatusLabel(status) {
+  switch (status) {
+    case "pending":
+      return "Bekliyor";
+    case "uploading":
+      return "Yükleniyor";
+    case "success":
+      return "Başarılı";
+    case "duplicate":
+      return "Mükerrer";
+    case "error":
+      return "Hata";
+    default:
+      return status;
+  }
+}
 
 /**
  * Firma Yönetimi — gerçek Google Drive OAuth / metadata senkronizasyonu.
@@ -14,20 +93,48 @@ export default function CloudStorageCompanyPanel({
   company,
   setCompany,
   onNotify,
+  onBusyChange,
 }) {
+  const { isManagementUser } = useUserRole();
   const [busy, setBusy] = useState("");
-  const [showTree, setShowTree] = useState(false);
+  const [showExpectedTree, setShowExpectedTree] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [lastSyncStats, setLastSyncStats] = useState(null);
+  const [structureCheck, setStructureCheck] = useState(null);
   const [localError, setLocalError] = useState("");
   const [errorCompanyId, setErrorCompanyId] = useState(company?.id);
   const [binding, setBinding] = useState(() => ({
     ...emptyCloudStorageBinding(), ...(company?.cloudStorage || {}),
   }));
+  const [uploadFolder, setUploadFolder] = useState(DRIVE_UPLOAD_DEFAULT_FOLDER);
+  const [uploadItems, setUploadItems] = useState([]);
+  const [uploadPhase, setUploadPhase] = useState(UPLOAD_PHASE.IDLE);
+  const [uploadSyncFailed, setUploadSyncFailed] = useState(false);
 
   const folderTree = useMemo(() => buildCompanyFolderTree(), []);
+  const uploadTargets = useMemo(() => buildUploadTargetPathList(), []);
   const displayedError =
     errorCompanyId === company?.id ? localError : "";
+
+  const uploadEnabled =
+    Boolean(company?.id) &&
+    binding.connectionStatus === "connected" &&
+    Boolean(binding.rootFolderId) &&
+    company?.isActive !== false;
+
+  const uploadLocked = isUploadUiLocked(uploadPhase) || Boolean(busy);
+  const uploadLiveMessage = uploadPhaseLiveMessage(uploadPhase, {
+    syncError: uploadSyncFailed,
+  });
+
+  useEffect(() => {
+    if (typeof onBusyChange === "function") {
+      onBusyChange(uploadLocked);
+    }
+    return () => {
+      if (typeof onBusyChange === "function") onBusyChange(false);
+    };
+  }, [uploadLocked, onBusyChange]);
 
   const notify = (message, type = "success") => {
     if (typeof onNotify === "function") onNotify(message, type);
@@ -36,6 +143,14 @@ export default function CloudStorageCompanyPanel({
   useEffect(() => {
     let active = true;
     if (!company?.id) return undefined;
+    void Promise.resolve().then(() => {
+      if (active) {
+        setStructureCheck(null);
+        setUploadItems([]);
+        setUploadPhase(UPLOAD_PHASE.IDLE);
+        setUploadSyncFailed(false);
+      }
+    });
     Promise.all([
       fetch("/api/google-drive/connection", { cache: "no-store" }).then((r) => r.json()),
       fetch(`/api/google-drive/folders?companyId=${encodeURIComponent(company.id)}`, { cache: "no-store" }).then((r) => r.json()),
@@ -62,10 +177,21 @@ export default function CloudStorageCompanyPanel({
   async function api(path, options = {}) {
     const response = await fetch(path, {
       ...options,
-      headers: { "content-type": "application/json", ...(options.headers || {}) },
+      headers: {
+        ...(options.body instanceof FormData
+          ? {}
+          : { "content-type": "application/json" }),
+        ...(options.headers || {}),
+      },
     });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || "Google Drive işlemi başarısız.");
+    if (!response.ok) {
+      const err = new Error(friendlyApiError(body));
+      err.code = body?.code || "";
+      err.body = body;
+      err.status = response.status;
+      throw err;
+    }
     return body;
   }
 
@@ -79,6 +205,183 @@ export default function CloudStorageCompanyPanel({
     } catch (error) {
       const message = error?.message || "İşlem başarısız.";
       setErrorCompanyId(company?.id);
+      setLocalError(message);
+      notify(message, "error");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const runAutoSync = async () => {
+    const result = await api("/api/google-drive/sync", {
+      method: "POST",
+      body: JSON.stringify({ companyId: company.id }),
+    });
+    setBinding((prev) => ({
+      ...prev,
+      syncStatus: "ok",
+      lastSyncAt: result.lastSyncAt,
+      indexedDocumentCount: Number(result.stats?.remoteCount || 0),
+    }));
+    setLastSyncStats(result.stats);
+    return result;
+  };
+
+  const handleUploadFiles = async (fileList) => {
+    if (uploadLocked || !uploadEnabled) return;
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+
+    const items = files.map((file, index) => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      name: file.name,
+      size: file.size,
+      status: file.size > DRIVE_UPLOAD_MAX_BYTES ? "error" : "pending",
+      message:
+        file.size > DRIVE_UPLOAD_MAX_BYTES
+          ? CHECK_ERROR_MESSAGES.PAYLOAD_TOO_LARGE
+          : "",
+      file,
+    }));
+
+    setUploadItems(items);
+    setUploadSyncFailed(false);
+    setUploadPhase(UPLOAD_PHASE.UPLOADING);
+    setErrorCompanyId(company?.id);
+    setLocalError("");
+    setBusy("upload");
+
+    const resultStatuses = items.map((item) => item.status);
+
+    try {
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        if (item.status === "error") {
+          resultStatuses[index] = "error";
+          continue;
+        }
+
+        setUploadItems((prev) =>
+          prev.map((row) =>
+            row.id === item.id ? { ...row, status: "uploading", message: "" } : row
+          )
+        );
+
+        try {
+          if (!item.file.size) {
+            throw Object.assign(new Error(CHECK_ERROR_MESSAGES.EMPTY_FILE), {
+              code: "EMPTY_FILE",
+            });
+          }
+          const form = new FormData();
+          form.set("companyId", company.id);
+          form.set("targetFolderPath", uploadFolder);
+          form.set("file", item.file, item.file.name);
+          const response = await fetch("/api/google-drive/files/upload", {
+            method: "POST",
+            body: form,
+          });
+          const body = await response.json().catch(() => ({}));
+
+          if (response.status === 409 && body?.code === "DUPLICATE_CONTENT") {
+            resultStatuses[index] = "duplicate";
+            setUploadItems((prev) =>
+              prev.map((row) =>
+                row.id === item.id
+                  ? {
+                      ...row,
+                      status: "duplicate",
+                      message: DUPLICATE_USER_MESSAGE,
+                    }
+                  : row
+              )
+            );
+            continue;
+          }
+
+          if (!response.ok) {
+            throw Object.assign(new Error(friendlyApiError(body)), {
+              code: body?.code || "",
+              body,
+              status: response.status,
+            });
+          }
+
+          resultStatuses[index] = "success";
+          setUploadItems((prev) =>
+            prev.map((row) =>
+              row.id === item.id
+                ? {
+                    ...row,
+                    status: "success",
+                    message: UPLOADED_INDEXING_MESSAGE,
+                  }
+                : row
+            )
+          );
+        } catch (error) {
+          resultStatuses[index] = "error";
+          setUploadItems((prev) =>
+            prev.map((row) =>
+              row.id === item.id
+                ? {
+                    ...row,
+                    status: "error",
+                    message: error?.message || CHECK_ERROR_MESSAGES.DRIVE_UPLOAD_FAILED,
+                  }
+                : row
+            )
+          );
+        }
+      }
+
+      const nextPhase = phaseAfterUploadResults(resultStatuses);
+
+      if (!shouldRunSyncAfterUploadResults(resultStatuses)) {
+        setUploadPhase(nextPhase);
+        if (nextPhase === UPLOAD_PHASE.DUPLICATE) {
+          notify(DUPLICATE_USER_MESSAGE, "error");
+        } else if (nextPhase === UPLOAD_PHASE.ERROR) {
+          notify("Yükleme başarısız. Tekrar deneyebilirsiniz.", "error");
+        }
+        return;
+      }
+
+      // En az bir yeni dosya yüklendi → tek sync
+      setUploadPhase(UPLOAD_PHASE.SYNCING);
+      setBusy("sync");
+      try {
+        const syncResult = await runAutoSync();
+        setUploadPhase(phaseAfterSyncResult({ ok: true }));
+        setUploadSyncFailed(false);
+        setUploadItems((prev) =>
+          prev.map((row) =>
+            row.status === "success"
+              ? { ...row, message: UPLOADED_AND_INDEXED_MESSAGE }
+              : row
+          )
+        );
+        notify(
+          `${UPLOADED_AND_INDEXED_MESSAGE} Drive’da ${syncResult.stats?.remoteCount ?? 0} belge.`,
+          "success"
+        );
+      } catch (syncError) {
+        setUploadSyncFailed(true);
+        setUploadPhase(phaseAfterSyncResult({ ok: false }));
+        setUploadItems((prev) =>
+          prev.map((row) =>
+            row.status === "success"
+              ? { ...row, message: UPLOADED_SYNC_FAILED_MESSAGE }
+              : row
+          )
+        );
+        const message = syncError?.message || UPLOADED_SYNC_FAILED_MESSAGE;
+        setLocalError(message);
+        notify(message, "error");
+      }
+    } catch (error) {
+      setUploadPhase(UPLOAD_PHASE.ERROR);
+      const message = error?.message || "Yükleme başarısız.";
       setLocalError(message);
       notify(message, "error");
     } finally {
@@ -122,6 +425,16 @@ export default function CloudStorageCompanyPanel({
     },
   ];
 
+  const checkTone = structureCheck
+    ? structureCheck.ok
+      ? "ok"
+      : structureCheck.missingPaths?.length
+        ? "missing"
+        : structureCheck.extraPaths?.length
+          ? "extra"
+          : "missing"
+    : null;
+
   return (
     <div className="space-y-6">
       <div>
@@ -132,8 +445,8 @@ export default function CloudStorageCompanyPanel({
           karttır; Drive metadata dosyasında unvan/MERSİS tutulmaz.
         </p>
         <p className="mt-2 text-xs text-amber-200/90">
-          Bağlantı Google’ın dar kapsamlı drive.file izniyle çalışır. Token yalnız
-          sunucuda şifreli saklanır; tarayıcıya ve firma kartına yazılmaz.
+          Bağlantı Google’ın dar kapsamlı drive.file izniyle çalışır. Dosyaları
+          Drive’a elle değil, aşağıdaki ANNVERO yükleme alanından ekleyin.
         </p>
       </div>
 
@@ -160,37 +473,42 @@ export default function CloudStorageCompanyPanel({
       )}
 
       <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={Boolean(busy)}
-          onClick={() => { window.location.assign(`/api/google-drive/oauth/start?companyId=${encodeURIComponent(company.id)}`); }}
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500 disabled:opacity-50"
-        >
-          {busy === "connect" ? "Hazırlanıyor…" : "Google Drive’ı Bağla"}
-        </button>
+        {isManagementUser ? (
+          <button
+            type="button"
+            disabled={Boolean(busy)}
+            onClick={() => { window.location.assign(`/api/google-drive/oauth/start?companyId=${encodeURIComponent(company.id)}`); }}
+            className="rounded-lg bg-sky-700 px-4 py-2 text-sm font-medium hover:bg-sky-600 disabled:opacity-50"
+          >
+            {busy === "connect" ? "Hazırlanıyor…" : "Google Drive’ı Bağla"}
+          </button>
+        ) : null}
 
-        <button
-          type="button"
-          disabled={Boolean(busy) || binding.connectionStatus !== "connected"}
-          onClick={() =>
-            void run("folders", async () => {
-              const { result } = await api("/api/google-drive/folders", {
-                method: "POST", body: JSON.stringify({ companyId: company.id }),
-              });
-              setBinding((prev) => ({ ...prev, rootFolderId: result.rootFolderId,
-                rootFolderName: result.rootFolderName, folderStructureVersion: result.folderStructureVersion }));
-              notify(
-                result.createdFolderCount
-                  ? `Klasör yapısı oluşturuldu (${result.createdFolderCount} yeni)`
-                  : "Klasör yapısı zaten güncel (idempotent)",
-                "success"
-              );
-            })
-          }
-          className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium hover:bg-emerald-600 disabled:opacity-50"
-        >
-          {busy === "folders" ? "Hazırlanıyor…" : "Firma Klasörünü Oluştur"}
-        </button>
+        {isManagementUser ? (
+          <button
+            type="button"
+            disabled={Boolean(busy) || binding.connectionStatus !== "connected"}
+            onClick={() =>
+              void run("folders", async () => {
+                const { result } = await api("/api/google-drive/folders", {
+                  method: "POST", body: JSON.stringify({ companyId: company.id }),
+                });
+                setBinding((prev) => ({ ...prev, rootFolderId: result.rootFolderId,
+                  rootFolderName: result.rootFolderName, folderStructureVersion: result.folderStructureVersion }));
+                setStructureCheck(null);
+                notify(
+                  result.createdFolderCount
+                    ? `Klasör yapısı oluşturuldu (${result.createdFolderCount} yeni)`
+                    : "Klasör yapısı zaten güncel (idempotent)",
+                  "success"
+                );
+              })
+            }
+            className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium hover:bg-emerald-600 disabled:opacity-50"
+          >
+            {busy === "folders" ? "Hazırlanıyor…" : "Firma Klasörünü Oluştur"}
+          </button>
+        ) : null}
 
         <button
           type="button"
@@ -206,47 +524,166 @@ export default function CloudStorageCompanyPanel({
           Klasörü Aç
         </button>
 
+        {isManagementUser ? (
+          <button
+            type="button"
+            disabled={Boolean(busy) || !binding.rootFolderId}
+            onClick={() =>
+              void run("check", async () => {
+                const result = await api(
+                  `/api/google-drive/folders/check?companyId=${encodeURIComponent(company.id)}`
+                );
+                setStructureCheck(result);
+                notify(
+                  result.ok
+                    ? "Klasör yapısı şema ile uyumlu"
+                    : friendlyApiError(result, "Klasör yapısı uyuşmuyor"),
+                  result.ok ? "success" : "error"
+                );
+              })
+            }
+            className="rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
+          >
+            {busy === "check" ? "Kontrol ediliyor…" : "Klasör Yapısını Kontrol Et"}
+          </button>
+        ) : null}
+
         <button
           type="button"
           disabled={!binding.rootFolderId}
-          onClick={() => setShowTree((v) => !v)}
+          onClick={() => setShowExpectedTree((v) => !v)}
           className="rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
         >
-          {showTree ? "Ağacı Gizle" : "Klasör Yapısını Kontrol Et"}
+          {showExpectedTree ? "Beklenen Şemayı Gizle" : "Beklenen Şemayı Göster"}
         </button>
 
-        <button
-          type="button"
-          disabled={Boolean(busy) || !binding.rootFolderId}
-          onClick={() =>
-            void run("sync", async () => {
-              const result = await api("/api/google-drive/sync", {
-                method: "POST", body: JSON.stringify({ companyId: company.id }),
-              });
-              setBinding((prev) => ({ ...prev, syncStatus: "ok", lastSyncAt: result.lastSyncAt }));
-              setLastSyncStats(result.stats);
-              notify("Senkronizasyon tamamlandı", "success");
-            })
-          }
-          className="rounded-lg border border-sky-700 bg-sky-950 px-4 py-2 text-sm font-medium text-sky-100 hover:bg-sky-900 disabled:opacity-50"
-        >
-          {busy === "sync" ? "Hazırlanıyor…" : "Senkronizasyonu Yenile"}
-        </button>
+        {isManagementUser ? (
+          <button
+            type="button"
+            disabled={Boolean(busy) || !binding.rootFolderId}
+            onClick={() =>
+              void run("sync", async () => {
+                await runAutoSync();
+                notify("Senkronizasyon tamamlandı", "success");
+              })
+            }
+            className="rounded-lg border border-sky-700 bg-sky-950 px-4 py-2 text-sm font-medium text-sky-100 hover:bg-sky-900 disabled:opacity-50"
+          >
+            {busy === "sync" ? "Hazırlanıyor…" : "Senkronizasyonu Yenile"}
+          </button>
+        ) : null}
 
-        <button
-          type="button"
-          disabled={Boolean(busy) || binding.connectionStatus !== "connected"}
-          onClick={() => setShowDisconnectConfirm(true)}
-          className="rounded-lg border border-rose-700/70 bg-rose-950/50 px-4 py-2 text-sm font-medium text-rose-100 hover:bg-rose-900/60 disabled:opacity-50"
-        >
-          Bağlantıyı Kaldır
-        </button>
+        {isManagementUser ? (
+          <button
+            type="button"
+            disabled={Boolean(busy) || binding.connectionStatus !== "connected"}
+            onClick={() => setShowDisconnectConfirm(true)}
+            className="rounded-lg border border-rose-700/70 bg-rose-950/50 px-4 py-2 text-sm font-medium text-rose-100 hover:bg-rose-900/60 disabled:opacity-50"
+          >
+            Bağlantıyı Kaldır
+          </button>
+        ) : null}
+      </div>
+
+      <div
+        className={`rounded-xl border p-4 ${
+          uploadEnabled
+            ? "border-slate-700 bg-slate-950/50"
+            : "border-slate-800 bg-slate-950/30 opacity-70"
+        }`}
+      >
+        <h3 className="text-sm font-semibold text-slate-100">
+          ANNVERO’dan Drive’a Evrak Yükle
+        </h3>
+        <p className="mt-1 text-xs text-slate-400">
+          {DRIVE_UPLOAD_ACCEPT_HINT}. Dosyalar uygulama tarafından Drive’a
+          yazılır; böylece senkronizasyon onları görebilir.
+        </p>
+        {!uploadEnabled ? (
+          <p className="mt-2 text-xs text-amber-200/90">
+            Yükleme için Google Drive bağlantısı ve firma klasörü gerekir.
+          </p>
+        ) : null}
+
+        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
+          <label className="flex min-w-[14rem] flex-1 flex-col gap-1 text-xs text-slate-400">
+            Hedef klasör
+            <select
+              value={uploadFolder}
+              disabled={!uploadEnabled || uploadLocked}
+              onChange={(event) => setUploadFolder(event.target.value)}
+              className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 disabled:opacity-50"
+            >
+              {uploadTargets.map((path) => (
+                <option key={path} value={path}>
+                  {path}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label
+            className={`inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium text-white ${
+              !uploadEnabled || uploadLocked
+                ? "cursor-not-allowed bg-sky-900/60 opacity-60"
+                : "cursor-pointer bg-sky-700 hover:bg-sky-600"
+            }`}
+          >
+            {uploadButtonLabel(uploadPhase)}
+            <input
+              type="file"
+              multiple
+              accept={DRIVE_UPLOAD_ACCEPT}
+              disabled={!uploadEnabled || uploadLocked}
+              className="hidden"
+              onChange={(event) => {
+                const list = event.target.files;
+                void handleUploadFiles(list);
+                event.target.value = "";
+              }}
+            />
+          </label>
+        </div>
+        <p className="mt-2 text-[11px] text-slate-500">
+          Boyut sınırı: {DRIVE_UPLOAD_MAX_LABEL} / dosya. Varsayılan hedef:{" "}
+          {DRIVE_UPLOAD_DEFAULT_FOLDER}.
+        </p>
+        <p className="sr-only" aria-live="polite" aria-atomic="true">
+          {uploadLiveMessage}
+        </p>
+        {uploadLiveMessage ? (
+          <p className="mt-2 text-xs text-slate-300" aria-hidden="true">
+            {uploadLiveMessage}
+          </p>
+        ) : null}
+
+        {uploadItems.length ? (
+          <ul className="mt-3 max-h-48 space-y-1 overflow-y-auto text-sm">
+            {uploadItems.map((item) => (
+              <li
+                key={item.id}
+                className={
+                  item.status === "success"
+                    ? "text-emerald-200"
+                    : item.status === "duplicate"
+                      ? "text-amber-200"
+                      : item.status === "error"
+                        ? "text-rose-200"
+                        : "text-slate-300"
+                }
+              >
+                <span className="font-medium">{uploadStatusLabel(item.status)}</span>
+                {" · "}
+                {item.name}
+                {item.message ? ` — ${item.message}` : ""}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
 
       {binding.rootFolderId ? (
         <p className="text-xs text-slate-500">
           Yapı sürümü: {binding.folderStructureVersion || FOLDER_STRUCTURE_VERSION}
-          {/* folder ID teknik; baskın değil */}
           <span className="ml-2 opacity-60">· teknik kimlik gizli tutulur</span>
         </p>
       ) : null}
@@ -255,6 +692,66 @@ export default function CloudStorageCompanyPanel({
         <p className="text-xs text-slate-400">
           Son senkronizasyon: Drive’da {lastSyncStats.remoteCount} belge bulundu.
         </p>
+      ) : null}
+
+      {structureCheck ? (
+        <div
+          className={
+            checkTone === "ok"
+              ? "rounded-xl border border-emerald-700/60 bg-emerald-950/30 p-4"
+              : checkTone === "extra"
+                ? "rounded-xl border border-amber-700/60 bg-amber-950/30 p-4"
+                : "rounded-xl border border-rose-700/60 bg-rose-950/30 p-4"
+          }
+        >
+          <p
+            className={
+              checkTone === "ok"
+                ? "text-sm font-medium text-emerald-100"
+                : checkTone === "extra"
+                  ? "text-sm font-medium text-amber-100"
+                  : "text-sm font-medium text-rose-100"
+            }
+          >
+            {structureCheck.ok
+              ? "Tam uyumlu — klasör yapısı şema ile eşleşiyor."
+              : structureCheck.missingPaths?.length
+                ? "Eksik klasörler bulundu."
+                : "Beklenmeyen (fazla) klasörler bulundu."}
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            Şema {structureCheck.schemaVersion} · beklenen {structureCheck.expectedCount} ·
+            Drive’da {structureCheck.existingCount}
+            {" · "}
+            _ANNVERO kökte: {structureCheck.annveroAtRoot ? "var" : "yok"}
+          </p>
+
+          {structureCheck.missingPaths?.length ? (
+            <div className="mt-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-rose-200/90">
+                Eksik yollar
+              </p>
+              <ul className="mt-1 max-h-40 space-y-0.5 overflow-y-auto text-sm text-rose-100/90">
+                {structureCheck.missingPaths.map((path) => (
+                  <li key={`missing-${path}`}>• {path}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {structureCheck.extraPaths?.length ? (
+            <div className="mt-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-amber-200/90">
+                Fazla yollar
+              </p>
+              <ul className="mt-1 max-h-40 space-y-0.5 overflow-y-auto text-sm text-amber-100/90">
+                {structureCheck.extraPaths.map((path) => (
+                  <li key={`extra-${path}`}>• {path}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       {showDisconnectConfirm ? (
@@ -310,6 +807,10 @@ export default function CloudStorageCompanyPanel({
                     setBinding(emptyCloudStorageBinding());
                     setCompany({ ...company, cloudStorage: emptyCloudStorageBinding() });
                     setLastSyncStats(null);
+                    setStructureCheck(null);
+                    setUploadItems([]);
+                    setUploadPhase(UPLOAD_PHASE.IDLE);
+                    setUploadSyncFailed(false);
                     setShowDisconnectConfirm(false);
                     notify("Bulut bağlantısı kaldırıldı", "success");
                   })
@@ -323,7 +824,7 @@ export default function CloudStorageCompanyPanel({
         </div>
       ) : null}
 
-      {showTree ? (
+      {showExpectedTree ? (
         <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
           <p className="mb-3 text-sm font-medium text-slate-200">
             Beklenen klasör ağacı (şema {FOLDER_STRUCTURE_VERSION})

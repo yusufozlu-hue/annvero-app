@@ -60,6 +60,22 @@ const CloudStorageCompanyPanel = dynamic(
     ),
   }
 );
+const DriveBulkProvisionPanel = dynamic(
+  () => import("./DriveBulkProvisionPanel"),
+  {
+    ssr: false,
+    loading: () => null,
+  }
+);
+const CloudDocumentsPanel = dynamic(
+  () => import("./CloudDocumentsPanel"),
+  {
+    ssr: false,
+    loading: () => (
+      <p className="px-1 py-6 text-sm text-slate-500">Evraklar yükleniyor…</p>
+    ),
+  }
+);
 const EMPLOYEE_PAGE_SIZE = 20;
 
 const COMPANY_TAB_SAVE_MESSAGES = {
@@ -152,6 +168,7 @@ export default function CompanyManagement() {
   const [contactsSectionOpen, setContactsSectionOpen] = useState(true);
   const [expandedContactDetails, setExpandedContactDetails] = useState({});
   const [companySearchQuery, setCompanySearchQuery] = useState("");
+  const [cloudStorageBusy, setCloudStorageBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -396,7 +413,7 @@ export default function CompanyManagement() {
     setIsSaving(true);
 
     try {
-      await saveCompanyRecord({
+      const saved = await saveCompanyRecord({
         id: normalized.id,
         company_name: normalized.companyName,
         data: normalized,
@@ -414,10 +431,18 @@ export default function CompanyManagement() {
       persistCompaniesToLocalStorage(updated);
       broadcastCompaniesRefresh();
 
-      showToast(
-        COMPANY_TAB_SAVE_MESSAGES[activeTab] || "Firma kaydedildi",
-        "success"
-      );
+      const driveStatus = saved?.driveArchive?.status;
+      if (
+        driveStatus === "DRIVE_ERROR" ||
+        driveStatus === "OFFICE_CONNECTION_PENDING"
+      ) {
+        showToast("Firma kaydedildi, bulut arşivi hazırlanıyor", "success");
+      } else {
+        showToast(
+          COMPANY_TAB_SAVE_MESSAGES[activeTab] || "Firma kaydedildi",
+          "success"
+        );
+      }
     } catch (error) {
       console.error("[CompanyManagement] saveCompany failed", {
         companyId: normalized.id,
@@ -1177,7 +1202,8 @@ export default function CompanyManagement() {
       <div key={c.id} className="flex items-stretch gap-1">
         <button
           onClick={() => selectCompany(c.id)}
-          className={`min-w-0 flex-1 rounded-lg px-4 py-2 text-left text-sm transition-colors ${visualClass}`}
+          disabled={cloudStorageBusy && !isSelected}
+          className={`min-w-0 flex-1 rounded-lg px-4 py-2 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${visualClass}`}
         >
           <div className="truncate font-medium">{c.companyName}</div>
           {isPassive && (
@@ -1486,11 +1512,15 @@ export default function CompanyManagement() {
             )}
 
             {activeTab === "cloudStorage" && (
-              <CloudStorageCompanyPanel
-                company={company}
-                setCompany={setCompany}
-                onNotify={showToast}
-              />
+              <div className="space-y-6">
+                <DriveBulkProvisionPanel onNotify={showToast} />
+                <CloudStorageCompanyPanel
+                  company={company}
+                  setCompany={setCompany}
+                  onNotify={showToast}
+                  onBusyChange={setCloudStorageBusy}
+                />
+              </div>
             )}
 
             {activeTab === "general" && (
@@ -2589,12 +2619,10 @@ export default function CompanyManagement() {
             )}
 
             {activeTab === "ticaretDocuments" && (
-              <TicaretSicilCompanyPanel
+              <CloudDocumentsPanel
+                key={company.id || "no-company"}
                 companyId={company.id}
-                companyName={company.companyName}
-                companyAddress={company.address}
-                companyTaxNumber={company.taxNumber}
-                view="documents"
+                onNotify={showToast}
               />
             )}
 

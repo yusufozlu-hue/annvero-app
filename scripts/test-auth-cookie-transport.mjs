@@ -129,11 +129,15 @@ test("hasSupabaseAuthCookieHint değer okumaz (boş document)", () => {
   assert.equal(hasSupabaseAuthCookieHint(), false);
 });
 
-test("callback createAnnveroServerSupabase + setAll", () => {
-  const src = read("app/auth/callback/route.js");
-  assert.match(src, /createAnnveroServerSupabase/);
-  assert.match(src, /setAll/);
-  assert.doesNotMatch(src, /document\.cookie/);
+test("callback client-side session + cookie transport", () => {
+  const src = read("app/auth/callback/AuthCallbackClient.tsx");
+  assert.match(src, /getSupabaseBrowserClient/);
+  assert.match(src, /hasSupabaseAuthCookieHint/);
+  assert.doesNotMatch(src, /document\.cookie\s*=\s*`[^`]*access_token/);
+  assert.doesNotMatch(
+    src,
+    /console\.(log|info|warn|error)[\s\S]{0,200}(access_token|refresh_token)/i
+  );
 });
 
 if (!process.exitCode) {

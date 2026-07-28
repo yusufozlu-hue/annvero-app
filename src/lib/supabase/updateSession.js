@@ -2,6 +2,11 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import { isPlatformAdmin } from "@/src/lib/auth/admin";
 import {
+  isOfficeRoutePath,
+  isTaxpayerAuthUser,
+  TAXPAYER_HOME_PATH,
+} from "@/src/config/annveroTaxpayerPortal";
+import {
   ANNVERO_RETURN_TO_COOKIE,
   ANNVERO_RETURN_TO_HINT_COOKIE,
   getReturnToCookieOptions,
@@ -13,6 +18,7 @@ import { getSupabaseSsrCookieOptions } from "@/src/lib/supabase/ssrCookies";
 
 function isProtectedPath(pathname) {
   return (
+    pathname.startsWith("/mukellef") ||
     pathname.startsWith("/muhasebe") ||
     pathname.startsWith("/dashboard") ||
     pathname.startsWith("/ofis-takip") ||
@@ -88,8 +94,6 @@ export async function updateSession(request) {
     return NextResponse.next({ request });
   }
 
-  // Public /login: asla Supabase getUser / token refresh bekleme.
-  // Oturumlu yönlendirme istemci tarafında; ?next= istemci + return-to API.
   if (pathname === "/login") {
     const legacyNext = searchParams.get("next");
     if (legacyNext) {
@@ -100,6 +104,10 @@ export async function updateSession(request) {
       setReturnToCookie(response, legacyNext);
       return response;
     }
+    return NextResponse.next({ request });
+  }
+
+  if (pathname === "/auth/callback" || pathname === "/auth/set-password") {
     return NextResponse.next({ request });
   }
 
@@ -136,6 +144,17 @@ export async function updateSession(request) {
     const response = NextResponse.redirect(loginUrl);
     setReturnToCookie(response, pathname);
     return withSupabaseCookies(supabaseResponse, response);
+  }
+
+  // Mükellef (JWT metadata hint) — ofis/admin route'larını /mukellef'e yönlendir. DB yok.
+  if (user && isTaxpayerAuthUser(user) && isOfficeRoutePath(pathname)) {
+    const homeUrl = request.nextUrl.clone();
+    homeUrl.pathname = TAXPAYER_HOME_PATH;
+    homeUrl.search = "";
+    return withSupabaseCookies(
+      supabaseResponse,
+      NextResponse.redirect(homeUrl)
+    );
   }
 
   if (isAdminPath(pathname) && user && !(await canAccessAdminArea(user))) {

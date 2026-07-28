@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
-import { assertCompanyAccess, getApiSupabase, requireApiSession } from "@/src/lib/auth/apiGuard";
+import {
+  assertCompanyAccess,
+  getApiSupabase,
+  jsonForbidden,
+  requireApiSession,
+} from "@/src/lib/auth/apiGuard";
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
-import { getValidGoogleAccessToken } from "@/src/lib/googleDrive/connectionStore";
-import { ensureGoogleDriveFolderTree } from "@/src/utils/cloudStorage/googleDriveAdapter";
+import {
+  ensureCompanyDriveProvisioned,
+  PROVISION_STATUS,
+  toPublicProvisionResult,
+} from "@/src/lib/googleDrive/ensureCompanyDriveProvisioned";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,29 +30,69 @@ export async function GET(request) {
   return NextResponse.json({ folder: data || null });
 }
 
+/**
+ * POST — tek firma klasör hazırlığı (management).
+ * Credential: ofis company-bound connection (session-user OAuth değil).
+ */
 export async function POST(request) {
   const session = await requireApiSession();
   if (session.error) return session.error;
-  const limited = enforceRateLimit(request, session, "google-drive-folders", { limit: 10, windowMs: 300_000 });
+  if (!session.access?.isManagementUser) {
+    return jsonForbidden("Bu işlem için yönetim yetkisi gerekli.");
+  }
+  const limited = enforceRateLimit(request, session, "google-drive-folders", {
+    limit: 10,
+    windowMs: 300_000,
+  });
   if (limited) return limited;
-  const { companyId } = await request.json();
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    body = {};
+  }
+  const companyId = String(body?.companyId || "").trim();
   const access = assertCompanyAccess(session.access, companyId, { required: true });
   if (!access.ok) return access.response;
-  const { supabase, guard } = getApiSupabase("google-drive-folders", "company_cloud_folders");
-  if (guard) return guard;
-  const [{ data: company, error: companyError }, token] = await Promise.all([
-    supabase.from("companies").select("id,company_name").eq("id", companyId).single(),
-    getValidGoogleAccessToken(session.user.id),
-  ]);
-  if (companyError || !company) return NextResponse.json({ error: "Firma bulunamadı." }, { status: 404 });
-  const result = await ensureGoogleDriveFolderTree({
-    accessToken: token.accessToken, companyId, companyName: company.company_name,
+
+  const provision = await ensureCompanyDriveProvisioned(companyId, {
+    dryRun: false,
   });
-  const { error } = await supabase.from("company_cloud_folders").upsert({
-    company_id: companyId, connection_id: token.connection.id,
-    root_folder_id: result.rootFolderId, root_folder_name: result.rootFolderName,
-    folder_structure_version: result.folderStructureVersion, sync_status: "idle", last_error: null,
-  }, { onConflict: "company_id" });
-  if (error) throw error;
-  return NextResponse.json({ result });
+
+  if (provision.status === PROVISION_STATUS.COMPANY_NOT_FOUND) {
+    return NextResponse.json({ error: "Firma bulunamadı." }, { status: 404 });
+  }
+  if (provision.status === PROVISION_STATUS.INACTIVE_SKIPPED) {
+    return NextResponse.json(
+      { error: "Pasif firmalar için Drive klasörü oluşturulmaz." },
+      { status: 409 }
+    );
+  }
+  if (
+    provision.status === PROVISION_STATUS.OFFICE_CONNECTION_PENDING ||
+    provision.status === PROVISION_STATUS.DRIVE_ERROR
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          provision.message ||
+          "Ofis bağlantısı hazırlanıyor. Lütfen muhasebe ofisinizle iletişime geçin.",
+        code: provision.status,
+        provision: toPublicProvisionResult(provision),
+      },
+      { status: 409 }
+    );
+  }
+
+  // Management UI bağlama kartı için kök meta (token yok).
+  return NextResponse.json({
+    result: {
+      rootFolderId: provision._rootFolderId || null,
+      rootFolderName: provision.companyName || null,
+      folderStructureVersion: "v1",
+      createdFolderCount: provision.createdFolderCount || 0,
+    },
+    provision: toPublicProvisionResult(provision),
+  });
 }

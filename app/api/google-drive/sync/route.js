@@ -1,52 +1,112 @@
+/**
+ * POST /api/google-drive/sync
+ * Firma erişimli metadata sync. force/full yalnız yönetim.
+ * Token: oturum kullanıcısı değil — firma-bound connection.
+ */
+
 import { NextResponse } from "next/server";
-import { assertCompanyAccess, getApiSupabase, requireApiSession } from "@/src/lib/auth/apiGuard";
+import {
+  assertCompanyAccess,
+  getApiSupabase,
+  requireApiSession,
+} from "@/src/lib/auth/apiGuard";
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
-import { getValidGoogleAccessToken } from "@/src/lib/googleDrive/connectionStore";
-import { listGoogleDriveMetadata } from "@/src/utils/cloudStorage/googleDriveAdapter";
+import {
+  COMPANY_DRIVE_ERROR,
+  COMPANY_DRIVE_USER_MESSAGES,
+  resolveCompanyDriveConnection,
+} from "@/src/lib/googleDrive/resolveCompanyDriveConnection";
+import { runCompanyDriveSync } from "@/src/utils/cloudStorage/runCompanyDriveSync";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function isCompanyActive(company) {
+  const flag = company?.data?.isActive;
+  return flag !== false;
+}
+
 export async function POST(request) {
   const session = await requireApiSession();
   if (session.error) return session.error;
-  const limited = enforceRateLimit(request, session, "google-drive-sync", { limit: 12, windowMs: 300_000 });
+  const limited = enforceRateLimit(request, session, "google-drive-sync", {
+    limit: 12,
+    windowMs: 300_000,
+  });
   if (limited) return limited;
-  const { companyId } = await request.json();
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch {
+    body = {};
+  }
+
+  const companyId = String(body?.companyId || "").trim();
+  const force = Boolean(body?.force);
+  const full = Boolean(body?.full || body?.fullReconcile);
+
+  if ((force || full) && !session.access?.isManagementUser) {
+    return NextResponse.json(
+      { error: "force/full senkron yalnız yönetim kullanıcılarına açıktır." },
+      { status: 403 }
+    );
+  }
+
   const access = assertCompanyAccess(session.access, companyId, { required: true });
   if (!access.ok) return access.response;
+
   const { supabase, guard } = getApiSupabase("google-drive-sync", "document_index");
   if (guard) return guard;
-  const [{ accessToken }, { data: folder, error: folderError }] = await Promise.all([
-    getValidGoogleAccessToken(session.user.id),
-    supabase.from("company_cloud_folders").select("root_folder_id").eq("company_id", companyId).single(),
-  ]);
-  if (folderError || !folder?.root_folder_id) {
-    return NextResponse.json({ error: "Önce firma Drive klasörünü oluşturun." }, { status: 409 });
+
+  const { data: company, error: companyError } = await supabase
+    .from("companies")
+    .select("id,data")
+    .eq("id", companyId)
+    .single();
+
+  if (companyError || !company) {
+    return NextResponse.json({ error: "Firma bulunamadı." }, { status: 404 });
   }
-  const remote = await listGoogleDriveMetadata({ accessToken, rootFolderId: folder.root_folder_id });
-  const rows = remote.map((file) => ({
-    company_id: companyId, provider: "google_drive", provider_file_id: file.providerFileId,
-    parent_folder_id: file.parentFolderId, file_name: file.fileName, mime_type: file.mimeType,
-    file_size: file.fileSize, file_hash: file.fileHash, last_modified_at: file.lastModifiedAt,
-    indexed_at: new Date().toISOString(), parse_status: "indexed",
-  }));
-  if (rows.length) {
-    const { error } = await supabase.from("document_index").upsert(rows, { onConflict: "company_id,provider_file_id" });
-    if (error) throw error;
+  if (!isCompanyActive(company)) {
+    return NextResponse.json(
+      { error: "Pasif firmaların Drive arşivi senkronize edilmez." },
+      { status: 409 }
+    );
   }
-  const remoteIds = new Set(remote.map((file) => file.providerFileId));
-  const { data: indexed, error: indexError } = await supabase.from("document_index")
-    .select("provider_file_id").eq("company_id", companyId).eq("provider", "google_drive")
-    .neq("parse_status", "soft_deleted");
-  if (indexError) throw indexError;
-  const missingIds = (indexed || []).map((row) => row.provider_file_id).filter((id) => !remoteIds.has(id));
-  if (missingIds.length) {
-    const { error: missingError } = await supabase.from("document_index")
-      .update({ parse_status: "missing" }).eq("company_id", companyId).in("provider_file_id", missingIds);
-    if (missingError) throw missingError;
+
+  let drive;
+  try {
+    drive = await resolveCompanyDriveConnection(companyId);
+  } catch (error) {
+    const code = error?.code || COMPANY_DRIVE_ERROR.OFFICE_CONNECTION_PENDING;
+    return NextResponse.json(
+      {
+        error:
+          COMPANY_DRIVE_USER_MESSAGES[code] ||
+          COMPANY_DRIVE_USER_MESSAGES[COMPANY_DRIVE_ERROR.OFFICE_CONNECTION_PENDING],
+        code,
+      },
+      { status: 409 }
+    );
   }
-  const now = new Date().toISOString();
-  await supabase.from("company_cloud_folders").update({ sync_status: "ok", last_sync_at: now, last_error: null }).eq("company_id", companyId);
-  return NextResponse.json({ stats: { remoteCount: remote.length, missing: missingIds.length }, lastSyncAt: now });
+
+  const result = await runCompanyDriveSync({
+    supabase,
+    accessToken: drive.accessToken,
+    companyId,
+    rootFolderId: drive.rootFolderId,
+    writeSyncEvents: true,
+    extraEvents: [
+      {
+        eventType: force || full ? "manual_full_sync" : "manual_sync",
+        status: "ok",
+        errorMessage: force || full ? "force_or_full" : null,
+      },
+    ],
+  });
+
+  return NextResponse.json({
+    stats: result.stats,
+  });
 }
