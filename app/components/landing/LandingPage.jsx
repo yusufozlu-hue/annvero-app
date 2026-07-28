@@ -115,7 +115,7 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <section id="hizmetler" className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
+        <section id="hizmetler" className="scroll-mt-24 mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
           <div className="max-w-2xl">
             <p className="text-sm font-semibold uppercase tracking-wider text-violet-700">
               Hizmetler
@@ -194,7 +194,7 @@ export default function LandingPage() {
 
         <PublicMevzuatHapNotlariSection />
 
-        <section id="hakkimizda" className="border-t border-violet-100 bg-white py-20">
+        <section id="hakkimizda" className="scroll-mt-24 border-t border-violet-100 bg-white py-20">
           <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-2 lg:px-8">
             <div>
               <p className="text-sm font-semibold uppercase tracking-wider text-violet-700">
@@ -212,7 +212,7 @@ export default function LandingPage() {
 
             <div
               id="iletisim"
-              className="rounded-3xl border border-violet-100 bg-gradient-to-br from-violet-50 to-white p-8"
+              className="scroll-mt-24 rounded-3xl border border-violet-100 bg-gradient-to-br from-violet-50 to-white p-8"
             >
               <p className="text-sm font-semibold uppercase tracking-wider text-violet-700">
                 İletişim

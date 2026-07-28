@@ -236,7 +236,8 @@ button:disabled {
 }
 
 html {
-  overflow-x: hidden;
+  /* clip (not hidden) preserves position:sticky on the public header */
+  overflow-x: clip;
   width: 100%;
   max-width: 100%;
 }
@@ -245,7 +246,7 @@ body {
   background: var(--annvero-bg);
   color: var(--annvero-text);
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
-  overflow-x: hidden;
+  overflow-x: clip;
   width: 100%;
   max-width: 100%;
   min-width: 0;
@@ -253,7 +254,7 @@ body {
 
 #__next,
 [data-nextjs-scroll-focus-boundary] {
-  overflow-x: hidden;
+  overflow-x: clip;
   width: 100%;
   max-width: 100%;
   min-width: 0;

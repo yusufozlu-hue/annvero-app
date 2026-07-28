@@ -54,7 +54,7 @@ export default function RootLayout({
   return (
     <html
       lang="tr"
-      className={`${geistSans.variable} ${geistMono.variable} h-full overflow-x-hidden antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full overflow-x-clip antialiased`}
       suppressHydrationWarning
     >
       <head>
@@ -64,7 +64,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className="flex min-h-full min-w-0 flex-col overflow-x-hidden bg-[var(--annvero-bg)] text-[var(--annvero-text)]">
+      <body className="flex min-h-full min-w-0 flex-col overflow-x-clip bg-[var(--annvero-bg)] text-[var(--annvero-text)]">
         {children}
         <DeferredSupportWidget />
         <PwaRegister />
