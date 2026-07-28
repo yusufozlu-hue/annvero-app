@@ -106,6 +106,26 @@ test("active VKN conflict finder", () => {
   assert.equal(isValidVkn("123"), false);
 });
 
+test("ambiguous set ignores inactive / duplicate_of peers", () => {
+  const set = buildAmbiguousSameNameCompanyIdSet([
+    {
+      id: "active",
+      company_name: "AYSU",
+      data: { taxNumber: "1234562045", isActive: true },
+    },
+    {
+      id: "dup",
+      company_name: "AYSU",
+      data: {
+        taxNumber: "1234562045",
+        isActive: false,
+        duplicate_of: "active",
+      },
+    },
+  ]);
+  assert.equal(set.size, 0);
+});
+
 test("ambiguous set ignores distinct VKN peers", () => {
   const set = buildAmbiguousSameNameCompanyIdSet([
     {
