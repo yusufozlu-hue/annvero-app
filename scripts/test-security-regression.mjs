@@ -1975,20 +1975,31 @@ test("ADH Drive: API route tenant guard + mükellef yönetim engeli (statik)", (
     "folders POST session token yok"
   );
 
+  const provisionActiveFull = fs.readFileSync(
+    path.join(root, "app/api/google-drive/folders/provision-active/route.js"),
+    "utf8"
+  );
   const provisionActive = extractExportAsyncHandler(
-    fs.readFileSync(
-      path.join(root, "app/api/google-drive/folders/provision-active/route.js"),
-      "utf8"
-    ),
+    provisionActiveFull,
     "POST"
   );
   assert.match(provisionActive, /isManagementUser/, "provision-active yönetim zorunlu");
   assert.match(provisionActive, /dryRun/, "provision-active dryRun");
-  assert.match(provisionActive, /duplicateSkipped/, "provision-active mükerrer atlama");
+  assert.match(provisionActiveFull, /duplicateSkipped/, "provision-active mükerrer atlama");
   assert.match(
-    provisionActive,
+    provisionActiveFull,
     /DUPLICATE_NAME_SKIPPED/,
     "provision-active mükerrer status execute savunması"
+  );
+  assert.match(
+    provisionActiveFull,
+    /COMPANY_ID_REQUIRED/,
+    "provision-active tek firma zorunlu"
+  );
+  assert.doesNotMatch(
+    provisionActiveFull,
+    /for \(const item of classified\.willCreate\)/,
+    "provision-active bulk willCreate döngüsü yok"
   );
   assert.doesNotMatch(
     provisionActive,

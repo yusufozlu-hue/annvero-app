@@ -206,7 +206,7 @@ await test("static: ensureCompanyDriveProvisioned davranışları", () => {
   assert.ok(src.includes("peerError"));
 });
 
-await test("static: provision-active API management + dryRun + duplicateSkipped", () => {
+await test("static: provision-active API management + dryRun + single execute", () => {
   const src = read("app/api/google-drive/folders/provision-active/route.js");
   assert.ok(src.includes("isManagementUser"));
   assert.ok(src.includes("dryRun"));
@@ -217,6 +217,13 @@ await test("static: provision-active API management + dryRun + duplicateSkipped"
   assert.ok(src.includes("toPublicProvisionResult"));
   assert.ok(src.includes("ensureCompanyDriveProvisioned"));
   assert.ok(src.includes("DUPLICATE_NAME_SKIPPED"));
+  assert.ok(src.includes("COMPANY_ID_REQUIRED"));
+  assert.ok(src.includes("BATCH_TOO_LARGE"));
+  assert.ok(src.includes("mode: \"single\"") || src.includes("mode: 'single'"));
+  assert.ok(src.includes("resolveRequestedCompanyId"));
+  assert.ok(src.includes("COMPANY_NOT_IN_SCOPE"));
+  // Execute: tek firma; tüm willCreate döngüsü yok
+  assert.doesNotMatch(src, /for \(const item of classified\.willCreate\)/);
   assert.doesNotMatch(src, /accessToken|_rootFolderId|token_reference/);
 });
 
@@ -245,7 +252,7 @@ await test("static: reconcile provisions missing active bindings", () => {
   assert.ok(src.includes("FOLDER_BINDING_MISSING") || src.includes("OFFICE_CONNECTION_PENDING"));
 });
 
-await test("static: UI Önizle + Hazırla + mükerrer sayaç, no OAuth per company", () => {
+await test("static: UI Önizle + per-company Hazırla + progress + resume", () => {
   const ui = read("app/(annvero)/muhasebe/components/DriveBulkProvisionPanel.jsx");
   const mgmt = read("app/(annvero)/muhasebe/components/CompanyManagement.jsx");
   assert.ok(ui.includes("Önizle"));
@@ -257,6 +264,17 @@ await test("static: UI Önizle + Hazırla + mükerrer sayaç, no OAuth per compa
   assert.ok(ui.includes("duplicateSkipped"));
   assert.ok(
     ui.includes("Aynı unvanlı mükerrer kayıt — inceleme bekliyor")
+  );
+  assert.ok(ui.includes("callExecuteOne"));
+  assert.ok(ui.includes("companyId"));
+  assert.ok(ui.includes("hazırlanıyor"));
+  assert.ok(ui.includes("mergeRowIntoPreview"));
+  assert.ok(ui.includes("safeErrorMessage"));
+  assert.ok(ui.includes("504") || ui.includes("zaman aşımı"));
+  // Tek bulk execute:true without companyId yok
+  assert.doesNotMatch(
+    ui,
+    /JSON\.stringify\(\s*execute \? \{ dryRun: false, execute: true \} :/
   );
   assert.doesNotMatch(ui, /oauth\/start/);
   assert.ok(mgmt.includes("DriveBulkProvisionPanel"));
@@ -308,11 +326,29 @@ await test("static: classify uses WILL_CREATE; dryRun path mutation-free", () =>
   assert.ok(src.includes("duplicateSkipped"));
   assert.ok(src.includes('status: PROVISION_STATUS.WILL_CREATE'));
   const dryIdx = route.indexOf("if (dryRun)");
-  const resultsIdx = route.indexOf("const results = []");
-  assert.ok(dryIdx >= 0 && resultsIdx > dryIdx);
-  const dryBlock = route.slice(dryIdx, resultsIdx);
+  assert.ok(dryIdx >= 0);
+  const dryReturnIdx = route.indexOf("return NextResponse.json", dryIdx);
+  assert.ok(dryReturnIdx > dryIdx);
+  const dryBlock = route.slice(dryIdx, dryReturnIdx + 120);
   assert.doesNotMatch(dryBlock, /ensureCompanyDriveProvisioned\s*\(/);
   assert.doesNotMatch(dryBlock, /ensureGoogleDriveFolderTree/);
+  // Execute yolu companyId zorunlu; classify sonrası tek ensure
+  assert.ok(route.includes("resolveRequestedCompanyId"));
+  const ensureCount = (route.match(/ensureCompanyDriveProvisioned\s*\(/g) || [])
+    .length;
+  assert.equal(ensureCount, 1);
+});
+
+await test("static: adapter reuses annveroCompanyId root — no second root", () => {
+  const adapter = read("src/utils/cloudStorage/googleDriveAdapter.js");
+  assert.ok(adapter.includes("annveroCompanyId"));
+  assert.ok(adapter.includes("appProperties has"));
+  const ensureFn = adapter.indexOf("export async function ensureGoogleDriveFolderTree");
+  assert.ok(ensureFn >= 0);
+  const slice = adapter.slice(ensureFn, ensureFn + 1200);
+  assert.ok(slice.includes("listFiles"));
+  assert.ok(slice.includes("if (!root)"));
+  assert.ok(slice.includes("createFolder"));
 });
 
 await test("UI summary: dry-run uses willCreate; row key companyId; duplicateSkipped", () => {

@@ -752,7 +752,13 @@ await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", 
     provisionActiveSrc.includes("DUPLICATE_NAME_SKIPPED"),
     "provision-active mükerrer status"
   );
+  assert.ok(provisionActiveSrc.includes("COMPANY_ID_REQUIRED"), "provision-active tek firma");
   assert.ok(provisionActiveSrc.includes("toPublicProvisionResult"), "provision public DTO");
+  assert.doesNotMatch(
+    provisionActiveSrc,
+    /for \(const item of classified\.willCreate\)/,
+    "provision-active bulk timeout döngüsü yok"
+  );
   assert.doesNotMatch(
     provisionActiveSrc,
     /accessToken|token_reference|_rootFolderId/,
