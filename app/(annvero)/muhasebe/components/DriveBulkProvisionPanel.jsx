@@ -1,103 +1,62 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useUserRole } from "@/src/hooks/useUserRole";
 
 const STATUS_CLASS = {
-  Hazır: "text-emerald-200",
-  Oluşturulacak: "text-sky-200",
-  Oluşturuldu: "text-sky-200",
-  Atlandı: "text-amber-200",
-  Hata: "text-rose-200",
+  Hazır: "text-emerald-300",
+  Oluşturulacak: "text-sky-300",
+  Oluşturuldu: "text-emerald-300",
+  "Pasif Atlandı": "text-slate-400",
+  "Aynı unvanlı mükerrer kayıt — inceleme bekliyor": "text-amber-300",
+  Hata: "text-rose-300",
 };
 
-/**
- * Dry-run / execute payload → tek satır / companyId (aynı id iki kez çizilmez).
- * Aynı isimli farklı id’ler ayrı satır kalır (veri birleştirilmez).
- */
-export function buildProvisionRowsFromPayload(payload = {}) {
+function flattenRows(payload) {
+  if (!payload) return [];
   const buckets = [
     ...(payload.alreadyReady || []),
     ...(payload.willCreate || []),
+    ...(payload.duplicateSkipped || []),
     ...(payload.inactiveSkipped || []),
     ...(payload.failed || []),
     ...(payload.results || []),
   ];
   const byId = new Map();
   for (const row of buckets) {
-    const companyId = String(row?.companyId || "").trim();
-    if (!companyId) continue;
-    byId.set(companyId, {
-      companyId,
-      companyName: row.companyName || "Firma",
-      label: row.label || "Hata",
-      status: row.status || "",
-    });
+    if (!row?.companyId) continue;
+    byId.set(String(row.companyId), row);
   }
-  return [...byId.values()].sort((a, b) =>
-    a.companyName.localeCompare(b.companyName, "tr")
-  );
+  return Array.from(byId.values());
 }
 
-/** Sayaç: dry-run → willCreate; execute → created. `0 ?? x` tuzağı yok. */
-export function provisionSummaryCounts(payload = {}) {
-  const summary = payload.summary || {};
-  const dryRun = payload.dryRun !== false;
+function provisionSummaryCounts(payload) {
+  const summary = payload?.summary || {};
+  const dryRun = Boolean(payload?.dryRun);
   return {
-    alreadyReady: Number(summary.alreadyReady) || 0,
-    pendingOrCreated: dryRun
-      ? Number(summary.willCreate) || 0
-      : Number(summary.created) || 0,
-    inactiveSkipped: Number(summary.inactiveSkipped) || 0,
-    failed: Number(summary.failed) || 0,
     dryRun,
+    alreadyReady: summary.alreadyReady ?? 0,
+    pendingOrCreated: dryRun
+      ? (summary.willCreate ?? 0)
+      : (summary.created ?? summary.willCreate ?? 0),
+    inactiveSkipped: summary.inactiveSkipped ?? 0,
+    duplicateSkipped: summary.duplicateSkipped ?? 0,
+    failed: summary.failed ?? 0,
   };
 }
 
 /**
- * Firma Yönetimi — aktif firmalar için toplu Drive arşiv hazırlığı.
- * Önizle (dry-run) → Hazırla (execute). Token / Drive ID göstermez.
+ * Aktif firmalar için Drive arşivi toplu önizleme / oluşturma.
+ * Ofis köküne dokunmaz; token göstermez. Mükerrer unvanları otomatik atlar.
  */
-export default function DriveBulkProvisionPanel({ onNotify }) {
-  const { isManagementUser } = useUserRole();
+export default function DriveBulkProvisionPanel({ notify = () => {} }) {
   const [busy, setBusy] = useState("");
   const [preview, setPreview] = useState(null);
   const [executeResult, setExecuteResult] = useState(null);
   const [error, setError] = useState("");
 
-  const payload = executeResult || preview || null;
-  const rows = useMemo(
-    () => buildProvisionRowsFromPayload(payload || {}),
-    [payload]
-  );
-  const counts = useMemo(
-    () => provisionSummaryCounts(payload || { dryRun: true, summary: {} }),
-    [payload]
-  );
-
-  const duplicateNameGroups = useMemo(() => {
-    const byName = new Map();
-    for (const row of rows) {
-      const key = String(row.companyName || "")
-        .trim()
-        .toLocaleLowerCase("tr");
-      if (!key) continue;
-      const list = byName.get(key) || [];
-      list.push(row.companyId);
-      byName.set(key, list);
-    }
-    let groups = 0;
-    for (const ids of byName.values()) {
-      if (ids.length > 1) groups += 1;
-    }
-    return groups;
-  }, [rows]);
-
-  if (!isManagementUser) return null;
-
-  const notify = (message, type = "info") => {
-    if (typeof onNotify === "function") onNotify(message, type);
-  };
+  const payload = executeResult || preview;
+  const rows = useMemo(() => flattenRows(payload), [payload]);
+  const counts = useMemo(() => provisionSummaryCounts(payload), [payload]);
 
   const callApi = async ({ execute }) => {
     setError("");
@@ -137,7 +96,8 @@ export default function DriveBulkProvisionPanel({ onNotify }) {
       </h3>
       <p className="mt-1 text-sm text-slate-400">
         Önce önizleyin; ardından tek tıkla eksik aktif firmaların ofis Drive
-        arşivini oluşturun. Mevcut kökler ve ADH arşivi korunur.
+        arşivini oluşturun. Aynı unvanlı mükerrer kayıtlar otomatik atlanır;
+        mevcut kökler ve ADH arşivi korunur.
       </p>
 
       <div className="mt-3 flex flex-wrap gap-2">
@@ -152,7 +112,7 @@ export default function DriveBulkProvisionPanel({ onNotify }) {
                 setExecuteResult(null);
                 const c = provisionSummaryCounts(body);
                 notify(
-                  `Önizleme: ${c.pendingOrCreated} oluşturulacak, ${c.alreadyReady} hazır.`,
+                  `Önizleme: ${c.pendingOrCreated} oluşturulacak, ${c.duplicateSkipped} mükerrer atlandı, ${c.alreadyReady} hazır.`,
                   "success"
                 );
               } catch (err) {
@@ -179,7 +139,7 @@ export default function DriveBulkProvisionPanel({ onNotify }) {
                 setPreview(body);
                 const c = provisionSummaryCounts(body);
                 notify(
-                  `Hazırlandı: ${c.pendingOrCreated} oluşturuldu, ${c.alreadyReady} hazır.`,
+                  `Hazırlandı: ${c.pendingOrCreated} oluşturuldu, ${c.duplicateSkipped} mükerrer atlandı, ${c.alreadyReady} hazır.`,
                   "success"
                 );
               } catch (err) {
@@ -206,15 +166,9 @@ export default function DriveBulkProvisionPanel({ onNotify }) {
         <p className="mt-3 text-xs text-slate-500">
           Hazır: {counts.alreadyReady} ·{" "}
           {counts.dryRun ? "Oluşturulacak" : "Oluşturulan"}:{" "}
-          {counts.pendingOrCreated} · Atlandı: {counts.inactiveSkipped} · Hata:{" "}
-          {counts.failed}
-        </p>
-      ) : null}
-
-      {duplicateNameGroups > 0 ? (
-        <p className="mt-2 text-xs text-amber-200/90">
-          Aynı unvanlı {duplicateNameGroups} grupta birden fazla firma kaydı
-          var (farklı kimlikler). Otomatik birleştirilmez.
+          {counts.pendingOrCreated} · Mükerrer Atlandı:{" "}
+          {counts.duplicateSkipped} · Pasif Atlandı: {counts.inactiveSkipped} ·
+          Hata: {counts.failed}
         </p>
       ) : null}
 

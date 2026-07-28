@@ -10,6 +10,8 @@ import {
   PROVISION_STATUS,
   PROVISION_STATUS_LABEL,
   toPublicProvisionResult,
+  normalizeCompanyNameForProvision,
+  buildDuplicateNameCompanyIdSet,
 } from "@/src/lib/googleDrive/ensureCompanyDriveProvisioned.js";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -52,7 +54,26 @@ await test("public DTO: token / Drive ID sızdırmaz", () => {
   assert.equal(pub.companyName, "Test A.Ş.");
   assert.equal(pub._rootFolderId, undefined);
   assert.doesNotMatch(JSON.stringify(pub), /drive-secret|conn-secret|accessToken/);
-  assert.equal(PROVISION_STATUS_LABEL[PROVISION_STATUS.INACTIVE_SKIPPED], "Atlandı");
+  assert.equal(
+    PROVISION_STATUS_LABEL[PROVISION_STATUS.INACTIVE_SKIPPED],
+    "Pasif Atlandı"
+  );
+});
+
+await test("duplicate name: normalize + set includes all peers", () => {
+  assert.equal(
+    normalizeCompanyNameForProvision("  AYSU  DIŞ  TİCARET  "),
+    normalizeCompanyNameForProvision("aysu dış ticaret")
+  );
+  const set = buildDuplicateNameCompanyIdSet([
+    { id: "a1", company_name: "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş" },
+    { id: "a2", company_name: "Aysu Dış Ticaret Ve Yapı Sanayi A.Ş" },
+    { id: "b1", company_name: "Benzersiz Ltd." },
+  ]);
+  assert.equal(set.has("a1"), true);
+  assert.equal(set.has("a2"), true);
+  assert.equal(set.has("b1"), false);
+  assert.equal(set.size, 2);
 });
 
 await test("static: ensureCompanyDriveProvisioned davranışları", () => {
@@ -61,26 +82,32 @@ await test("static: ensureCompanyDriveProvisioned davranışları", () => {
   assert.ok(src.includes("resolveOfficeDriveCredential"));
   assert.ok(src.includes("getValidGoogleAccessTokenByConnectionId"));
   assert.ok(src.includes("INACTIVE_SKIPPED"));
+  assert.ok(src.includes("DUPLICATE_NAME_SKIPPED"));
+  assert.ok(src.includes("buildDuplicateNameCompanyIdSet"));
   assert.ok(src.includes("isActive"));
   assert.ok(src.includes("annveroCompanyId") || src.includes("ensureGoogleDriveFolderTree"));
   assert.ok(src.includes("onConflict: \"company_id\"") || src.includes("onConflict: 'company_id'"));
   assert.doesNotMatch(src, /assertCompanyAccess/);
   assert.doesNotMatch(src, /getValidGoogleAccessToken\s*\(/);
-  // Pasif: oluşturma yok; mevcut korunur
   assert.ok(src.includes("Pasif firma"));
-  // Hata: firma silinmez
   assert.ok(src.includes("Firma kaydı asla silinmez") || src.includes("bulut arşivi hazırlanıyor"));
+  // duplicate check before create / dry WILL_CREATE
+  const dupIdx = src.indexOf("DUPLICATE_NAME_SKIPPED");
+  const willIdx = src.indexOf("PROVISION_STATUS.WILL_CREATE");
+  assert.ok(dupIdx >= 0 && willIdx > dupIdx);
 });
 
-await test("static: provision-active API management + dryRun + no secrets", () => {
+await test("static: provision-active API management + dryRun + duplicateSkipped", () => {
   const src = read("app/api/google-drive/folders/provision-active/route.js");
   assert.ok(src.includes("isManagementUser"));
   assert.ok(src.includes("dryRun"));
   assert.ok(src.includes("alreadyReady"));
   assert.ok(src.includes("willCreate"));
   assert.ok(src.includes("inactiveSkipped"));
+  assert.ok(src.includes("duplicateSkipped"));
   assert.ok(src.includes("toPublicProvisionResult"));
   assert.ok(src.includes("ensureCompanyDriveProvisioned"));
+  assert.ok(src.includes("DUPLICATE_NAME_SKIPPED"));
   assert.doesNotMatch(src, /accessToken|_rootFolderId|token_reference/);
 });
 
@@ -96,7 +123,6 @@ await test("static: companies POST auto-provisions after save", () => {
   assert.ok(src.includes("ensureCompanyDriveProvisioned"));
   assert.ok(src.includes("driveArchive"));
   assert.ok(src.includes("Firma kaydedildi, bulut arşivi hazırlanıyor"));
-  // upsert önce, provision sonra
   const upsertIdx = src.indexOf(".upsert([record]");
   const provisionIdx = src.indexOf("ensureCompanyDriveProvisioned");
   assert.ok(upsertIdx >= 0 && provisionIdx > upsertIdx);
@@ -110,14 +136,19 @@ await test("static: reconcile provisions missing active bindings", () => {
   assert.ok(src.includes("FOLDER_BINDING_MISSING") || src.includes("OFFICE_CONNECTION_PENDING"));
 });
 
-await test("static: UI Önizle + Hazırla, no OAuth per company", () => {
+await test("static: UI Önizle + Hazırla + mükerrer sayaç, no OAuth per company", () => {
   const ui = read("app/(annvero)/muhasebe/components/DriveBulkProvisionPanel.jsx");
   const mgmt = read("app/(annvero)/muhasebe/components/CompanyManagement.jsx");
   assert.ok(ui.includes("Önizle"));
   assert.ok(ui.includes("Hazırla"));
   assert.ok(ui.includes("Aktif Firmaların Drive Arşivini Hazırla"));
   assert.ok(ui.includes("provision-active"));
-  assert.ok(ui.includes("isManagementUser"));
+  assert.ok(ui.includes("Mükerrer Atlandı"));
+  assert.ok(ui.includes("Pasif Atlandı"));
+  assert.ok(ui.includes("duplicateSkipped"));
+  assert.ok(
+    ui.includes("Aynı unvanlı mükerrer kayıt — inceleme bekliyor")
+  );
   assert.doesNotMatch(ui, /oauth\/start/);
   assert.ok(mgmt.includes("DriveBulkProvisionPanel"));
 });
@@ -127,15 +158,18 @@ await test("static: adapter rename-only on name change; _ANNVERO protected", () 
   assert.ok(adapter.includes("annveroCompanyId"));
   assert.ok(adapter.includes("renameDriveFile"));
   assert.ok(adapter.includes("createdFolderCount"));
-  // metadata yalnız yoksa
   assert.ok(adapter.includes("ensureTextFile"));
 });
 
-await test("status labels: dry-run Oluşturulacak, execute Oluşturuldu", () => {
+await test("status labels: dry-run Oluşturulacak, duplicate + pasif", () => {
   assert.equal(PROVISION_STATUS_LABEL.ALREADY_READY, "Hazır");
   assert.equal(PROVISION_STATUS_LABEL.WILL_CREATE, "Oluşturulacak");
   assert.equal(PROVISION_STATUS_LABEL.CREATED, "Oluşturuldu");
-  assert.equal(PROVISION_STATUS_LABEL.INACTIVE_SKIPPED, "Atlandı");
+  assert.equal(PROVISION_STATUS_LABEL.INACTIVE_SKIPPED, "Pasif Atlandı");
+  assert.equal(
+    PROVISION_STATUS_LABEL.DUPLICATE_NAME_SKIPPED,
+    "Aynı unvanlı mükerrer kayıt — inceleme bekliyor"
+  );
   assert.equal(PROVISION_STATUS_LABEL.DRIVE_ERROR, "Hata");
 
   const dry = toPublicProvisionResult({
@@ -144,6 +178,12 @@ await test("status labels: dry-run Oluşturulacak, execute Oluşturuldu", () => 
     companyName: "A",
   });
   assert.equal(dry.label, "Oluşturulacak");
+  const dup = toPublicProvisionResult({
+    status: PROVISION_STATUS.DUPLICATE_NAME_SKIPPED,
+    companyId: "a1",
+    companyName: "AYSU",
+  });
+  assert.equal(dup.label, "Aynı unvanlı mükerrer kayıt — inceleme bekliyor");
   const done = toPublicProvisionResult({
     status: PROVISION_STATUS.CREATED,
     companyId: "a",
@@ -156,8 +196,8 @@ await test("static: classify uses WILL_CREATE; dryRun path mutation-free", () =>
   const src = read("src/lib/googleDrive/ensureCompanyDriveProvisioned.js");
   const route = read("app/api/google-drive/folders/provision-active/route.js");
   assert.ok(src.includes("WILL_CREATE"));
+  assert.ok(src.includes("duplicateSkipped"));
   assert.ok(src.includes('status: PROVISION_STATUS.WILL_CREATE'));
-  // dry-run branch only returns classify — no ensure execute loop before if (dryRun) return
   const dryIdx = route.indexOf("if (dryRun)");
   const resultsIdx = route.indexOf("const results = []");
   assert.ok(dryIdx >= 0 && resultsIdx > dryIdx);
@@ -166,13 +206,19 @@ await test("static: classify uses WILL_CREATE; dryRun path mutation-free", () =>
   assert.doesNotMatch(dryBlock, /ensureGoogleDriveFolderTree/);
 });
 
-await test("UI summary: dry-run uses willCreate not created=0 trap; row key companyId", () => {
+await test("UI summary: dry-run uses willCreate; row key companyId; duplicateSkipped", () => {
   const ui = read("app/(annvero)/muhasebe/components/DriveBulkProvisionPanel.jsx");
   assert.ok(ui.includes("provisionSummaryCounts"));
-  assert.ok(ui.includes("buildProvisionRowsFromPayload"));
+  assert.ok(ui.includes("flattenRows") || ui.includes("buildProvisionRowsFromPayload"));
   assert.ok(ui.includes("Oluşturulacak"));
   assert.ok(ui.includes("key={row.companyId}"));
-  assert.doesNotMatch(ui, /summary\.created \?\?/);
+  assert.ok(ui.includes("duplicateSkipped"));
+  // dry-run: willCreate; execute: created — created ?? asla dry-run’da tek başına kullanılmaz
+  assert.ok(ui.includes("summary.willCreate ?? 0"));
+  assert.match(
+    ui,
+    /dryRun[\s\S]*\?[\s\S]*summary\.willCreate \?\? 0[\s\S]*:[\s\S]*summary\.created \?\?/
+  );
 });
 
 if (process.exitCode) {
