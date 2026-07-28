@@ -8,6 +8,11 @@ import { getServerSupabaseAdmin } from "@/src/lib/supabase/serverAdmin";
 import { getValidGoogleAccessTokenByConnectionId } from "@/src/lib/googleDrive/connectionStore";
 import { ensureGoogleDriveFolderTree } from "@/src/utils/cloudStorage/googleDriveAdapter";
 import { FOLDER_STRUCTURE_VERSION } from "@/src/utils/cloudStorage/folderSchema";
+import {
+  buildAmbiguousSameNameCompanyIdSet,
+  formatCompanyDisplayName,
+  normalizeCompanyTitleKey,
+} from "@/src/utils/companyIdentity";
 
 export const PROVISION_STATUS = Object.freeze({
   ALREADY_READY: "ALREADY_READY",
@@ -16,7 +21,10 @@ export const PROVISION_STATUS = Object.freeze({
   /** Execute sonrası gerçekten oluşturuldu */
   CREATED: "CREATED",
   INACTIVE_SKIPPED: "INACTIVE_SKIPPED",
-  /** Aynı unvanlı birden fazla distinct company_id — otomatik oluşturma yok */
+  /**
+   * Aynı unvan + kimlikle ayrılamayan mükerrer adayı.
+   * Farklı geçerli VKN/MERSIS → bu duruma düşmez.
+   */
   DUPLICATE_NAME_SKIPPED: "DUPLICATE_NAME_SKIPPED",
   COMPANY_NOT_FOUND: "COMPANY_NOT_FOUND",
   OFFICE_CONNECTION_PENDING: "OFFICE_CONNECTION_PENDING",
@@ -28,8 +36,7 @@ export const PROVISION_STATUS_LABEL = Object.freeze({
   [PROVISION_STATUS.WILL_CREATE]: "Oluşturulacak",
   [PROVISION_STATUS.CREATED]: "Oluşturuldu",
   [PROVISION_STATUS.INACTIVE_SKIPPED]: "Pasif Atlandı",
-  [PROVISION_STATUS.DUPLICATE_NAME_SKIPPED]:
-    "Aynı unvanlı mükerrer kayıt — inceleme bekliyor",
+  [PROVISION_STATUS.DUPLICATE_NAME_SKIPPED]: "Mükerrer İnceleme",
   [PROVISION_STATUS.COMPANY_NOT_FOUND]: "Hata",
   [PROVISION_STATUS.OFFICE_CONNECTION_PENDING]: "Hata",
   [PROVISION_STATUS.DRIVE_ERROR]: "Hata",
@@ -40,40 +47,19 @@ function isCompanyActive(company) {
 }
 
 export function normalizeCompanyNameForProvision(name) {
-  return String(name || "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLocaleLowerCase("tr");
+  return normalizeCompanyTitleKey(name);
 }
 
-function companyDisplayName(company) {
-  return String(
-    company?.company_name || company?.data?.companyName || "ANNVERO Firma"
-  ).trim();
+function companyDisplayName(company, peers = []) {
+  return formatCompanyDisplayName(company, peers);
 }
 
 /**
- * Aynı normalize unvan altında birden fazla distinct id var mı?
- * @returns {Set<string>} duplicate gruba düşen tüm company_id’ler
+ * Aynı unvan altında kimlikle ayrılamayan company_id’ler.
+ * Geçerli farklı VKN/MERSIS’li firmalar sete girmez.
  */
 export function buildDuplicateNameCompanyIdSet(companies = []) {
-  const byName = new Map();
-  for (const company of companies) {
-    const id = String(company?.id || "").trim();
-    if (!id) continue;
-    const key = normalizeCompanyNameForProvision(companyDisplayName(company));
-    if (!key) continue;
-    const set = byName.get(key) || new Set();
-    set.add(id);
-    byName.set(key, set);
-  }
-  const duplicated = new Set();
-  for (const ids of byName.values()) {
-    if (ids.size > 1) {
-      for (const id of ids) duplicated.add(id);
-    }
-  }
-  return duplicated;
+  return buildAmbiguousSameNameCompanyIdSet(companies);
 }
 
 /**
@@ -296,7 +282,7 @@ export async function ensureCompanyDriveProvisioned(
     }
   }
 
-  // Aktif + eksik binding → oluşturulacak (mükerrer unvan engeli; fail-closed)
+  // Aktif + eksik binding → oluşturulacak (kimlikle ayrılamayan mükerrer; fail-closed)
   const { data: namePeers, error: peerError } = await supabase
     .from("companies")
     .select("id,company_name,data");
@@ -305,16 +291,18 @@ export async function ensureCompanyDriveProvisioned(
       status: PROVISION_STATUS.DRIVE_ERROR,
       companyId: id,
       companyName: name,
-      message: "Mükerrer unvan kontrolü yapılamadı.",
+      message: "Mükerrer inceleme kontrolü yapılamadı.",
     };
   }
-  const dupSet = buildDuplicateNameCompanyIdSet(namePeers || []);
+  const peers = namePeers || [];
+  const displayName = companyDisplayName(company, peers);
+  const dupSet = buildDuplicateNameCompanyIdSet(peers);
   if (dupSet.has(id)) {
     return {
       status: PROVISION_STATUS.DUPLICATE_NAME_SKIPPED,
       companyId: id,
-      companyName: name,
-      message: "Aynı unvanlı mükerrer kayıt — inceleme bekliyor.",
+      companyName: displayName,
+      message: "Mükerrer İnceleme — aynı unvan kimlikle ayrılamadı.",
     };
   }
 
@@ -322,7 +310,7 @@ export async function ensureCompanyDriveProvisioned(
     return {
       status: PROVISION_STATUS.WILL_CREATE,
       companyId: id,
-      companyName: name,
+      companyName: displayName,
       message: "Drive arşivi oluşturulacak.",
       willCreate: true,
     };
@@ -338,7 +326,7 @@ export async function ensureCompanyDriveProvisioned(
     return {
       status: PROVISION_STATUS.OFFICE_CONNECTION_PENDING,
       companyId: id,
-      companyName: name,
+      companyName: displayName,
       message: "Ofis bağlantısı hazırlanıyor.",
     };
   }
@@ -347,7 +335,7 @@ export async function ensureCompanyDriveProvisioned(
     const tree = await ensureGoogleDriveFolderTree({
       accessToken: office.accessToken,
       companyId: id,
-      companyName: name,
+      companyName: displayName,
     });
 
     // Mevcut root varsa (yalnız connection eksik) Drive ID korunur.
@@ -374,7 +362,7 @@ export async function ensureCompanyDriveProvisioned(
       return {
         status: PROVISION_STATUS.DRIVE_ERROR,
         companyId: id,
-        companyName: name,
+        companyName: displayName,
         message: "Klasör kaydı yazılamadı.",
       };
     }
@@ -384,7 +372,7 @@ export async function ensureCompanyDriveProvisioned(
         ? PROVISION_STATUS.ALREADY_READY
         : PROVISION_STATUS.CREATED,
       companyId: id,
-      companyName: name,
+      companyName: displayName,
       message: hasRoot
         ? "Bağlantı güncellendi; kök korundu."
         : "Drive arşivi oluşturuldu.",
@@ -409,7 +397,7 @@ export async function ensureCompanyDriveProvisioned(
     return {
       status: PROVISION_STATUS.DRIVE_ERROR,
       companyId: id,
-      companyName: name,
+      companyName: displayName,
       message: "Firma kaydedildi, bulut arşivi hazırlanıyor.",
     };
   }
@@ -417,14 +405,16 @@ export async function ensureCompanyDriveProvisioned(
 
 /**
  * Saf sınıflandırma (DB yok) — test ve classifyCompaniesForProvision için.
- * Öncelik: pasif → hazır (ADH/kök korunur) → mükerrer unvan → oluşturulacak.
- * Mükerrer gruptaki eksik üyeler willCreate’e girmez; otomatik merge/silme yok.
+ * Öncelik: pasif → hazır (ADH/kök korunur) → kimliksiz mükerrer unvan → oluşturulacak.
+ * Farklı geçerli VKN/MERSIS’li aynı unvanlar willCreate’e girebilir.
+ * Otomatik merge/silme yok.
  */
 export function partitionCompaniesForProvision(companies = [], folders = []) {
   const folderByCompany = new Map(
     (folders || []).map((f) => [String(f.company_id), f])
   );
-  const duplicateIds = buildDuplicateNameCompanyIdSet(companies || []);
+  const list = companies || [];
+  const duplicateIds = buildDuplicateNameCompanyIdSet(list);
 
   const alreadyReady = [];
   const willCreate = [];
@@ -432,9 +422,9 @@ export function partitionCompaniesForProvision(companies = [], folders = []) {
   const duplicateSkipped = [];
   const failed = [];
 
-  for (const company of companies || []) {
+  for (const company of list) {
     const id = String(company.id);
-    const name = companyDisplayName(company);
+    const name = companyDisplayName(company, list);
     const folder = folderByCompany.get(id);
     const ready =
       Boolean(folder?.root_folder_id) &&
@@ -469,7 +459,7 @@ export function partitionCompaniesForProvision(companies = [], folders = []) {
           status: PROVISION_STATUS.DUPLICATE_NAME_SKIPPED,
           companyId: id,
           companyName: name,
-          message: "Aynı unvanlı mükerrer kayıt — inceleme bekliyor.",
+          message: "Mükerrer İnceleme — aynı unvan kimlikle ayrılamadı.",
         })
       );
       continue;
