@@ -61,7 +61,7 @@ await test("public DTO: token / Drive ID sızdırmaz", () => {
   );
 });
 
-await test("duplicate name: normalize + set includes all peers", () => {
+await test("duplicate name: same name without distinct VKN is ambiguous", () => {
   assert.equal(
     normalizeCompanyNameForProvision("  AYSU  DIŞ  TİCARET  "),
     normalizeCompanyNameForProvision("aysu dış ticaret")
@@ -77,7 +77,40 @@ await test("duplicate name: normalize + set includes all peers", () => {
   assert.equal(set.size, 2);
 });
 
-await test("partition: AYSU mükerrer atlanır; hazır korunur; unique oluşturulur", () => {
+await test("duplicate name: distinct valid VKN → not skipped", () => {
+  const set = buildDuplicateNameCompanyIdSet([
+    {
+      id: "a1",
+      company_name: "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
+      data: { taxNumber: "1234567890", isActive: true },
+    },
+    {
+      id: "a2",
+      company_name: "Aysu Dış Ticaret Ve Yapı Sanayi A.Ş",
+      data: { taxNumber: "0987654321", isActive: true },
+    },
+  ]);
+  assert.equal(set.size, 0);
+});
+
+await test("duplicate name: same VKN → mükerrer inceleme", () => {
+  const set = buildDuplicateNameCompanyIdSet([
+    {
+      id: "a1",
+      company_name: "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
+      data: { taxNumber: "1234567890", isActive: true },
+    },
+    {
+      id: "a2",
+      company_name: "Aysu Dış Ticaret Ve Yapı Sanayi A.Ş",
+      data: { taxNumber: "1234567890", isActive: true },
+    },
+  ]);
+  assert.equal(set.has("a1"), true);
+  assert.equal(set.has("a2"), true);
+});
+
+await test("partition: AYSU same-VKN mükerrer; distinct VKN willCreate; hazır korunur", () => {
   const partitioned = partitionCompaniesForProvision(
     [
       {
@@ -88,12 +121,17 @@ await test("partition: AYSU mükerrer atlanır; hazır korunur; unique oluşturu
       {
         id: "aysu-1",
         company_name: "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
-        data: { isActive: true },
+        data: { isActive: true, taxNumber: "1111111111" },
       },
       {
         id: "aysu-2",
         company_name: "Aysu Dış Ticaret Ve Yapı Sanayi A.Ş",
-        data: { isActive: true },
+        data: { isActive: true, taxNumber: "1111111111" },
+      },
+      {
+        id: "aysu-distinct",
+        company_name: "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
+        data: { isActive: true, taxNumber: "2222222222" },
       },
       {
         id: "unique-1",
@@ -113,7 +151,7 @@ await test("partition: AYSU mükerrer atlanır; hazır korunur; unique oluşturu
       {
         id: "aysu-ready",
         company_name: "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
-        data: { isActive: true },
+        data: { isActive: true, taxNumber: "3333333333" },
       },
     ],
     [
@@ -131,21 +169,21 @@ await test("partition: AYSU mükerrer atlanır; hazır korunur; unique oluşturu
   );
 
   assert.equal(partitioned.alreadyReady.length, 2);
-  assert.equal(partitioned.willCreate.length, 2);
+  // unique-1, unique-2, aysu-distinct (farklı VKN)
+  assert.equal(partitioned.willCreate.length, 3);
   assert.equal(partitioned.duplicateSkipped.length, 2);
   assert.equal(partitioned.inactiveSkipped.length, 1);
   assert.equal(partitioned.failed.length, 0);
 
   const readyIds = partitioned.alreadyReady.map((r) => r.companyId).sort();
   assert.deepEqual(readyIds, ["aysu-ready", "ready-1"]);
-  // Hazır mükerrer unvanlı kayıt yeniden oluşturulmaz (ADH kökü korunur).
   assert.equal(
     partitioned.alreadyReady.find((r) => r.companyId === "aysu-ready").status,
     PROVISION_STATUS.ALREADY_READY
   );
 
   const willIds = partitioned.willCreate.map((r) => r.companyId).sort();
-  assert.deepEqual(willIds, ["unique-1", "unique-2"]);
+  assert.deepEqual(willIds, ["aysu-distinct", "unique-1", "unique-2"]);
   for (const row of partitioned.willCreate) {
     assert.equal(row.status, PROVISION_STATUS.WILL_CREATE);
   }
@@ -154,13 +192,9 @@ await test("partition: AYSU mükerrer atlanır; hazır korunur; unique oluşturu
   assert.deepEqual(dupIds, ["aysu-1", "aysu-2"]);
   for (const row of partitioned.duplicateSkipped) {
     assert.equal(row.status, PROVISION_STATUS.DUPLICATE_NAME_SKIPPED);
-    assert.equal(
-      row.label,
-      "Aynı unvanlı mükerrer kayıt — inceleme bekliyor"
-    );
+    assert.equal(row.label, "Mükerrer İnceleme");
   }
 
-  // Execute adayı (willCreate) ile mükerrer küme kesişmez.
   const willSet = new Set(willIds);
   for (const id of dupIds) assert.equal(willSet.has(id), false);
 
@@ -202,8 +236,12 @@ await test("static: ensureCompanyDriveProvisioned davranışları", () => {
   const willIdx = src.indexOf("PROVISION_STATUS.WILL_CREATE");
   assert.ok(dupIdx >= 0 && willIdx > dupIdx);
   assert.ok(src.includes("partitionCompaniesForProvision"));
-  assert.ok(src.includes("Mükerrer unvan kontrolü yapılamadı"));
+  assert.ok(
+    src.includes("Mükerrer inceleme kontrolü yapılamadı") ||
+      src.includes("Mükerrer unvan kontrolü yapılamadı")
+  );
   assert.ok(src.includes("peerError"));
+  assert.ok(src.includes("companyIdentity") || src.includes("buildAmbiguousSameNameCompanyIdSet") || src.includes("formatCompanyDisplayName"));
 });
 
 await test("static: provision-active API management + dryRun + single execute", () => {
@@ -234,6 +272,13 @@ await test("static: folders POST uses ensureCompanyDriveProvisioned", () => {
   assert.doesNotMatch(src, /getValidGoogleAccessToken\s*\(/);
 });
 
+await test("static: companies POST blocks duplicate active VKN", () => {
+  const src = read("app/api/companies/route.js");
+  assert.ok(src.includes("DUPLICATE_ACTIVE_VKN"));
+  assert.ok(src.includes("findActiveCompanyWithSameVkn"));
+  assert.ok(src.includes("extractCompanyVkn"));
+});
+
 await test("static: companies POST auto-provisions after save", () => {
   const src = read("app/api/companies/route.js");
   assert.ok(src.includes("ensureCompanyDriveProvisioned"));
@@ -242,6 +287,18 @@ await test("static: companies POST auto-provisions after save", () => {
   const upsertIdx = src.indexOf(".upsert([record]");
   const provisionIdx = src.indexOf("ensureCompanyDriveProvisioned");
   assert.ok(upsertIdx >= 0 && provisionIdx > upsertIdx);
+});
+
+await test("static: CompanyManagement identity-aware create/save", () => {
+  const src = read("app/(annvero)/muhasebe/components/CompanyManagement.jsx");
+  assert.ok(src.includes("findActiveCompanyWithSameVkn"));
+  assert.ok(src.includes("formatCompanyDisplayName"));
+  assert.ok(src.includes("Mükerrer İnceleme"));
+  assert.ok(src.includes("Farklı VKN ile ayrı firma"));
+  assert.doesNotMatch(
+    src,
+    /Bu firma adı zaten kayıtlı/
+  );
 });
 
 await test("static: reconcile provisions missing active bindings", () => {
@@ -259,11 +316,12 @@ await test("static: UI Önizle + per-company Hazırla + progress + resume", () =
   assert.ok(ui.includes("Hazırla"));
   assert.ok(ui.includes("Aktif Firmaların Drive Arşivini Hazırla"));
   assert.ok(ui.includes("provision-active"));
-  assert.ok(ui.includes("Mükerrer Atlandı"));
+  assert.ok(ui.includes("Mükerrer İnceleme") || ui.includes("Mükerrer Atlandı"));
   assert.ok(ui.includes("Pasif Atlandı"));
   assert.ok(ui.includes("duplicateSkipped"));
   assert.ok(
-    ui.includes("Aynı unvanlı mükerrer kayıt — inceleme bekliyor")
+    ui.includes("Mükerrer İnceleme") ||
+      ui.includes("Aynı unvanlı mükerrer kayıt — inceleme bekliyor")
   );
   assert.ok(ui.includes("callExecuteOne"));
   assert.ok(ui.includes("companyId"));
@@ -295,7 +353,7 @@ await test("status labels: dry-run Oluşturulacak, duplicate + pasif", () => {
   assert.equal(PROVISION_STATUS_LABEL.INACTIVE_SKIPPED, "Pasif Atlandı");
   assert.equal(
     PROVISION_STATUS_LABEL.DUPLICATE_NAME_SKIPPED,
-    "Aynı unvanlı mükerrer kayıt — inceleme bekliyor"
+    "Mükerrer İnceleme"
   );
   assert.equal(PROVISION_STATUS_LABEL.DRIVE_ERROR, "Hata");
 
@@ -310,7 +368,7 @@ await test("status labels: dry-run Oluşturulacak, duplicate + pasif", () => {
     companyId: "a1",
     companyName: "AYSU",
   });
-  assert.equal(dup.label, "Aynı unvanlı mükerrer kayıt — inceleme bekliyor");
+  assert.equal(dup.label, "Mükerrer İnceleme");
   const done = toPublicProvisionResult({
     status: PROVISION_STATUS.CREATED,
     companyId: "a",

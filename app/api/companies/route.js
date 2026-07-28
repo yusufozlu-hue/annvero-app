@@ -22,6 +22,11 @@ import {
   logSupabaseQueryDiagnostics,
   logSupabaseQueryError,
 } from "@/src/lib/supabase/serverAdmin";
+import {
+  extractCompanyVkn,
+  findActiveCompanyWithSameVkn,
+  isValidVkn,
+} from "@/src/utils/companyIdentity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -108,6 +113,30 @@ export async function POST(request) {
 
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return NextResponse.json({ error: "Firma data alanı geçersiz." }, { status: 400 });
+  }
+
+  const incomingVkn = extractCompanyVkn(data);
+  const isActiveIncoming = data.isActive !== false;
+  if (isActiveIncoming && isValidVkn(incomingVkn)) {
+    const { data: peers, error: peerError } = await supabase
+      .from(COMPANIES_TABLE)
+      .select("id, company_name, data");
+    if (peerError) {
+      return buildSupabaseErrorResponse("companies:post:vkn-check", peerError);
+    }
+    const conflict = findActiveCompanyWithSameVkn(peers || [], incomingVkn, id);
+    if (conflict) {
+      const masked = `******${incomingVkn.slice(-4)}`;
+      return NextResponse.json(
+        {
+          error: "Aynı VKN ile aktif firma zaten kayıtlı.",
+          code: "DUPLICATE_ACTIVE_VKN",
+          details: `VKN ${masked} başka bir aktif firmada kullanılıyor.`,
+          hint: "Aynı hukuki kimlik için ikinci aktif kayıt açılamaz.",
+        },
+        { status: 409 }
+      );
+    }
   }
 
   const record = {

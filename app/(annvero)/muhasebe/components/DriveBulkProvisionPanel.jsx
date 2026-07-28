@@ -8,6 +8,7 @@ const STATUS_CLASS = {
   Oluşturuldu: "text-emerald-300",
   Hazırlanıyor: "text-sky-200",
   "Pasif Atlandı": "text-slate-400",
+  "Mükerrer İnceleme": "text-amber-300",
   "Aynı unvanlı mükerrer kayıt — inceleme bekliyor": "text-amber-300",
   Hata: "text-rose-300",
 };
@@ -127,7 +128,7 @@ function mergeRowIntoPreview(preview, row) {
 
 /**
  * Aktif firmalar için Drive arşivi toplu önizleme / tekil sırayla oluşturma.
- * Ofis köküne dokunmaz; token göstermez. Mükerrer unvanları otomatik atlar.
+ * Ofis köküne dokunmaz; token göstermez. Kimliksiz mükerrer unvanları Mükerrer İnceleme olarak atlar.
  */
 export default function DriveBulkProvisionPanel({ notify = () => {} }) {
   const [busy, setBusy] = useState("");
@@ -377,7 +378,7 @@ export default function DriveBulkProvisionPanel({ notify = () => {} }) {
         <p className="mt-3 text-xs text-slate-500">
           Hazır: {counts.alreadyReady} ·{" "}
           {counts.dryRun ? "Oluşturulacak" : "Oluşturulan"}:{" "}
-          {counts.pendingOrCreated} · Mükerrer Atlandı:{" "}
+          {counts.pendingOrCreated} · Mükerrer İnceleme:{" "}
           {counts.duplicateSkipped} · Pasif Atlandı: {counts.inactiveSkipped} ·
           Hata: {counts.failed}
         </p>

@@ -7,6 +7,13 @@ import { fetchCompanies, persistCompaniesToLocalStorage, broadcastCompaniesRefre
 import { deleteCompanyRecord, saveCompanyRecord } from "@/src/utils/companiesApi";
 import { emptyCompany, normalizeCompany } from "@/src/utils/companyNormalize";
 import {
+  findActiveCompanyWithSameVkn,
+  formatCompanyDisplayName,
+  isUnderMukerrerInceleme,
+  isValidVkn,
+  normalizeCompanyTitleKey,
+} from "@/src/utils/companyIdentity";
+import {
   getAccountPlanForCompany,
   loadAccountPlansFromStorage,
 } from "@/src/utils/companyCenter";
@@ -301,15 +308,26 @@ export default function CompanyManagement() {
       return;
     }
 
-    const normalizedName = trimmedName.toLowerCase();
-    const isDuplicate = companies.some(
-      (c) => (c.companyName || "").trim().toLowerCase() === normalizedName
-    );
-
-    if (isDuplicate) {
-      showToast("Bu firma adı zaten kayıtlı", "error");
-      return;
+    const draftVkn = String(newCompanyDraft.taxNumber || "").replace(/\D/g, "");
+    if (isValidVkn(draftVkn)) {
+      const vknConflict = findActiveCompanyWithSameVkn(
+        companies,
+        draftVkn,
+        ""
+      );
+      if (vknConflict) {
+        showToast(
+          `Aynı VKN ile aktif firma zaten kayıtlı (…${draftVkn.slice(-4)})`,
+          "error"
+        );
+        return;
+      }
     }
+
+    const normalizedName = normalizeCompanyTitleKey(trimmedName);
+    const sameName = companies.some(
+      (c) => normalizeCompanyTitleKey(c.companyName || "") === normalizedName
+    );
 
     const newCompany = normalizeCompany({
       ...emptyCompany,
@@ -324,7 +342,14 @@ export default function CompanyManagement() {
     setSelectedId(newCompany.id);
     setActiveTab("general");
     setNewCompanyModalOpen(false);
-    showToast("Yeni firma oluşturuldu. Bilgileri tamamlayıp kaydedin.", "success");
+    if (sameName) {
+      showToast(
+        "Aynı unvanlı başka kayıt var — uyarı. Farklı VKN ile ayrı firma olarak devam edilebilir.",
+        "success"
+      );
+    } else {
+      showToast("Yeni firma oluşturuldu. Bilgileri tamamlayıp kaydedin.", "success");
+    }
   };
 
   const createNewCompany = () => {
@@ -398,16 +423,34 @@ export default function CompanyManagement() {
       normalized.id = crypto.randomUUID();
     }
 
-    const normalizedName = trimmedName.toLowerCase();
-    const isDuplicate = companies.some(
+    const normalizedName = normalizeCompanyTitleKey(trimmedName);
+    const sameNamePeer = companies.some(
       (c) =>
         c.id !== normalized.id &&
-        (c.companyName || "").trim().toLowerCase() === normalizedName
+        normalizeCompanyTitleKey(c.companyName || "") === normalizedName
     );
 
-    if (isDuplicate) {
-      showToast("Bu firma zaten kayıtlı", "error");
-      return;
+    const saveVkn = String(normalized.taxNumber || "").replace(/\D/g, "");
+    if (normalized.isActive !== false && isValidVkn(saveVkn)) {
+      const vknConflict = findActiveCompanyWithSameVkn(
+        companies,
+        saveVkn,
+        normalized.id
+      );
+      if (vknConflict) {
+        showToast(
+          `Aynı VKN ile aktif firma zaten kayıtlı (…${saveVkn.slice(-4)})`,
+          "error"
+        );
+        return;
+      }
+    }
+
+    if (sameNamePeer && !isValidVkn(saveVkn)) {
+      showToast(
+        "Aynı unvanlı kayıt var — uyarı. Kaydetmek için geçerli VKN girin veya unvanı ayırt edin.",
+        "success"
+      );
     }
 
     setIsSaving(true);
@@ -1184,6 +1227,8 @@ export default function CompanyManagement() {
   const renderCompanyButton = (c) => {
     const isSelected = selectedId === c.id;
     const isPassive = c.isActive === false;
+    const mukerrer = isUnderMukerrerInceleme(c, companies);
+    const listName = formatCompanyDisplayName(c, companies);
 
     let visualClass = "";
 
@@ -1205,9 +1250,17 @@ export default function CompanyManagement() {
           disabled={cloudStorageBusy && !isSelected}
           className={`min-w-0 flex-1 rounded-lg px-4 py-2 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${visualClass}`}
         >
-          <div className="truncate font-medium">{c.companyName}</div>
+          <div className="truncate font-medium">{listName}</div>
           {isPassive && (
             <div className="mt-0.5 text-xs text-slate-500">Pasif</div>
+          )}
+          {mukerrer && !isPassive && (
+            <div className="mt-0.5 text-xs text-amber-400">Mükerrer İnceleme</div>
+          )}
+          {mukerrer && isPassive && (c.duplicate_of || c.duplicateOf) && (
+            <div className="mt-0.5 text-xs text-slate-500">
+              Mükerrer (pasif)
+            </div>
           )}
         </button>
         <button
