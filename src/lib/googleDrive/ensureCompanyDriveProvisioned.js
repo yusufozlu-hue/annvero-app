@@ -16,6 +16,8 @@ export const PROVISION_STATUS = Object.freeze({
   /** Execute sonrası gerçekten oluşturuldu */
   CREATED: "CREATED",
   INACTIVE_SKIPPED: "INACTIVE_SKIPPED",
+  /** Aynı unvanlı birden fazla distinct company_id — otomatik oluşturma yok */
+  DUPLICATE_NAME_SKIPPED: "DUPLICATE_NAME_SKIPPED",
   COMPANY_NOT_FOUND: "COMPANY_NOT_FOUND",
   OFFICE_CONNECTION_PENDING: "OFFICE_CONNECTION_PENDING",
   DRIVE_ERROR: "DRIVE_ERROR",
@@ -25,7 +27,9 @@ export const PROVISION_STATUS_LABEL = Object.freeze({
   [PROVISION_STATUS.ALREADY_READY]: "Hazır",
   [PROVISION_STATUS.WILL_CREATE]: "Oluşturulacak",
   [PROVISION_STATUS.CREATED]: "Oluşturuldu",
-  [PROVISION_STATUS.INACTIVE_SKIPPED]: "Atlandı",
+  [PROVISION_STATUS.INACTIVE_SKIPPED]: "Pasif Atlandı",
+  [PROVISION_STATUS.DUPLICATE_NAME_SKIPPED]:
+    "Aynı unvanlı mükerrer kayıt — inceleme bekliyor",
   [PROVISION_STATUS.COMPANY_NOT_FOUND]: "Hata",
   [PROVISION_STATUS.OFFICE_CONNECTION_PENDING]: "Hata",
   [PROVISION_STATUS.DRIVE_ERROR]: "Hata",
@@ -35,10 +39,41 @@ function isCompanyActive(company) {
   return company?.data?.isActive !== false;
 }
 
+export function normalizeCompanyNameForProvision(name) {
+  return String(name || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase("tr");
+}
+
 function companyDisplayName(company) {
   return String(
     company?.company_name || company?.data?.companyName || "ANNVERO Firma"
   ).trim();
+}
+
+/**
+ * Aynı normalize unvan altında birden fazla distinct id var mı?
+ * @returns {Set<string>} duplicate gruba düşen tüm company_id’ler
+ */
+export function buildDuplicateNameCompanyIdSet(companies = []) {
+  const byName = new Map();
+  for (const company of companies) {
+    const id = String(company?.id || "").trim();
+    if (!id) continue;
+    const key = normalizeCompanyNameForProvision(companyDisplayName(company));
+    if (!key) continue;
+    const set = byName.get(key) || new Set();
+    set.add(id);
+    byName.set(key, set);
+  }
+  const duplicated = new Set();
+  for (const ids of byName.values()) {
+    if (ids.size > 1) {
+      for (const id of ids) duplicated.add(id);
+    }
+  }
+  return duplicated;
 }
 
 /**
@@ -261,7 +296,28 @@ export async function ensureCompanyDriveProvisioned(
     }
   }
 
-  // Aktif + eksik binding → oluşturulacak
+  // Aktif + eksik binding → oluşturulacak (mükerrer unvan engeli; fail-closed)
+  const { data: namePeers, error: peerError } = await supabase
+    .from("companies")
+    .select("id,company_name,data");
+  if (peerError) {
+    return {
+      status: PROVISION_STATUS.DRIVE_ERROR,
+      companyId: id,
+      companyName: name,
+      message: "Mükerrer unvan kontrolü yapılamadı.",
+    };
+  }
+  const dupSet = buildDuplicateNameCompanyIdSet(namePeers || []);
+  if (dupSet.has(id)) {
+    return {
+      status: PROVISION_STATUS.DUPLICATE_NAME_SKIPPED,
+      companyId: id,
+      companyName: name,
+      message: "Aynı unvanlı mükerrer kayıt — inceleme bekliyor.",
+    };
+  }
+
   if (dryRun) {
     return {
       status: PROVISION_STATUS.WILL_CREATE,
@@ -361,6 +417,7 @@ export async function ensureCompanyDriveProvisioned(
 
 /**
  * Tüm firmaları sınıflandır (dry-run toplu).
+ * Aynı unvanlı distinct company_id grubundaki üyeler otomatik oluşturulmaz.
  */
 export async function classifyCompaniesForProvision(supabase) {
   const [{ data: companies, error: companiesError }, { data: folders, error: foldersError }] =
@@ -377,10 +434,12 @@ export async function classifyCompaniesForProvision(supabase) {
   const folderByCompany = new Map(
     (folders || []).map((f) => [String(f.company_id), f])
   );
+  const duplicateIds = buildDuplicateNameCompanyIdSet(companies || []);
 
   const alreadyReady = [];
   const willCreate = [];
   const inactiveSkipped = [];
+  const duplicateSkipped = [];
   const failed = [];
 
   for (const company of companies || []) {
@@ -403,6 +462,7 @@ export async function classifyCompaniesForProvision(supabase) {
     }
 
     if (ready) {
+      // Mevcut kök/binding korunur (ADH dahil); yeniden oluşturma yok.
       alreadyReady.push(
         toPublicProvisionResult({
           status: PROVISION_STATUS.ALREADY_READY,
@@ -410,17 +470,36 @@ export async function classifyCompaniesForProvision(supabase) {
           companyName: name,
         })
       );
-    } else {
-      willCreate.push(
+      continue;
+    }
+
+    if (duplicateIds.has(id)) {
+      duplicateSkipped.push(
         toPublicProvisionResult({
-          status: PROVISION_STATUS.WILL_CREATE,
+          status: PROVISION_STATUS.DUPLICATE_NAME_SKIPPED,
           companyId: id,
           companyName: name,
-          message: "Drive arşivi oluşturulacak.",
+          message: "Aynı unvanlı mükerrer kayıt — inceleme bekliyor.",
         })
       );
+      continue;
     }
+
+    willCreate.push(
+      toPublicProvisionResult({
+        status: PROVISION_STATUS.WILL_CREATE,
+        companyId: id,
+        companyName: name,
+        message: "Drive arşivi oluşturulacak.",
+      })
+    );
   }
 
-  return { alreadyReady, willCreate, inactiveSkipped, failed };
+  return {
+    alreadyReady,
+    willCreate,
+    inactiveSkipped,
+    duplicateSkipped,
+    failed,
+  };
 }

@@ -747,6 +747,7 @@ await test("document list: company filter, _ANNVERO hariç, aktif varsayılan", 
   );
   assert.ok(provisionActiveSrc.includes("isManagementUser"), "provision-active yönetim");
   assert.ok(provisionActiveSrc.includes("dryRun"), "provision-active dryRun");
+  assert.ok(provisionActiveSrc.includes("duplicateSkipped"), "provision-active mükerrer atlama");
   assert.ok(provisionActiveSrc.includes("toPublicProvisionResult"), "provision public DTO");
   assert.doesNotMatch(
     provisionActiveSrc,

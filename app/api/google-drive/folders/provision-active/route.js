@@ -2,6 +2,7 @@
  * POST /api/google-drive/folders/provision-active
  * Aktif firmaların Drive arşivini toplu hazırla (dryRun varsayılan true).
  * Yalnız management/admin. Token / Drive ID istemciye dönmez.
+ * Aynı unvanlı distinct company_id grupları otomatik oluşturulmaz.
  */
 
 import { NextResponse } from "next/server";
@@ -27,10 +28,12 @@ function publicBatchPayload({
   alreadyReady,
   willCreate,
   inactiveSkipped,
+  duplicateSkipped,
   failed,
   results,
   createdCount,
 }) {
+  const dup = duplicateSkipped || [];
   return {
     ok: true,
     dryRun: Boolean(dryRun),
@@ -38,12 +41,14 @@ function publicBatchPayload({
       alreadyReady: alreadyReady.length,
       willCreate: willCreate.length,
       inactiveSkipped: inactiveSkipped.length,
+      duplicateSkipped: dup.length,
       failed: failed.length,
       created: createdCount ?? 0,
     },
     alreadyReady,
     willCreate,
     inactiveSkipped,
+    duplicateSkipped: dup,
     failed,
     results: results || undefined,
   };
@@ -96,9 +101,11 @@ export async function POST(request) {
   const created = [];
   const alreadyReady = [...classified.alreadyReady];
   const inactiveSkipped = [...classified.inactiveSkipped];
+  const duplicateSkipped = [...(classified.duplicateSkipped || [])];
   const failed = [];
   let createdCount = 0;
 
+  // Mükerrer unvan grubu willCreate’de yoktur; yine de execute savunması.
   for (const item of classified.willCreate) {
     const provision = await ensureCompanyDriveProvisioned(item.companyId, {
       dryRun: false,
@@ -113,6 +120,8 @@ export async function POST(request) {
       alreadyReady.push(pub);
     } else if (provision.status === PROVISION_STATUS.INACTIVE_SKIPPED) {
       inactiveSkipped.push(pub);
+    } else if (provision.status === PROVISION_STATUS.DUPLICATE_NAME_SKIPPED) {
+      duplicateSkipped.push(pub);
     } else {
       failed.push(pub);
     }
@@ -124,6 +133,7 @@ export async function POST(request) {
       alreadyReady,
       willCreate: created,
       inactiveSkipped,
+      duplicateSkipped,
       failed,
       results,
       createdCount,
