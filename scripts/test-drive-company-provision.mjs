@@ -131,11 +131,48 @@ await test("static: adapter rename-only on name change; _ANNVERO protected", () 
   assert.ok(adapter.includes("ensureTextFile"));
 });
 
-await test("status labels cover required UI states", () => {
+await test("status labels: dry-run Oluşturulacak, execute Oluşturuldu", () => {
   assert.equal(PROVISION_STATUS_LABEL.ALREADY_READY, "Hazır");
+  assert.equal(PROVISION_STATUS_LABEL.WILL_CREATE, "Oluşturulacak");
   assert.equal(PROVISION_STATUS_LABEL.CREATED, "Oluşturuldu");
   assert.equal(PROVISION_STATUS_LABEL.INACTIVE_SKIPPED, "Atlandı");
   assert.equal(PROVISION_STATUS_LABEL.DRIVE_ERROR, "Hata");
+
+  const dry = toPublicProvisionResult({
+    status: PROVISION_STATUS.WILL_CREATE,
+    companyId: "a",
+    companyName: "A",
+  });
+  assert.equal(dry.label, "Oluşturulacak");
+  const done = toPublicProvisionResult({
+    status: PROVISION_STATUS.CREATED,
+    companyId: "a",
+    companyName: "A",
+  });
+  assert.equal(done.label, "Oluşturuldu");
+});
+
+await test("static: classify uses WILL_CREATE; dryRun path mutation-free", () => {
+  const src = read("src/lib/googleDrive/ensureCompanyDriveProvisioned.js");
+  const route = read("app/api/google-drive/folders/provision-active/route.js");
+  assert.ok(src.includes("WILL_CREATE"));
+  assert.ok(src.includes('status: PROVISION_STATUS.WILL_CREATE'));
+  // dry-run branch only returns classify — no ensure execute loop before if (dryRun) return
+  const dryIdx = route.indexOf("if (dryRun)");
+  const resultsIdx = route.indexOf("const results = []");
+  assert.ok(dryIdx >= 0 && resultsIdx > dryIdx);
+  const dryBlock = route.slice(dryIdx, resultsIdx);
+  assert.doesNotMatch(dryBlock, /ensureCompanyDriveProvisioned\s*\(/);
+  assert.doesNotMatch(dryBlock, /ensureGoogleDriveFolderTree/);
+});
+
+await test("UI summary: dry-run uses willCreate not created=0 trap; row key companyId", () => {
+  const ui = read("app/(annvero)/muhasebe/components/DriveBulkProvisionPanel.jsx");
+  assert.ok(ui.includes("provisionSummaryCounts"));
+  assert.ok(ui.includes("buildProvisionRowsFromPayload"));
+  assert.ok(ui.includes("Oluşturulacak"));
+  assert.ok(ui.includes("key={row.companyId}"));
+  assert.doesNotMatch(ui, /summary\.created \?\?/);
 });
 
 if (process.exitCode) {

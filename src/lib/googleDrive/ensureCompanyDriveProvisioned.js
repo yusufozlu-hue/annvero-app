@@ -11,6 +11,9 @@ import { FOLDER_STRUCTURE_VERSION } from "@/src/utils/cloudStorage/folderSchema"
 
 export const PROVISION_STATUS = Object.freeze({
   ALREADY_READY: "ALREADY_READY",
+  /** Dry-run: henüz oluşturulmadı */
+  WILL_CREATE: "WILL_CREATE",
+  /** Execute sonrası gerçekten oluşturuldu */
   CREATED: "CREATED",
   INACTIVE_SKIPPED: "INACTIVE_SKIPPED",
   COMPANY_NOT_FOUND: "COMPANY_NOT_FOUND",
@@ -20,6 +23,7 @@ export const PROVISION_STATUS = Object.freeze({
 
 export const PROVISION_STATUS_LABEL = Object.freeze({
   [PROVISION_STATUS.ALREADY_READY]: "Hazır",
+  [PROVISION_STATUS.WILL_CREATE]: "Oluşturulacak",
   [PROVISION_STATUS.CREATED]: "Oluşturuldu",
   [PROVISION_STATUS.INACTIVE_SKIPPED]: "Atlandı",
   [PROVISION_STATUS.COMPANY_NOT_FOUND]: "Hata",
@@ -260,7 +264,7 @@ export async function ensureCompanyDriveProvisioned(
   // Aktif + eksik binding → oluşturulacak
   if (dryRun) {
     return {
-      status: PROVISION_STATUS.CREATED,
+      status: PROVISION_STATUS.WILL_CREATE,
       companyId: id,
       companyName: name,
       message: "Drive arşivi oluşturulacak.",
@@ -409,7 +413,7 @@ export async function classifyCompaniesForProvision(supabase) {
     } else {
       willCreate.push(
         toPublicProvisionResult({
-          status: PROVISION_STATUS.CREATED,
+          status: PROVISION_STATUS.WILL_CREATE,
           companyId: id,
           companyName: name,
           message: "Drive arşivi oluşturulacak.",
