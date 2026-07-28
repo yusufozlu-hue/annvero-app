@@ -1,14 +1,58 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useUserRole } from "@/src/hooks/useUserRole";
 
 const STATUS_CLASS = {
   Hazır: "text-emerald-200",
+  Oluşturulacak: "text-sky-200",
   Oluşturuldu: "text-sky-200",
   Atlandı: "text-amber-200",
   Hata: "text-rose-200",
 };
+
+/**
+ * Dry-run / execute payload → tek satır / companyId (aynı id iki kez çizilmez).
+ * Aynı isimli farklı id’ler ayrı satır kalır (veri birleştirilmez).
+ */
+export function buildProvisionRowsFromPayload(payload = {}) {
+  const buckets = [
+    ...(payload.alreadyReady || []),
+    ...(payload.willCreate || []),
+    ...(payload.inactiveSkipped || []),
+    ...(payload.failed || []),
+    ...(payload.results || []),
+  ];
+  const byId = new Map();
+  for (const row of buckets) {
+    const companyId = String(row?.companyId || "").trim();
+    if (!companyId) continue;
+    byId.set(companyId, {
+      companyId,
+      companyName: row.companyName || "Firma",
+      label: row.label || "Hata",
+      status: row.status || "",
+    });
+  }
+  return [...byId.values()].sort((a, b) =>
+    a.companyName.localeCompare(b.companyName, "tr")
+  );
+}
+
+/** Sayaç: dry-run → willCreate; execute → created. `0 ?? x` tuzağı yok. */
+export function provisionSummaryCounts(payload = {}) {
+  const summary = payload.summary || {};
+  const dryRun = payload.dryRun !== false;
+  return {
+    alreadyReady: Number(summary.alreadyReady) || 0,
+    pendingOrCreated: dryRun
+      ? Number(summary.willCreate) || 0
+      : Number(summary.created) || 0,
+    inactiveSkipped: Number(summary.inactiveSkipped) || 0,
+    failed: Number(summary.failed) || 0,
+    dryRun,
+  };
+}
 
 /**
  * Firma Yönetimi — aktif firmalar için toplu Drive arşiv hazırlığı.
@@ -20,6 +64,34 @@ export default function DriveBulkProvisionPanel({ onNotify }) {
   const [preview, setPreview] = useState(null);
   const [executeResult, setExecuteResult] = useState(null);
   const [error, setError] = useState("");
+
+  const payload = executeResult || preview || null;
+  const rows = useMemo(
+    () => buildProvisionRowsFromPayload(payload || {}),
+    [payload]
+  );
+  const counts = useMemo(
+    () => provisionSummaryCounts(payload || { dryRun: true, summary: {} }),
+    [payload]
+  );
+
+  const duplicateNameGroups = useMemo(() => {
+    const byName = new Map();
+    for (const row of rows) {
+      const key = String(row.companyName || "")
+        .trim()
+        .toLocaleLowerCase("tr");
+      if (!key) continue;
+      const list = byName.get(key) || [];
+      list.push(row.companyId);
+      byName.set(key, list);
+    }
+    let groups = 0;
+    for (const ids of byName.values()) {
+      if (ids.length > 1) groups += 1;
+    }
+    return groups;
+  }, [rows]);
 
   if (!isManagementUser) return null;
 
@@ -46,7 +118,6 @@ export default function DriveBulkProvisionPanel({ onNotify }) {
       if (!response.ok) {
         throw new Error(body.error || body.message || "İşlem başarısız.");
       }
-      // Secret / Drive ID sızıntı kontrolü (istemci tarafı savunma).
       const raw = JSON.stringify(body);
       if (
         /token_reference|accessToken|refresh_token|client_secret/i.test(raw)
@@ -57,27 +128,6 @@ export default function DriveBulkProvisionPanel({ onNotify }) {
     } finally {
       setBusy("");
     }
-  };
-
-  const rowsFromPayload = (payload) => {
-    const buckets = [
-      ...(payload.alreadyReady || []),
-      ...(payload.willCreate || []),
-      ...(payload.inactiveSkipped || []),
-      ...(payload.failed || []),
-      ...(payload.results || []),
-    ];
-    const byId = new Map();
-    for (const row of buckets) {
-      if (!row?.companyId) continue;
-      byId.set(row.companyId, {
-        companyName: row.companyName || "Firma",
-        label: row.label || "Hata",
-      });
-    }
-    return [...byId.values()].sort((a, b) =>
-      a.companyName.localeCompare(b.companyName, "tr")
-    );
   };
 
   return (
@@ -100,8 +150,9 @@ export default function DriveBulkProvisionPanel({ onNotify }) {
                 const body = await callApi({ execute: false });
                 setPreview(body);
                 setExecuteResult(null);
+                const c = provisionSummaryCounts(body);
                 notify(
-                  `Önizleme: ${body.summary?.willCreate ?? 0} oluşturulacak, ${body.summary?.alreadyReady ?? 0} hazır.`,
+                  `Önizleme: ${c.pendingOrCreated} oluşturulacak, ${c.alreadyReady} hazır.`,
                   "success"
                 );
               } catch (err) {
@@ -126,8 +177,9 @@ export default function DriveBulkProvisionPanel({ onNotify }) {
                 const body = await callApi({ execute: true });
                 setExecuteResult(body);
                 setPreview(body);
+                const c = provisionSummaryCounts(body);
                 notify(
-                  `Hazırlandı: ${body.summary?.created ?? 0} oluşturuldu, ${body.summary?.alreadyReady ?? 0} hazır.`,
+                  `Hazırlandı: ${c.pendingOrCreated} oluşturuldu, ${c.alreadyReady} hazır.`,
                   "success"
                 );
               } catch (err) {
@@ -150,22 +202,27 @@ export default function DriveBulkProvisionPanel({ onNotify }) {
         </p>
       ) : null}
 
-      {(executeResult || preview)?.summary ? (
+      {payload?.summary ? (
         <p className="mt-3 text-xs text-slate-500">
-          Hazır: {(executeResult || preview).summary.alreadyReady} ·
-          Oluşturulacak/Oluşturulan:{" "}
-          {(executeResult || preview).summary.created ??
-            (executeResult || preview).summary.willCreate}{" "}
-          · Atlandı: {(executeResult || preview).summary.inactiveSkipped} ·
-          Hata: {(executeResult || preview).summary.failed}
+          Hazır: {counts.alreadyReady} ·{" "}
+          {counts.dryRun ? "Oluşturulacak" : "Oluşturulan"}:{" "}
+          {counts.pendingOrCreated} · Atlandı: {counts.inactiveSkipped} · Hata:{" "}
+          {counts.failed}
         </p>
       ) : null}
 
-      {rowsFromPayload(executeResult || preview || {}).length ? (
+      {duplicateNameGroups > 0 ? (
+        <p className="mt-2 text-xs text-amber-200/90">
+          Aynı unvanlı {duplicateNameGroups} grupta birden fazla firma kaydı
+          var (farklı kimlikler). Otomatik birleştirilmez.
+        </p>
+      ) : null}
+
+      {rows.length ? (
         <ul className="mt-3 max-h-56 space-y-1 overflow-y-auto rounded-lg border border-slate-800 p-2 text-sm">
-          {rowsFromPayload(executeResult || preview || {}).map((row) => (
+          {rows.map((row) => (
             <li
-              key={`${row.companyName}-${row.label}`}
+              key={row.companyId}
               className="flex items-center justify-between gap-2 px-1 py-0.5"
             >
               <span className="truncate text-slate-200">{row.companyName}</span>
