@@ -12,6 +12,7 @@ import {
   toPublicProvisionResult,
   normalizeCompanyNameForProvision,
   buildDuplicateNameCompanyIdSet,
+  partitionCompaniesForProvision,
 } from "@/src/lib/googleDrive/ensureCompanyDriveProvisioned.js";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -76,6 +77,111 @@ await test("duplicate name: normalize + set includes all peers", () => {
   assert.equal(set.size, 2);
 });
 
+await test("partition: AYSU mükerrer atlanır; hazır korunur; unique oluşturulur", () => {
+  const partitioned = partitionCompaniesForProvision(
+    [
+      {
+        id: "ready-1",
+        company_name: "Hazır Firma",
+        data: { isActive: true },
+      },
+      {
+        id: "aysu-1",
+        company_name: "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
+        data: { isActive: true },
+      },
+      {
+        id: "aysu-2",
+        company_name: "Aysu Dış Ticaret Ve Yapı Sanayi A.Ş",
+        data: { isActive: true },
+      },
+      {
+        id: "unique-1",
+        company_name: "Benzersiz Ltd.",
+        data: { isActive: true },
+      },
+      {
+        id: "unique-2",
+        company_name: "Diğer Aktif A.Ş.",
+        data: { isActive: true },
+      },
+      {
+        id: "inactive-1",
+        company_name: "Pasif Firma",
+        data: { isActive: false },
+      },
+      {
+        id: "aysu-ready",
+        company_name: "AYSU DIŞ TİCARET VE YAPI SANAYİ A.Ş",
+        data: { isActive: true },
+      },
+    ],
+    [
+      {
+        company_id: "ready-1",
+        root_folder_id: "root-ready",
+        connection_id: "conn-1",
+      },
+      {
+        company_id: "aysu-ready",
+        root_folder_id: "root-aysu-adh",
+        connection_id: "conn-adh",
+      },
+    ]
+  );
+
+  assert.equal(partitioned.alreadyReady.length, 2);
+  assert.equal(partitioned.willCreate.length, 2);
+  assert.equal(partitioned.duplicateSkipped.length, 2);
+  assert.equal(partitioned.inactiveSkipped.length, 1);
+  assert.equal(partitioned.failed.length, 0);
+
+  const readyIds = partitioned.alreadyReady.map((r) => r.companyId).sort();
+  assert.deepEqual(readyIds, ["aysu-ready", "ready-1"]);
+  // Hazır mükerrer unvanlı kayıt yeniden oluşturulmaz (ADH kökü korunur).
+  assert.equal(
+    partitioned.alreadyReady.find((r) => r.companyId === "aysu-ready").status,
+    PROVISION_STATUS.ALREADY_READY
+  );
+
+  const willIds = partitioned.willCreate.map((r) => r.companyId).sort();
+  assert.deepEqual(willIds, ["unique-1", "unique-2"]);
+  for (const row of partitioned.willCreate) {
+    assert.equal(row.status, PROVISION_STATUS.WILL_CREATE);
+  }
+
+  const dupIds = partitioned.duplicateSkipped.map((r) => r.companyId).sort();
+  assert.deepEqual(dupIds, ["aysu-1", "aysu-2"]);
+  for (const row of partitioned.duplicateSkipped) {
+    assert.equal(row.status, PROVISION_STATUS.DUPLICATE_NAME_SKIPPED);
+    assert.equal(
+      row.label,
+      "Aynı unvanlı mükerrer kayıt — inceleme bekliyor"
+    );
+  }
+
+  // Execute adayı (willCreate) ile mükerrer küme kesişmez.
+  const willSet = new Set(willIds);
+  for (const id of dupIds) assert.equal(willSet.has(id), false);
+
+  assert.equal(partitioned.inactiveSkipped[0].label, "Pasif Atlandı");
+});
+
+await test("partition: same-name group entirely skipped when none ready", () => {
+  const partitioned = partitionCompaniesForProvision(
+    [
+      { id: "d1", company_name: "Çift Unvan", data: { isActive: true } },
+      { id: "d2", company_name: "çift  unvan", data: { isActive: true } },
+      { id: "ok", company_name: "Tekil", data: { isActive: true } },
+    ],
+    []
+  );
+  assert.equal(partitioned.duplicateSkipped.length, 2);
+  assert.equal(partitioned.willCreate.length, 1);
+  assert.equal(partitioned.willCreate[0].companyId, "ok");
+  assert.equal(partitioned.summary?.duplicateSkipped, undefined);
+});
+
 await test("static: ensureCompanyDriveProvisioned davranışları", () => {
   const src = read("src/lib/googleDrive/ensureCompanyDriveProvisioned.js");
   assert.ok(src.includes("ensureGoogleDriveFolderTree"));
@@ -95,6 +201,9 @@ await test("static: ensureCompanyDriveProvisioned davranışları", () => {
   const dupIdx = src.indexOf("DUPLICATE_NAME_SKIPPED");
   const willIdx = src.indexOf("PROVISION_STATUS.WILL_CREATE");
   assert.ok(dupIdx >= 0 && willIdx > dupIdx);
+  assert.ok(src.includes("partitionCompaniesForProvision"));
+  assert.ok(src.includes("Mükerrer unvan kontrolü yapılamadı"));
+  assert.ok(src.includes("peerError"));
 });
 
 await test("static: provision-active API management + dryRun + duplicateSkipped", () => {

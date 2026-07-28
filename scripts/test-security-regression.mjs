@@ -1985,6 +1985,11 @@ test("ADH Drive: API route tenant guard + mükellef yönetim engeli (statik)", (
   assert.match(provisionActive, /isManagementUser/, "provision-active yönetim zorunlu");
   assert.match(provisionActive, /dryRun/, "provision-active dryRun");
   assert.match(provisionActive, /duplicateSkipped/, "provision-active mükerrer atlama");
+  assert.match(
+    provisionActive,
+    /DUPLICATE_NAME_SKIPPED/,
+    "provision-active mükerrer status execute savunması"
+  );
   assert.doesNotMatch(
     provisionActive,
     /accessToken|token_reference/,

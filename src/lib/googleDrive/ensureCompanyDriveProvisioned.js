@@ -416,21 +416,11 @@ export async function ensureCompanyDriveProvisioned(
 }
 
 /**
- * Tüm firmaları sınıflandır (dry-run toplu).
- * Aynı unvanlı distinct company_id grubundaki üyeler otomatik oluşturulmaz.
+ * Saf sınıflandırma (DB yok) — test ve classifyCompaniesForProvision için.
+ * Öncelik: pasif → hazır (ADH/kök korunur) → mükerrer unvan → oluşturulacak.
+ * Mükerrer gruptaki eksik üyeler willCreate’e girmez; otomatik merge/silme yok.
  */
-export async function classifyCompaniesForProvision(supabase) {
-  const [{ data: companies, error: companiesError }, { data: folders, error: foldersError }] =
-    await Promise.all([
-      supabase.from("companies").select("id,company_name,data").order("company_name"),
-      supabase
-        .from("company_cloud_folders")
-        .select("company_id,root_folder_id,connection_id"),
-    ]);
-
-  if (companiesError) throw companiesError;
-  if (foldersError) throw foldersError;
-
+export function partitionCompaniesForProvision(companies = [], folders = []) {
   const folderByCompany = new Map(
     (folders || []).map((f) => [String(f.company_id), f])
   );
@@ -502,4 +492,23 @@ export async function classifyCompaniesForProvision(supabase) {
     duplicateSkipped,
     failed,
   };
+}
+
+/**
+ * Tüm firmaları sınıflandır (dry-run toplu).
+ * Aynı unvanlı distinct company_id grubundaki üyeler otomatik oluşturulmaz.
+ */
+export async function classifyCompaniesForProvision(supabase) {
+  const [{ data: companies, error: companiesError }, { data: folders, error: foldersError }] =
+    await Promise.all([
+      supabase.from("companies").select("id,company_name,data").order("company_name"),
+      supabase
+        .from("company_cloud_folders")
+        .select("company_id,root_folder_id,connection_id"),
+    ]);
+
+  if (companiesError) throw companiesError;
+  if (foldersError) throw foldersError;
+
+  return partitionCompaniesForProvision(companies || [], folders || []);
 }
