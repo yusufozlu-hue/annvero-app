@@ -151,6 +151,16 @@ import {
   resolveParserBankFromSheet,
 } from "@/src/utils/bankStatementFormatGuard";
 import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils";
+import {
+  canonicalToLegacyBankRow,
+} from "@/src/utils/bankCanonicalTransaction";
+import { parseBankStatementPdf } from "@/src/utils/bankStatementPdf";
+import {
+  BANK_JOB_STATE,
+  createInitialBankJobState,
+  shouldBlockNewBankJob,
+  transitionBankJob,
+} from "@/src/utils/bankJobStateMachine";
 
 const RowSearchToolbar = dynamic(
   () => import("../components/RowSearchToolbar"),
@@ -394,6 +404,9 @@ export default function BankParserWorkbench() {
   /** Dosya seçiminde bir kez okunan sheet — parse aşamasında reuse */
   const fileSheetRowsRef = useRef(null);
   const fileSheetSourceRef = useRef(null);
+  const pdfLegacyRowsRef = useRef(null);
+  const pdfMetaRef = useRef(null);
+  const bankJobStateRef = useRef(createInitialBankJobState());
   /** Pipeline/parse bankası — React state'ten bağımsız (stale closure yok) */
   const activeBankRef = useRef("");
   /** Aşamalar arası kısa boşlukta ikinci auto/manual start engeli */
@@ -620,6 +633,8 @@ export default function BankParserWorkbench() {
       setFileName("");
       fileSheetRowsRef.current = null;
       fileSheetSourceRef.current = null;
+      pdfLegacyRowsRef.current = null;
+      pdfMetaRef.current = null;
       activeBankRef.current = "";
       setSelectedBank("");
       setBankDetection({ status: "idle", bankId: null, message: "" });
@@ -868,7 +883,8 @@ export default function BankParserWorkbench() {
     isApplyingCoreAll ||
     isExporting ||
     isEnginePreparing ||
-    pipelineRunning;
+    pipelineRunning ||
+    shouldBlockNewBankJob(bankJobStateRef.current);
 
   const ensureBankParserCore = async () => {
     if (bankParserCoreRef.current) return bankParserCoreRef.current;
@@ -888,6 +904,15 @@ export default function BankParserWorkbench() {
     abortRef.current = controller;
     const runId = pipelineRunIdRef.current + 1;
     pipelineRunIdRef.current = runId;
+    bankJobStateRef.current = transitionBankJob(
+      createInitialBankJobState(),
+      BANK_JOB_STATE.READING,
+      {
+        jobId: runId,
+        fileName: selectedFile?.name || "",
+        companyId: selectedCompanyId || "",
+      }
+    );
     // Stage trace: her yeni kullanıcı işleminde sıfırla (buildPipelineOptions tekrar çağrılsa bile korunur)
     resetCariStageTrace();
     const memorySnap = hydrateAccountMemoryForPipeline(selectedCompanyId || "");
@@ -1821,6 +1846,8 @@ export default function BankParserWorkbench() {
       setFileName("");
       fileSheetRowsRef.current = null;
       fileSheetSourceRef.current = null;
+      pdfLegacyRowsRef.current = null;
+      pdfMetaRef.current = null;
       clearActiveBank();
       resetFileInput();
       return;
@@ -1832,6 +1859,8 @@ export default function BankParserWorkbench() {
     setPipelineError(null);
     fileSheetRowsRef.current = null;
     fileSheetSourceRef.current = null;
+    pdfLegacyRowsRef.current = null;
+    pdfMetaRef.current = null;
     activeBankRef.current = "";
     setSelectedBank("");
     setBankDetection({
@@ -1853,6 +1882,65 @@ export default function BankParserWorkbench() {
         });
         return;
       }
+
+      const isPdf = /\.pdf$/i.test(file.name || "") ||
+        String(file.type || "").includes("pdf");
+      if (isPdf) {
+        const pdfResult = await parseBankStatementPdf(arrayBuffer, {
+          companyId: selectedCompanyId || "",
+        });
+        pdfMetaRef.current = pdfResult;
+        if (pdfResult.code === "OCR_REQUIRED" || pdfResult.ocrRequired) {
+          pdfLegacyRowsRef.current = [];
+          fileSheetRowsRef.current = [];
+          fileSheetSourceRef.current = file.name;
+          setBankDetection({
+            status: "unknown",
+            bankId: null,
+            message: pdfResult.message || "OCR gerekli — inceleme kuyruğu.",
+          });
+          setPipelineError(pdfResult.message || "OCR_REQUIRED");
+          return;
+        }
+        if (!pdfResult.ok && !pdfResult.transactions?.length) {
+          pdfLegacyRowsRef.current = [];
+          fileSheetRowsRef.current = null;
+          fileSheetSourceRef.current = null;
+          setBankDetection({
+            status: "unknown",
+            bankId: null,
+            message: pdfResult.message || "PDF okunamadı.",
+          });
+          setPipelineError(pdfResult.message || "PDF okunamadı.");
+          return;
+        }
+        const legacy = (pdfResult.transactions || []).map(canonicalToLegacyBankRow);
+        pdfLegacyRowsRef.current = legacy;
+        fileSheetRowsRef.current = pdfResult.sheetRows || [];
+        fileSheetSourceRef.current = file.name;
+        const bankId = String(pdfResult.detectedBank || "").toUpperCase();
+        if (bankId && bankId !== "UNKNOWN") {
+          const label =
+            BANK_PARSER_OPTIONS.find((b) => b.id === bankId)?.label || bankId;
+          setActiveBank(bankId, {
+            status: "detected",
+            bankId,
+            message: `${label} — PDF otomatik tespit`,
+          });
+        } else {
+          activeBankRef.current = "";
+          setSelectedBank("");
+          setBankDetection({
+            status: "unknown",
+            bankId: null,
+            message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+          });
+        }
+        return;
+      }
+
+      pdfLegacyRowsRef.current = null;
+      pdfMetaRef.current = null;
       const sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
       fileSheetRowsRef.current = sheetRows;
       fileSheetSourceRef.current = file.name;
@@ -1880,6 +1968,8 @@ export default function BankParserWorkbench() {
       logManagedPipelineIssue("bank-detect", error);
       fileSheetRowsRef.current = null;
       fileSheetSourceRef.current = null;
+      pdfLegacyRowsRef.current = null;
+      pdfMetaRef.current = null;
       activeBankRef.current = "";
       setSelectedBank("");
       setBankDetection({
@@ -2044,6 +2134,112 @@ export default function BankParserWorkbench() {
         parserJob.onProgress(message);
       }
     };
+
+    // PDF: dosya seçiminde canonicalize edilmiş satırlar varsa Excel worker'a gitme.
+    if (
+      pdfLegacyRowsRef.current &&
+      fileSheetSourceRef.current === file?.name
+    ) {
+      const meta = pdfMetaRef.current;
+      if (meta?.ocrRequired || meta?.code === "OCR_REQUIRED") {
+        const err = new Error(
+          meta.message ||
+            "Bu PDF taranmış görünüyor; OCR tamamlanana kadar inceleme kuyruğuna alındı."
+        );
+        err.code = "OCR_REQUIRED";
+        throw err;
+      }
+      if (meta && meta.ok === false && !pdfLegacyRowsRef.current.length) {
+        const err = new Error(meta.message || "PDF okunamadı.");
+        err.code = meta.code || "PDF_ERROR";
+        throw err;
+      }
+      if (meta?.balance?.reviewRequired) {
+        const err = new Error(
+          meta.message ||
+            "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
+        );
+        err.code = "BALANCE_MISMATCH";
+        err.reviewRequired = true;
+        // Yine de satırları döndürmek isteyen caller için attach
+        err.normalizedRows = pdfLegacyRowsRef.current;
+        throw err;
+      }
+      onProgress({
+        stage: BANK_PARSE_STAGES.PARSING,
+        detail: "PDF hareketleri hazır",
+        percent: 100,
+      });
+      return {
+        rawCount: pdfLegacyRowsRef.current.length,
+        normalizedRows: pdfLegacyRowsRef.current,
+        parseMode: "pdf-canonical",
+        timings: meta?.elapsedMs ? { pdfMs: meta.elapsedMs } : null,
+        bankName: bank,
+        sourceType: "pdf",
+        sourceFileHash: meta?.sourceFileHash || "",
+        balance: meta?.balance || null,
+      };
+    }
+
+    const isPdf =
+      /\.pdf$/i.test(file?.name || "") ||
+      String(file?.type || "").includes("pdf");
+    if (isPdf) {
+      const arrayBuffer = await file.arrayBuffer();
+      if (signal?.aborted) {
+        const err = new Error("İşlem iptal edildi.");
+        err.name = "AbortError";
+        throw err;
+      }
+      const pdfResult = await parseBankStatementPdf(arrayBuffer, {
+        companyId: selectedCompanyId || "",
+        selectedBank: bank,
+        signal,
+      });
+      pdfMetaRef.current = pdfResult;
+      if (pdfResult.code === "OCR_REQUIRED" || pdfResult.ocrRequired) {
+        pdfLegacyRowsRef.current = [];
+        const err = new Error(pdfResult.message || "OCR_REQUIRED");
+        err.code = "OCR_REQUIRED";
+        throw err;
+      }
+      if (!pdfResult.ok && !pdfResult.transactions?.length) {
+        pdfLegacyRowsRef.current = [];
+        const err = new Error(pdfResult.message || "PDF okunamadı.");
+        err.code = pdfResult.code || "PDF_ERROR";
+        throw err;
+      }
+      const legacy = (pdfResult.transactions || []).map(canonicalToLegacyBankRow);
+      pdfLegacyRowsRef.current = legacy;
+      fileSheetRowsRef.current = pdfResult.sheetRows || [];
+      fileSheetSourceRef.current = file?.name || null;
+      if (pdfResult.balance?.reviewRequired) {
+        const err = new Error(
+          pdfResult.message ||
+            "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
+        );
+        err.code = "BALANCE_MISMATCH";
+        err.reviewRequired = true;
+        err.normalizedRows = legacy;
+        throw err;
+      }
+      onProgress({
+        stage: BANK_PARSE_STAGES.PARSING,
+        detail: "PDF hareketleri hazır",
+        percent: 100,
+      });
+      return {
+        rawCount: legacy.length,
+        normalizedRows: legacy,
+        parseMode: "pdf-canonical",
+        timings: pdfResult.elapsedMs ? { pdfMs: pdfResult.elapsedMs } : null,
+        bankName: bank,
+        sourceType: "pdf",
+        sourceFileHash: pdfResult.sourceFileHash || "",
+        balance: pdfResult.balance || null,
+      };
+    }
 
     // Dosya seçiminde cache varsa XLSX'i tekrar okuma.
     let sheetRows = null;
@@ -3316,7 +3512,7 @@ export default function BankParserWorkbench() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".xlsx,.xls,.csv"
+                  accept=".xlsx,.xls,.csv,.pdf"
                   onChange={handleFileSelect}
                   disabled={isJobBusy}
                   className="hidden"

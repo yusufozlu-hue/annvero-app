@@ -1,0 +1,47 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 697 >>
+stream
+BT /F1 10 Tf 40 800 Td (--- page 1 ---) Tj
+0 -14 Td (Ziraat Bankasi Hesap Ekstresi) Tj
+0 -14 Td (Sayfa 1) Tj
+0 -14 Td (Ziraat Bankasi Hesap Ekstresi) Tj
+0 -14 Td (Hesap No: 12345678) Tj
+0 -14 Td (Para Birimi: TRY) Tj
+0 -14 Td (Acilis bakiyesi: 10.000,00) Tj
+0 -14 Td (Tarih Aciklama Borc Alacak Bakiye) Tj
+0 -14 Td (02.01.2026 ZIRAAT EFT GELEN ABC LTD 1500,00 0,00 11500,00) Tj
+0 -14 Td (03.01.2026 ZIRAAT HAVALE GIDEN XYZ AS 0,00 250,00 11250,00) Tj
+0 -14 Td (04.01.2026 ZIRAAT POS TAHSILAT 800,00 0,00 12050,00) Tj
+0 -14 Td (Ara toplam 2.300,00 250,00) Tj
+0 -14 Td (Devreden bakiye 12.050,00) Tj
+0 -14 Td (Kapanis bakiyesi: 12.050,00) Tj
+0 -14 Td (www.ornekbanka.com.tr Musteri Hizmetleri) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000989 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1059
+%%EOF

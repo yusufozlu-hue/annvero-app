@@ -17,7 +17,7 @@ export const FILE_TYPE_CAPABILITY = {
   [SUPPORTED_FILE_TYPES.XLSX]: { active: true, reader: "excelSheet" },
   [SUPPORTED_FILE_TYPES.XLS]: { active: true, reader: "excelSheet" },
   [SUPPORTED_FILE_TYPES.CSV]: { active: false, reader: "csvSheet" },
-  [SUPPORTED_FILE_TYPES.PDF]: { active: false, reader: "pdfText" },
+  [SUPPORTED_FILE_TYPES.PDF]: { active: true, reader: "pdfText" },
   [SUPPORTED_FILE_TYPES.OCR_PDF]: { active: false, reader: "pdfOcr" },
   [SUPPORTED_FILE_TYPES.ZIP]: { active: false, reader: "zipExtract" },
   [SUPPORTED_FILE_TYPES.EMAIL_ATTACHMENT]: { active: false, reader: "emailAttachment" },
