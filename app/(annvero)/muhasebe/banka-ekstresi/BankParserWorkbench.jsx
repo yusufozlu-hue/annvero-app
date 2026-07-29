@@ -934,6 +934,7 @@ export default function BankParserWorkbench() {
     setPipelinePhase(PIPELINE_PHASES.IDLE);
     pipelinePhaseRef.current = PIPELINE_PHASES.IDLE;
     setPipelineRunning(false);
+    bankJobStateRef.current = createInitialBankJobState();
     setPipelineProgress({
       percent: 0,
       label: "",
@@ -954,6 +955,7 @@ export default function BankParserWorkbench() {
     setIsApplyingCoreAll(false);
     setIsExporting(false);
     setPipelineRunning(false);
+    bankJobStateRef.current = createInitialBankJobState();
     setPipelineMode("idle");
     setPipelinePhase(PIPELINE_PHASES.CANCELLED);
     pipelinePhaseRef.current = PIPELINE_PHASES.CANCELLED;
@@ -1223,6 +1225,7 @@ export default function BankParserWorkbench() {
       showToast(error?.message || "Excel oluşturulamadı.", "error");
     } finally {
       if (isRunActive(runId)) setIsExporting(false);
+      bankJobStateRef.current = createInitialBankJobState();
     }
   };
 
@@ -2824,6 +2827,7 @@ export default function BankParserWorkbench() {
       // Hata yalnızca kartta — toast yok (çift mesaj önleme)
     } finally {
       if (isRunActive(runId)) setIsParsing(false);
+      bankJobStateRef.current = createInitialBankJobState();
     }
   };
 
@@ -2892,6 +2896,7 @@ export default function BankParserWorkbench() {
       setPipelineMode("idle");
     } finally {
       releaseAnalysisLock();
+      bankJobStateRef.current = createInitialBankJobState();
     }
   };
 
@@ -2960,6 +2965,7 @@ export default function BankParserWorkbench() {
       setPipelineMode("idle");
     } finally {
       releaseLucaLock();
+      bankJobStateRef.current = createInitialBankJobState();
     }
   };
 
@@ -3214,6 +3220,8 @@ export default function BankParserWorkbench() {
       // Hata yalnızca kartta — toast yok
     } finally {
       setPipelineRunning(false);
+      // READING'te kalan job state isJobBusy'yi kilitlemesin (Yeniden İşle / re-upload).
+      bankJobStateRef.current = createInitialBankJobState();
     }
   };
 
@@ -3284,6 +3292,7 @@ export default function BankParserWorkbench() {
       parserJob.markError(error);
     } finally {
       if (isRunActive(runId)) setIsApplyingCoreAll(false);
+      bankJobStateRef.current = createInitialBankJobState();
     }
   };
 
