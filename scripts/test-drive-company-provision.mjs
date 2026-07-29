@@ -279,11 +279,16 @@ await test("static: companies POST blocks duplicate active VKN", () => {
   assert.ok(src.includes("extractCompanyVkn"));
 });
 
-await test("static: companies POST auto-provisions after save", () => {
+await test("static: companies POST async-provisions after save", () => {
   const src = read("app/api/companies/route.js");
   assert.ok(src.includes("ensureCompanyDriveProvisioned"));
   assert.ok(src.includes("driveArchive"));
-  assert.ok(src.includes("Firma kaydedildi, bulut arşivi hazırlanıyor"));
+  assert.ok(src.includes("PROVISION_QUEUED"));
+  assert.ok(src.includes("void (async"));
+  assert.match(
+    src,
+    /Drive arşivi arka planda hazırlanıyor|bulut arşivi hazırlanıyor/
+  );
   const upsertIdx = src.indexOf(".upsert([record]");
   const provisionIdx = src.indexOf("ensureCompanyDriveProvisioned");
   assert.ok(upsertIdx >= 0 && provisionIdx > upsertIdx);

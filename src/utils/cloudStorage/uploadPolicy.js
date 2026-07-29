@@ -165,7 +165,7 @@ export function assertUploadTargetPath(targetFolderPath) {
     return {
       ok: false,
       code: "INVALID_TARGET_PATH",
-      message: "Hedef klasör şema v1 izinli yollarından biri değil.",
+      message: "Hedef klasör şema v2 izinli yollarından biri değil.",
     };
   }
   return { ok: true, path: normalized };

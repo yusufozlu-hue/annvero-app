@@ -2018,8 +2018,8 @@ test("ADH Drive: API route tenant guard + mükellef yönetim engeli (statik)", (
   );
   assert.match(
     companiesPostSrc,
-    /bulut arşivi hazırlanıyor/,
-    "companies POST soft drive hata mesajı"
+    /Drive arşivi arka planda hazırlanıyor|bulut arşivi hazırlanıyor/,
+    "companies POST async provision mesajı"
   );
 
   const oauthStart = extractExportAsyncHandler(

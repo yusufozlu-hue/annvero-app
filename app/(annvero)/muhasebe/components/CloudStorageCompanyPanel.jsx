@@ -24,10 +24,18 @@ import {
   UPLOAD_PHASE,
   UPLOADED_AND_INDEXED_MESSAGE,
   UPLOADED_INDEXING_MESSAGE,
+  UPLOADED_RETRY_PENDING_MESSAGE,
   UPLOADED_SYNC_FAILED_MESSAGE,
+  inlineSyncCoversAllSuccesses,
+  messageForUploadResponse,
+  uploadResponseSyncState,
   uploadButtonLabel,
   uploadPhaseLiveMessage,
 } from "@/src/utils/cloudStorage/uploadFlow";
+import {
+  parseSyncRetryState,
+  SYNC_RETRY_MAX_ATTEMPTS,
+} from "@/src/utils/cloudStorage/syncRetry.js";
 
 const CHECK_ERROR_MESSAGES = Object.freeze({
   MISSING_COMPANY_ID: "Firma seçilmedi.",
@@ -45,7 +53,7 @@ const CHECK_ERROR_MESSAGES = Object.freeze({
   FORBIDDEN: "Bu firmaya erişim yetkiniz yok.",
   COMPANY_INACTIVE: "Pasif firmalara evrak yüklenemez.",
   SYSTEM_FOLDER_FORBIDDEN: "Sistem klasörüne (_ANNVERO) dosya yüklenemez.",
-  INVALID_TARGET_PATH: "Hedef klasör şema v1 izinli yollarından biri değil.",
+  INVALID_TARGET_PATH: "Hedef klasör şema v2 izinli yollarından biri değil.",
   UNSUPPORTED_FILE_TYPE: "Desteklenmeyen dosya türü. PDF, Excel, XML veya görsel yükleyin.",
   MIME_EXTENSION_MISMATCH: "Dosya uzantısı ile içerik türü uyuşmuyor.",
   EMPTY_FILE: "Boş dosya yüklenemez.",
@@ -252,6 +260,9 @@ export default function CloudStorageCompanyPanel({
     setBusy("upload");
 
     const resultStatuses = items.map((item) => item.status);
+    let inlineTriggeredCount = 0;
+    let anyRetryScheduled = false;
+    let anyNeedsClientSync = false;
 
     try {
       for (let index = 0; index < items.length; index += 1) {
@@ -308,13 +319,17 @@ export default function CloudStorageCompanyPanel({
           }
 
           resultStatuses[index] = "success";
+          const syncState = uploadResponseSyncState(body);
+          if (syncState.triggered) inlineTriggeredCount += 1;
+          if (syncState.retryScheduled) anyRetryScheduled = true;
+          if (syncState.needsClientSync) anyNeedsClientSync = true;
           setUploadItems((prev) =>
             prev.map((row) =>
               row.id === item.id
                 ? {
                     ...row,
                     status: "success",
-                    message: UPLOADED_INDEXING_MESSAGE,
+                    message: messageForUploadResponse(body),
                   }
                 : row
             )
@@ -335,19 +350,36 @@ export default function CloudStorageCompanyPanel({
         }
       }
 
-      const nextPhase = phaseAfterUploadResults(resultStatuses);
+      const inlineSyncDone = inlineSyncCoversAllSuccesses(
+        resultStatuses,
+        inlineTriggeredCount
+      );
+      const nextPhase = inlineSyncDone
+        ? UPLOAD_PHASE.COMPLETED
+        : phaseAfterUploadResults(resultStatuses);
 
-      if (!shouldRunSyncAfterUploadResults(resultStatuses)) {
-        setUploadPhase(nextPhase);
+      if (
+        !shouldRunSyncAfterUploadResults(resultStatuses, inlineSyncDone) ||
+        (anyRetryScheduled && !anyNeedsClientSync)
+      ) {
+        setUploadPhase(
+          inlineSyncDone || (anyRetryScheduled && !anyNeedsClientSync)
+            ? UPLOAD_PHASE.COMPLETED
+            : nextPhase
+        );
         if (nextPhase === UPLOAD_PHASE.DUPLICATE) {
           notify(DUPLICATE_USER_MESSAGE, "error");
-        } else if (nextPhase === UPLOAD_PHASE.ERROR) {
+        } else if (nextPhase === UPLOAD_PHASE.ERROR && !anyRetryScheduled) {
           notify("Yükleme başarısız. Tekrar deneyebilirsiniz.", "error");
+        } else if (anyRetryScheduled) {
+          notify(UPLOADED_RETRY_PENDING_MESSAGE, "success");
+        } else if (inlineSyncDone) {
+          notify(UPLOADED_AND_INDEXED_MESSAGE, "success");
         }
         return;
       }
 
-      // En az bir yeni dosya yüklendi → tek sync
+      // Yedek: inline sync tamamlanmadı
       setUploadPhase(UPLOAD_PHASE.SYNCING);
       setBusy("sync");
       try {
@@ -389,6 +421,17 @@ export default function CloudStorageCompanyPanel({
     }
   };
 
+  const retryState = parseSyncRetryState(binding.lastError);
+  const driveStatusLabel = retryState
+    ? `Yeniden denenecek (${retryState.attempt}/${SYNC_RETRY_MAX_ATTEMPTS})`
+    : binding.lastError
+      ? "Hata"
+      : binding.syncStatus === "ok"
+        ? "Hazır"
+        : binding.connectionStatus === "connected"
+          ? "Bağlı"
+          : "Bekliyor";
+
   const statusCards = [
     {
       label: "Bağlantı",
@@ -414,14 +457,12 @@ export default function CloudStorageCompanyPanel({
       value: String(binding.indexedDocumentCount || 0),
     },
     {
+      label: "Şema",
+      value: binding.folderStructureVersion || FOLDER_STRUCTURE_VERSION,
+    },
+    {
       label: "Durum",
-      value: binding.lastError
-        ? "Hata"
-        : binding.syncStatus === "ok"
-          ? "Hazır"
-          : binding.connectionStatus === "connected"
-            ? "Bağlı"
-            : "Bekliyor",
+      value: driveStatusLabel,
     },
   ];
 
@@ -450,7 +491,7 @@ export default function CloudStorageCompanyPanel({
         </p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {statusCards.map((card) => (
           <div
             key={card.label}
@@ -466,11 +507,22 @@ export default function CloudStorageCompanyPanel({
         ))}
       </div>
 
-      {(displayedError || binding.lastError) && (
+      {(displayedError ||
+        (binding.lastError && !parseSyncRetryState(binding.lastError))) && (
         <div className="rounded-xl border border-rose-800/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-100">
           {displayedError || binding.lastError}
         </div>
       )}
+      {retryState ? (
+        <div className="rounded-xl border border-amber-800/60 bg-amber-950/40 px-4 py-3 text-sm text-amber-100">
+          İndeksleme yeniden denenecek (deneme {retryState.attempt}/
+          {SYNC_RETRY_MAX_ATTEMPTS}
+          {retryState.dueAtMs
+            ? ` · sonraki: ${new Date(retryState.dueAtMs).toLocaleString("tr-TR")}`
+            : ""}
+          ).
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         {isManagementUser ? (

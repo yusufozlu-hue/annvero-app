@@ -117,6 +117,39 @@ await test("companyContentMatch: image → pending, not fake match", () => {
   assert.ok(pending.reasons.includes("image_ocr_unavailable"));
 });
 
+await test("classifyUploadTarget: ödeme vs tahakkuk ayrımı", () => {
+  const mtvPay = classifyUploadTarget({
+    fileName: "mtv_odeme_dekont.pdf",
+    mimeType: "application/pdf",
+  });
+  assert.equal(mtvPay.documentType, "odeme");
+  assert.equal(
+    mtvPay.targetFolderPath,
+    "11 - Ödeme Belgeleri/MTV Ödemeleri"
+  );
+
+  const mtvTah = classifyUploadTarget({
+    fileName: "mtv_tahakkuk.pdf",
+    mimeType: "application/pdf",
+  });
+  assert.ok(mtvTah.targetFolderPath.startsWith("03 - Tahakkuk Fişleri"));
+
+  const sgkPay = classifyUploadTarget({
+    fileName: "sgk_odeme_makbuz.pdf",
+    mimeType: "application/pdf",
+  });
+  assert.equal(sgkPay.targetFolderPath, "11 - Ödeme Belgeleri/SGK Ödemeleri");
+
+  const itoPay = classifyUploadTarget({
+    fileName: "ito_aidat_dekont.pdf",
+    mimeType: "application/pdf",
+  });
+  assert.equal(
+    itoPay.targetFolderPath,
+    "11 - Ödeme Belgeleri/İTO Aidat Ödemeleri"
+  );
+});
+
 await test("syncRetry: backoff + idempotency + max review", () => {
   const a0 = computeSyncBackoffMs(0, 1000, 60_000);
   const a3 = computeSyncBackoffMs(3, 1000, 60_000);

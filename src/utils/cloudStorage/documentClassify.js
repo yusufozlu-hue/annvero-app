@@ -1,5 +1,6 @@
 /**
  * Dosya adına göre deterministik Drive klasör yolu seçimi.
+ * Tahakkuk ≠ ödeme. MTV/Emlak tahakkuk klasörü yok — ödemeler `11 - Ödeme Belgeleri`.
  * `_ANNVERO` asla hedef olamaz.
  */
 
@@ -8,6 +9,7 @@ import { ANNVERO_SYSTEM_FOLDER } from "./folderSchema.js";
 
 const BEYANNAME_ROOT = "02 - Beyannameler";
 const TAHAKKUK_ROOT = "03 - Tahakkuk Fişleri";
+const PAYMENT_ROOT = "11 - Ödeme Belgeleri";
 
 const BEYANNAME_KEYWORDS = Object.freeze([
   ["muhsgk", "MUHSGK"],
@@ -31,6 +33,15 @@ const TAHAKKUK_KEYWORDS = Object.freeze([
   ["ödeme emri", null],
 ]);
 
+const PAYMENT_HINTS = Object.freeze([
+  "odeme",
+  "ödeme",
+  "dekont",
+  "makbuz",
+  "havale",
+  "eft",
+]);
+
 function normalize(text = "") {
   return String(text || "")
     .toLocaleLowerCase("tr-TR")
@@ -42,6 +53,35 @@ function matchSubfolder(haystack, pairs) {
     if (haystack.includes(needle)) return sub;
   }
   return null;
+}
+
+function hasPaymentHint(name) {
+  return PAYMENT_HINTS.some((h) => name.includes(h));
+}
+
+function classifyPaymentSubfolder(name) {
+  if (name.includes("mtv") || name.includes("motorlu taşıt")) {
+    return "MTV Ödemeleri";
+  }
+  if (
+    name.includes("emlak") ||
+    name.includes("emlak vergisi") ||
+    name.includes("emlak vergi")
+  ) {
+    return "Emlak Vergisi Ödemeleri";
+  }
+  if (
+    name.includes("ito") ||
+    name.includes("i̇to") ||
+    name.includes("aidat") ||
+    name.includes("ticaret odası")
+  ) {
+    return "İTO Aidat Ödemeleri";
+  }
+  if (name.includes("sgk") || name.includes("sgdp")) {
+    return "SGK Ödemeleri";
+  }
+  return "Vergi Ödemeleri";
 }
 
 /**
@@ -67,6 +107,21 @@ export function classifyUploadTarget({ fileName = "", mimeType = "" } = {}) {
     }
     return p;
   };
+
+  // Ödeme belgeleri (tahakkuk değil) — önce ödeme ipucu
+  const isTahakkukWord = name.includes("tahakkuk") || TAHAKKUK_KEYWORDS.some(
+    ([needle]) => name.includes(needle)
+  );
+  if (hasPaymentHint(name) && !isTahakkukWord) {
+    const sub = classifyPaymentSubfolder(name);
+    return {
+      targetFolderPath: denySystem(`${PAYMENT_ROOT}/${sub}`),
+      documentType: "odeme",
+      confidence: "medium",
+      needsReview: false,
+      reason: "filename_odeme",
+    };
+  }
 
   if (
     name.includes("personel") ||
@@ -138,8 +193,7 @@ export function classifyUploadTarget({ fileName = "", mimeType = "" } = {}) {
     };
   }
 
-  const isTahakkukHint = TAHAKKUK_KEYWORDS.some(([needle]) => name.includes(needle));
-  if (isTahakkukHint || name.includes("tahakkuk")) {
+  if (isTahakkukWord || name.includes("tahakkuk")) {
     const sub = matchSubfolder(name, BEYANNAME_KEYWORDS) || "Düzeltmeler";
     return {
       targetFolderPath: denySystem(`${TAHAKKUK_ROOT}/${sub}`),
@@ -168,7 +222,6 @@ export function classifyUploadTarget({ fileName = "", mimeType = "" } = {}) {
     };
   }
 
-  // Görseller: OCR yoksa inceleme gerekli — varsayılan diğer + review bayrağı.
   if (mime.startsWith("image/") || /\.(png|jpe?g)$/i.test(fileName)) {
     return {
       targetFolderPath: denySystem(DRIVE_UPLOAD_DEFAULT_FOLDER),

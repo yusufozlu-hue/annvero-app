@@ -1,5 +1,5 @@
 /**
- * Firma Drive klasör ağacı şeması (V1).
+ * Firma Drive klasör ağacı şeması (V2 — v1 geriye uyumlu, yalnız eksikler eklenir).
  * Tekrar çalıştırılabilir: mevcut node varsa oluşturma atlanır (idempotent).
  */
 
@@ -25,6 +25,7 @@ export const ROOT_FOLDER_SPECS = Object.freeze([
   { key: "policeler", name: "08 - Poliçeler" },
   { key: "ruhsatlar", name: "09 - Ruhsatlar" },
   { key: "tapular", name: "10 - Tapular" },
+  { key: "odemeler", name: "11 - Ödeme Belgeleri" },
   { key: "resmi_yazisma", name: "97 - Resmi Yazışmalar" },
   { key: "diger", name: "98 - Diğer Evraklar" },
   { key: "arsiv", name: "99 - Arşiv" },
@@ -61,6 +62,16 @@ export const TAHAKKUK_SUBFOLDERS = Object.freeze([
   "Düzeltmeler",
 ]);
 
+/** MTV / Emlak tahakkuk değil — ödeme belgeleri altında */
+export const PAYMENT_SUBFOLDERS = Object.freeze([
+  "Vergi Ödemeleri",
+  "SGK Ödemeleri",
+  "MTV Ödemeleri",
+  "Emlak Vergisi Ödemeleri",
+  "İTO Aidat Ödemeleri",
+  "Diğer Ödemeler",
+]);
+
 function assertNoExcludedTahakkuk() {
   for (const name of TAHAKKUK_SUBFOLDERS) {
     const upper = String(name).toUpperCase();
@@ -90,6 +101,11 @@ export function buildCompanyFolderPathList() {
         paths.push(`${spec.name}/${sub}`);
       }
     }
+    if (spec.key === "odemeler") {
+      for (const sub of PAYMENT_SUBFOLDERS) {
+        paths.push(`${spec.name}/${sub}`);
+      }
+    }
   }
   return paths;
 }
@@ -111,6 +127,13 @@ export function buildCompanyFolderTree() {
         name: spec.name,
         key: spec.key,
         children: TAHAKKUK_SUBFOLDERS.map((name) => ({ name, key: name })),
+      };
+    }
+    if (spec.key === "odemeler") {
+      return {
+        name: spec.name,
+        key: spec.key,
+        children: PAYMENT_SUBFOLDERS.map((name) => ({ name, key: name })),
       };
     }
     return {
