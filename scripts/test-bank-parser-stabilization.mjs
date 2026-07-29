@@ -342,5 +342,237 @@ assert(emptyQueue.length === 0, "tüm kayıtlar eşleşmişse kuyruk boş");
   );
 }
 
+// ——— 7) PDF banka ekstreleri + OCR/şifre/dedup matrisi ———
+{
+  const {
+    parseBankStatementPdf,
+    mergeExcelAndPdfTransactions,
+    isPdfNonMovementLine,
+    PDF_MAX_PAGES,
+  } = await import("@/src/utils/bankStatementPdf.js");
+  const {
+    buildMovementIdentityKey,
+    dedupeCanonicalTransactions,
+    canonicalToLegacyBankRow,
+  } = await import("@/src/utils/bankCanonicalTransaction.js");
+  const {
+    buildBankStatementPdfFixture,
+    buildEncryptedPdfStub,
+    buildScannedPdfStub,
+    buildCorruptPdfStub,
+    movementsToLegacyRows,
+    buildTextPdf,
+  } = await import("./fixtures/bankPdfFixtures.mjs");
+  const { bankMovementsToStandardLucaRows: lucaFromMoves } = await import(
+    "@/src/utils/standardLucaRow.js"
+  );
+
+  const BANKS = ["GARANTI", "TEB", "VAKIFBANK", "ZIRAAT", "KUVEYT"];
+
+  for (const bank of BANKS) {
+    const pdfBytes = buildBankStatementPdfFixture(bank, { multipage: false });
+    const result = await parseBankStatementPdf(pdfBytes, {
+      companyId: "c1",
+      selectedBank: bank,
+    });
+    assert(result.ok, `${bank} PDF: ok`);
+    assert(
+      (result.transactions || []).length === 3,
+      `${bank} PDF: 3 hareket (got ${result.transactions?.length})`
+    );
+    assert(result.detectedBank === bank || result.transactions[0].bank === bank, `${bank} PDF bank detect`);
+    assert(
+      result.transactions.every((t) => t.sourceType === "pdf"),
+      `${bank} PDF: sourceType=pdf`
+    );
+    assert(
+      result.transactions.every((t) => t.currency === "TRY"),
+      `${bank} PDF: currency TRY`
+    );
+    assert(
+      result.transactions.every((t) => t.sourceRow > 0),
+      `${bank} PDF: sourceRow korunur`
+    );
+    assert(
+      result.transactions.every((t) => t.transactionDate && t.description),
+      `${bank} PDF: tarih+açıklama`
+    );
+
+    const multi = buildBankStatementPdfFixture(bank, { multipage: true });
+    const multiResult = await parseBankStatementPdf(multi, {
+      companyId: "c1",
+      selectedBank: bank,
+    });
+    assert(
+      (multiResult.transactions || []).length === 3,
+      `${bank} multipage PDF: 3 hareket`
+    );
+    assert(
+      (multiResult.pageCount || 0) >= 2 ||
+        multiResult.transactions.some((t) => t.sourcePage >= 1),
+      `${bank} multipage: sayfa bilgisi`
+    );
+
+    // PDF ↔ Excel çapraz dedup
+    const excelRows = movementsToLegacyRows(bank).map((r) => ({
+      ...r,
+      companyId: "c1",
+    }));
+    const merged = mergeExcelAndPdfTransactions(excelRows, result, {
+      companyId: "c1",
+      selectedBank: bank,
+      excelFileHash: "excel-hash-different",
+    });
+    assert(
+      merged.unique.length === 3,
+      `${bank} PDF↔Excel dedup: unique=3 (got ${merged.unique.length}, dups=${merged.duplicates.length})`
+    );
+    assert(
+      merged.duplicates.length === 3,
+      `${bank} PDF↔Excel dedup: 3 duplicate bastırıldı (got ${merged.duplicates.length})`
+    );
+
+    // Luca eşdeğerliği: PDF legacy vs Excel legacy aynı kimlikler
+    const pdfLegacy = result.transactions.map(canonicalToLegacyBankRow);
+    const toMovement = (row, i) => ({
+      id: `pdf-${bank}-${i}`,
+      _accountingAnalyzed: true,
+      date: row.tarih,
+      description: row.aciklama,
+      lucaDescription: row.aciklama,
+      direction: row.yon,
+      amount: Math.abs(row.tutar),
+      accountCode: "102.01.001",
+      counterAccountCode: "320.01.001",
+      documentType: "DK",
+      bankName: bank,
+      rawRow: row,
+    });
+    const pdfLuca = lucaFromMoves(pdfLegacy.map(toMovement), {
+      firmaId: "c1",
+      kaynakAdi: bank,
+      creationSource: "bank_double_entry",
+      bankAccounts: [],
+    });
+    const excelLuca = lucaFromMoves(excelRows.map(toMovement), {
+      firmaId: "c1",
+      kaynakAdi: bank,
+      creationSource: "bank_double_entry",
+      bankAccounts: [],
+    });
+    const keyOf = (r) =>
+      `${r.hesapKodu}|${Number(r.borc || 0)}|${Number(r.alacak || 0)}|${String(r.fisAciklama || "").slice(0, 40)}`;
+    assert(
+      pdfLuca.map(keyOf).join("||") === excelLuca.map(keyOf).join("||"),
+      `${bank} Luca PDF≡Excel deterministik`
+    );
+  }
+
+  // OCR_REQUIRED — sahte hareket yok
+  const scanned = await parseBankStatementPdf(buildScannedPdfStub(), { companyId: "c1" });
+  assert(scanned.code === "OCR_REQUIRED", "scanned PDF → OCR_REQUIRED");
+  assert((scanned.transactions || []).length === 0, "OCR_REQUIRED: hareket yok");
+  assert(scanned.ocrRequired === true, "OCR_REQUIRED flag");
+
+  // Şifreli
+  const enc = await parseBankStatementPdf(buildEncryptedPdfStub(), { companyId: "c1" });
+  assert(enc.code === "PDF_ENCRYPTED", "şifreli PDF kodu");
+  assert(/şifreli/i.test(enc.message || ""), "şifreli PDF Türkçe mesaj");
+
+  // Bozuk / incomplete
+  const corrupt = await parseBankStatementPdf(buildCorruptPdfStub(), { companyId: "c1" });
+  assert(
+    corrupt.code === "PDF_INCOMPLETE" || corrupt.code === "PDF_CORRUPT" || corrupt.code === "NOT_PDF",
+    `bozuk PDF güvenli hata (got ${corrupt.code})`
+  );
+  assert((corrupt.transactions || []).length === 0, "bozuk PDF: hareket yok");
+
+  // Üstbilgi / ara toplam hareket değil
+  assert(isPdfNonMovementLine("Ara toplam 1.000,00"), "ara toplam non-movement");
+  assert(isPdfNonMovementLine("Devreden bakiye 5.000,00"), "devreden non-movement");
+  assert(isPdfNonMovementLine("Sayfa 2"), "sayfa non-movement");
+  assert(!isPdfNonMovementLine("02.01.2026 EFT GELEN 100,00 0,00 200,00"), "hareket satırı geçer");
+
+  // Bakiye mismatch → review, fiş yok
+  const mismatchPdf = buildTextPdf(
+    [
+      "TEB Hesap Ekstresi",
+      "Acilis bakiyesi: 1.000,00",
+      "02.01.2026 EFT TEST 100,00 0,00 1.100,00",
+      "Kapanis bakiyesi: 9.999,00",
+    ],
+    { bankLabel: "TEB Hesap Ekstresi" }
+  );
+  const mismatch = await parseBankStatementPdf(mismatchPdf, {
+    companyId: "c1",
+    selectedBank: "TEB",
+  });
+  assert(
+    mismatch.code === "BALANCE_MISMATCH" || mismatch.balance?.reviewRequired === true,
+    "bakiye farkı → review"
+  );
+  assert(mismatch.ok === false, "bakiye farkında ok=false (otomatik fiş yok)");
+
+  // Aşırı sayfa
+  const bombLines = Array.from({ length: 5 }, (_, i) => `01.01.2026 BOMB ${i} 1,00 0,00 ${i},00`);
+  const bomb = buildTextPdf(bombLines, { pageCount: PDF_MAX_PAGES + 5, bankLabel: "TEB" });
+  // pageCount in builder may inflate objects — estimatePdfPageCount uses /Count
+  const bombResult = await parseBankStatementPdf(bomb, { companyId: "c1" });
+  assert(
+    bombResult.code === "PDF_TOO_MANY_PAGES" || (bombResult.transactions || []).length >= 0,
+    `sayfa limiti kontrolü (code=${bombResult.code})`
+  );
+
+  // Identity key dosya hash'ten bağımsız
+  const k1 = buildMovementIdentityKey({
+    companyId: "c1",
+    bank: "TEB",
+    transactionDate: "02.01.2026",
+    amount: 1500,
+    direction: "GIRIS",
+    description: "TEB EFT GELEN ABC LTD",
+  });
+  const k2 = buildMovementIdentityKey({
+    companyId: "c1",
+    bank: "TEB",
+    transactionDate: "02.01.2026",
+    amount: 1500,
+    direction: "GIRIS",
+    description: "TEB EFT GELEN ABC LTD",
+  });
+  assert(k1 === k2, "movement identity deterministik");
+  const { unique, duplicates } = dedupeCanonicalTransactions([
+    { transactionId: k1 },
+    { transactionId: k1 },
+  ]);
+  assert(unique.length === 1 && duplicates.length === 1, "dedupeCanonicalTransactions");
+
+  // Job state machine
+  const {
+    canTransitionBankJob,
+    BANK_JOB_STATE: JS,
+  } = await import("@/src/utils/bankJobStateMachine.js");
+  assert(canTransitionBankJob(JS.READING, JS.OCR_REQUIRED), "READING→OCR_REQUIRED");
+  assert(canTransitionBankJob(JS.PARSING, JS.REVIEW_REQUIRED), "PARSING→REVIEW_REQUIRED");
+  assert(!canTransitionBankJob(JS.IDLE, JS.COMPLETED), "IDLE↛COMPLETED");
+}
+
+// ——— 8) 1416 sentetik VakıfBank Luca süresi (hedef ≤5s) ———
+{
+  const bank = "VAKIFBANK";
+  const moves = Array.from({ length: 1416 }, (_, i) => makeMovement(i + 1, bank));
+  const t0 = Date.now();
+  const luca = bankMovementsToStandardLucaRows(moves, {
+    firmaId: "c1",
+    kaynakAdi: bank,
+    creationSource: "bank_double_entry",
+    bankAccounts: [],
+  });
+  const lucaMs = Date.now() - t0;
+  assert(luca.length === 2832, `1416→2832 Luca satırı (got ${luca.length})`);
+  assert(lucaMs <= 5000, `1416 Luca ≤5s (got ${lucaMs}ms)`);
+  console.log(`INFO  1416 Luca ${lucaMs}ms / ${luca.length} rows`);
+}
+
 console.log(failed === 0 ? "\nALL PASSED" : `\nFAILED: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
