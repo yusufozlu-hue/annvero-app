@@ -550,11 +550,22 @@ assert(emptyQueue.length === 0, "tüm kayıtlar eşleşmişse kuyruk boş");
   // Job state machine
   const {
     canTransitionBankJob,
+    createInitialBankJobState,
+    shouldBlockNewBankJob,
+    transitionBankJob,
     BANK_JOB_STATE: JS,
   } = await import("@/src/utils/bankJobStateMachine.js");
   assert(canTransitionBankJob(JS.READING, JS.OCR_REQUIRED), "READING→OCR_REQUIRED");
   assert(canTransitionBankJob(JS.PARSING, JS.REVIEW_REQUIRED), "PARSING→REVIEW_REQUIRED");
   assert(!canTransitionBankJob(JS.IDLE, JS.COMPLETED), "IDLE↛COMPLETED");
+  const idle = createInitialBankJobState();
+  assert(!shouldBlockNewBankJob(idle), "idle should not block");
+  const reading = transitionBankJob(idle, JS.READING, { jobId: 1 });
+  assert(shouldBlockNewBankJob(reading), "READING should block");
+  assert(reading.loading === true, "READING loading");
+  // Simulate pipeline finally: hard-reset unlocks Yeniden İşle / re-upload
+  const reset = createInitialBankJobState();
+  assert(!shouldBlockNewBankJob(reset), "reset after READING unlocks busy lock");
 }
 
 // ——— 8) 1416 sentetik VakıfBank Luca süresi (hedef ≤5s) ———
