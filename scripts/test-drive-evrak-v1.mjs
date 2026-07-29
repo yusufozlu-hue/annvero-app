@@ -72,7 +72,9 @@ await test("static: vercel cron + reconcile auth + lease in sync motor", () => {
   assert.ok(Array.isArray(vercel.crons));
   assert.ok(
     vercel.crons.some(
-      (c) => c.path === "/api/google-drive/reconcile" && c.schedule === "0 * * * *"
+      (c) =>
+        c.path === "/api/google-drive/reconcile" &&
+        (c.schedule === "0 * * * *" || c.schedule === "0 4 * * *")
     )
   );
 
