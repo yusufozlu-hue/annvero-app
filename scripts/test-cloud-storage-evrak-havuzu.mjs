@@ -31,7 +31,11 @@ import {
   UPLOAD_PHASE,
   UPLOADED_AND_INDEXED_MESSAGE,
   UPLOADED_INDEXING_MESSAGE,
+  UPLOADED_RETRY_PENDING_MESSAGE,
   UPLOADED_SYNC_FAILED_MESSAGE,
+  inlineSyncCoversAllSuccesses,
+  messageForUploadResponse,
+  uploadResponseSyncState,
   uploadButtonLabel,
   uploadPhaseLiveMessage,
 } from "@/src/utils/cloudStorage/uploadFlow.js";
@@ -103,7 +107,10 @@ await test("1. firma klasör ağacı üretimi", () => {
   assert.ok(paths.includes("02 - Beyannameler/MUHSGK"));
   assert.ok(paths.includes("03 - Tahakkuk Fişleri/SGK"));
   assert.ok(paths.includes("03 - Tahakkuk Fişleri/SGDP"));
-  assert.ok(!paths.some((p) => /MTV|Emlak/i.test(p)));
+  assert.ok(paths.includes("11 - Ödeme Belgeleri/MTV Ödemeleri"));
+  assert.ok(paths.includes("11 - Ödeme Belgeleri/Emlak Vergisi Ödemeleri"));
+  assert.ok(!paths.some((p) => /03 - Tahakkuk Fişleri\/.*MTV/i.test(p)));
+  assert.ok(!paths.some((p) => /03 - Tahakkuk Fişleri\/.*Emlak/i.test(p)));
   assert.equal(BEYANNAME_SUBFOLDERS.length, 9);
   assert.equal(TAHAKKUK_SUBFOLDERS.length, 11);
   assert.ok(buildCompanyFolderTree().length >= 14);
@@ -483,6 +490,23 @@ await test("upload sonrası sync hash ile indeksler", () => {
     existingIndex: pass.created,
   });
   assert.ok(dup.stats.skippedDuplicates >= 1 || dup.skippedDuplicates?.length >= 1);
+});
+
+await test("upload flow: inline sync → client sync atlanır", () => {
+  assert.equal(shouldRunSyncAfterUploadResults(["success"], true), false);
+  assert.equal(
+    inlineSyncCoversAllSuccesses(["success", "duplicate"], 1),
+    true
+  );
+  assert.equal(
+    inlineSyncCoversAllSuccesses(["success", "success"], 1),
+    false
+  );
+  const body = { sync: { triggered: true, retryScheduled: false } };
+  assert.equal(uploadResponseSyncState(body).needsClientSync, false);
+  assert.equal(messageForUploadResponse(body), UPLOADED_AND_INDEXED_MESSAGE);
+  const retryBody = { sync: { triggered: false, retryScheduled: true } };
+  assert.equal(messageForUploadResponse(retryBody), UPLOADED_RETRY_PENDING_MESSAGE);
 });
 
 await test("upload flow: başarılı → syncing → completed", () => {

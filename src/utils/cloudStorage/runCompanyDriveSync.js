@@ -5,6 +5,7 @@
 
 import { listGoogleDriveMetadata } from "./googleDriveAdapter.js";
 import { runMetadataSyncPass } from "./syncEngine.js";
+import { acquireCompanySyncLease, releaseCompanySyncLease } from "./syncLease.js";
 import { ANNVERO_SYSTEM_FOLDER } from "./types.js";
 
 function rowFromDb(row) {
@@ -73,6 +74,40 @@ export async function runCompanyDriveSync({
     throw err;
   }
 
+  const lease = await acquireCompanySyncLease(supabase, companyId);
+  if (!lease.acquired) {
+    const err = new Error("SYNC_LEASE_BUSY");
+    err.code = "SYNC_LEASE_BUSY";
+    throw err;
+  }
+
+  try {
+    return await runCompanyDriveSyncBody({
+      supabase,
+      accessToken,
+      companyId,
+      rootFolderId,
+      writeSyncEvents,
+      extraEvents,
+    });
+  } catch (error) {
+    try {
+      await releaseCompanySyncLease(supabase, companyId, { status: "error" });
+    } catch {
+      // ignore
+    }
+    throw error;
+  }
+}
+
+async function runCompanyDriveSyncBody({
+  supabase,
+  accessToken,
+  companyId,
+  rootFolderId,
+  writeSyncEvents = false,
+  extraEvents = [],
+} = {}) {
   const remote = await listGoogleDriveMetadata({
     accessToken,
     rootFolderId,

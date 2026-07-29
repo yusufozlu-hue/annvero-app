@@ -19,6 +19,11 @@ function resolveExistingPath(basePath) {
 }
 
 export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "server-only") {
+    const stub = path.join(ROOT, "scripts/test-stubs/server-only.mjs");
+    return nextResolve(pathToFileURL(stub).href, context);
+  }
+
   if (specifier.startsWith("@/")) {
     const rel = specifier.slice(2).replace(/\\/g, "/");
     const abs = resolveExistingPath(path.join(ROOT, rel));

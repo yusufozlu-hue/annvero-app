@@ -18,7 +18,11 @@ import {
   UPLOAD_PHASE,
   UPLOADED_AND_INDEXED_MESSAGE,
   UPLOADED_INDEXING_MESSAGE,
+  UPLOADED_RETRY_PENDING_MESSAGE,
   UPLOADED_SYNC_FAILED_MESSAGE,
+  inlineSyncCoversAllSuccesses,
+  messageForUploadResponse,
+  uploadResponseSyncState,
   uploadButtonLabel,
   uploadPhaseLiveMessage,
 } from "@/src/utils/cloudStorage/uploadFlow";
@@ -101,6 +105,9 @@ export default function TaxpayerUploadClient() {
       setError("");
 
       const resultStatuses = items.map((item) => item.status);
+      let inlineTriggeredCount = 0;
+      let anyRetryScheduled = false;
+      let anyNeedsClientSync = false;
 
       try {
         for (let index = 0; index < items.length; index += 1) {
@@ -147,10 +154,15 @@ export default function TaxpayerUploadClient() {
             }
 
             resultStatuses[index] = "success";
+            const syncState = uploadResponseSyncState(body);
+            if (syncState.triggered) inlineTriggeredCount += 1;
+            if (syncState.retryScheduled) anyRetryScheduled = true;
+            if (syncState.needsClientSync) anyNeedsClientSync = true;
+            const itemMessage = messageForUploadResponse(body);
             setUploadItems((prev) =>
               prev.map((row) =>
                 row.id === item.id
-                  ? { ...row, status: "success", message: UPLOADED_INDEXING_MESSAGE }
+                  ? { ...row, status: "success", message: itemMessage }
                   : row
               )
             );
@@ -168,10 +180,24 @@ export default function TaxpayerUploadClient() {
           }
         }
 
-        const nextPhase = phaseAfterUploadResults(resultStatuses);
-        if (!shouldRunSyncAfterUploadResults(resultStatuses)) {
-          setUploadPhase(nextPhase);
-          if (nextPhase === UPLOAD_PHASE.ERROR) {
+        const inlineSyncDone = inlineSyncCoversAllSuccesses(
+          resultStatuses,
+          inlineTriggeredCount
+        );
+        const nextPhase = inlineSyncDone
+          ? UPLOAD_PHASE.COMPLETED
+          : phaseAfterUploadResults(resultStatuses);
+
+        if (
+          !shouldRunSyncAfterUploadResults(resultStatuses, inlineSyncDone) ||
+          (anyRetryScheduled && !anyNeedsClientSync)
+        ) {
+          setUploadPhase(
+            inlineSyncDone || (anyRetryScheduled && !anyNeedsClientSync)
+              ? UPLOAD_PHASE.COMPLETED
+              : nextPhase
+          );
+          if (nextPhase === UPLOAD_PHASE.ERROR && !anyRetryScheduled) {
             setError("Yükleme başarısız. Tekrar deneyebilirsiniz.");
           }
           return;

@@ -20,7 +20,10 @@ export const UPLOADED_INDEXING_MESSAGE = "Drive’a yüklendi, indeksleniyor…"
 export const UPLOADED_AND_INDEXED_MESSAGE = "Yüklendi ve indekslendi.";
 
 export const UPLOADED_SYNC_FAILED_MESSAGE =
-  "Drive’a yüklendi fakat indeksleme başarısız. Senkronizasyonu Yenile’yi deneyin.";
+  "Drive’a yüklendi; indeksleme otomatik yeniden denenecek.";
+
+export const UPLOADED_RETRY_PENDING_MESSAGE =
+  "Drive’a yüklendi; indeksleme arka planda tamamlanacak.";
 
 /**
  * Buton etiketi — faz’a göre.
@@ -41,10 +44,36 @@ export function uploadButtonLabel(phase) {
   }
 }
 
+export function uploadResponseSyncState(body = {}) {
+  const sync = body?.sync || {};
+  return {
+    triggered: Boolean(sync.triggered),
+    retryScheduled: Boolean(sync.retryScheduled),
+    needsClientSync: !sync.triggered && !sync.retryScheduled,
+  };
+}
+
+export function messageForUploadResponse(body = {}) {
+  const { triggered, retryScheduled } = uploadResponseSyncState(body);
+  if (triggered) return UPLOADED_AND_INDEXED_MESSAGE;
+  if (retryScheduled) return UPLOADED_RETRY_PENDING_MESSAGE;
+  return UPLOADED_INDEXING_MESSAGE;
+}
+
+export function inlineSyncCoversAllSuccesses(
+  resultStatuses = [],
+  inlineTriggeredCount = 0
+) {
+  const successCount = resultStatuses.filter((s) => s === "success").length;
+  if (!successCount) return false;
+  return inlineTriggeredCount >= successCount;
+}
+
 /**
- * En az bir yeni (non-duplicate) başarı var mı → sync gerekir.
+ * Upload API inline sync başarılı → ayrı sync çağrısı gerekmez.
  */
-export function shouldRunSyncAfterUploadResults(itemStatuses = []) {
+export function shouldRunSyncAfterUploadResults(itemStatuses = [], inlineSync = false) {
+  if (inlineSync) return false;
   return itemStatuses.some((status) => status === "success");
 }
 

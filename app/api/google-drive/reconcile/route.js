@@ -1,6 +1,6 @@
 /**
- * POST /api/google-drive/reconcile
- * HMAC shared-secret ile sistem reconcile — üretim schedule bu turda yok.
+ * POST/GET /api/google-drive/reconcile
+ * Cron secret / HMAC ile sistem reconcile — saatlik batch + sync retry.
  * Aktif + bağlantısız firmalar ensureCompanyDriveProvisioned ile tamamlanır.
  */
 
@@ -19,6 +19,21 @@ import { requiresStrictRuntimeSecrets } from "@/src/lib/security/envGuard";
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import { ANNVERO_SYSTEM_FOLDER } from "@/src/utils/cloudStorage/types.js";
 import { runCompanyDriveSync } from "@/src/utils/cloudStorage/runCompanyDriveSync";
+import {
+  RECONCILE_MAX_COMPANIES_PER_RUN,
+  RECONCILE_TIME_BUDGET_MS,
+  reconcileTimeRemaining,
+  sliceReconcileBatch,
+  sortCompanyIds,
+} from "@/src/utils/cloudStorage/reconcileBatch.js";
+import {
+  classifySyncFailure,
+  enqueueSyncRetry,
+  isSyncRetryDue,
+  parseSyncRetryState,
+  shouldRetrySyncAttempt,
+  clearSyncRetry,
+} from "@/src/utils/cloudStorage/syncRetry.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -54,8 +69,22 @@ function readReconcileSecret() {
   return a || b || "";
 }
 
+function readProvidedSecret(request) {
+  const auth = String(request.headers.get("authorization") || "").trim();
+  if (auth.toLowerCase().startsWith("bearer ")) {
+    return auth.slice(7).trim();
+  }
+  return String(request.headers.get("x-annvero-reconcile-secret") || "").trim();
+}
+
 function isCompanyActive(company) {
   return company?.data?.isActive !== false;
+}
+
+function isDuplicateRecord(company) {
+  const data =
+    company?.data && typeof company.data === "object" ? company.data : {};
+  return Boolean(data.duplicate_of || data.duplicateOf);
 }
 
 function authorizeReconcile(request) {
@@ -78,7 +107,7 @@ function authorizeReconcile(request) {
       ),
     };
   }
-  const provided = request.headers.get("x-annvero-reconcile-secret") || "";
+  const provided = readProvidedSecret(request);
   if (!safeEqualSecret(provided, expected)) {
     return {
       ok: false,
@@ -106,6 +135,7 @@ async function syncResolved(supabase, companyId, drive) {
       },
     ],
   });
+  await clearSyncRetry(supabase, companyId);
   return {
     companyId,
     ok: true,
@@ -124,7 +154,7 @@ async function reconcileOneCompany(supabase, companyId) {
   if (companyError || !company) {
     return { companyId, code: "COMPANY_NOT_FOUND", ok: false };
   }
-  if (!isCompanyActive(company)) {
+  if (!isCompanyActive(company) || isDuplicateRecord(company)) {
     return { companyId, code: "COMPANY_INACTIVE", ok: false, skipped: true };
   }
 
@@ -156,6 +186,10 @@ async function reconcileOneCompany(supabase, companyId) {
         }
       } else if (provision.status === PROVISION_STATUS.INACTIVE_SKIPPED) {
         return { companyId, code: "COMPANY_INACTIVE", ok: false, skipped: true };
+      } else if (
+        provision.status === PROVISION_STATUS.DUPLICATE_NAME_SKIPPED
+      ) {
+        return { companyId, code: "COMPANY_INACTIVE", ok: false, skipped: true };
       } else {
         return {
           companyId,
@@ -171,26 +205,71 @@ async function reconcileOneCompany(supabase, companyId) {
 
   try {
     return await syncResolved(supabase, companyId, drive);
-  } catch {
+  } catch (error) {
+    const kind = classifySyncFailure(error);
+    if (kind.retryable && shouldRetrySyncAttempt(1)) {
+      await enqueueSyncRetry(supabase, companyId, { attempt: 1 });
+    }
     return { companyId, code: "SYNC_FAILED", ok: false };
   }
 }
 
-export async function POST(request) {
+async function processSyncRetryDue(supabase, folders, startMs) {
+  const results = [];
+  for (const row of folders || []) {
+    if (reconcileTimeRemaining(startMs) < 5000) break;
+    const companyId = String(row.company_id || "").trim();
+    if (!companyId) continue;
+    if (!isSyncRetryDue(row.last_error)) continue;
+
+    const state = parseSyncRetryState(row.last_error);
+    if (!state || !shouldRetrySyncAttempt(state.attempt)) continue;
+
+    let drive;
+    try {
+      drive = await resolveCompanyDriveConnection(companyId);
+    } catch {
+      continue;
+    }
+
+    try {
+      const synced = await syncResolved(supabase, companyId, drive);
+      results.push({ ...synced, kind: "sync_retry" });
+    } catch (error) {
+      const kind = classifySyncFailure(error);
+      if (kind.retryable && shouldRetrySyncAttempt(state.attempt + 1)) {
+        await enqueueSyncRetry(supabase, companyId, {
+          attempt: state.attempt + 1,
+        });
+      }
+      results.push({
+        companyId,
+        ok: false,
+        code: "SYNC_FAILED",
+        kind: "sync_retry",
+      });
+    }
+  }
+  return results;
+}
+
+async function handleReconcile(request) {
   const auth = authorizeReconcile(request);
   if (!auth.ok) return auth.response;
 
   const limited = enforceRateLimit(request, null, "google-drive-reconcile", {
-    limit: 10,
+    limit: 12,
     windowMs: 300_000,
   });
   if (limited) return limited;
 
   let body = {};
-  try {
-    body = await request.json();
-  } catch {
-    body = {};
+  if (request.method === "POST") {
+    try {
+      body = await request.json();
+    } catch {
+      body = {};
+    }
   }
 
   const { supabase, guard } = getApiSupabase(
@@ -199,7 +278,10 @@ export async function POST(request) {
   );
   if (guard) return guard;
 
+  const startMs = Date.now();
   const singleCompanyId = String(body?.companyId || "").trim();
+  const cursor = String(body?.cursor || "").trim();
+  const limit = Number(body?.limit) || RECONCILE_MAX_COMPANIES_PER_RUN;
 
   if (singleCompanyId) {
     const result = await reconcileOneCompany(supabase, singleCompanyId);
@@ -215,8 +297,7 @@ export async function POST(request) {
     await Promise.all([
       supabase
         .from("company_cloud_folders")
-        .select("company_id,root_folder_id,connection_id")
-        .not("root_folder_id", "is", null),
+        .select("company_id,root_folder_id,connection_id,last_error,sync_status"),
       supabase.from("companies").select("id,data"),
     ]);
 
@@ -227,6 +308,8 @@ export async function POST(request) {
     );
   }
 
+  const retryResults = await processSyncRetryDue(supabase, folders, startMs);
+
   const folderById = new Map(
     (folders || []).map((f) => [String(f.company_id), f])
   );
@@ -236,9 +319,8 @@ export async function POST(request) {
     const id = String(f.company_id || "").trim();
     if (id) companyIds.add(id);
   }
-  // Aktif + bağsız firmalar da reconcile ile hazırlanır (idempotent).
   for (const company of companies || []) {
-    if (!isCompanyActive(company)) continue;
+    if (!isCompanyActive(company) || isDuplicateRecord(company)) continue;
     const id = String(company.id || "").trim();
     if (!id) continue;
     const folder = folderById.get(id);
@@ -248,12 +330,18 @@ export async function POST(request) {
     if (!ready) companyIds.add(id);
   }
 
-  const results = [];
-  let okCount = 0;
-  let skipCount = 0;
-  let failCount = 0;
+  const { batch, nextCursor, total, done } = sliceReconcileBatch(
+    [...companyIds],
+    { cursor, limit }
+  );
 
-  for (const companyId of companyIds) {
+  const results = [...retryResults];
+  let okCount = retryResults.filter((r) => r.ok).length;
+  let skipCount = 0;
+  let failCount = retryResults.filter((r) => !r.ok).length;
+
+  for (const companyId of batch) {
+    if (reconcileTimeRemaining(startMs) < 3000) break;
     const result = await reconcileOneCompany(supabase, companyId);
     results.push({
       companyId: result.companyId,
@@ -267,10 +355,30 @@ export async function POST(request) {
     else failCount += 1;
   }
 
+  const timeBudgetExceeded = reconcileTimeRemaining(startMs) < 3000;
+
   return NextResponse.json({
     ok: failCount === 0,
     code: "BATCH_DONE",
-    summary: { okCount, skipCount, failCount, total: results.length },
+    summary: {
+      okCount,
+      skipCount,
+      failCount,
+      total,
+      processed: results.length,
+      timeBudgetExceeded,
+    },
+    cursor: timeBudgetExceeded || !done ? nextCursor : "",
+    done: done && !timeBudgetExceeded,
     results,
+    skippedSystemFolder: ANNVERO_SYSTEM_FOLDER,
   });
+}
+
+export async function POST(request) {
+  return handleReconcile(request);
+}
+
+export async function GET(request) {
+  return handleReconcile(request);
 }

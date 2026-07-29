@@ -18,7 +18,11 @@ import {
 } from "@/src/utils/cloudStorage/googleDriveAdapter";
 import { classifyUploadTarget } from "@/src/utils/cloudStorage/documentClassify.js";
 import { validateDocumentCompanyMatch } from "@/src/utils/cloudStorage/companyContentMatch.js";
-import { buildUploadIdempotencyKey } from "@/src/utils/cloudStorage/syncRetry.js";
+import {
+  buildUploadIdempotencyKey,
+  enqueueSyncRetry,
+  classifySyncFailure,
+} from "@/src/utils/cloudStorage/syncRetry.js";
 import { runCompanyDriveSync } from "@/src/utils/cloudStorage/runCompanyDriveSync";
 import { DOCUMENT_PARSE_STATUS } from "@/src/utils/cloudStorage/types.js";
 import {
@@ -51,7 +55,7 @@ const SAFE = Object.freeze({
   CONNECTION_FOREIGN: "Firma depolama bağlantısı bu kayıtla eşleşmiyor.",
   TARGET_FOLDER_MISSING: "Hedef klasör Drive’da bulunamadı. Önce klasör yapısını oluşturun.",
   SYSTEM_FOLDER_FORBIDDEN: "Sistem klasörüne (_ANNVERO) dosya yüklenemez.",
-  INVALID_TARGET_PATH: "Hedef klasör şema v1 izinli yollarından biri değil.",
+  INVALID_TARGET_PATH: "Hedef klasör şema v2 izinli yollarından biri değil.",
   UNSUPPORTED_FILE_TYPE: "Desteklenmeyen dosya türü. PDF, Excel, XML veya görsel yükleyin.",
   MIME_EXTENSION_MISMATCH: "Dosya uzantısı ile içerik türü uyuşmuyor.",
   EMPTY_FILE: "Boş dosya yüklenemez.",
@@ -229,6 +233,9 @@ export async function POST(request) {
 
   if (companyError || !company) return jsonError("COMPANY_NOT_FOUND", 404);
   if (!isCompanyActive(company)) return jsonError("COMPANY_INACTIVE", 409);
+  const dupOf =
+    company?.data?.duplicate_of || company?.data?.duplicateOf;
+  if (dupOf) return jsonError("COMPANY_INACTIVE", 409);
 
   let drive;
   try {
@@ -360,6 +367,7 @@ export async function POST(request) {
 
     let syncResult = null;
     let syncTriggered = false;
+    let syncRetryScheduled = false;
     try {
       syncResult = await runCompanyDriveSync({
         supabase,
@@ -418,8 +426,17 @@ export async function POST(request) {
           // ignore
         }
       }
-    } catch {
+    } catch (syncError) {
       syncTriggered = false;
+      const kind = classifySyncFailure(syncError);
+      if (kind.retryable) {
+        try {
+          await enqueueSyncRetry(supabase, companyId, { attempt: 1 });
+          syncRetryScheduled = true;
+        } catch {
+          // soft — reconcile cron yedek
+        }
+      }
     }
 
     return NextResponse.json({
@@ -447,6 +464,7 @@ export async function POST(request) {
       idempotencyKey,
       sync: {
         triggered: syncTriggered,
+        retryScheduled: syncRetryScheduled,
         stats: syncResult?.stats || null,
         lastSyncAt: syncResult?.lastSyncAt || null,
       },

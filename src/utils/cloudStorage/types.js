@@ -52,7 +52,7 @@ export const DOCUMENT_KIND = {
 /** MTV / Emlak — tahakkuk klasörü oluşturulmaz */
 export const TAHAKKUK_EXCLUDED_OBLIGATIONS = Object.freeze(["MTV", "EMLAK"]);
 
-export const FOLDER_STRUCTURE_VERSION = "v1";
+export const FOLDER_STRUCTURE_VERSION = "v2";
 
 export const ANNVERO_SYSTEM_FOLDER = "_ANNVERO";
 

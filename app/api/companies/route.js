@@ -165,33 +165,34 @@ export async function POST(request) {
     afterState: saved,
   });
 
-  // Drive arşivi — firma kaydı korunsun; hata soft/pending.
-  let driveArchive = null;
-  try {
-    const {
-      ensureCompanyDriveProvisioned,
-      toPublicProvisionResult,
-      PROVISION_STATUS,
-    } = await import("@/src/lib/googleDrive/ensureCompanyDriveProvisioned");
-    const provision = await ensureCompanyDriveProvisioned(id, { dryRun: false });
-    driveArchive = toPublicProvisionResult(provision);
-    if (
-      provision.status === PROVISION_STATUS.DRIVE_ERROR ||
-      provision.status === PROVISION_STATUS.OFFICE_CONNECTION_PENDING
-    ) {
-      driveArchive = {
-        ...driveArchive,
-        message:
-          "Firma kaydedildi, bulut arşivi hazırlanıyor.",
-      };
-    }
-  } catch {
+  // Drive arşivi — HTTP yanıtını bekletme; reconcile yedek tamamlar.
+  let driveArchive = {
+    companyId: id,
+    companyName,
+    status: "PROVISION_QUEUED",
+    label: "Hazırlanıyor",
+    message: "Firma kaydedildi; Drive arşivi arka planda hazırlanıyor.",
+  };
+  if (isActiveIncoming) {
+    void (async () => {
+      try {
+        const {
+          ensureCompanyDriveProvisioned,
+          toPublicProvisionResult,
+          PROVISION_STATUS,
+        } = await import("@/src/lib/googleDrive/ensureCompanyDriveProvisioned");
+        await ensureCompanyDriveProvisioned(id, { dryRun: false });
+      } catch {
+        // reconcile cron yedek
+      }
+    })();
+  } else {
     driveArchive = {
       companyId: id,
-      companyName: companyName,
-      status: "DRIVE_ERROR",
-      label: "Hata",
-      message: "Firma kaydedildi, bulut arşivi hazırlanıyor.",
+      companyName,
+      status: "INACTIVE_SKIPPED",
+      label: "Pasif Atlandı",
+      message: "Pasif firma — Drive arşivi oluşturulmaz.",
     };
   }
 

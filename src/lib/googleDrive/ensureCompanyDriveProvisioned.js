@@ -46,6 +46,12 @@ function isCompanyActive(company) {
   return company?.data?.isActive !== false;
 }
 
+function isMergedDuplicate(company) {
+  const data =
+    company?.data && typeof company.data === "object" ? company.data : {};
+  return Boolean(data.duplicate_of || data.duplicateOf);
+}
+
 export function normalizeCompanyNameForProvision(name) {
   return normalizeCompanyTitleKey(name);
 }
@@ -176,6 +182,15 @@ export async function ensureCompanyDriveProvisioned(
 
   const name = companyDisplayName(company);
   const active = isCompanyActive(company);
+
+  if (isMergedDuplicate(company)) {
+    return {
+      status: PROVISION_STATUS.INACTIVE_SKIPPED,
+      companyId: id,
+      companyName: name,
+      message: "Mükerrer kayıt — birleştirilmiş firma için arşiv oluşturulmaz.",
+    };
+  }
 
   const { data: folder, error: folderError } = await supabase
     .from("company_cloud_folders")
@@ -436,6 +451,18 @@ export function partitionCompaniesForProvision(companies = [], folders = []) {
           status: PROVISION_STATUS.INACTIVE_SKIPPED,
           companyId: id,
           companyName: name,
+        })
+      );
+      continue;
+    }
+
+    if (isMergedDuplicate(company)) {
+      inactiveSkipped.push(
+        toPublicProvisionResult({
+          status: PROVISION_STATUS.INACTIVE_SKIPPED,
+          companyId: id,
+          companyName: name,
+          message: "Mükerrer kayıt — birleştirilmiş firma atlandı.",
         })
       );
       continue;
