@@ -37,6 +37,7 @@ import {
   finalizeStandardLucaRow,
   KAYNAK_TIPI,
   logStandardLucaReport,
+  buildElektrawebPreviewRows,
 } from "@/src/utils/standardLucaRow";
 import {
   saveAccountMemoryFromEdit,
@@ -172,6 +173,31 @@ import {
   shouldBlockNewBankJob,
   transitionBankJob,
 } from "@/src/utils/bankJobStateMachine";
+import {
+  ACCOUNTING_PRIORITY,
+  ANNVERO_V1_ENGINE_VERSION,
+  V1_CTA_LABEL,
+  V1_CTA_RERUN_LABEL,
+  V1_JOB_STATE,
+  archiveStatementToDrive,
+  assertLucaRowExpectation,
+  buildIdempotencyKey,
+  buildV1ResultSummary,
+  decideTerminalStatus,
+  mapLocalProgressToV1,
+  mapV1PhaseToLegacy,
+  reconcileEdefterStage,
+  runVoucherControlStage,
+  shouldRunV1Stage,
+  userFacingV1Error,
+  validateV1Inputs,
+} from "@/src/utils/annveroV1Orchestration";
+import {
+  listV1JobHistory,
+  persistV1JobSummary,
+  releaseV1Lease,
+  requestV1Lease,
+} from "@/src/utils/annveroV1Client";
 
 const RowSearchToolbar = dynamic(
   () => import("../components/RowSearchToolbar"),
@@ -419,6 +445,10 @@ export default function BankParserWorkbench() {
   const pdfMetaRef = useRef(null);
   /** Firma oturumu: işlenmiş hareket kimlikleri (Excel↔PDF çapraz dedup) */
   const processedMovementKeysRef = useRef(new Set());
+  const v1LeaseIdRef = useRef(null);
+  const v1JobIdRef = useRef(null);
+  const v1StageOutputsRef = useRef({});
+  const [v1AuditHistory, setV1AuditHistory] = useState([]);
   const lastDedupMetaRef = useRef(null);
   const bankJobStateRef = useRef(createInitialBankJobState());
   /** Pipeline/parse bankası — React state'ten bağımsız (stale closure yok) */
@@ -599,6 +629,10 @@ export default function BankParserWorkbench() {
   useEffect(() => {
     processedMovementKeysRef.current = new Set();
     lastDedupMetaRef.current = null;
+    v1StageOutputsRef.current = {};
+    v1LeaseIdRef.current = null;
+    v1JobIdRef.current = null;
+    setV1AuditHistory([]);
   }, [selectedCompanyId]);
 
   useEffect(() => {
@@ -2277,13 +2311,15 @@ export default function BankParserWorkbench() {
 
     // Dosya seçiminde cache varsa XLSX'i tekrar okuma.
     let sheetRows = null;
+    let arrayBuffer = null;
     if (
       fileSheetRowsRef.current &&
       fileSheetSourceRef.current === file?.name
     ) {
       sheetRows = fileSheetRowsRef.current;
+      arrayBuffer = await file.arrayBuffer();
     } else {
-      const arrayBuffer = await file.arrayBuffer();
+      arrayBuffer = await file.arrayBuffer();
       if (signal?.aborted) {
         const err = new Error("İşlem iptal edildi.");
         err.name = "AbortError";
@@ -2338,12 +2374,18 @@ export default function BankParserWorkbench() {
         onProgress,
         timeoutMs: 120_000,
       });
+      const { buildSourceFileHash } = await import(
+        "@/src/utils/bankCanonicalTransaction"
+      );
+      const sourceFileHash = buildSourceFileHash(new Uint8Array(arrayBuffer));
       return {
         rawCount: workerResult.rawCount || sheetRows.length,
         normalizedRows: workerResult.normalizedRows || [],
         parseMode: workerResult.parseMode || "worker",
         timings: workerResult.timings || null,
         bankName: bank,
+        sourceFileHash,
+        sourceType: "xlsx",
       };
     } catch (workerError) {
       if (workerError?.name === "AbortError" || signal?.aborted) throw workerError;
@@ -2359,6 +2401,7 @@ export default function BankParserWorkbench() {
       });
       return parseBankExcelOnMainThread(file, bank, onProgress, {
         sheetRows,
+        arrayBuffer,
       });
     }
   };
@@ -2413,6 +2456,8 @@ export default function BankParserWorkbench() {
       uniqueCount: dedup.uniqueCount,
       inputCount: dedup.inputCount,
       allDuplicate: dedup.allDuplicate,
+      sourceFileHash: mainResult.sourceFileHash || "",
+      sourceType: mainResult.sourceType || "xlsx",
     };
     if (dedup.allDuplicate) {
       const err = new Error(DUPLICATE_STATEMENT_UI_MESSAGE);
@@ -3052,7 +3097,7 @@ export default function BankParserWorkbench() {
     }
   };
 
-  /** Tek tuş — tek runId / tek AbortController */
+  /** Tek tuş — ANNVERO V1 orkestrasyon (İşle ve Kontrol Et) */
   const runFullBankPipeline = async ({ resumeFrom = null } = {}) => {
     if (isJobBusy) {
       showToast("Başka bir işlem sürüyor.", "error");
@@ -3073,6 +3118,23 @@ export default function BankParserWorkbench() {
         phase: PIPELINE_PHASES.PARSING,
         phaseLabel: getPipelinePhaseTitle(PIPELINE_PHASES.PARSING),
         message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+        recoverable: false,
+        tone: "error",
+      });
+      setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+      return;
+    }
+
+    const inputCheck = validateV1Inputs({
+      companyId: selectedCompanyId,
+      file: selectedFile,
+      bankId: runBank,
+    });
+    if (!inputCheck.ok) {
+      setPipelineError({
+        phase: PIPELINE_PHASES.PARSING,
+        phaseLabel: "Doğrulama",
+        message: inputCheck.message,
         recoverable: false,
         tone: "error",
       });
@@ -3112,7 +3174,110 @@ export default function BankParserWorkbench() {
     const { runId, signal } = beginPipelineRun();
     const tPipeline0 = performance.now();
     const stageDurations = {};
-    // Run context — state flush beklemeden sabit banka
+    const jobId =
+      v1JobIdRef.current ||
+      `v1_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    v1JobIdRef.current = jobId;
+    if (!resumeFrom) {
+      v1StageOutputsRef.current = {};
+    }
+    const stageOutputs = v1StageOutputsRef.current;
+
+    // Lease — aynı firmada eşzamanlı iş engeli
+    let leaseId = v1LeaseIdRef.current;
+    try {
+      if (!leaseId) {
+        leaseId = `lease_${runId}`;
+        const leased = await requestV1Lease(selectedCompanyId, leaseId);
+        leaseId = leased.leaseId || leaseId;
+        v1LeaseIdRef.current = leaseId;
+      }
+    } catch (leaseError) {
+      setPipelineError({
+        phase: PIPELINE_PHASES.ERROR,
+        phaseLabel: "Lease",
+        message:
+          leaseError?.message ||
+          "Bu firma için zaten aktif bir işlem var.",
+        recoverable: true,
+        tone: "error",
+      });
+      setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+      return;
+    }
+
+    // Sunucu idempotency — aynı içerik ikinci kez tam zincir üretmesin
+    try {
+      const { buildSourceFileHash } = await import(
+        "@/src/utils/bankCanonicalTransaction"
+      );
+      const preHash = buildSourceFileHash(
+        new Uint8Array(await selectedFile.arrayBuffer())
+      );
+      if (preHash) {
+        lastDedupMetaRef.current = {
+          ...(lastDedupMetaRef.current || {}),
+          sourceFileHash: preHash,
+        };
+        const idempotencyKey = buildIdempotencyKey({
+          companyId: selectedCompanyId,
+          contentHash: preHash,
+        });
+        const hist = await listV1JobHistory(selectedCompanyId, 30);
+        const prior = (hist?.runs || []).find(
+          (row) =>
+            String(row?.metadata?.idempotency_key || "") === idempotencyKey
+        );
+        if (prior) {
+          setPipelineResult({
+            movementCount: Number(prior.metadata?.movement_count || 0),
+            lucaRowCount: Number(prior.metadata?.luca_row_count || 0),
+            duplicate: true,
+            terminalStatus: V1_JOB_STATE.DUPLICATE,
+            edefterStatus: prior.metadata?.edefter_status || "",
+            edefterCode: prior.metadata?.edefter_code || "",
+            driveArchived: Boolean(prior.metadata?.drive_archived),
+            reviewRequired: false,
+            canAutoApprove: false,
+            passed: Number(prior.metadata?.passed || 0),
+            warnings: Number(prior.metadata?.warnings || 0),
+            errors: Number(prior.metadata?.errors || 0),
+            totalDurationMs: 0,
+            engineVersion: ANNVERO_V1_ENGINE_VERSION,
+            duplicateMessage: DUPLICATE_STATEMENT_UI_MESSAGE,
+          });
+          setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+          setPipelineError({
+            phase: PIPELINE_PHASES.PARSING,
+            phaseLabel: "Mükerrer",
+            message: DUPLICATE_STATEMENT_UI_MESSAGE,
+            recoverable: false,
+            tone: "error",
+          });
+          setPipelineProgress({
+            percent: 100,
+            label: "Mükerrer ekstre",
+            detail: DUPLICATE_STATEMENT_UI_MESSAGE,
+            processed: 0,
+            total: 0,
+          });
+          showToast(DUPLICATE_STATEMENT_UI_MESSAGE, "error");
+          parserJob.markSuccess(DUPLICATE_STATEMENT_UI_MESSAGE);
+          setPipelineMode("idle");
+          if (hist?.runs) setV1AuditHistory(hist.runs);
+          try {
+            await releaseV1Lease(selectedCompanyId, leaseId);
+          } catch {
+            /* ignore */
+          }
+          v1LeaseIdRef.current = null;
+          return;
+        }
+      }
+    } catch {
+      /* geçmiş okunamazsa zincire devam */
+    }
+
     activeBankRef.current = runBank;
     setPipelineRunning(true);
     setPipelineMode("auto");
@@ -3121,136 +3286,397 @@ export default function BankParserWorkbench() {
     setPreviewErrorDetail("");
 
     parserJob.begin({
-      stage: "Banka Ekstresi İşleniyor",
-      detail: "Dosya okunuyor…",
+      stage: "İşle ve Kontrol Et",
+      detail: "Dosya doğrulanıyor…",
     });
 
+    const emitV1 = (v1Phase, localPercent = 0, detail = "") => {
+      const legacy = mapV1PhaseToLegacy(v1Phase);
+      setPipelinePhaseSafe(legacy);
+      const percent = mapLocalProgressToV1(v1Phase, localPercent);
+      const label = detail || userFacingV1Error(v1Phase);
+      setPipelineProgress({
+        percent,
+        label,
+        detail,
+        processed: null,
+        total: null,
+      });
+      parserJob.onProgress({
+        stage: label,
+        detail,
+        percent,
+        processed: null,
+        total: null,
+      });
+    };
+
     let failedPhase = null;
+    let terminalDuplicate = false;
+    let fisKontrolResult = null;
+    let edefterResult = null;
+    let archiveResult = null;
+    let elektraRowCount = 0;
+
     try {
-      if (
-        shouldRunPipelineStage(resumeFrom, "PARSING") ||
-        shouldRunPipelineStage(resumeFrom, "PREVIEW")
-      ) {
-        setIsParsing(true);
-        setActiveStep("preview");
-        setPipelinePhaseSafe(PIPELINE_PHASES.PARSING);
-        emitPipelineProgress(PIPELINE_PHASES.PARSING, {
-          percent: 5,
-          detail: "Dosya okunuyor…",
-        });
+      // 1) validating
+      if (shouldRunV1Stage(resumeFrom, V1_JOB_STATE.VALIDATING) || !resumeFrom) {
+        emitV1(V1_JOB_STATE.VALIDATING, 40, "Dosya ve firma doğrulanıyor…");
         assertPipelineSignal(signal, isRunActive, runId);
-        const preview = await runPreviewStage({
-          signal,
-          runId,
-          bankName: runBank,
-        });
-        stageDurations.previewMs = preview.durationMs;
-        stageDurations.parseMode = preview.parseMode;
-        stageDurations.bankName = preview.bankName || runBank;
-        setIsParsing(false);
-      }
-
-      if (shouldRunPipelineStage(resumeFrom, "ACCOUNTING_ANALYSIS")) {
-        assertPipelineSignal(signal, isRunActive, runId);
-        setIsAnalyzing(true);
-        setActiveStep("analysis");
-        setPipelinePhaseSafe(PIPELINE_PHASES.ACCOUNTING_ANALYSIS);
-        emitPipelineProgress(PIPELINE_PHASES.ACCOUNTING_ANALYSIS, {
-          percent: 0,
-          detail: "Muhasebe kuralları uygulanıyor…",
-        });
-        const analysis = await runAccountingAnalysisStage({
-          signal,
-          runId,
-          bankName: runBank,
-        });
-        stageDurations.analysisMs = analysis.durationMs;
-        setIsAnalyzing(false);
-      }
-
-      if (shouldRunPipelineStage(resumeFrom, "LUCA_BUILD")) {
-        assertPipelineSignal(signal, isRunActive, runId);
-        if (
-          resumeFrom === "LUCA_BUILD" &&
-          !accountingAnalyzed &&
-          !movementsRef.current.some((m) => m?._accountingAnalyzed)
-        ) {
-          throw new Error("Önce Muhasebe Analizini Başlatın.");
-        }
-        setIsPreparingLuca(true);
-        setActiveStep("luca");
-        setPipelinePhaseSafe(PIPELINE_PHASES.LUCA_BUILD);
-        emitPipelineProgress(PIPELINE_PHASES.LUCA_BUILD, {
-          percent: 0,
-          detail: "Luca fiş satırları hazırlanıyor…",
-        });
-        const luca = await runLucaBuildStage({
-          signal,
-          runId,
-          bankName: runBank,
-        });
-        stageDurations.lucaMs = luca.durationMs;
-        setIsPreparingLuca(false);
-      }
-
-      if (shouldRunPipelineStage(resumeFrom, "VALIDATION")) {
-        assertPipelineSignal(signal, isRunActive, runId);
-        setPipelinePhaseSafe(PIPELINE_PHASES.VALIDATION);
-        emitPipelineProgress(PIPELINE_PHASES.VALIDATION, {
-          percent: 50,
-          detail: "Eksik hesaplar kontrol ediliyor…",
-        });
-        const validation = await runValidationStage({ signal, runId });
-        stageDurations.validationMs = validation.durationMs;
-
-        const totalDurationMs = Math.round(performance.now() - tPipeline0);
-        const result = {
-          movementCount: movementsRef.current.length,
-          lucaRowCount: lucaRef.current.length,
-          missingCount: validation.missingCount,
-          missingLucaRowCount: validation.missingLucaRowCount,
-          uniqueUnresolvedMovements: validation.uniqueUnresolvedMovements,
-          uniqueMatchedMovements: validation.uniqueMatchedMovements,
-          unrecognizedCount:
-            validation.uniqueUnresolvedMovements ?? validation.unrecognizedCount,
-          readyCount: validation.readyCount,
-          autoMatchedCount: deriveAutoMatchedMovements(validation.readyCount, {
-            uniqueMatchedMovements: validation.uniqueMatchedMovements,
-          }),
-          totalDurationMs,
-          stageDurations,
-          parseMode: stageDurations.parseMode || null,
+        stageOutputs[V1_JOB_STATE.VALIDATING] = {
+          ok: true,
+          accountingPriority: ACCOUNTING_PRIORITY,
+          engineVersion: ANNVERO_V1_ENGINE_VERSION,
         };
-        setPipelineResult(result);
-        setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
-        // Başarılı işlenen hareket kimliklerini oturuma kaydet (yeniden yükleme = mükerrer)
-        {
-          const canon = legacyBankRowsToCanonical(movementsRef.current, {
-            companyId: selectedCompanyId || "",
-            selectedBank: runBank,
+        stageDurations.validatingMs = Math.round(performance.now() - tPipeline0);
+      }
+
+      // 2) archiving (Drive) — bağlantı yoksa banka akışını engelleme
+      if (shouldRunV1Stage(resumeFrom, V1_JOB_STATE.ARCHIVING) || shouldRunV1Stage(null, V1_JOB_STATE.ARCHIVING)) {
+        if (!stageOutputs[V1_JOB_STATE.ARCHIVING]) {
+          emitV1(V1_JOB_STATE.ARCHIVING, 20, "Drive arşivleniyor…");
+          assertPipelineSignal(signal, isRunActive, runId);
+          const tArch = performance.now();
+          archiveResult = await archiveStatementToDrive({
+            companyId: selectedCompanyId,
+            file: selectedFile,
+            signal,
           });
-          processedMovementKeysRef.current = registerProcessedKeys(
-            processedMovementKeysRef.current,
-            keysFromCanonical(canon)
-          );
+          stageOutputs[V1_JOB_STATE.ARCHIVING] = archiveResult;
+          stageDurations.archivingMs = Math.round(performance.now() - tArch);
+        } else {
+          archiveResult = stageOutputs[V1_JOB_STATE.ARCHIVING];
         }
-        setPipelineProgress({
-          percent: 100,
-          label: "Luca dosyanız hazır.",
-          detail: validation.missingCount
-            ? `${validation.missingCount} eksik hesap satırı var — Excel’i yine hazırlayabilirsiniz.`
-            : "Luca dosyanız hazır.",
-          processed: result.movementCount,
-          total: result.movementCount,
+      }
+
+      // 3–4) parsing + deduplicating (mevcut preview aşaması)
+      {
+        const legacyResume =
+          resumeFrom && V1_JOB_STATE[String(resumeFrom).toUpperCase()]
+            ? mapV1PhaseToLegacy(resumeFrom)
+            : resumeFrom;
+        const shouldParse =
+          !stageOutputs[V1_JOB_STATE.PARSING] &&
+          (shouldRunPipelineStage(legacyResume, "PARSING") ||
+            shouldRunPipelineStage(legacyResume, "PREVIEW") ||
+            shouldRunV1Stage(resumeFrom, V1_JOB_STATE.PARSING) ||
+            shouldRunV1Stage(resumeFrom, V1_JOB_STATE.DEDUPLICATING) ||
+            !resumeFrom);
+        if (shouldParse) {
+          setIsParsing(true);
+          setActiveStep("preview");
+          emitV1(V1_JOB_STATE.PARSING, 10, "Dosya okunuyor…");
+          assertPipelineSignal(signal, isRunActive, runId);
+          const preview = await runPreviewStage({
+            signal,
+            runId,
+            bankName: runBank,
+          });
+          stageDurations.previewMs = preview.durationMs;
+          stageDurations.parseMode = preview.parseMode;
+          stageDurations.bankName = preview.bankName || runBank;
+          stageOutputs[V1_JOB_STATE.PARSING] = {
+            movementCount: movementsRef.current.length,
+            durationMs: preview.durationMs,
+          };
+          stageOutputs[V1_JOB_STATE.DEDUPLICATING] = {
+            ok: true,
+            fromPreview: true,
+          };
+          setIsParsing(false);
+        }
+      }
+
+      // 5–6) CORE + memory (mevcut accounting analysis — öncelik CORE→hafıza)
+      {
+        const legacyResume =
+          resumeFrom && String(resumeFrom).includes("_")
+            ? mapV1PhaseToLegacy(resumeFrom)
+            : resumeFrom;
+        const shouldAnalyze =
+          (!stageOutputs[V1_JOB_STATE.APPLYING_CORE] ||
+            resumeFrom === V1_JOB_STATE.APPLYING_CORE ||
+            resumeFrom === V1_JOB_STATE.APPLYING_MEMORY ||
+            resumeFrom === "ACCOUNTING_ANALYSIS") &&
+          (shouldRunPipelineStage(legacyResume, "ACCOUNTING_ANALYSIS") ||
+            shouldRunV1Stage(resumeFrom, V1_JOB_STATE.APPLYING_CORE) ||
+            shouldRunV1Stage(resumeFrom, V1_JOB_STATE.APPLYING_MEMORY) ||
+            !resumeFrom);
+        if (shouldAnalyze && movementsRef.current.length) {
+          assertPipelineSignal(signal, isRunActive, runId);
+          setIsAnalyzing(true);
+          setActiveStep("analysis");
+          emitV1(V1_JOB_STATE.APPLYING_CORE, 30, "ANNVERO CORE uygulanıyor…");
+          emitV1(
+            V1_JOB_STATE.APPLYING_MEMORY,
+            60,
+            "Firma muhasebe hafızası uygulanıyor…"
+          );
+          setPipelinePhaseSafe(PIPELINE_PHASES.ACCOUNTING_ANALYSIS);
+          const analysis = await runAccountingAnalysisStage({
+            signal,
+            runId,
+            bankName: runBank,
+          });
+          stageDurations.analysisMs = analysis.durationMs;
+          stageOutputs[V1_JOB_STATE.APPLYING_CORE] = { ok: true };
+          stageOutputs[V1_JOB_STATE.APPLYING_MEMORY] = { ok: true };
+          setIsAnalyzing(false);
+        }
+      }
+
+      // 7) creating_vouchers
+      {
+        const legacyResume =
+          resumeFrom && String(resumeFrom).includes("_")
+            ? mapV1PhaseToLegacy(resumeFrom)
+            : resumeFrom;
+        const shouldLuca =
+          (!stageOutputs[V1_JOB_STATE.CREATING_VOUCHERS] ||
+            resumeFrom === V1_JOB_STATE.CREATING_VOUCHERS ||
+            resumeFrom === "LUCA_BUILD") &&
+          (shouldRunPipelineStage(legacyResume, "LUCA_BUILD") ||
+            shouldRunV1Stage(resumeFrom, V1_JOB_STATE.CREATING_VOUCHERS) ||
+            !resumeFrom);
+        if (shouldLuca) {
+          assertPipelineSignal(signal, isRunActive, runId);
+          if (
+            (resumeFrom === "LUCA_BUILD" ||
+              resumeFrom === V1_JOB_STATE.CREATING_VOUCHERS) &&
+            !accountingAnalyzed &&
+            !movementsRef.current.some((m) => m?._accountingAnalyzed)
+          ) {
+            throw new Error("Önce Muhasebe Analizini Başlatın.");
+          }
+          setIsPreparingLuca(true);
+          setActiveStep("luca");
+          emitV1(
+            V1_JOB_STATE.CREATING_VOUCHERS,
+            20,
+            "Fiş taslakları oluşturuluyor…"
+          );
+          const luca = await runLucaBuildStage({
+            signal,
+            runId,
+            bankName: runBank,
+          });
+          stageDurations.lucaMs = luca.durationMs;
+          stageOutputs[V1_JOB_STATE.CREATING_VOUCHERS] = {
+            lucaRowCount: lucaRef.current.length,
+            durationMs: luca.durationMs,
+          };
+          setIsPreparingLuca(false);
+        }
+      }
+
+      // 8) controlling_vouchers — Fiş Kontrol Merkezi
+      {
+        const shouldControl =
+          (!stageOutputs[V1_JOB_STATE.CONTROLLING_VOUCHERS] ||
+            resumeFrom === V1_JOB_STATE.CONTROLLING_VOUCHERS ||
+            resumeFrom === "VALIDATION") &&
+          (shouldRunV1Stage(resumeFrom, V1_JOB_STATE.CONTROLLING_VOUCHERS) ||
+            shouldRunPipelineStage(
+              resumeFrom && String(resumeFrom).includes("_")
+                ? mapV1PhaseToLegacy(resumeFrom)
+                : resumeFrom,
+              "VALIDATION"
+            ) ||
+            !resumeFrom);
+        if (shouldControl) {
+          assertPipelineSignal(signal, isRunActive, runId);
+          emitV1(V1_JOB_STATE.CONTROLLING_VOUCHERS, 40, "Fiş Kontrol çalışıyor…");
+          setPipelinePhaseSafe(PIPELINE_PHASES.VALIDATION);
+          const validation = await runValidationStage({ signal, runId });
+          stageDurations.validationMs = validation.durationMs;
+          fisKontrolResult = runVoucherControlStage(lucaRef.current || [], {
+            companyId: selectedCompanyId,
+            firmaId: selectedCompanyId,
+          });
+          stageOutputs[V1_JOB_STATE.CONTROLLING_VOUCHERS] = {
+            passed: fisKontrolResult.passed,
+            warnings: fisKontrolResult.warnings,
+            errors: fisKontrolResult.errors,
+            lowConfidence: fisKontrolResult.lowConfidence,
+            canAutoApprove: fisKontrolResult.canAutoApprove,
+            reviewRequired: fisKontrolResult.reviewRequired,
+            lucaBatchCount: fisKontrolResult.lucaBatchCount,
+            fisKontrolHref: fisKontrolResult.fisKontrolHref,
+            missingCount: validation.missingCount,
+            uniqueMatchedMovements: validation.uniqueMatchedMovements,
+            uniqueUnresolvedMovements: validation.uniqueUnresolvedMovements,
+            readyCount: validation.readyCount,
+          };
+          stageDurations.fisKontrolMs = validation.durationMs;
+        } else {
+          fisKontrolResult = stageOutputs[V1_JOB_STATE.CONTROLLING_VOUCHERS];
+        }
+      }
+
+      // 9) reconciling_edefter — paket yoksa EDEFTER_NOT_AVAILABLE
+      if (
+        shouldRunV1Stage(resumeFrom, V1_JOB_STATE.RECONCILING_EDEFTER) ||
+        !resumeFrom
+      ) {
+        if (!stageOutputs[V1_JOB_STATE.RECONCILING_EDEFTER]) {
+          emitV1(V1_JOB_STATE.RECONCILING_EDEFTER, 50, "E-Defter çapraz kontrol…");
+          assertPipelineSignal(signal, isRunActive, runId);
+          edefterResult = reconcileEdefterStage({ edefterPackage: null });
+          stageOutputs[V1_JOB_STATE.RECONCILING_EDEFTER] = edefterResult;
+        } else {
+          edefterResult = stageOutputs[V1_JOB_STATE.RECONCILING_EDEFTER];
+        }
+      }
+
+      // 10) generating_exports — Luca grupları + ElektraWeb önizleme (indirme ayrı CTA)
+      if (
+        shouldRunV1Stage(resumeFrom, V1_JOB_STATE.GENERATING_EXPORTS) ||
+        !resumeFrom
+      ) {
+        if (!stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS]) {
+          emitV1(
+            V1_JOB_STATE.GENERATING_EXPORTS,
+            50,
+            "Luca / ElektraWeb çıktıları hazırlanıyor…"
+          );
+          assertPipelineSignal(signal, isRunActive, runId);
+          const lucaExpect = assertLucaRowExpectation(
+            movementsRef.current.length,
+            lucaRef.current.length
+          );
+          const elektraRows = buildElektrawebPreviewRows(lucaRef.current || [], {
+            companyId: selectedCompanyId,
+          });
+          elektraRowCount = Array.isArray(elektraRows) ? elektraRows.length : 0;
+          stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS] = {
+            lucaRowCount: lucaRef.current.length,
+            elektraRowCount,
+            lucaExpect,
+            lucaBatchCount: fisKontrolResult?.lucaBatchCount || 0,
+          };
+        } else {
+          elektraRowCount =
+            stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS]?.elektraRowCount || 0;
+        }
+      }
+
+      // 11) persisting — güvenli özet
+      const validationMeta = stageOutputs[V1_JOB_STATE.CONTROLLING_VOUCHERS] || {};
+      const totalDurationMs = Math.round(performance.now() - tPipeline0);
+      const terminalStatus = decideTerminalStatus({
+        duplicate: terminalDuplicate,
+        reviewRequired: Boolean(fisKontrolResult?.reviewRequired),
+      });
+
+      const resultSummary = buildV1ResultSummary({
+        movementCount: movementsRef.current.length,
+        lucaRowCount: lucaRef.current.length,
+        autoMatchedCount: deriveAutoMatchedMovements(
+          validationMeta.readyCount,
+          {
+            uniqueMatchedMovements: validationMeta.uniqueMatchedMovements,
+          }
+        ),
+        reviewCount:
+          validationMeta.uniqueUnresolvedMovements ??
+          fisKontrolResult?.errors ??
+          0,
+        fisKontrol: fisKontrolResult,
+        edefter: edefterResult,
+        archive: archiveResult,
+        duplicate: terminalDuplicate,
+        totalDurationMs,
+        stageDurations,
+        terminalStatus,
+        parseMs: stageDurations.previewMs || null,
+        chainMs: totalDurationMs,
+      });
+
+      emitV1(V1_JOB_STATE.PERSISTING, 60, "Güvenli özet kaydediliyor…");
+      const idempotencyKey = buildIdempotencyKey({
+        companyId: selectedCompanyId,
+        contentHash: lastDedupMetaRef.current?.sourceFileHash || "",
+      });
+      await persistV1JobSummary({
+        companyId: selectedCompanyId,
+        jobId,
+        leaseId,
+        idempotencyKey,
+        summary: resultSummary,
+        checkpointPhase: V1_JOB_STATE.PERSISTING,
+        action: "persist",
+      });
+      stageOutputs[V1_JOB_STATE.PERSISTING] = { ok: true };
+
+      const result = {
+        movementCount: movementsRef.current.length,
+        lucaRowCount: lucaRef.current.length,
+        elektraRowCount,
+        missingCount: validationMeta.missingCount || 0,
+        missingLucaRowCount: validationMeta.missingCount || 0,
+        uniqueUnresolvedMovements: validationMeta.uniqueUnresolvedMovements,
+        uniqueMatchedMovements: validationMeta.uniqueMatchedMovements,
+        unrecognizedCount: validationMeta.uniqueUnresolvedMovements,
+        readyCount: validationMeta.readyCount,
+        autoMatchedCount: resultSummary.autoMatchedCount,
+        passed: resultSummary.passed,
+        warnings: resultSummary.warnings,
+        errors: resultSummary.errors,
+        edefterStatus: resultSummary.edefterStatus,
+        edefterCode: resultSummary.edefterCode,
+        driveArchived: resultSummary.driveArchived,
+        driveSkipped: resultSummary.driveSkipped,
+        reviewRequired: resultSummary.reviewRequired,
+        canAutoApprove: resultSummary.canAutoApprove,
+        fisKontrolHref: resultSummary.fisKontrolHref,
+        terminalStatus,
+        totalDurationMs,
+        stageDurations,
+        parseMode: stageDurations.parseMode || null,
+        engineVersion: ANNVERO_V1_ENGINE_VERSION,
+      };
+      setPipelineResult(result);
+      setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+
+      {
+        const canon = legacyBankRowsToCanonical(movementsRef.current, {
+          companyId: selectedCompanyId || "",
+          selectedBank: runBank,
         });
-        parserJob.markSuccess("Luca dosyanız hazır.");
-        setPipelineMode("idle");
-        showToast(
-          validation.missingCount
-            ? `İşlem tamamlandı. ${result.lucaRowCount} Luca satırı · ${validation.missingCount} eksik hesap.`
-            : `İşlem tamamlandı. ${result.lucaRowCount} Luca satırı hazır.`,
-          "success"
+        processedMovementKeysRef.current = registerProcessedKeys(
+          processedMovementKeysRef.current,
+          keysFromCanonical(canon)
         );
+      }
+
+      setPipelineProgress({
+        percent: 100,
+        label:
+          terminalStatus === V1_JOB_STATE.REVIEW_REQUIRED
+            ? "İnceleme gerekli"
+            : "İşlem ve kontrol tamamlandı.",
+        detail: result.errors
+          ? `${result.errors} hata · ${result.warnings} uyarı — otomatik onay yok.`
+          : edefterResult?.code === "EDEFTER_NOT_AVAILABLE"
+            ? "E-Defter yok (EDEFTER_NOT_AVAILABLE); banka akışı tamamlandı."
+            : "Luca / ElektraWeb çıktıları hazır.",
+        processed: result.movementCount,
+        total: result.movementCount,
+      });
+      parserJob.markSuccess("İşlem ve kontrol tamamlandı.");
+      setPipelineMode("idle");
+      showToast(
+        result.reviewRequired
+          ? `İnceleme gerekli. ${result.lucaRowCount} Luca satırı · ${result.errors} hata.`
+          : `Tamamlandı. ${result.lucaRowCount} Luca satırı hazır.`,
+        result.reviewRequired ? "error" : "success"
+      );
+
+      try {
+        const hist = await listV1JobHistory(selectedCompanyId, 10);
+        if (hist?.runs) setV1AuditHistory(hist.runs);
+      } catch {
+        /* ignore */
       }
     } catch (error) {
       setIsParsing(false);
@@ -3259,6 +3685,41 @@ export default function BankParserWorkbench() {
       if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
         setPipelinePhaseSafe(PIPELINE_PHASES.CANCELLED);
         setPipelineMode("idle");
+        await releaseV1Lease(selectedCompanyId, leaseId);
+        v1LeaseIdRef.current = null;
+        return;
+      }
+      if (error?.code === "DUPLICATE_STATEMENT") {
+        terminalDuplicate = true;
+        setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+        setPipelineError({
+          phase: PIPELINE_PHASES.PREVIEW,
+          phaseLabel: "Mükerrer",
+          message: DUPLICATE_STATEMENT_UI_MESSAGE,
+          suppressedMovements: error?.suppressedMovements ?? null,
+          suppressedLucaRows: error?.suppressedLucaRows ?? null,
+          recoverable: false,
+          tone: "info",
+        });
+        setPipelineMode("idle");
+        parserJob.reset();
+        await persistV1JobSummary({
+          companyId: selectedCompanyId,
+          jobId,
+          leaseId,
+          idempotencyKey: buildIdempotencyKey({
+            companyId: selectedCompanyId,
+            contentHash: "",
+          }),
+          summary: buildV1ResultSummary({
+            duplicate: true,
+            terminalStatus: V1_JOB_STATE.DUPLICATE,
+            edefter: reconcileEdefterStage({}),
+          }),
+          action: "persist",
+        });
+        await releaseV1Lease(selectedCompanyId, leaseId);
+        v1LeaseIdRef.current = null;
         return;
       }
       failedPhase = pipelinePhaseRef.current || PIPELINE_PHASES.ERROR;
@@ -3280,14 +3741,15 @@ export default function BankParserWorkbench() {
         });
       }
       const message =
-        error?.code === "DUPLICATE_STATEMENT"
-          ? DUPLICATE_STATEMENT_UI_MESSAGE
-          : error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+        error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
           ? `Dosya ${error.detectedBank === "VAKIFBANK" ? "Vakıfbank" : "Garanti"} olarak algılandı. Banka seçimi güncellendi.`
-          : buildManagedFailureMessage(error, failedPhase);
+          : error?.code === "OCR_REQUIRED"
+            ? error.message || "Taranmış PDF için OCR gerekli (OCR_REQUIRED)."
+            : buildManagedFailureMessage(error, failedPhase);
       if (
         error?.code === "BANK_FORMAT_MISMATCH" ||
         error?.code === "DUPLICATE_STATEMENT" ||
+        error?.code === "OCR_REQUIRED" ||
         failedPhase === PIPELINE_PHASES.PARSING ||
         failedPhase === PIPELINE_PHASES.PREVIEW
       ) {
@@ -3310,19 +3772,23 @@ export default function BankParserWorkbench() {
             ? Boolean(movementsRef.current.length)
             : false),
         tone:
-          error?.code === "DUPLICATE_STATEMENT"
+          error?.code === "DUPLICATE_STATEMENT" || error?.code === "OCR_REQUIRED"
             ? "info"
             : error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
-            ? "info"
-            : "error",
+              ? "info"
+              : "error",
       });
       setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
       setPipelineMode("idle");
-      // Hata yalnızca kartta — toast yok
+      await releaseV1Lease(selectedCompanyId, leaseId);
+      v1LeaseIdRef.current = null;
     } finally {
       setPipelineRunning(false);
-      // READING'te kalan job state isJobBusy'yi kilitlemesin (Yeniden İşle / re-upload).
       bankJobStateRef.current = createInitialBankJobState();
+      if (v1LeaseIdRef.current) {
+        await releaseV1Lease(selectedCompanyId, v1LeaseIdRef.current);
+        v1LeaseIdRef.current = null;
+      }
     }
   };
 
@@ -3733,8 +4199,8 @@ export default function BankParserWorkbench() {
                 : isJobBusy && pipelineMode === "auto"
                   ? "İşleniyor…"
                   : pipelinePhase === PIPELINE_PHASES.READY_FOR_EXPORT
-                    ? "Yeniden İşle"
-                    : "Ekstreyi İşle"}
+                    ? V1_CTA_RERUN_LABEL
+                    : V1_CTA_LABEL}
             </button>
           </div>
 
@@ -3796,9 +4262,18 @@ export default function BankParserWorkbench() {
               isExporting={isExporting}
               lucaReady={lucaReady}
               onDownloadExcel={() => exportExcel()}
+              onDownloadElektra={() => exportExcel()}
               onReviewMissing={handleReviewMissingAccounts}
               onPartialExport={handlePartialExportConfirm}
               onGoToLucaProducer={handleGoToLucaProducer}
+              onGoToFisKontrol={() => {
+                if (pipelineResult?.fisKontrolHref) {
+                  router.push(pipelineResult.fisKontrolHref);
+                } else {
+                  router.push("/muhasebe/fis-kontrol");
+                }
+              }}
+              auditHistory={v1AuditHistory}
               secondaryBtnClass={annveroBtnSecondary}
               isReviewMissingLoading={cariResolutionLoading}
               showServiceMeta={showBankServiceUi}

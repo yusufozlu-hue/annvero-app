@@ -261,9 +261,12 @@ export function BankPipelineResultCard({
   isExporting,
   lucaReady,
   onDownloadExcel,
+  onDownloadElektra,
   onReviewMissing,
   onPartialExport,
   onGoToLucaProducer,
+  onGoToFisKontrol,
+  auditHistory = [],
   primaryBtnClass = "",
   secondaryBtnClass = "",
   isReviewMissingLoading = false,
@@ -277,20 +280,25 @@ export function BankPipelineResultCard({
     { label: "Hareket", value: result.movementCount },
     { label: "Luca satırı", value: result.lucaRowCount },
     {
-      label: "Otomatik eşleşen (hareket)",
+      label: "Otomatik eşleşen",
       value:
         result.autoMatchedCount != null ? result.autoMatchedCount : "—",
     },
     {
-      label: "Eksik Luca satırı",
-      value: result.missingLucaRowCount ?? result.missingCount,
-    },
-    {
-      label: "Tanınmayan hareket",
+      label: "İnceleme",
       value:
         result.uniqueUnresolvedMovements ??
         result.unresolvedMovementCount ??
+        result.reviewCount ??
         result.unrecognizedCount,
+    },
+    {
+      label: "Geçti / Uyarı / Hata",
+      value: `${result.passed ?? "—"} / ${result.warnings ?? "—"} / ${result.errors ?? "—"}`,
+    },
+    {
+      label: "E-Defter",
+      value: result.edefterCode || result.edefterStatus || "—",
     },
   ];
   if (showServiceMeta) {
@@ -307,16 +315,27 @@ export function BankPipelineResultCard({
           <CheckCircleIcon className="h-8 w-8" />
         </div>
         <div>
-          <h3 className="text-xl font-semibold text-white">İşlem Tamamlandı</h3>
+          <h3 className="text-xl font-semibold text-white">
+            {result.duplicate || result.terminalStatus === "duplicate"
+              ? "Mükerrer ekstre"
+              : result.reviewRequired
+                ? "İnceleme Gerekli"
+                : "İşlem ve Kontrol Tamamlandı"}
+          </h3>
           <p className="mt-1 text-sm text-emerald-100/80">
-            Luca dosyanız hazır. İndirmeden önce özeti kontrol edebilirsiniz.
+            {result.duplicate || result.terminalStatus === "duplicate"
+              ? result.duplicateMessage ||
+                "Mükerrer ekstre — yeniden işlenmedi"
+              : result.reviewRequired
+                ? "Kritik veya düşük güven satırlar var — otomatik onay / Luca-Elektra aktarımı kapalı."
+                : "Tek tuş zinciri tamamlandı. Çıktıları indirebilir veya Fiş Kontrol’e gidebilirsiniz."}
           </p>
         </div>
       </div>
 
       <div
         className={`mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 ${
-          showServiceMeta ? "lg:grid-cols-6" : "lg:grid-cols-5"
+          showServiceMeta ? "lg:grid-cols-4" : "lg:grid-cols-3"
         }`}
       >
         {stats.map((item) => (
@@ -340,15 +359,43 @@ export function BankPipelineResultCard({
         </p>
       ) : null}
 
+      {result.driveArchived || result.driveSkipped ? (
+        <p className="mt-3 text-xs text-slate-400">
+          Drive:{" "}
+          {result.driveArchived
+            ? "kaynak arşivlendi"
+            : "arşiv atlandı (bağlantı yok) — banka akışı engellenmedi"}
+        </p>
+      ) : null}
+
       <div className="mt-5 flex flex-wrap gap-2">
         <button
           type="button"
           onClick={onDownloadExcel}
-          disabled={isExporting || !lucaReady}
+          disabled={isExporting || !lucaReady || (result.reviewRequired && !result.canAutoApprove && result.errors > 0)}
           className={`rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 ${primaryBtnClass}`}
         >
-          {isExporting ? "Excel hazırlanıyor…" : "Luca Excel’i İndir"}
+          {isExporting ? "Excel hazırlanıyor…" : "Luca İndir"}
         </button>
+        {onDownloadElektra ? (
+          <button
+            type="button"
+            onClick={onDownloadElektra}
+            disabled={isExporting || !lucaReady || (result.errors > 0 && !result.canAutoApprove)}
+            className="rounded-xl border border-emerald-600/50 bg-emerald-950/40 px-4 py-3 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-900/40 disabled:opacity-50"
+          >
+            ElektraWeb İndir
+          </button>
+        ) : null}
+        {onGoToFisKontrol ? (
+          <button
+            type="button"
+            onClick={onGoToFisKontrol}
+            className="rounded-xl border border-sky-600/50 bg-sky-950/40 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-900/40"
+          >
+            Fiş Kontrol’e Git
+          </button>
+        ) : null}
         {missing > 0 ? (
           <>
             <button
@@ -357,17 +404,7 @@ export function BankPipelineResultCard({
               disabled={isReviewMissingLoading}
               className="inline-flex items-center gap-2 rounded-xl border border-rose-600/50 bg-rose-950/40 px-4 py-3 text-sm font-semibold text-rose-100 transition hover:bg-rose-900/50 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isReviewMissingLoading ? (
-                <>
-                  <span
-                    className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-rose-200/30 border-t-rose-100"
-                    aria-hidden="true"
-                  />
-                  Hazırlanıyor…
-                </>
-              ) : (
-                "Eksik Hesapları İncele"
-              )}
+              {isReviewMissingLoading ? "Hazırlanıyor…" : "Eksik Hesapları İncele"}
             </button>
             <button
               type="button"
@@ -375,7 +412,7 @@ export function BankPipelineResultCard({
               disabled={isExporting}
               className="rounded-xl border border-amber-600/50 bg-amber-950/40 px-4 py-3 text-sm font-semibold text-amber-100 transition hover:bg-amber-900/40 disabled:opacity-50"
             >
-              Eksik Satırlar Hariç Excel Oluştur
+              Eksik Satırlar Hariç Excel
             </button>
           </>
         ) : null}
@@ -390,6 +427,27 @@ export function BankPipelineResultCard({
           Luca Fiş Üreticiye Gönder
         </button>
       </div>
+
+      {Array.isArray(auditHistory) && auditHistory.length > 0 ? (
+        <div className="mt-5 border-t border-emerald-900/40 pt-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Denetim geçmişi
+          </p>
+          <ul className="mt-2 space-y-1 text-xs text-slate-300">
+            {auditHistory.slice(0, 5).map((run) => (
+              <li key={run.id || run.createdAt}>
+                {(run.metadata?.terminal_status || "kayıt").toString()} ·{" "}
+                {run.createdAt
+                  ? new Date(run.createdAt).toLocaleString("tr-TR")
+                  : "—"}
+                {run.metadata?.movement_count != null
+                  ? ` · ${run.metadata.movement_count} hareket`
+                  : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -443,7 +501,7 @@ export function BankPipelineErrorCard({
                   : "border border-red-500/40 bg-red-900/50 hover:bg-red-900"
               }`}
             >
-              Tekrar Dene
+              Güvenli Yeniden Dene
             </button>
             {onOpenManual ? (
               <button
