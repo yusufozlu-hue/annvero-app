@@ -513,10 +513,75 @@ assert(emptyQueue.length === 0, "tüm kayıtlar eşleşmişse kuyruk boş");
   );
   assert(mismatch.ok === false, "bakiye farkında ok=false (otomatik fiş yok)");
 
+  // Kanıt yok → BALANCE_EVIDENCE_MISSING (sahte MATCHED yok)
+  const {
+    BALANCE_EVIDENCE_MISSING,
+    BALANCE_MATCHED,
+    reconcileStatementBalances,
+  } = await import("@/src/utils/bankBalanceReconcile.js");
+  const noEvidence = reconcileStatementBalances(
+    [
+      {
+        amount: 100,
+        direction: "GIRIS",
+        transactionDate: "01.01.2026",
+        description: "X",
+      },
+    ],
+    {}
+  );
+  assert(
+    noEvidence.code === BALANCE_EVIDENCE_MISSING,
+    "kanıt yok → BALANCE_EVIDENCE_MISSING"
+  );
+  assert(noEvidence.matched !== true, "kanıt yokken matched≠true");
+
+  const matchedHints = reconcileStatementBalances(
+    [
+      { amount: 100, direction: "GIRIS" },
+      { amount: -40, direction: "CIKIS" },
+    ],
+    { openingBalance: 1000, closingBalance: 1060 }
+  );
+  assert(matchedHints.code === BALANCE_MATCHED, "açılış+alacak-borç=kapanış");
+  assert(matchedHints.signModel.includes("credits"), "işaret modeli yazılı");
+
+  // Session dedup UI mesajı + bastırılan sayılar
+  const {
+    applySessionMovementDedup,
+    DUPLICATE_STATEMENT_UI_MESSAGE,
+  } = await import("@/src/utils/bankStatementDedup.js");
+  const tebPdf = await parseBankStatementPdf(
+    buildBankStatementPdfFixture("TEB"),
+    { companyId: "c1", selectedBank: "TEB" }
+  );
+  assert(tebPdf.balance?.code === BALANCE_MATCHED || tebPdf.ok, "TEB fixture bakiye");
+  const sampleCanon = tebPdf.transactions;
+  const firstPass = applySessionMovementDedup(sampleCanon, new Set(), {
+    companyId: "c1",
+    selectedBank: "TEB",
+  });
+  assert(firstPass.uniqueCount === 3, "ilk geçiş unique=3");
+  const secondPass = applySessionMovementDedup(
+    sampleCanon,
+    firstPass.seenKeys,
+    { companyId: "c1", selectedBank: "TEB" }
+  );
+  assert(secondPass.allDuplicate === true, "ikinci geçiş allDuplicate");
+  assert(
+    secondPass.uiMessage === DUPLICATE_STATEMENT_UI_MESSAGE,
+    "UI mükerrer mesajı"
+  );
+  assert(secondPass.suppressedMovements === 3, "bastırılan hareket=3");
+  assert(secondPass.suppressedLucaRows === 6, "bastırılan Luca=6");
+  assert(
+    DUPLICATE_STATEMENT_UI_MESSAGE === "Mükerrer ekstre — yeniden işlenmedi.",
+    "UI mesaj metni sabit"
+  );
+
   // Aşırı sayfa
   const bombLines = Array.from({ length: 5 }, (_, i) => `01.01.2026 BOMB ${i} 1,00 0,00 ${i},00`);
   const bomb = buildTextPdf(bombLines, { pageCount: PDF_MAX_PAGES + 5, bankLabel: "TEB" });
-  // pageCount in builder may inflate objects — estimatePdfPageCount uses /Count
   const bombResult = await parseBankStatementPdf(bomb, { companyId: "c1" });
   assert(
     bombResult.code === "PDF_TOO_MANY_PAGES" || (bombResult.transactions || []).length >= 0,
@@ -583,6 +648,133 @@ assert(emptyQueue.length === 0, "tüm kayıtlar eşleşmişse kuyruk boş");
   assert(luca.length === 2832, `1416→2832 Luca satırı (got ${luca.length})`);
   assert(lucaMs <= 5000, `1416 Luca ≤5s (got ${lucaMs}ms)`);
   console.log(`INFO  1416 Luca ${lucaMs}ms / ${luca.length} rows`);
+}
+
+// ——— 9) Gerçek VAKIFBANK ÖRNEK.xlsx (yalnız yerel; içerik loglanmaz) ———
+{
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const realPath = path.join(
+    process.env.USERPROFILE || "",
+    "Desktop",
+    "VAKIFBANK ÖRNEK.xlsx"
+  );
+  if (!fs.existsSync(realPath)) {
+    console.log("INFO  real VakıfBank xlsx yok — offline 1416 skip");
+  } else {
+    const { parseBankExcelOnMainThread } = await import(
+      "@/src/utils/bankExcelMainThreadParse.js"
+    );
+    const {
+      buildParserPreviewFromNormalizedRowsAsync,
+      runAccountingAnalysisOnMovementsAsync,
+      buildLucaRowsFromMovementsAsync,
+    } = await import("@/src/utils/bankParserCore.js");
+    const { reconcileStatementBalances } = await import(
+      "@/src/utils/bankBalanceReconcile.js"
+    );
+    const { legacyBankRowsToCanonical, dedupeCanonicalTransactions } =
+      await import("@/src/utils/bankCanonicalTransaction.js");
+    const { applySessionMovementDedup } = await import(
+      "@/src/utils/bankStatementDedup.js"
+    );
+
+    const buf = fs.readFileSync(realPath);
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    const tParse0 = performance.now();
+    const parsed = await parseBankExcelOnMainThread(null, "VAKIFBANK", null, {
+      arrayBuffer: ab,
+    });
+    const parseMs = Math.round(performance.now() - tParse0);
+    const movementCount = (parsed.normalizedRows || []).length;
+    assert(movementCount === 1416, `real parse count 1416 (got ${movementCount})`);
+
+    const canon = legacyBankRowsToCanonical(parsed.normalizedRows || [], {
+      companyId: "offline",
+      selectedBank: "VAKIFBANK",
+    });
+    const balance = reconcileStatementBalances(canon, {});
+    assert(
+      ["BALANCE_MATCHED", "BALANCE_MISMATCH", "BALANCE_EVIDENCE_MISSING"].includes(
+        balance.code
+      ),
+      `balance code geçerli (${balance.code})`
+    );
+
+    const tPrev0 = performance.now();
+    const preview = await buildParserPreviewFromNormalizedRowsAsync({
+      normalizedRows: parsed.normalizedRows,
+      selectedCompanyId: "offline",
+      selectedBank: "VAKIFBANK",
+    });
+    const previewMs = Math.round(performance.now() - tPrev0);
+    const moves = preview.movementRows || [];
+
+    const tA0 = performance.now();
+    const analysis = await runAccountingAnalysisOnMovementsAsync({
+      normalizedRows: parsed.normalizedRows,
+      movementRows: moves,
+      selectedCompanyId: "offline",
+      selectedBank: "VAKIFBANK",
+    });
+    const analyzeMs = Math.round(performance.now() - tA0);
+    assert(analyzeMs <= 20_000, `real analyze ≤20s (got ${analyzeMs}ms)`);
+
+    const analyzed = analysis.movementRows || moves;
+    const tL0 = performance.now();
+    const luca1 = await buildLucaRowsFromMovementsAsync(analyzed, {
+      selectedCompanyId: "offline",
+      selectedBank: "VAKIFBANK",
+    });
+    const lucaMs = Math.round(performance.now() - tL0);
+    const lucaCount = (luca1.standardLucaRows || []).length;
+    const summaryOf = (rows) =>
+      `${rows.length}:${rows
+        .slice(0, 8)
+        .map((r) => `${r.hesapKodu || r.accountCode || ""}:${Number(r.borc || r.debit || 0)}`)
+        .join("|")}`;
+    const lucaHash1 = summaryOf(luca1.standardLucaRows || []);
+    const luca2 = await buildLucaRowsFromMovementsAsync(analyzed, {
+      selectedCompanyId: "offline",
+      selectedBank: "VAKIFBANK",
+    });
+    const lucaHash2 = summaryOf(luca2.standardLucaRows || []);
+    assert(lucaHash1 === lucaHash2, "Luca deterministik");
+    assert(lucaCount === 2832, `real Luca 2832 (got ${lucaCount})`);
+
+    const dedup1 = applySessionMovementDedup(canon, new Set(), {
+      companyId: "offline",
+      selectedBank: "VAKIFBANK",
+    });
+    const dedup2 = applySessionMovementDedup(canon, dedup1.seenKeys, {
+      companyId: "offline",
+      selectedBank: "VAKIFBANK",
+    });
+    assert(dedup2.allDuplicate === true, "real excel re-upload allDuplicate");
+    assert(dedup2.suppressedMovements === 1416, "real excel suppressed 1416");
+    assert(dedup2.suppressedLucaRows === 2832, "real excel suppressed Luca 2832");
+
+    const { unique: mergeUnique, duplicates: mergeDups } =
+      dedupeCanonicalTransactions([...canon, ...canon]);
+    assert(mergeUnique.length === 1416 && mergeDups.length === 1416, "self cross-dedup");
+
+    console.log(
+      JSON.stringify({
+        realOffline: {
+          movementCount,
+          parseMs,
+          previewMs,
+          analyzeMs,
+          lucaMs,
+          lucaCount,
+          balanceCode: balance.code,
+          analyzeGate20s: analyzeMs <= 20_000,
+          excelRededupSuppressed: dedup2.suppressedMovements,
+          lucaDeterministic: true,
+        },
+      })
+    );
+  }
 }
 
 console.log(failed === 0 ? "\nALL PASSED" : `\nFAILED: ${failed}`);
