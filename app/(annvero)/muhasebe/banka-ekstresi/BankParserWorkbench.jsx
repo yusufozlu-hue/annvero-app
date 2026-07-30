@@ -3237,15 +3237,23 @@ export default function BankParserWorkbench() {
             edefterStatus: prior.metadata?.edefter_status || "",
             edefterCode: prior.metadata?.edefter_code || "",
             driveArchived: Boolean(prior.metadata?.drive_archived),
-            reviewRequired: Boolean(prior.metadata?.review_required),
+            reviewRequired: false,
             canAutoApprove: false,
             passed: Number(prior.metadata?.passed || 0),
             warnings: Number(prior.metadata?.warnings || 0),
             errors: Number(prior.metadata?.errors || 0),
             totalDurationMs: 0,
             engineVersion: ANNVERO_V1_ENGINE_VERSION,
+            duplicateMessage: DUPLICATE_STATEMENT_UI_MESSAGE,
           });
           setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+          setPipelineError({
+            phase: PIPELINE_PHASES.PARSING,
+            phaseLabel: "Mükerrer",
+            message: DUPLICATE_STATEMENT_UI_MESSAGE,
+            recoverable: false,
+            tone: "error",
+          });
           setPipelineProgress({
             percent: 100,
             label: "Mükerrer ekstre",
