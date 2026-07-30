@@ -12,6 +12,13 @@ import {
   dedupeCanonicalTransactions,
   legacyBankRowsToCanonical,
 } from "@/src/utils/bankCanonicalTransaction.js";
+import {
+  BALANCE_EVIDENCE_MISSING,
+  BALANCE_MISMATCH,
+  reconcileStatementBalances,
+} from "@/src/utils/bankBalanceReconcile.js";
+
+export { reconcileStatementBalances } from "@/src/utils/bankBalanceReconcile.js";
 
 export const PDF_MAX_BYTES = 8 * 1024 * 1024;
 export const PDF_MAX_PAGES = 80;
@@ -338,40 +345,6 @@ export function parsePdfMovementLines(text = "", context = {}) {
   return { transactions: out, warnings, bank };
 }
 
-/**
- * Açılış/kapanış bakiyesi mutabakatı.
- */
-export function reconcileStatementBalances(transactions = [], hints = {}) {
-  const txs = [...(transactions || [])];
-  if (!txs.length) {
-    return { ok: true, code: "EMPTY", delta: 0, reviewRequired: false };
-  }
-  const opening = hints.openingBalance;
-  const closing = hints.closingBalance;
-  if (
-    opening == null ||
-    closing == null ||
-    !Number.isFinite(Number(opening)) ||
-    !Number.isFinite(Number(closing))
-  ) {
-    return { ok: true, code: "NO_HINTS", delta: 0, reviewRequired: false };
-  }
-  const net = txs.reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
-  const expected = Number(opening) + net;
-  const delta = Number((expected - Number(closing)).toFixed(2));
-  if (Math.abs(delta) > 0.05) {
-    return {
-      ok: false,
-      code: "BALANCE_MISMATCH",
-      delta,
-      reviewRequired: true,
-      message:
-        "Açılış/kapanış bakiyesi hareket toplamı ile uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli.",
-    };
-  }
-  return { ok: true, code: "MATCHED", delta: 0, reviewRequired: false };
-}
-
 export function extractBalanceHintsFromText(text = "") {
   const t = String(text || "");
   const open =
@@ -554,11 +527,22 @@ export async function parseBankStatementPdf(bytes, options = {}) {
       ? BANK_PARSE_STATUS.WARNING
       : BANK_PARSE_STATUS.OK;
 
+  let code = "OK";
+  if (balance.reviewRequired || balance.code === BALANCE_MISMATCH) {
+    code = BALANCE_MISMATCH;
+  } else if (balance.code === BALANCE_EVIDENCE_MISSING) {
+    code = BALANCE_EVIDENCE_MISSING;
+  }
+
   return {
     ok: !balance.reviewRequired,
     status,
-    code: balance.reviewRequired ? "BALANCE_MISMATCH" : "OK",
-    message: balance.reviewRequired ? balance.message : "",
+    code,
+    message: balance.reviewRequired
+      ? balance.message
+      : balance.code === BALANCE_EVIDENCE_MISSING
+        ? balance.message || ""
+        : "",
     transactions: parsed.transactions,
     warnings: parsed.warnings,
     sourceFileHash,

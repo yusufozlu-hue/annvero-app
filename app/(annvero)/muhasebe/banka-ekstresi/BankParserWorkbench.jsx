@@ -153,8 +153,19 @@ import {
 import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils";
 import {
   canonicalToLegacyBankRow,
+  legacyBankRowsToCanonical,
 } from "@/src/utils/bankCanonicalTransaction";
 import { parseBankStatementPdf } from "@/src/utils/bankStatementPdf";
+import {
+  BALANCE_MISMATCH,
+  reconcileStatementBalances,
+} from "@/src/utils/bankBalanceReconcile";
+import {
+  DUPLICATE_STATEMENT_UI_MESSAGE,
+  applySessionMovementDedup,
+  keysFromCanonical,
+  registerProcessedKeys,
+} from "@/src/utils/bankStatementDedup";
 import {
   BANK_JOB_STATE,
   createInitialBankJobState,
@@ -406,6 +417,9 @@ export default function BankParserWorkbench() {
   const fileSheetSourceRef = useRef(null);
   const pdfLegacyRowsRef = useRef(null);
   const pdfMetaRef = useRef(null);
+  /** Firma oturumu: işlenmiş hareket kimlikleri (Excel↔PDF çapraz dedup) */
+  const processedMovementKeysRef = useRef(new Set());
+  const lastDedupMetaRef = useRef(null);
   const bankJobStateRef = useRef(createInitialBankJobState());
   /** Pipeline/parse bankası — React state'ten bağımsız (stale closure yok) */
   const activeBankRef = useRef("");
@@ -557,6 +571,18 @@ export default function BankParserWorkbench() {
   };
 
   const buildManagedFailureMessage = (error, fallbackPhase) => {
+    if (
+      error?.code === "DUPLICATE_STATEMENT" ||
+      error?.uiMessage === DUPLICATE_STATEMENT_UI_MESSAGE
+    ) {
+      return DUPLICATE_STATEMENT_UI_MESSAGE;
+    }
+    if (error?.code === BALANCE_MISMATCH) {
+      return (
+        error.message ||
+        "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
+      );
+    }
     const isFormatMismatch =
       error?.code === "BANK_FORMAT_MISMATCH" ||
       String(error?.message || "").includes(BANK_FORMAT_MISMATCH_MESSAGE);
@@ -569,6 +595,11 @@ export default function BankParserWorkbench() {
       "İşlem tamamlanamadı. Lütfen tekrar deneyin."
     );
   };
+
+  useEffect(() => {
+    processedMovementKeysRef.current = new Set();
+    lastDedupMetaRef.current = null;
+  }, [selectedCompanyId]);
 
   useEffect(() => {
     if (!toast) return;
@@ -2364,6 +2395,58 @@ export default function BankParserWorkbench() {
     assertPipelineSignal(signal, isRunActive, runId);
 
     normalizedRef.current = mainResult.normalizedRows || [];
+
+    // Oturum dedup — aynı Excel/PDF hareketleri ikinci kez işlenmez
+    const dedup = applySessionMovementDedup(
+      normalizedRef.current,
+      processedMovementKeysRef.current,
+      {
+        companyId: selectedCompanyId || "",
+        selectedBank: bank,
+        sourceFileHash: mainResult.sourceFileHash || "",
+        sourceType: mainResult.sourceType || "xlsx",
+      }
+    );
+    lastDedupMetaRef.current = {
+      suppressedMovements: dedup.suppressedMovements,
+      suppressedLucaRows: dedup.suppressedLucaRows,
+      uniqueCount: dedup.uniqueCount,
+      inputCount: dedup.inputCount,
+      allDuplicate: dedup.allDuplicate,
+    };
+    if (dedup.allDuplicate) {
+      const err = new Error(DUPLICATE_STATEMENT_UI_MESSAGE);
+      err.code = "DUPLICATE_STATEMENT";
+      err.suppressedMovements = dedup.suppressedMovements;
+      err.suppressedLucaRows = dedup.suppressedLucaRows;
+      err.uiMessage = DUPLICATE_STATEMENT_UI_MESSAGE;
+      throw err;
+    }
+    if (dedup.suppressedMovements > 0) {
+      normalizedRef.current = dedup.unique.map(canonicalToLegacyBankRow);
+    }
+
+    // Bakiye mutabakatı (PDF meta veya çalışan bakiye)
+    const balance =
+      mainResult.balance ||
+      reconcileStatementBalances(
+        legacyBankRowsToCanonical(normalizedRef.current, {
+          companyId: selectedCompanyId || "",
+          selectedBank: bank,
+        }),
+        {}
+      );
+    if (balance?.code === BALANCE_MISMATCH || balance?.reviewRequired) {
+      const err = new Error(
+        balance.message ||
+          "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
+      );
+      err.code = BALANCE_MISMATCH;
+      err.reviewRequired = true;
+      err.balance = balance;
+      throw err;
+    }
+
     setPipelinePhaseSafe(PIPELINE_PHASES.PREVIEW);
     const {
       buildParserPreviewFromNormalizedRowsAsync,
@@ -3140,6 +3223,17 @@ export default function BankParserWorkbench() {
         };
         setPipelineResult(result);
         setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+        // Başarılı işlenen hareket kimliklerini oturuma kaydet (yeniden yükleme = mükerrer)
+        {
+          const canon = legacyBankRowsToCanonical(movementsRef.current, {
+            companyId: selectedCompanyId || "",
+            selectedBank: runBank,
+          });
+          processedMovementKeysRef.current = registerProcessedKeys(
+            processedMovementKeysRef.current,
+            keysFromCanonical(canon)
+          );
+        }
         setPipelineProgress({
           percent: 100,
           label: "Luca dosyanız hazır.",
@@ -3186,11 +3280,14 @@ export default function BankParserWorkbench() {
         });
       }
       const message =
-        error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+        error?.code === "DUPLICATE_STATEMENT"
+          ? DUPLICATE_STATEMENT_UI_MESSAGE
+          : error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
           ? `Dosya ${error.detectedBank === "VAKIFBANK" ? "Vakıfbank" : "Garanti"} olarak algılandı. Banka seçimi güncellendi.`
           : buildManagedFailureMessage(error, failedPhase);
       if (
         error?.code === "BANK_FORMAT_MISMATCH" ||
+        error?.code === "DUPLICATE_STATEMENT" ||
         failedPhase === PIPELINE_PHASES.PARSING ||
         failedPhase === PIPELINE_PHASES.PREVIEW
       ) {
@@ -3204,6 +3301,8 @@ export default function BankParserWorkbench() {
         phase: failedPhase,
         phaseLabel: getPipelinePhaseTitle(failedPhase),
         message,
+        suppressedMovements: error?.suppressedMovements ?? null,
+        suppressedLucaRows: error?.suppressedLucaRows ?? null,
         recoverable:
           Boolean(error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank) ||
           (failedPhase !== PIPELINE_PHASES.PARSING &&
@@ -3211,7 +3310,9 @@ export default function BankParserWorkbench() {
             ? Boolean(movementsRef.current.length)
             : false),
         tone:
-          error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+          error?.code === "DUPLICATE_STATEMENT"
+            ? "info"
+            : error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
             ? "info"
             : "error",
       });
