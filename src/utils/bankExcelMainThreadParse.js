@@ -108,6 +108,7 @@ export async function parseBankExcelOnMainThread(
   }
 
   let sheetRows = sheetRowsInput;
+  let hashBuffer = arrayBufferInput;
   if (sheetRows) {
     onProgress?.({
       stage: "Dosya okunuyor",
@@ -144,6 +145,8 @@ export async function parseBankExcelOnMainThread(
       Object.assign(err, classified);
       throw err;
     }
+
+    hashBuffer = arrayBuffer;
 
     try {
       onProgress?.({ stage: "Dosya okunuyor", detail: "xlsx yükleniyor (ana thread)" });
@@ -222,8 +225,8 @@ export async function parseBankExcelOnMainThread(
   const { buildSourceFileHash } = await import(
     "@/src/utils/bankCanonicalTransaction"
   );
-  const sourceFileHash = arrayBuffer
-    ? buildSourceFileHash(new Uint8Array(arrayBuffer))
+  const sourceFileHash = hashBuffer
+    ? buildSourceFileHash(new Uint8Array(hashBuffer))
     : "";
 
   return {
