@@ -275,7 +275,7 @@ export function runParserWorker({
         phase: message.phase || message.stage || null,
       });
       const err = new Error(errorText);
-      if (message.errorCode) err.code = message.errorCode;
+      if (message.errorCode || message.code) err.code = message.errorCode || message.code;
       if (message.errorName) err.name = message.errorName;
       if (message.phase) err.phase = message.phase;
       if (message.stack) err.stack = message.stack;
@@ -397,11 +397,19 @@ export function runLucaExcelWorker({ workerUrl, arrayBuffer, onProgress, timeout
   });
 }
 
-export function runEDefterXmlWorker({ workerUrl, arrayBuffer, fileName = "", onProgress, timeoutMs = 180_000 }) {
+export function runEDefterXmlWorker({
+  workerUrl,
+  arrayBuffer,
+  fileName = "",
+  companyTaxId = "",
+  knownFingerprints = [],
+  onProgress,
+  timeoutMs = 180_000,
+}) {
   return runParserWorker({
     workerUrl,
     jobType: PARSER_JOB_TYPES.EDEFTER_XML,
-    payload: { arrayBuffer, fileName },
+    payload: { arrayBuffer, fileName, companyTaxId, knownFingerprints, timeoutMs },
     transferables: arrayBuffer ? [arrayBuffer] : [],
     onProgress,
     timeoutMs,

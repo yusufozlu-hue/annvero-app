@@ -1,24 +1,36 @@
 import {
   BELGE_TARIH_FARK_GUN,
   BORC_ALACAK_TOLERANCE,
+  E_DEFTER_FINDING_CODE,
   E_DEFTER_FINDING_STATUS,
+  E_DEFTER_FINGERPRINT_STORAGE_KEY,
   E_DEFTER_HATA_TURU,
   E_DEFTER_KAYNAK,
   E_DEFTER_KONTROL_DURUM,
   E_DEFTER_KONTROL_GRUP,
   E_DEFTER_KONTROL_STATUS,
   E_DEFTER_RECORDS_STORAGE_KEY,
+  E_DEFTER_REPORT_DISCLAIMER,
   E_DEFTER_RISK_LEVEL,
+  E_DEFTER_SONUC_SEVIYE,
   E_DEFTER_TURU,
   KASA_BAKIYE_ESIK,
   NEAR_DATE_DAYS,
+  mapLegacyLevelToSonuc,
   riskBandFromScore,
   riskLevelFromScore,
+  sonucSeviyeFromScore,
 } from "@/src/config/eDefterKontrolDefaults";
 import { loadDeclarationAccrualRecords } from "@/src/utils/beyannameTahakkukEngine";
 import { formatDateTR, parseDateTR } from "@/src/utils/formatDateTR";
 import { parseMoneyTR } from "@/src/utils/parseMoneyTR";
 import { normalizeParserText } from "@/src/utils/textNormalize";
+import {
+  EDEFTER_ERROR_CODE,
+  createFingerprintSession,
+  normalizePeriodKey,
+  normalizeTaxId,
+} from "@/src/utils/eDefterSecurity";
 
 function compactText(value) {
   return normalizeParserText(value).replace(/\s+/g, "");
@@ -307,6 +319,35 @@ function analyzeAccountBalanceIssues(hesapKodu, net) {
     riskScore += 35;
   }
 
+  if (prefix.startsWith("102") && net < -BORC_ALACAK_TOLERANCE) {
+    issues.push("102 banka hesabında ters bakiye riski.");
+    riskScore += 30;
+  }
+
+  if (prefix.startsWith("180") && Math.abs(net) > KASA_BAKIYE_ESIK) {
+    issues.push("180 gelecek aylara ait giderlerde olağandışı bakiye.");
+    riskScore += 25;
+  }
+
+  if (prefix.startsWith("280") && Math.abs(net) > KASA_BAKIYE_ESIK) {
+    issues.push("280 gelecek yıllara ait giderlerde olağandışı bakiye.");
+    riskScore += 25;
+  }
+
+  if (prefix.startsWith("309") || prefix.startsWith("409")) {
+    if (Math.abs(net) > KASA_BAKIYE_ESIK) {
+      issues.push(`${prefix.slice(0, 3)} alınan/verilen çeklerde olağandışı bakiye.`);
+      riskScore += 25;
+    }
+  }
+
+  if (prefix.startsWith("335") || prefix.startsWith("195") || prefix.startsWith("196")) {
+    if (Math.abs(net) > BORC_ALACAK_TOLERANCE) {
+      issues.push(`${prefix.slice(0, 3)} personel/avans hesabında bakiye risk göstergesi.`);
+      riskScore += 20;
+    }
+  }
+
   if (
     !prefix.startsWith("120") &&
     !prefix.startsWith("320") &&
@@ -390,12 +431,42 @@ function buildGlobalContext(rows = []) {
     .map((row) => `${row.aciklama} ${row.hesapAdi} ${row.belgeTuru}`.toLocaleLowerCase("tr-TR"))
     .join(" ");
 
+  const fisLineCounts = new Map();
+  const belgeCounts = new Map();
+  const aciklamaCounts = new Map();
+  const nearKeys = new Map();
+
+  for (const row of ledgerRows) {
+    if (row.fisNo && row.kaynak !== E_DEFTER_KAYNAK.MIZAN) {
+      const fk = compactText(row.fisNo);
+      fisLineCounts.set(fk, (fisLineCounts.get(fk) || 0) + 1);
+    }
+    if (row.belgeNo) {
+      const bk = compactText(row.belgeNo);
+      belgeCounts.set(bk, (belgeCounts.get(bk) || 0) + 1);
+    }
+    if (row.aciklama) {
+      const ak = compactText(row.aciklama);
+      aciklamaCounts.set(ak, (aciklamaCounts.get(ak) || 0) + 1);
+    }
+    if (row.tutar && row.cariUnvan) {
+      const nk = `${compactText(row.cariUnvan)}|${roundMoney(row.tutar)}`;
+      const list = nearKeys.get(nk) || [];
+      list.push(row);
+      nearKeys.set(nk, list);
+    }
+  }
+
   return {
     accountBalances,
     problematicAccounts,
     unbalancedFis,
     fisNoGaps,
     outOfOrderFis,
+    fisLineCounts,
+    belgeCounts,
+    aciklamaCounts,
+    nearKeys,
     hasKapanisFisi: /kapan[ıi]s|7\/a|7a|gelir tablosu kapan/.test(allText),
     hasAmortisman: /amortisman/.test(allText),
     hasKurDegerleme: /kur de[ğg]erleme|kur fark[ıi]|de[ğg]erleme fark[ıi]/.test(allText),
@@ -443,43 +514,28 @@ function buildIssues(row, allRows = [], context = {}) {
     riskScore += 15;
   }
 
-  const fisDuplicates = allRows.filter(
-    (item) =>
-      item.id !== row.id &&
-      item.fisNo &&
-      compactText(item.fisNo) === fisKey &&
-      item.kaynak !== E_DEFTER_KAYNAK.MIZAN
-  );
-
-  if (fisDuplicates.length > 5 && row.fisNo) {
+  const fisLineCount = context.fisLineCounts?.get(fisKey) || 0;
+  if (fisLineCount > 5 && row.fisNo) {
     issues.push("Fiş no yoğun tekrar / mükerrer riski.");
     riskScore += 15;
   }
 
-  const belgeDuplicates = allRows.filter(
-    (item) =>
-      item.id !== row.id &&
-      item.belgeNo &&
-      compactText(item.belgeNo) === compactText(row.belgeNo)
-  );
-
-  if (belgeDuplicates.length > 0 && row.belgeNo) {
+  const belgeKey = compactText(row.belgeNo);
+  if (row.belgeNo && (context.belgeCounts?.get(belgeKey) || 0) > 1) {
     issues.push("Belge no mükerrer.");
     riskScore += 30;
   }
 
-  const nearDuplicates = allRows.filter((item) => {
-    if (item.id === row.id) return false;
-    if (roundMoney(item.tutar) !== roundMoney(row.tutar) || !row.tutar) return false;
-    if (compactText(item.cariUnvan) !== compactText(row.cariUnvan) || !row.cariUnvan) {
-      return false;
+  if (row.tutar && row.cariUnvan && context.nearKeys) {
+    const nk = `${compactText(row.cariUnvan)}|${roundMoney(row.tutar)}`;
+    const peers = context.nearKeys.get(nk) || [];
+    const nearDup = peers.some(
+      (item) => item.id !== row.id && daysBetween(item.tarih, row.tarih) <= NEAR_DATE_DAYS
+    );
+    if (nearDup) {
+      issues.push("Aynı cari + tutar + yakın tarih mükerrer riski.");
+      riskScore += 25;
     }
-    return daysBetween(item.tarih, row.tarih) <= NEAR_DATE_DAYS;
-  });
-
-  if (nearDuplicates.length) {
-    issues.push("Aynı cari + tutar + yakın tarih mükerrer riski.");
-    riskScore += 25;
   }
 
   if (row.tutar > 0 && row.tutar % 1000 === 0 && row.tutar >= 10000) {
@@ -487,13 +543,42 @@ function buildIssues(row, allRows = [], context = {}) {
     riskScore += 10;
   }
 
-  const duplicateDescriptions = allRows.filter(
-    (item) =>
-      item.id !== row.id &&
-      compactText(item.aciklama) === compactText(row.aciklama) &&
-      row.aciklama
-  );
-  if (duplicateDescriptions.length > 2) {
+  if (Number(row.borc || 0) < 0 || Number(row.alacak || 0) < 0) {
+    issues.push("Negatif tutar satırı.");
+    riskScore += 40;
+  }
+
+  if (
+    Number(row.borc || 0) === 0 &&
+    Number(row.alacak || 0) === 0 &&
+    row.kaynak !== E_DEFTER_KAYNAK.MIZAN
+  ) {
+    issues.push("Sıfır tutarlı satır.");
+    riskScore += 15;
+  }
+
+  if (context.accountPlanCodes instanceof Set && row.hesapKodu) {
+    const code = String(row.hesapKodu).trim();
+    const short = code.split(".")[0];
+    if (!context.accountPlanCodes.has(code) && !context.accountPlanCodes.has(short)) {
+      issues.push("Hesap kodu hesap planında yok.");
+      riskScore += 35;
+    }
+  }
+
+  if (context.expectedPeriodKey && row.tarih) {
+    const d = parseDateTR(row.tarih);
+    if (d) {
+      const rowPeriod = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      if (rowPeriod !== context.expectedPeriodKey) {
+        issues.push("Dönem dışı tarih.");
+        riskScore += 30;
+      }
+    }
+  }
+
+  const aciklamaKey = compactText(row.aciklama);
+  if (row.aciklama && (context.aciklamaCounts?.get(aciklamaKey) || 0) > 3) {
     issues.push("Mükerrer açıklama tekrarı.");
     riskScore += 15;
   }
@@ -726,11 +811,256 @@ export function analyzeEDefterRow(row, allRows = [], context = {}) {
   };
 }
 
-export function analyzeEDefterRows(rows = []) {
-  const context = buildGlobalContext(rows);
+export function analyzeEDefterRows(rows = [], options = {}) {
+  const context = {
+    ...buildGlobalContext(rows),
+    accountPlanCodes: options.accountPlanCodes || null,
+    expectedPeriodKey: options.expectedPeriod
+      ? normalizePeriodKey(String(options.expectedPeriod).replace("/", "-"))
+      : "",
+  };
   const analyzed = rows.map((row) => analyzeEDefterRow(row, rows, context));
   const warnings = buildPeriodEndWarnings(context);
   return [...analyzed, ...warnings];
+}
+
+function sumDebitCredit(rows = []) {
+  return rows.reduce(
+    (acc, row) => {
+      acc.borc += roundMoney(row.borc);
+      acc.alacak += roundMoney(row.alacak);
+      return acc;
+    },
+    { borc: 0, alacak: 0 }
+  );
+}
+
+/**
+ * Yevmiye ↔ kebir çapraz mutabakat. Fark varsa JOURNAL_LEDGER_MISMATCH — “uygun” üretilmez.
+ */
+export function reconcileJournalLedger(yevmiyeRows = [], kebirRows = []) {
+  const findings = [];
+  if (!yevmiyeRows.length || !kebirRows.length) {
+    return { findings, matched: false, skipped: true };
+  }
+
+  const yTotals = sumDebitCredit(yevmiyeRows);
+  const kTotals = sumDebitCredit(kebirRows);
+  const borcFark = roundMoney(yTotals.borc - kTotals.borc);
+  const alacakFark = roundMoney(yTotals.alacak - kTotals.alacak);
+
+  if (Math.abs(borcFark) > BORC_ALACAK_TOLERANCE || Math.abs(alacakFark) > BORC_ALACAK_TOLERANCE) {
+    findings.push({
+      code: E_DEFTER_FINDING_CODE.JOURNAL_LEDGER_MISMATCH,
+      message: `Yevmiye-kebir toplam farkı: borç fark=${borcFark}, alacak fark=${alacakFark}`,
+      level: E_DEFTER_SONUC_SEVIYE.KRITIK,
+    });
+  }
+
+  const yMap = buildAccountBalanceMap(yevmiyeRows);
+  const kMap = buildAccountBalanceMap(kebirRows);
+  const allKeys = new Set([...yMap.keys(), ...kMap.keys()]);
+  for (const key of allKeys) {
+    const y = yMap.get(key) || { borc: 0, alacak: 0, net: 0, hesapKodu: key };
+    const k = kMap.get(key) || { borc: 0, alacak: 0, net: 0, hesapKodu: key };
+    if (
+      Math.abs(y.borc - k.borc) > BORC_ALACAK_TOLERANCE ||
+      Math.abs(y.alacak - k.alacak) > BORC_ALACAK_TOLERANCE
+    ) {
+      findings.push({
+        code: E_DEFTER_FINDING_CODE.JOURNAL_LEDGER_MISMATCH,
+        message: `Hesap bazlı yevmiye-kebir farkı: ${y.hesapKodu || k.hesapKodu}`,
+        level: E_DEFTER_SONUC_SEVIYE.KRITIK,
+      });
+      break;
+    }
+  }
+
+  return {
+    findings,
+    matched: findings.length === 0,
+    skipped: false,
+    yTotals,
+    kTotals,
+  };
+}
+
+export function buildCrossFindingRows(findings = [], context = {}) {
+  return (findings || []).map((finding, index) => {
+    const riskScore =
+      mapLegacyLevelToSonuc(finding.level) === E_DEFTER_SONUC_SEVIYE.KRITIK ? 90 : 55;
+    const row = {
+      id: `capraz-${finding.code || index}`,
+      kaynak: E_DEFTER_KAYNAK.CAPRAZ,
+      tarih: "",
+      fisNo: "",
+      yevmiyeNo: "",
+      hesapKodu: "",
+      hesapAdi: "Çapraz Mutabakat",
+      aciklama: finding.message,
+      belgeTuru: "Çapraz",
+      belgeNo: finding.code || "",
+      belgeTarihi: "",
+      borc: 0,
+      alacak: 0,
+      cariUnvan: "",
+      tutar: 0,
+      kontrolDurumu: "",
+      not: "",
+      duzeltildiMi: false,
+      disaridaBirak: false,
+      manuallyEdited: false,
+      issues: [finding.message],
+      riskScore,
+      riskBand: riskBandFromScore(riskScore),
+      riskLevel: finding.level || riskLevelFromScore(riskScore),
+      sonucSeviye: mapLegacyLevelToSonuc(finding.level),
+      hataTuru: E_DEFTER_HATA_TURU.MUHASEBESEL,
+      onerilenKontrol: "Yevmiye ve kebir toplamlarını hesap bazında karşılaştırın.",
+      cozumDurumu: E_DEFTER_FINDING_STATUS.YENI,
+      grup: E_DEFTER_KONTROL_GRUP.CAPRAZ,
+      durum: E_DEFTER_KONTROL_DURUM.KRITIK,
+      companyId: context.companyId || "",
+      period: context.period || "",
+    };
+    row.smartExplanation = buildSmartEDefterExplanation(row, row.issues);
+    return row;
+  });
+}
+
+export function analyzeBeratMeta(beratMeta = null, packageMeta = {}, options = {}) {
+  const findings = [];
+  if (!beratMeta) {
+    findings.push({
+      code: "BERAT_ESLESMEDI",
+      message: "Berat dosyası eksik veya okunamadı.",
+      level: E_DEFTER_SONUC_SEVIYE.UYARI,
+    });
+    return findings;
+  }
+
+  if (options.companyTaxId && beratMeta.taxId) {
+    if (normalizeTaxId(beratMeta.taxId) !== normalizeTaxId(options.companyTaxId)) {
+      findings.push({
+        code: EDEFTER_ERROR_CODE.COMPANY_MISMATCH,
+        message: "Berat firma bilgisi seçili firma ile uyuşmuyor.",
+        level: E_DEFTER_SONUC_SEVIYE.KRITIK,
+      });
+    }
+  }
+
+  if (options.expectedPeriod && beratMeta.period) {
+    const a = normalizePeriodKey(beratMeta.period);
+    const b = normalizePeriodKey(String(options.expectedPeriod).replace("/", "-"));
+    if (a && b && a !== b) {
+      findings.push({
+        code: "BERAT_DONEM",
+        message: "Berat dönemi beklenen dönem ile uyuşmuyor.",
+        level: E_DEFTER_SONUC_SEVIYE.UYARI,
+      });
+    }
+  }
+
+  findings.push({
+    code: E_DEFTER_FINDING_CODE.EXTERNAL_VERIFICATION_REQUIRED,
+    message:
+      "Berat varlık/tür bilgisi okundu; GİB veya mali mühür kriptografik doğrulaması yapılmadı. Harici doğrulama gerekir.",
+    level: E_DEFTER_SONUC_SEVIYE.BILGI,
+  });
+
+  return findings;
+}
+
+export function resolveOverallSonuc(rows = []) {
+  let worst = E_DEFTER_SONUC_SEVIYE.UYGUN;
+  const rank = {
+    [E_DEFTER_SONUC_SEVIYE.UYGUN]: 0,
+    [E_DEFTER_SONUC_SEVIYE.BILGI]: 1,
+    [E_DEFTER_SONUC_SEVIYE.UYARI]: 2,
+    [E_DEFTER_SONUC_SEVIYE.KRITIK]: 3,
+  };
+  for (const row of rows.filter((r) => !r.disaridaBirak)) {
+    const seviye =
+      row.sonucSeviye ||
+      mapLegacyLevelToSonuc(row.riskLevel) ||
+      sonucSeviyeFromScore(row.riskScore || 0);
+    if (row.grup === E_DEFTER_KONTROL_GRUP.KRITIK || row.grup === E_DEFTER_KONTROL_GRUP.CAPRAZ) {
+      worst = E_DEFTER_SONUC_SEVIYE.KRITIK;
+      break;
+    }
+    if ((rank[seviye] || 0) > (rank[worst] || 0)) worst = seviye;
+    if (row.grup === E_DEFTER_KONTROL_GRUP.TEKNIK && (row.riskScore || 0) >= 70) {
+      worst = E_DEFTER_SONUC_SEVIYE.KRITIK;
+    }
+  }
+  return worst;
+}
+
+export function canApproveEDefterExport(overallSonuc) {
+  return overallSonuc !== E_DEFTER_SONUC_SEVIYE.KRITIK;
+}
+
+/** Fiş Kontrol derin bağlantısı — çift kuyruk kopyası yok. */
+export function buildFisKontrolDeepLink({ companyId = "", fisNo = "" } = {}) {
+  const params = new URLSearchParams();
+  if (companyId) params.set("companyId", companyId);
+  if (fisNo) params.set("fisNo", fisNo);
+  params.set("from", "e-defter-kontrol");
+  return `/muhasebe/fis-kontrol?${params.toString()}`;
+}
+
+/**
+ * Muhasebe Hafızasına kör yazma yok. CORE > hafıza.
+ * Bu yardımcı yalnızca entegrasyon meta üretir; storage yazmaz.
+ */
+export function buildEDefterIntegrationHooks({
+  rows = [],
+  companyId = "",
+  coreDecision = null,
+} = {}) {
+  const criticalFis = rows
+    .filter(
+      (row) =>
+        row.fisNo &&
+        (row.grup === E_DEFTER_KONTROL_GRUP.KRITIK ||
+          row.sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK ||
+          row.riskLevel === E_DEFTER_RISK_LEVEL.KRITIK)
+    )
+    .map((row) => row.fisNo);
+
+  const uniqueFis = [...new Set(criticalFis)];
+  return {
+    writeToAccountMemory: false,
+    corePriority: true,
+    coreOverridesMemory: true,
+    coreDecisionSource: coreDecision?.decision_source || coreDecision?.source || null,
+    fisKontrolLinks: uniqueFis.map((fisNo) =>
+      buildFisKontrolDeepLink({ companyId, fisNo })
+    ),
+    disclaimer: E_DEFTER_REPORT_DISCLAIMER,
+  };
+}
+
+export function loadEDefterFingerprintSession() {
+  if (typeof window === "undefined") return createFingerprintSession();
+  try {
+    const raw = JSON.parse(localStorage.getItem(E_DEFTER_FINGERPRINT_STORAGE_KEY) || "[]");
+    return createFingerprintSession(Array.isArray(raw) ? raw : []);
+  } catch {
+    return createFingerprintSession();
+  }
+}
+
+export function saveEDefterFingerprintSession(session) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      E_DEFTER_FINGERPRINT_STORAGE_KEY,
+      JSON.stringify(session.values?.() || [])
+    );
+  } catch {
+    /* ignore quota */
+  }
 }
 
 export function recalculateEDefterSummary(rows = []) {
@@ -856,6 +1186,12 @@ export function runEDefterKontrolPipeline({
   companyId = "",
   period = "",
   declarationRecords = [],
+  accountPlanCodes = null,
+  beratMeta = null,
+  packageMeta = {},
+  companyTaxId = "",
+  coreDecision = null,
+  retryToken = "",
 }) {
   const mergedRows = [
     ...muavinRows,
@@ -864,8 +1200,49 @@ export function runEDefterKontrolPipeline({
     ...mizanRows,
     ...xmlRows,
   ];
-  const analyzedRows = analyzeEDefterRows(mergedRows);
-  const technicalRows = buildTechnicalFindingRows(technicalFindings, { companyId, period });
+
+  const yevmiyeOnly = mergedRows.filter(
+    (row) =>
+      row.kaynak === E_DEFTER_KAYNAK.YEVMIYE ||
+      row.kaynak === E_DEFTER_KAYNAK.YEVMIYE_XML
+  );
+  const kebirOnly = mergedRows.filter((row) => row.kaynak === E_DEFTER_KAYNAK.KEBIR_XML);
+
+  const analyzedRows = analyzeEDefterRows(mergedRows, {
+    accountPlanCodes,
+    expectedPeriod: period,
+  });
+
+  const journalLedger = reconcileJournalLedger(
+    yevmiyeOnly.length ? yevmiyeOnly : mergedRows.filter((r) => r.kaynak !== E_DEFTER_KAYNAK.KEBIR_XML && r.kaynak !== E_DEFTER_KAYNAK.MIZAN),
+    kebirOnly
+  );
+
+  const totals = sumDebitCredit(
+    mergedRows.filter((row) => row.kaynak !== E_DEFTER_KAYNAK.MIZAN)
+  );
+  const totalFindings = [];
+  if (
+    mergedRows.some((r) => r.kaynak !== E_DEFTER_KAYNAK.MIZAN) &&
+    Math.abs(totals.borc - totals.alacak) > BORC_ALACAK_TOLERANCE
+  ) {
+    totalFindings.push({
+      code: E_DEFTER_FINDING_CODE.TOPLAM_BORC_ALACAK,
+      message: `Toplam borç/alacak eşit değil: borç=${totals.borc}, alacak=${totals.alacak}`,
+      level: E_DEFTER_SONUC_SEVIYE.KRITIK,
+    });
+  }
+
+  const beratFindings = analyzeBeratMeta(beratMeta, packageMeta, {
+    companyTaxId,
+    expectedPeriod: period,
+  });
+
+  const technicalRows = buildTechnicalFindingRows(
+    [...technicalFindings, ...beratFindings, ...totalFindings],
+    { companyId, period }
+  );
+  const crossRows = buildCrossFindingRows(journalLedger.findings, { companyId, period });
   const vergiselRows = buildVergiselFindingRows({
     rows: mergedRows,
     declarationRecords: declarationRecords.length
@@ -876,21 +1253,42 @@ export function runEDefterKontrolPipeline({
     companyId,
     period,
   });
-  const combinedRows = [...analyzedRows, ...technicalRows, ...vergiselRows];
+  const combinedRows = [...analyzedRows, ...technicalRows, ...crossRows, ...vergiselRows].map(
+    (row) => ({
+      ...row,
+      sonucSeviye:
+        row.sonucSeviye ||
+        mapLegacyLevelToSonuc(row.riskLevel) ||
+        sonucSeviyeFromScore(row.riskScore || 0),
+    })
+  );
   const summary = recalculateEDefterSummary(combinedRows);
   summary.yuklenenDefterSayisi =
     Number(Boolean(muavinRows.length)) +
     Number(Boolean(yevmiyeRows.length)) +
     Number(Boolean(mizanRows.length)) +
     Number(Boolean(xmlRows.length));
+  const overallSonuc = resolveOverallSonuc(combinedRows);
+  summary.overallSonuc = overallSonuc;
+  summary.edefterUygun = overallSonuc === E_DEFTER_SONUC_SEVIYE.UYGUN;
+  summary.canApproveExport = canApproveEDefterExport(overallSonuc);
   const groupCounts = groupEDefterCounts(combinedRows);
+  const hooks = buildEDefterIntegrationHooks({
+    rows: combinedRows,
+    companyId,
+    coreDecision,
+  });
 
   return {
     rows: combinedRows,
     summary,
     groupCounts,
+    overallSonuc,
+    journalLedger,
+    retryToken: retryToken || `retry-${Date.now()}`,
+    disclaimer: E_DEFTER_REPORT_DISCLAIMER,
     integrationMeta: {
-      source: "e-defter-kontrol-v2",
+      source: "e-defter-kontrol-v3",
       fisNolar: combinedRows.map((row) => row.fisNo).filter(Boolean),
       hesapKodlari: combinedRows.map((row) => row.hesapKodu).filter(Boolean),
       belgeNolar: combinedRows.map((row) => row.belgeNo).filter(Boolean),
@@ -898,8 +1296,97 @@ export function runEDefterKontrolPipeline({
       kurDegerlemeReady: true,
       lucaAktarimKontrolReady: true,
       muavinMutabakatReady: true,
+      ...hooks,
     },
   };
+}
+
+/**
+ * Tek tuş pipeline: parse edilmiş XML + excel satırları → tam kontrol.
+ * Firma/dönem belirsizliğinde karar: dosya meta > seçili UI; çelişkide hata.
+ */
+export async function runOneClickEDefterKontrol({
+  parsedUpload = null,
+  muavinRows = [],
+  yevmiyeRows = [],
+  mizanRows = [],
+  edefterListeRows = [],
+  companyId = "",
+  companyTaxId = "",
+  period = "",
+  accountPlanCodes = null,
+  declarationRecords = [],
+  coreDecision = null,
+  fingerprintSession = null,
+} = {}) {
+  if (parsedUpload?.duplicate) {
+    return {
+      duplicate: true,
+      duplicateMessage: parsedUpload.duplicateMessage,
+      rows: [],
+      summary: {
+        overallSonuc: E_DEFTER_SONUC_SEVIYE.BILGI,
+        edefterUygun: false,
+        canApproveExport: false,
+        kritikHata: 0,
+        uyariSayisi: 0,
+        toplamSatir: 0,
+        toplamFis: 0,
+        yuklenenDefterSayisi: 0,
+        teknikHata: 0,
+        vergiselRisk: 0,
+        yuksekRisk: 0,
+        mukerrerRisk: 0,
+        tersBakiye: 0,
+        eksikBilgi: 0,
+      },
+      groupCounts: [],
+      overallSonuc: E_DEFTER_SONUC_SEVIYE.BILGI,
+      disclaimer: E_DEFTER_REPORT_DISCLAIMER,
+    };
+  }
+
+  const fileTax = parsedUpload?.packageMeta?.taxId || "";
+  const filePeriod = parsedUpload?.packageMeta?.period || "";
+  if (companyTaxId && fileTax && normalizeTaxId(companyTaxId) !== normalizeTaxId(fileTax)) {
+    const err = new Error("Dosyadaki VKN/TCKN seçili firma ile uyuşmuyor. Analiz durduruldu.");
+    err.code = EDEFTER_ERROR_CODE.COMPANY_MISMATCH;
+    throw err;
+  }
+
+  let resolvedPeriod = period;
+  if (!resolvedPeriod && filePeriod) {
+    resolvedPeriod = filePeriod.replace("-", "/");
+  } else if (resolvedPeriod && filePeriod) {
+    const a = normalizePeriodKey(resolvedPeriod.replace("/", "-"));
+    const b = normalizePeriodKey(filePeriod);
+    if (a && b && a !== b) {
+      const err = new Error("Dosya dönemi ile seçili dönem uyuşmuyor.");
+      err.code = EDEFTER_ERROR_CODE.MIXED_COMPANY_OR_PERIOD;
+      throw err;
+    }
+  }
+
+  if (fingerprintSession && parsedUpload?.fingerprint) {
+    fingerprintSession.add(parsedUpload.fingerprint);
+  }
+
+  return runEDefterKontrolPipeline({
+    muavinRows,
+    yevmiyeRows,
+    mizanRows,
+    edefterListeRows,
+    xmlRows: parsedUpload?.rows || [],
+    technicalFindings: parsedUpload?.technicalFindings || [],
+    companyId,
+    period: resolvedPeriod,
+    declarationRecords,
+    accountPlanCodes,
+    beratMeta: parsedUpload?.beratMeta || null,
+    packageMeta: parsedUpload?.packageMeta || {},
+    companyTaxId,
+    coreDecision,
+  });
 }
 
 export function recalculateEDefterRows(rows = []) {
@@ -926,9 +1413,10 @@ export function recalculateEDefterRows(rows = []) {
 }
 
 function scoreFromLevel(level = "") {
-  if (level === E_DEFTER_RISK_LEVEL.KRITIK) return 85;
-  if (level === E_DEFTER_RISK_LEVEL.YUKSEK) return 65;
-  if (level === E_DEFTER_RISK_LEVEL.ORTA) return 40;
+  const mapped = mapLegacyLevelToSonuc(level);
+  if (mapped === E_DEFTER_SONUC_SEVIYE.KRITIK || level === E_DEFTER_RISK_LEVEL.KRITIK) return 85;
+  if (mapped === E_DEFTER_SONUC_SEVIYE.UYARI || level === E_DEFTER_RISK_LEVEL.YUKSEK) return 65;
+  if (mapped === E_DEFTER_SONUC_SEVIYE.BILGI || level === E_DEFTER_RISK_LEVEL.ORTA) return 40;
   return 15;
 }
 
@@ -1088,6 +1576,28 @@ export function buildVergiselFindingRows({ rows = [], declarationRecords = [], c
       level: E_DEFTER_RISK_LEVEL.ORTA,
       code: "TEVKIFAT",
       action: "Tevkifat beyannamesi ve stopaj hesaplarını karşılaştırın.",
+    });
+  }
+
+  const sgdpRows = rows.filter((row) =>
+    /sgdp|sosyal g[uü]venlik destek/i.test(`${row.aciklama || ""} ${row.hesapAdi || ""}`)
+  );
+  if (sgdpRows.length || (sgk361 > 0 && /sgdp/i.test(rows.map((r) => r.aciklama).join(" ")))) {
+    findings.push({
+      message: "361/SGDP risk göstergesi: SGDP prim kaydı ile 361 hesabı birlikte kontrol edilmeli (kesin vergi hükmü değildir).",
+      level: E_DEFTER_RISK_LEVEL.ORTA,
+      code: "SGDP_361",
+      action: "SGDP bordro/tahakkuk ile 361 hareketlerini karşılaştırın.",
+    });
+  }
+
+  const kasaBanka = sumAccountPrefix(rows, "100") + sumAccountPrefix(rows, "102");
+  if (kasaBanka > KASA_BAKIYE_ESIK * 2) {
+    findings.push({
+      message: "100/102 nakit-banka yüksek hareket risk göstergesi.",
+      level: E_DEFTER_RISK_LEVEL.ORTA,
+      code: "KASA_BANKA_100_102",
+      action: "Kasa ve banka mutabakatını kontrol edin.",
     });
   }
 

@@ -22,11 +22,11 @@ self.onmessage = async (event) => {
       ...result,
     });
   } catch (error) {
-    console.error("[eDefterAnalyze.worker] analyze failed", error);
     self.postMessage({
       type: "error",
       requestId,
       error: error?.message || "e-Defter analizi başarısız.",
+      code: error?.code || "",
     });
   }
 };
