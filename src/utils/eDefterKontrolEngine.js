@@ -27,6 +27,7 @@ import { parseMoneyTR } from "@/src/utils/parseMoneyTR";
 import { normalizeParserText } from "@/src/utils/textNormalize";
 import {
   EDEFTER_ERROR_CODE,
+  buildContentFingerprint,
   createFingerprintSession,
   normalizePeriodKey,
   normalizeTaxId,
@@ -1660,6 +1661,7 @@ export function buildEDefterUploadRecord(input = {}) {
 export function loadEDefterKontrolRecords() {
   if (typeof window === "undefined") return [];
   try {
+    // Geçici UI cache — denetim kaynağı değil; sunucu kaydı asıldır.
     return JSON.parse(localStorage.getItem(E_DEFTER_RECORDS_STORAGE_KEY) || "[]");
   } catch {
     return [];
@@ -1668,7 +1670,35 @@ export function loadEDefterKontrolRecords() {
 
 export function saveEDefterKontrolRecords(records = []) {
   if (typeof window === "undefined") return;
+  // Yalnız geçici cache; başarılı sunucu kaydı sonrası temizlenir.
   localStorage.setItem(E_DEFTER_RECORDS_STORAGE_KEY, JSON.stringify(records));
+}
+
+/** Analiz sonucu için güvenli kaynak parmak izi (ham içerik yok). */
+export function buildEDefterResultFingerprints({
+  sourceFingerprint = "",
+  journalRows = [],
+  ledgerRows = [],
+  companyId = "",
+  period = "",
+  summary = {},
+} = {}) {
+  const journalKey = journalRows
+    .slice(0, 5000)
+    .map((r) => `${r.fisNo}|${r.yevmiyeNo}|${r.hesapKodu}|${r.borc}|${r.alacak}`)
+    .join(";");
+  const ledgerKey = ledgerRows
+    .slice(0, 5000)
+    .map((r) => `${r.fisNo}|${r.yevmiyeNo}|${r.hesapKodu}|${r.borc}|${r.alacak}`)
+    .join(";");
+  const fallbackSource = buildContentFingerprint(
+    `${companyId}|${period}|${summary.overallSonuc || ""}|${summary.toplamSatir || 0}|${summary.kritikHata || 0}|${journalKey.slice(0, 2000)}`
+  );
+  return {
+    source: sourceFingerprint || fallbackSource,
+    journal: journalKey ? buildContentFingerprint(journalKey) : "",
+    ledger: ledgerKey ? buildContentFingerprint(ledgerKey) : "",
+  };
 }
 
 export function runEDefterKontrolScenario() {

@@ -11,6 +11,8 @@ export const SOFT_DELETE_TABLES = [
   "learned_bank_rules",
   "reconciliation_matches",
   "official_notifications",
+  "edefter_control_runs",
+  "edefter_control_findings",
 ];
 
 /**

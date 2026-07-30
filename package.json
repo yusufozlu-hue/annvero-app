@@ -29,6 +29,7 @@
     "test:bank-parser": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-parser-stabilization.mjs",
     "test:fis-kontrol": "node --import ./scripts/_alias-loader.mjs ./scripts/test-fis-kontrol-merkezi.mjs",
     "test:e-defter-kontrol": "node --import ./scripts/_alias-loader.mjs ./scripts/test-e-defter-kontrol.mjs",
+    "test:edefter-persist": "node --import ./scripts/_alias-loader.mjs ./scripts/test-edefter-persist.mjs",
     "test:account-memory": "node --import ./scripts/_alias-loader.mjs ./scripts/test-account-memory-stabilize.mjs",
     "test:cari-biletduk": "node --import ./scripts/_alias-loader.mjs ./scripts/test-cari-biletduk-handler-apply.mjs"
   },
