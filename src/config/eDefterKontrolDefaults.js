@@ -8,6 +8,7 @@ export const E_DEFTER_KAYNAK = {
   BERAT: "berat",
   TEKNIK: "teknik",
   VERGISEL: "vergisel",
+  CAPRAZ: "capraz",
 };
 
 export const E_DEFTER_TURU = {
@@ -36,14 +37,28 @@ export const E_DEFTER_HATA_TURU = {
   VERGISEL: "Vergisel",
 };
 
+/** Sonuç seviyeleri — UI / export */
+export const E_DEFTER_SONUC_SEVIYE = {
+  UYGUN: "Uygun",
+  BILGI: "Bilgi",
+  UYARI: "Uyarı",
+  KRITIK: "Kritik hata",
+};
+
 export const E_DEFTER_RISK_LEVEL = {
   DUSUK: "Düşük",
   ORTA: "Orta",
   YUKSEK: "Yüksek",
   KRITIK: "Kritik",
+  /** Yeni 4 seviye ile uyum (alias) */
+  UYGUN: E_DEFTER_SONUC_SEVIYE.UYGUN,
+  BILGI: E_DEFTER_SONUC_SEVIYE.BILGI,
+  UYARI: E_DEFTER_SONUC_SEVIYE.UYARI,
+  KRITIK_HATA: E_DEFTER_SONUC_SEVIYE.KRITIK,
 };
 
 export const E_DEFTER_RECORDS_STORAGE_KEY = "annvero_edefter_kontrol_records_v1";
+export const E_DEFTER_FINGERPRINT_STORAGE_KEY = "annvero_edefter_fingerprints_v1";
 
 export const E_DEFTER_KONTROL_GRUP = {
   HATASIZ: "Hatasız kayıtlar",
@@ -55,6 +70,7 @@ export const E_DEFTER_KONTROL_GRUP = {
   KDV_KONTROL: "KDV kontrol uyarıları",
   TEKNIK: "Teknik hatalar",
   VERGISEL: "Vergisel riskler",
+  CAPRAZ: "Çapraz mutabakat",
 };
 
 export const E_DEFTER_KONTROL_DURUM = {
@@ -67,6 +83,20 @@ export const E_DEFTER_KONTROL_DURUM = {
   KDV_KONTROL: "KDV kontrol uyarı",
   FIS_DENGESIZ: "Fiş dengesiz",
 };
+
+export const E_DEFTER_FINDING_CODE = {
+  COMPANY_MISMATCH: "COMPANY_MISMATCH",
+  MIXED_COMPANY_OR_PERIOD: "MIXED_COMPANY_OR_PERIOD",
+  JOURNAL_LEDGER_MISMATCH: "JOURNAL_LEDGER_MISMATCH",
+  EXTERNAL_VERIFICATION_REQUIRED: "EXTERNAL_VERIFICATION_REQUIRED",
+  HESAP_PLANINDA_YOK: "HESAP_PLANINDA_YOK",
+  DONEM_DISI: "DONEM_DISI",
+  NEGATIF_SIFIR: "NEGATIF_SIFIR",
+  TOPLAM_BORC_ALACAK: "TOPLAM_BORC_ALACAK",
+};
+
+export const E_DEFTER_REPORT_DISCLAIMER =
+  "Bu rapor ANNVERO E-Defter Kontrol Merkezi tarafından üretilmiştir. GİB doğrulaması veya mali mühür kriptografik teyidi içermez; kesin vergi hükmü değildir.";
 
 export const RISK_BAND = {
   DUSUK: "Düşük",
@@ -92,9 +122,45 @@ export function riskLevelFromScore(score) {
   return E_DEFTER_RISK_LEVEL.DUSUK;
 }
 
+/** Skor → 4 seviye sonuç */
+export function sonucSeviyeFromScore(score) {
+  if (score >= 71) return E_DEFTER_SONUC_SEVIYE.KRITIK;
+  if (score >= 40) return E_DEFTER_SONUC_SEVIYE.UYARI;
+  if (score >= 15) return E_DEFTER_SONUC_SEVIYE.BILGI;
+  return E_DEFTER_SONUC_SEVIYE.UYGUN;
+}
+
+export function mapLegacyLevelToSonuc(level = "") {
+  const t = String(level || "");
+  if (
+    t === E_DEFTER_SONUC_SEVIYE.KRITIK ||
+    t === E_DEFTER_RISK_LEVEL.KRITIK ||
+    t === "Kritik" ||
+    t === "Kritik hata"
+  ) {
+    return E_DEFTER_SONUC_SEVIYE.KRITIK;
+  }
+  if (t === E_DEFTER_RISK_LEVEL.YUKSEK || t === "Yüksek" || t === E_DEFTER_SONUC_SEVIYE.UYARI) {
+    return E_DEFTER_SONUC_SEVIYE.UYARI;
+  }
+  if (t === E_DEFTER_RISK_LEVEL.ORTA || t === "Orta" || t === E_DEFTER_SONUC_SEVIYE.BILGI || t === "Bilgi") {
+    return E_DEFTER_SONUC_SEVIYE.BILGI;
+  }
+  return E_DEFTER_SONUC_SEVIYE.UYGUN;
+}
+
 export function riskLevelBadgeClass(level) {
-  if (level === E_DEFTER_RISK_LEVEL.KRITIK) return "bg-red-950 text-red-200 ring-red-700/60";
-  if (level === E_DEFTER_RISK_LEVEL.YUKSEK) return "bg-orange-950 text-orange-200 ring-orange-700/60";
-  if (level === E_DEFTER_RISK_LEVEL.ORTA) return "bg-amber-950 text-amber-200 ring-amber-700/60";
+  if (
+    level === E_DEFTER_RISK_LEVEL.KRITIK ||
+    level === E_DEFTER_SONUC_SEVIYE.KRITIK
+  ) {
+    return "bg-red-950 text-red-200 ring-red-700/60";
+  }
+  if (level === E_DEFTER_RISK_LEVEL.YUKSEK || level === E_DEFTER_SONUC_SEVIYE.UYARI) {
+    return "bg-orange-950 text-orange-200 ring-orange-700/60";
+  }
+  if (level === E_DEFTER_RISK_LEVEL.ORTA || level === E_DEFTER_SONUC_SEVIYE.BILGI) {
+    return "bg-amber-950 text-amber-200 ring-amber-700/60";
+  }
   return "bg-slate-800 text-slate-200 ring-slate-600/60";
 }

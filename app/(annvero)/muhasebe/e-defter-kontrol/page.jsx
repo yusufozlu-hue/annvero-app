@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
@@ -9,21 +9,26 @@ import {
   E_DEFTER_HATA_TURU,
   E_DEFTER_KONTROL_GRUP,
   E_DEFTER_KONTROL_STATUS,
+  E_DEFTER_REPORT_DISCLAIMER,
   E_DEFTER_RISK_LEVEL,
+  E_DEFTER_SONUC_SEVIYE,
   riskLevelBadgeClass,
 } from "@/src/config/eDefterKontrolDefaults";
 import { normalizeCompanyRecord } from "@/src/utils/companyCenter";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
   buildEDefterUploadRecord,
+  buildFisKontrolDeepLink,
   filterEDefterRows,
+  loadEDefterFingerprintSession,
   loadEDefterKontrolRecords,
   parseEDefterListeSheet,
   parseMizanSheet,
   parseMuavinSheet,
   parseYevmiyeSheet,
   recalculateEDefterRows,
-  runEDefterKontrolPipeline,
+  runOneClickEDefterKontrol,
+  saveEDefterFingerprintSession,
   saveEDefterKontrolRecords,
 } from "@/src/utils/eDefterKontrolEngine";
 import {
@@ -36,14 +41,13 @@ import { useParserJob } from "@/src/hooks/useParserJob";
 import { logParserJobError } from "@/src/utils/parserJobLogger";
 import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
 import {
-  runEDefterAnalyzeWorker,
   runEDefterXmlWorker,
   runExcelSheetWorker,
 } from "@/src/utils/workerParserBridge";
 import { parseEDefterUploadBuffer } from "@/src/utils/eDefterXmlParser";
+import { DUPLICATE_EDEFTER_UI_MESSAGE } from "@/src/utils/eDefterSecurity";
 import {
   logExcelError,
-  logXmlError,
   SYSTEM_ERROR_TYPES,
 } from "@/src/utils/systemLogEngine";
 
@@ -57,20 +61,25 @@ function formatMoney(value) {
   });
 }
 
-async function readExcelSheet(file) {
-  const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-}
-
 function grupClass(grup) {
   if (grup === E_DEFTER_KONTROL_GRUP.HATASIZ) return "bg-emerald-900/50 text-emerald-200";
-  if ([E_DEFTER_KONTROL_GRUP.KRITIK, E_DEFTER_KONTROL_GRUP.TEKNIK].includes(grup)) {
+  if ([E_DEFTER_KONTROL_GRUP.KRITIK, E_DEFTER_KONTROL_GRUP.TEKNIK, E_DEFTER_KONTROL_GRUP.CAPRAZ].includes(grup)) {
     return "bg-red-900/50 text-red-200";
   }
   if (grup === E_DEFTER_KONTROL_GRUP.VERGISEL) return "bg-purple-900/50 text-purple-200";
   return "bg-amber-900/50 text-amber-200";
+}
+
+function companyTaxIdOf(company) {
+  if (!company) return "";
+  return String(
+    company.vkn ||
+      company.taxId ||
+      company.vergiNo ||
+      company.tckn ||
+      company.taxNumber ||
+      ""
+  ).replace(/\D/g, "");
 }
 
 export default function EDefterKontrolPage() {
@@ -97,6 +106,7 @@ export default function EDefterKontrolPage() {
   const [xmlRows, setXmlRows] = useState([]);
   const [technicalFindings, setTechnicalFindings] = useState([]);
   const [uploadMeta, setUploadMeta] = useState(null);
+  const [pendingParsed, setPendingParsed] = useState(null);
 
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState(null);
@@ -107,9 +117,18 @@ export default function EDefterKontrolPage() {
   const [hataTuruFilter, setHataTuruFilter] = useState("Tümü");
   const [cozumFilter, setCozumFilter] = useState("Tümü");
   const [expandedId, setExpandedId] = useState("");
+  const [showAllDetails, setShowAllDetails] = useState(false);
   const [toast, setToast] = useState("");
   const [xmlParsing, setXmlParsing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const [detailLimit, setDetailLimit] = useState(40);
+
+  const fingerprintSessionRef = useRef(null);
+  if (!fingerprintSessionRef.current) {
+    fingerprintSessionRef.current = loadEDefterFingerprintSession();
+  }
+  const abortRef = useRef(null);
+  const prevCompanyRef = useRef(selectedCompanyId);
 
   const parserJob = useParserJob({
     logMeta: {
@@ -125,7 +144,32 @@ export default function EDefterKontrolPage() {
     [records, selectedCompanyId]
   );
 
-  const displayedRows = useMemo(
+  const clearAnalysisState = () => {
+    setMuavinRows([]);
+    setYevmiyeRows([]);
+    setMizanRows([]);
+    setEdefterListeRows([]);
+    setXmlRows([]);
+    setTechnicalFindings([]);
+    setUploadMeta(null);
+    setPendingParsed(null);
+    setRows([]);
+    setSummary(null);
+    setGroupCounts([]);
+    setActiveGroup("");
+    setExpandedId("");
+    setShowAllDetails(false);
+    setDetailLimit(40);
+  };
+
+  useEffect(() => {
+    if (prevCompanyRef.current === selectedCompanyId) return;
+    prevCompanyRef.current = selectedCompanyId;
+    clearAnalysisState();
+    setToast("Firma değişti — kontrol durumu temizlendi.");
+  }, [selectedCompanyId]);
+
+  const findingRows = useMemo(
     () =>
       filterEDefterRows(rows, {
         grup: activeGroup,
@@ -133,9 +177,14 @@ export default function EDefterKontrolPage() {
         riskLevel: riskLevelFilter,
         hataTuru: hataTuruFilter,
         cozumDurumu: cozumFilter,
-      }),
+      }).filter((row) => row.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ),
     [rows, activeGroup, search, riskLevelFilter, hataTuruFilter, cozumFilter]
   );
+
+  const displayedRows = useMemo(() => {
+    if (showAllDetails) return findingRows;
+    return findingRows.slice(0, detailLimit);
+  }, [findingRows, showAllDetails, detailLimit]);
 
   const persistRecord = (record) => {
     const next = [record, ...records.filter((item) => item.id !== record.id)];
@@ -154,7 +203,6 @@ export default function EDefterKontrolPage() {
       });
       return result.rows;
     } catch (error) {
-      console.warn("[e-defter] excel worker fallback", error);
       const workbook = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
@@ -166,24 +214,50 @@ export default function EDefterKontrolPage() {
     if (!file) return;
     setXmlParsing(true);
     parserJob.begin({ stage: "XML/ZIP okunuyor", detail: file.name });
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const arrayBuffer = await file.arrayBuffer();
+      const companyTaxId = companyTaxIdOf(selectedCompany);
+      const known = fingerprintSessionRef.current;
       let parsed;
       try {
         const workerResult = await runEDefterXmlWorker({
           workerUrl: PARSER_WORKER_URLS.eDefterXml,
           arrayBuffer,
           fileName: file.name,
+          companyTaxId,
+          knownFingerprints: known.values(),
           onProgress: parserJob.onProgress,
         });
         parsed = workerResult;
+        if (Array.isArray(workerResult.knownFingerprints)) {
+          workerResult.knownFingerprints.forEach((fp) => known.add(fp));
+          saveEDefterFingerprintSession(known);
+        }
       } catch (workerError) {
-        console.warn("[e-defter] xml worker fallback", workerError);
-        parsed = await parseEDefterUploadBuffer(arrayBuffer, file.name);
+        if (workerError?.code) throw workerError;
+        parsed = await parseEDefterUploadBuffer(arrayBuffer, file.name, {
+          companyTaxId,
+          knownFingerprints: known,
+          signal: controller.signal,
+        });
+        if (parsed.fingerprint) {
+          known.add(parsed.fingerprint);
+          saveEDefterFingerprintSession(known);
+        }
       }
+
+      if (parsed.duplicate) {
+        setToast(parsed.duplicateMessage || DUPLICATE_EDEFTER_UI_MESSAGE);
+        parserJob.markSuccess("Mükerrer — işlenmedi");
+        return;
+      }
+
       setXmlRows(parsed.rows);
       setTechnicalFindings(parsed.technicalFindings);
       setUploadMeta(parsed);
+      setPendingParsed(parsed);
       parserJob.markSuccess(`${parsed.rows.length} XML satırı okundu`);
       setToast(`${parsed.rows.length} XML satırı, ${parsed.technicalFindings.length} teknik bulgu okundu.`);
     } catch (error) {
@@ -200,6 +274,7 @@ export default function EDefterKontrolPage() {
       setToast(error.message || "XML/ZIP okunamadı.");
     } finally {
       setXmlParsing(false);
+      abortRef.current = null;
       event.target.value = "";
     }
   };
@@ -250,42 +325,47 @@ export default function EDefterKontrolPage() {
       setToast("Önce firma seçin.");
       return;
     }
-    if (!muavinRows.length && !yevmiyeRows.length && !xmlRows.length) {
+    if (!muavinRows.length && !yevmiyeRows.length && !xmlRows.length && !pendingParsed) {
       setToast("En az muavin, yevmiye veya XML/ZIP dosyası yükleyin.");
       return;
     }
 
     setAnalyzing(true);
-    parserJob.begin({ stage: "e-Defter kontrolü", detail: "Kurallar çalışıyor" });
-
-    const payload = {
-      muavinRows,
-      yevmiyeRows,
-      mizanRows,
-      edefterListeRows,
-      xmlRows,
-      technicalFindings,
-      companyId: selectedCompanyId,
-      period,
-    };
+    parserJob.begin({ stage: "e-Defter kontrolü", detail: "Tek tuş kontrol" });
 
     try {
-      let result;
-      try {
-        const workerResult = await runEDefterAnalyzeWorker({
-          workerUrl: PARSER_WORKER_URLS.eDefterAnalyze,
-          payload,
-          onProgress: parserJob.onProgress,
-        });
-        result = workerResult;
-      } catch (workerError) {
-        console.warn("[e-defter] analyze worker fallback", workerError);
-        result = runEDefterKontrolPipeline(payload);
+      const result = await runOneClickEDefterKontrol({
+        parsedUpload: pendingParsed || {
+          rows: xmlRows,
+          technicalFindings,
+          beratMeta: uploadMeta?.beratMeta || null,
+          packageMeta: uploadMeta?.packageMeta || {},
+          fingerprint: uploadMeta?.fingerprint || "",
+          duplicate: false,
+        },
+        muavinRows,
+        yevmiyeRows,
+        mizanRows,
+        edefterListeRows,
+        companyId: selectedCompanyId,
+        companyTaxId: companyTaxIdOf(selectedCompany),
+        period,
+        fingerprintSession: fingerprintSessionRef.current,
+        coreDecision: { decision_source: "CORE", source: "CORE" },
+      });
+
+      if (result.duplicate) {
+        setToast(result.duplicateMessage || DUPLICATE_EDEFTER_UI_MESSAGE);
+        parserJob.markSuccess("Mükerrer");
+        return;
       }
 
+      saveEDefterFingerprintSession(fingerprintSessionRef.current);
       setRows(result.rows);
       setSummary(result.summary);
       setGroupCounts(result.groupCounts);
+      setShowAllDetails(false);
+      setDetailLimit(40);
 
       persistRecord(
         buildEDefterUploadRecord({
@@ -302,8 +382,12 @@ export default function EDefterKontrolPage() {
         })
       );
 
-      parserJob.markSuccess(`${result.rows.length} kayıt kontrol edildi`);
-      setToast(`${result.rows.length} kayıt kontrol edildi.`);
+      parserJob.markSuccess(`${result.rows.length} kayıt · ${result.overallSonuc}`);
+      setToast(
+        result.summary.edefterUygun
+          ? `Kontrol tamamlandı: ${result.overallSonuc}`
+          : `Kontrol tamamlandı: ${result.overallSonuc} (onaylı uygun değil)`
+      );
     } catch (error) {
       logParserJobError(error, {
         module: "XML / e-Defter",
@@ -326,7 +410,12 @@ export default function EDefterKontrolPage() {
         row.id === rowId ? { ...row, ...patch, manuallyEdited: true } : row
       );
       const result = recalculateEDefterRows(next);
-      setSummary(result.summary);
+      setSummary({
+        ...result.summary,
+        overallSonuc: summary?.overallSonuc,
+        edefterUygun: summary?.edefterUygun,
+        canApproveExport: summary?.canApproveExport,
+      });
       setGroupCounts(result.groupCounts);
       return result.rows;
     });
@@ -337,17 +426,39 @@ export default function EDefterKontrolPage() {
       setToast("Önce kontrol çalıştırın.");
       return;
     }
-    exportEDefterReportWorkbook({
+    const result = exportEDefterReportWorkbook({
       rows,
       summary: summary || {},
-      meta: { firmaAdi: getCompanyDisplayName(selectedCompany), donem: period },
+      meta: {
+        firmaAdi: getCompanyDisplayName(selectedCompany),
+        donem: period,
+        disclaimer: E_DEFTER_REPORT_DISCLAIMER,
+        appVersion: typeof window !== "undefined" ? window.__ANNVERO_BUILD__ || "web" : "web",
+      },
       fileName: "e-defter-kontrol",
+      force: true,
     });
+    if (result.blocked) {
+      setToast(result.message);
+      return;
+    }
     setToast("Excel raporu indirildi.");
   };
 
   const handlePdf = () => {
-    setToast(prepareEDefterPdfReport().message);
+    const pdf = prepareEDefterPdfReport({
+      summary: summary || {},
+      meta: { appVersion: "web" },
+    });
+    setToast(pdf.message);
+  };
+
+  const handleCancel = () => {
+    abortRef.current?.abort?.();
+    parserJob.cancel("user");
+    setXmlParsing(false);
+    setAnalyzing(false);
+    setToast("İşlem iptal edildi.");
   };
 
   return (
@@ -366,7 +477,7 @@ export default function EDefterKontrolPage() {
           <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">E-Defter Kontrol Merkezi</h1>
           <p className="mt-2 max-w-3xl text-sm leading-relaxed text-gray-400 sm:text-base">
             Yevmiye/kebir XML, berat ve ZIP dosyalarını analiz ederek teknik, muhasebesel ve vergisel
-            hataları berat öncesi tespit edin.
+            riskleri berat öncesi tespit edin. GİB doğrulaması yapılmaz.
           </p>
         </div>
         <div className="flex w-full min-w-[280px] flex-col gap-2 sm:w-auto">
@@ -378,43 +489,50 @@ export default function EDefterKontrolPage() {
             timeoutWarning={parserJob.timeoutWarning}
             status={parserJob.status}
             error={parserJob.error}
-            onCancel={xmlParsing || analyzing ? () => parserJob.cancel("user") : undefined}
+            onCancel={xmlParsing || analyzing ? handleCancel : undefined}
           />
           <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={handleAnalyze}
-            disabled={analyzing}
-            className="rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-950/40 disabled:opacity-60"
-          >
-            {analyzing ? "Kontrol çalışıyor..." : "Kontrol Çalıştır"}
-          </button>
-          <button
-            type="button"
-            onClick={handleExport}
-            className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-gray-200 hover:bg-white/10"
-          >
-            Excel İndir
-          </button>
-          <button
-            type="button"
-            onClick={handlePdf}
-            className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-gray-400 hover:bg-white/10"
-          >
-            PDF (Yakında)
-          </button>
+            <button
+              type="button"
+              onClick={handleAnalyze}
+              disabled={analyzing || xmlParsing}
+              className="rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-950/40 disabled:opacity-60"
+            >
+              {analyzing ? "Kontrol çalışıyor..." : "Kontrolü Başlat"}
+            </button>
+            <button
+              type="button"
+              onClick={handleExport}
+              className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-gray-200 hover:bg-white/10"
+            >
+              Excel İndir
+            </button>
+            <button
+              type="button"
+              onClick={handlePdf}
+              className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-gray-400 hover:bg-white/10"
+            >
+              PDF Özeti
+            </button>
           </div>
         </div>
       </div>
 
       {summary ? (
-        <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
+          <StatCard label="Genel Sonuç" value={summary.overallSonuc || "-"} />
           <StatCard label="Yüklenen Defter" value={summary.yuklenenDefterSayisi} />
           <StatCard label="Kritik Hata" value={summary.kritikHata} tone="red" />
           <StatCard label="Uyarı" value={summary.uyariSayisi} tone="amber" />
           <StatCard label="Teknik Hata" value={summary.teknikHata} />
           <StatCard label="Vergisel Risk" value={summary.vergiselRisk} tone="purple" />
         </div>
+      ) : null}
+
+      {summary?.overallSonuc === E_DEFTER_SONUC_SEVIYE.KRITIK ? (
+        <p className="mb-4 rounded-xl border border-red-500/40 bg-red-950/40 px-4 py-3 text-sm text-red-100">
+          Kritik hata varken “E-Defter uygun” onayı verilemez.
+        </p>
       ) : null}
 
       <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/70 p-5 shadow-xl shadow-black/20">
@@ -505,11 +623,13 @@ export default function EDefterKontrolPage() {
           className={`${inputClassName} max-w-[180px]`}
         >
           <option value="Tümü">Tüm Riskler</option>
-          {Object.values(E_DEFTER_RISK_LEVEL).map((level) => (
-            <option key={level} value={level}>
-              {level}
-            </option>
-          ))}
+          {Object.values(E_DEFTER_RISK_LEVEL)
+            .filter((v, i, arr) => arr.indexOf(v) === i)
+            .map((level) => (
+              <option key={level} value={level}>
+                {level}
+              </option>
+            ))}
         </select>
         <select
           value={hataTuruFilter}
@@ -557,67 +677,91 @@ export default function EDefterKontrolPage() {
       ) : null}
 
       <section className="rounded-2xl border border-white/10 bg-gray-900/70 p-5 shadow-xl shadow-black/20">
-        <h2 className="mb-4 text-xl font-semibold">Kontrol Sonuçları</h2>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-xl font-semibold">Kontrol Sonuçları</h2>
+          {findingRows.length > detailLimit ? (
+            <button
+              type="button"
+              onClick={() => {
+                setShowAllDetails(true);
+                setDetailLimit(findingRows.length);
+              }}
+              className="text-xs font-semibold text-indigo-300"
+            >
+              Tüm detayları yükle ({findingRows.length})
+            </button>
+          ) : null}
+        </div>
         {displayedRows.length === 0 ? (
           <p className="py-8 text-center text-gray-400">
-            Henüz sonuç yok. XML/ZIP veya Excel yükleyip kontrol çalıştırın.
+            Henüz sonuç yok. XML/ZIP veya Excel yükleyip Kontrolü Başlatın.
           </p>
         ) : (
           <div className="space-y-3">
-            {displayedRows
-              .filter((row) => row.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ)
-              .map((row) => (
-                <article key={row.id} className="rounded-xl border border-white/10 bg-gray-950/70 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${riskLevelBadgeClass(row.riskLevel)}`}>
-                          {row.riskLevel || "-"}
-                        </span>
-                        <span className={`rounded-full px-2 py-0.5 text-xs ${grupClass(row.grup)}`}>
-                          {row.grup}
-                        </span>
-                        <span className="text-xs text-gray-500">{row.hataTuru}</span>
-                      </div>
-                      <p className="text-sm text-white">
-                        {row.yevmiyeNo ? `Yevmiye ${row.yevmiyeNo}` : ""}
-                        {row.fisNo ? ` · Fiş ${row.fisNo}` : ""}
-                        {row.hesapKodu ? ` · ${row.hesapKodu}` : ""}
-                      </p>
-                      <p className="mt-1 text-sm text-gray-300">{row.aciklama || (row.issues || []).join(" ")}</p>
-                      <p className="mt-2 text-sm text-indigo-200">{row.onerilenKontrol}</p>
+            {displayedRows.map((row) => (
+              <article key={row.id} className="rounded-xl border border-white/10 bg-gray-950/70 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${riskLevelBadgeClass(row.sonucSeviye || row.riskLevel)}`}>
+                        {row.sonucSeviye || row.riskLevel || "-"}
+                      </span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${grupClass(row.grup)}`}>
+                        {row.grup}
+                      </span>
+                      <span className="text-xs text-gray-500">{row.hataTuru}</span>
                     </div>
-                    <div className="text-right">
-                      <p className="text-lg font-bold tabular-nums">{formatMoney(row.tutar || row.borc || row.alacak)} TL</p>
-                      <select
-                        value={row.cozumDurumu || E_DEFTER_FINDING_STATUS.YENI}
-                        onChange={(event) => updateRow(row.id, { cozumDurumu: event.target.value })}
-                        className={`${inputClassName} mt-2 min-w-[150px] text-xs`}
+                    <p className="text-sm text-white">
+                      {row.yevmiyeNo ? `Yevmiye ${row.yevmiyeNo}` : ""}
+                      {row.fisNo ? ` · Fiş ${row.fisNo}` : ""}
+                      {row.hesapKodu ? ` · ${row.hesapKodu}` : ""}
+                    </p>
+                    <p className="mt-1 text-sm text-gray-300">{row.aciklama || (row.issues || []).join(" ")}</p>
+                    <p className="mt-2 text-sm text-indigo-200">{row.onerilenKontrol}</p>
+                    {row.fisNo ? (
+                      <a
+                        href={buildFisKontrolDeepLink({
+                          companyId: selectedCompanyId,
+                          fisNo: row.fisNo,
+                        })}
+                        className="mt-2 inline-block text-xs font-semibold text-emerald-300 hover:underline"
                       >
-                        {Object.values(E_DEFTER_FINDING_STATUS).map((status) => (
-                          <option key={status} value={status}>
-                            {status}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                        Fiş Kontrolde aç
+                      </a>
+                    ) : null}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setExpandedId((current) => (current === row.id ? "" : row.id))}
-                    className="mt-3 text-xs font-semibold text-indigo-300"
-                  >
-                    {expandedId === row.id ? "Akıllı açıklamayı gizle" : "Akıllı açıklamayı göster"}
-                  </button>
-                  {expandedId === row.id ? (
-                    <pre className="mt-3 whitespace-pre-wrap rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-gray-300">
-                      {row.smartExplanation}
-                    </pre>
-                  ) : null}
-                </article>
-              ))}
+                  <div className="text-right">
+                    <p className="text-lg font-bold tabular-nums">{formatMoney(row.tutar || row.borc || row.alacak)} TL</p>
+                    <select
+                      value={row.cozumDurumu || E_DEFTER_FINDING_STATUS.YENI}
+                      onChange={(event) => updateRow(row.id, { cozumDurumu: event.target.value })}
+                      className={`${inputClassName} mt-2 min-w-[150px] text-xs`}
+                    >
+                      {Object.values(E_DEFTER_FINDING_STATUS).map((status) => (
+                        <option key={status} value={status}>
+                          {status}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExpandedId((current) => (current === row.id ? "" : row.id))}
+                  className="mt-3 text-xs font-semibold text-indigo-300"
+                >
+                  {expandedId === row.id ? "Akıllı açıklamayı gizle" : "Akıllı açıklamayı göster"}
+                </button>
+                {expandedId === row.id ? (
+                  <pre className="mt-3 whitespace-pre-wrap rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-gray-300">
+                    {row.smartExplanation}
+                  </pre>
+                ) : null}
+              </article>
+            ))}
           </div>
         )}
+        <p className="mt-4 text-xs text-gray-500">{E_DEFTER_REPORT_DISCLAIMER}</p>
       </section>
     </main>
   );
@@ -638,7 +782,7 @@ function StatCard({ label, value, tone = "default" }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-gray-900/70 p-4">
       <p className="text-xs font-medium uppercase tracking-wide text-gray-400">{label}</p>
-      <p className={`mt-2 text-3xl font-bold tabular-nums ${toneClass}`}>{value ?? 0}</p>
+      <p className={`mt-2 text-2xl font-bold tabular-nums ${toneClass}`}>{value ?? 0}</p>
     </div>
   );
 }

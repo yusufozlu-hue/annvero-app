@@ -2,15 +2,187 @@ import JSZip from "jszip";
 import { E_DEFTER_KAYNAK } from "@/src/config/eDefterKontrolDefaults";
 import { formatDateTR } from "@/src/utils/formatDateTR";
 import { parseMoneyTR } from "@/src/utils/parseMoneyTR";
+import {
+  EDEFTER_ERROR_CODE,
+  assertCompanyTaxMatch,
+  assertRowLimit,
+  assertSafeZipEntries,
+  assertUploadSize,
+  buildContentFingerprint,
+  createParseAbortGuard,
+  extractPeriodFromText,
+  extractTaxIdFromText,
+  makeEDefterError,
+  normalizePeriodKey,
+  normalizeTaxId,
+  rejectXxePayload,
+} from "@/src/utils/eDefterSecurity";
 
 function localName(node) {
   return String(node?.localName || node?.nodeName || "").replace(/^.*:/, "");
 }
 
+/**
+ * Node ortamında DOMParser yoksa minimal, XXE'siz XML ağacı.
+ * Yalnızca etiket/metin; ENTITY/DOCTYPE zaten rejectXxe ile engellenir.
+ */
+function createMinimalDomFromXml(xmlText = "") {
+  const cleaned = String(xmlText || "")
+    .replace(/<\?xml[^?]*\?>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "");
+
+  class MiniNode {
+    constructor(name, attrs = {}) {
+      this.nodeName = name;
+      this.localName = name.replace(/^.*:/, "");
+      this.attributes = attrs;
+      this.childNodes = [];
+      this.parentNode = null;
+      this._text = "";
+    }
+    get textContent() {
+      if (this._text) return this._text;
+      return this.childNodes.map((c) => c.textContent).join("");
+    }
+    set textContent(v) {
+      this._text = String(v || "");
+      this.childNodes = [];
+    }
+    getElementsByTagName(tag) {
+      const wanted = String(tag || "*").toLowerCase();
+      const out = [];
+      const walk = (n) => {
+        if (!n || !n.nodeName || n.nodeName === "#text") return;
+        const name = localName(n).toLowerCase();
+        if (wanted === "*" || name === wanted || n.nodeName.toLowerCase() === wanted) {
+          out.push(n);
+        }
+        for (const c of n.childNodes) walk(c);
+      };
+      walk(this);
+      return out;
+    }
+    querySelector(sel) {
+      if (sel === "parsererror") return null;
+      return null;
+    }
+  }
+
+  const root = new MiniNode("document");
+  const stack = [root];
+  const tagRe = /<\/?([A-Za-z_][\w:.-]*)([^>]*)>|([^<]+)/g;
+  let match;
+  while ((match = tagRe.exec(cleaned))) {
+    if (match[3] != null) {
+      const text = match[3].replace(/\s+/g, " ").trim();
+      if (!text) continue;
+      const textNode = new MiniNode("#text");
+      textNode._text = text;
+      textNode.nodeName = "#text";
+      textNode.localName = "#text";
+      stack[stack.length - 1].childNodes.push(textNode);
+      continue;
+    }
+    const name = match[1];
+    const attrsRaw = match[2] || "";
+    const isClose = String(match[0]).startsWith("</");
+    const selfClose = /\/>\s*$/.test(match[0]);
+    if (isClose) {
+      if (stack.length > 1) stack.pop();
+      continue;
+    }
+    const attrs = {};
+    const attrRe = /([A-Za-z_][\w:.-]*)\s*=\s*("([^"]*)"|'([^']*)')/g;
+    let am;
+    while ((am = attrRe.exec(attrsRaw))) {
+      attrs[am[1]] = am[3] ?? am[4] ?? "";
+    }
+    const node = new MiniNode(name, attrs);
+    stack[stack.length - 1].childNodes.push(node);
+    node.parentNode = stack[stack.length - 1];
+    if (!selfClose) stack.push(node);
+  }
+
+  const documentElement =
+    root.childNodes.find((n) => n.nodeName && n.nodeName !== "#text") || root;
+
+  return {
+    documentElement,
+    getElementsByTagName: (tag) => documentElement.getElementsByTagName(tag),
+    querySelector: (sel) => (sel === "parsererror" ? null : null),
+  };
+}
+
+function parseXmlDocument(xmlText = "") {
+  const safe = rejectXxePayload(xmlText);
+  if (typeof DOMParser !== "undefined") {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(safe, "application/xml");
+    const parseError = doc.querySelector?.("parsererror");
+    if (parseError) {
+      throw makeEDefterError(
+        EDEFTER_ERROR_CODE.XML_BOZUK,
+        "XML dosyası okunamadı veya bozuk."
+      );
+    }
+    return doc;
+  }
+  if (!safe.trim() || !/<[A-Za-z_]/.test(safe)) {
+    throw makeEDefterError(EDEFTER_ERROR_CODE.XML_BOZUK, "XML dosyası okunamadı veya bozuk.");
+  }
+  // Unclosed root / truncated payload
+  const openTags = (safe.match(/<[A-Za-z_][\w:.-]*[^>/]*>/g) || []).length;
+  const closeTags = (safe.match(/<\/[A-Za-z_][\w:.-]*>/g) || []).length;
+  const selfClose = (safe.match(/<[A-Za-z_][\w:.-]*[^>]*\/>/g) || []).length;
+  if (openTags > closeTags + selfClose + 2) {
+    throw makeEDefterError(EDEFTER_ERROR_CODE.XML_BOZUK, "XML dosyası okunamadı veya bozuk.");
+  }
+  if (/<[^>]*$/.test(safe.trim())) {
+    throw makeEDefterError(EDEFTER_ERROR_CODE.XML_BOZUK, "XML dosyası okunamadı veya bozuk.");
+  }
+  return createMinimalDomFromXml(safe);
+}
+
+function detectDefterType(fileName = "", xmlText = "", rootName = "") {
+  const lower = String(fileName || "").toLowerCase();
+  const content = String(xmlText || "").toLowerCase();
+  const root = String(rootName || "").toLowerCase();
+
+  const contentHints = {
+    berat:
+      content.includes("berat") ||
+      content.includes("ledgerbookinstance") ||
+      root.includes("berat") ||
+      /defter\s*t[uü]r[uü][^<]{0,40}berat/i.test(xmlText),
+    kebir:
+      content.includes("kebir") ||
+      content.includes("generalledger") ||
+      content.includes("ledgerentries") ||
+      root.includes("kebir") ||
+      root.includes("ledger"),
+    yevmiye:
+      content.includes("yevmiye") ||
+      content.includes("journal") ||
+      content.includes("entryheader") ||
+      root.includes("journal") ||
+      root.includes("yevmiye"),
+  };
+
+  if (contentHints.berat || lower.includes("berat")) return "berat";
+  if (contentHints.kebir && !contentHints.yevmiye) return "kebir";
+  if (contentHints.yevmiye && !contentHints.kebir) return "yevmiye";
+  if (contentHints.kebir || lower.includes("kebir") || lower.includes("ledger")) return "kebir";
+  if (contentHints.yevmiye || lower.includes("yevmiye") || lower.includes("journal")) {
+    return "yevmiye";
+  }
+  if (lower.includes("berat")) return "berat";
+  return "yevmiye";
+}
+
 function textOf(parent, names = []) {
   if (!parent) return "";
   const wanted = new Set(names.map((name) => name.toLowerCase()));
-  const walker = parent.getElementsByTagName("*");
+  const walker = parent.getElementsByTagName?.("*") || [];
   for (const node of walker) {
     const name = localName(node).toLowerCase();
     if (wanted.has(name) && node.textContent?.trim()) {
@@ -18,26 +190,6 @@ function textOf(parent, names = []) {
     }
   }
   return "";
-}
-
-function parseXmlDocument(xmlText = "") {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlText, "application/xml");
-  const parseError = doc.querySelector("parsererror");
-  if (parseError) {
-    throw new Error("XML dosyası okunamadı veya bozuk.");
-  }
-  return doc;
-}
-
-function detectDefterType(fileName = "", xmlText = "") {
-  const lower = fileName.toLowerCase();
-  const content = xmlText.toLowerCase();
-  if (lower.includes("berat") || content.includes("berat")) return "berat";
-  if (lower.includes("kebir") || content.includes("kebir") || content.includes("ledger")) {
-    return "kebir";
-  }
-  return "yevmiye";
 }
 
 function mapEntryToRow(entryNode, index, kaynak) {
@@ -52,7 +204,12 @@ function mapEntryToRow(entryNode, index, kaynak) {
     ])
   );
   const fisNo = textOf(entryNode, ["entryNumber", "fisNo", "fisNumber", "journalNumber"]);
-  const yevmiyeNo = textOf(entryNode, ["lineNumber", "yevmiyeNo", "yevmiyeNumber", "entryLineNumber"]);
+  const yevmiyeNo = textOf(entryNode, [
+    "lineNumber",
+    "yevmiyeNo",
+    "yevmiyeNumber",
+    "entryLineNumber",
+  ]);
   const hesapKodu = textOf(entryNode, [
     "accountMainID",
     "accountSubID",
@@ -95,9 +252,40 @@ function mapEntryToRow(entryNode, index, kaynak) {
   };
 }
 
-export function parseEDefterXmlText(xmlText = "", fileName = "") {
+function extractPackageMeta(xmlText = "", doc = null) {
+  const taxId =
+    extractTaxIdFromText(xmlText) ||
+    (doc
+      ? textOf(doc.documentElement, [
+          "vkn",
+          "tckn",
+          "taxId",
+          "identifier",
+          "uniqueID",
+          "taxpayerId",
+        ])
+      : "");
+  const periodRaw =
+    extractPeriodFromText(xmlText) ||
+    (doc
+      ? textOf(doc.documentElement, [
+          "periodCoveredStart",
+          "period",
+          "donem",
+          "fiscalYear",
+          "accountingPeriod",
+        ])
+      : "");
+  return {
+    taxId: normalizeTaxId(taxId),
+    period: normalizePeriodKey(periodRaw),
+  };
+}
+
+export function parseEDefterXmlText(xmlText = "", fileName = "", options = {}) {
   const doc = parseXmlDocument(xmlText);
-  const defterType = detectDefterType(fileName, xmlText);
+  const rootName = localName(doc.documentElement);
+  const defterType = detectDefterType(fileName, xmlText, rootName);
   const kaynak =
     defterType === "kebir"
       ? E_DEFTER_KAYNAK.KEBIR_XML
@@ -123,15 +311,25 @@ export function parseEDefterXmlText(xmlText = "", fileName = "") {
     .map((node, index) => mapEntryToRow(node, index, kaynak))
     .filter(Boolean);
 
+  assertRowLimit(rows.length);
+
+  const packageMeta = extractPackageMeta(xmlText, doc);
   const beratMeta = {
     readable: true,
     defterType,
     entryCount: rows.length,
     beratId: textOf(doc.documentElement, ["beratId", "beratNo", "uuid", "id"]),
-    period: textOf(doc.documentElement, ["periodCoveredStart", "period", "donem"]),
+    period: packageMeta.period || textOf(doc.documentElement, ["periodCoveredStart", "period", "donem"]),
+    taxId: packageMeta.taxId,
+    rootName,
+    contentDetected: true,
   };
 
-  return { rows, meta: beratMeta, defterType };
+  if (options.companyTaxId) {
+    assertCompanyTaxMatch(packageMeta.taxId, options.companyTaxId);
+  }
+
+  return { rows, meta: beratMeta, defterType, packageMeta };
 }
 
 export function analyzeEDefterXmlTechnical(rows = [], meta = {}) {
@@ -161,7 +359,7 @@ export function analyzeEDefterXmlTechnical(rows = [], meta = {}) {
       findings.push({
         code: "MUKERRER_YEVMIYE",
         message: `Mükerrer yevmiye numarası: ${yevmiyeNo}`,
-        level: "Yüksek",
+        level: "Uyarı",
       });
     }
   }
@@ -176,7 +374,7 @@ export function analyzeEDefterXmlTechnical(rows = [], meta = {}) {
       findings.push({
         code: "EKSIK_YEVMIYE",
         message: `Eksik yevmiye numarası: ${numericYevmiye[index - 1]} ile ${numericYevmiye[index]} arası`,
-        level: "Orta",
+        level: "Uyarı",
       });
       break;
     }
@@ -187,27 +385,30 @@ export function analyzeEDefterXmlTechnical(rows = [], meta = {}) {
       findings.push({
         code: "BOS_FIS",
         message: `Boş fiş: ${fisNo}`,
-        level: "Yüksek",
+        level: "Uyarı",
       });
     }
     if (Math.abs(totals.borc - totals.alacak) > 0.05) {
       findings.push({
         code: "FIS_DENGESIZ",
         message: `Borç/alacak eşitliği bozuk fiş: ${fisNo}`,
-        level: "Kritik",
+        level: "Kritik hata",
       });
     }
   }
 
   const sortedDates = fisDates
-    .map((item) => ({ ...item, time: Date.parse(item.tarih.split(".").reverse().join("-")) || 0 }))
+    .map((item) => ({
+      ...item,
+      time: Date.parse(item.tarih.split(".").reverse().join("-")) || 0,
+    }))
     .sort((a, b) => a.fisNo.localeCompare(b.fisNo, "tr"));
   for (let index = 1; index < sortedDates.length; index += 1) {
     if (sortedDates[index].time < sortedDates[index - 1].time) {
       findings.push({
         code: "TARIH_SIRASI",
         message: `Tarih sırası bozuk: ${sortedDates[index].fisNo}`,
-        level: "Orta",
+        level: "Uyarı",
       });
       break;
     }
@@ -217,59 +418,160 @@ export function analyzeEDefterXmlTechnical(rows = [], meta = {}) {
     findings.unshift({
       code: "XML_OKUNAMADI",
       message: "XML dosyası okunamadı.",
-      level: "Kritik",
+      level: "Kritik hata",
     });
   }
 
   return findings;
 }
 
-export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "") {
+function detectBufferKind(arrayBuffer, fileName = "") {
   const lower = String(fileName || "").toLowerCase();
+  const bytes = new Uint8Array(arrayBuffer || new ArrayBuffer(0));
+  const isZipMagic =
+    bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07);
+  const head = String.fromCharCode(...bytes.subarray(0, Math.min(bytes.length, 200))).trim();
+  const looksXml = head.startsWith("<") || head.startsWith("<?xml");
+  if (isZipMagic || lower.endsWith(".zip")) return "zip";
+  if (looksXml || lower.endsWith(".xml")) return "xml";
+  return "unknown";
+}
 
-  if (lower.endsWith(".zip")) {
-    const zip = await JSZip.loadAsync(arrayBuffer);
+/**
+ * @param {ArrayBuffer} arrayBuffer
+ * @param {string} fileName
+ * @param {{
+ *   companyTaxId?: string,
+ *   expectedPeriod?: string,
+ *   signal?: AbortSignal,
+ *   timeoutMs?: number,
+ *   knownFingerprints?: Set<string>| { has(fp:string): boolean, add?(fp:string): void },
+ *   skipDedup?: boolean,
+ * }} [options]
+ */
+export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "", options = {}) {
+  const byteLength = arrayBuffer?.byteLength ?? 0;
+  assertUploadSize(byteLength);
+
+  const guard = createParseAbortGuard({
+    signal: options.signal,
+    timeoutMs: options.timeoutMs,
+  });
+  guard.check();
+
+  const fingerprint = buildContentFingerprint(arrayBuffer);
+  if (!options.skipDedup && options.knownFingerprints?.has?.(fingerprint)) {
+    return {
+      rows: [],
+      technicalFindings: [],
+      defterType: "duplicate",
+      beratMeta: null,
+      fileName,
+      fingerprint,
+      duplicate: true,
+      duplicateMessage: "Mükerrer E-Defter dosyası — yeniden işlenmedi",
+      packageMeta: { taxId: "", period: "" },
+    };
+  }
+
+  const kind = detectBufferKind(arrayBuffer, fileName);
+  if (kind === "unknown") {
+    throw makeEDefterError(
+      EDEFTER_ERROR_CODE.UNSUPPORTED,
+      "Desteklenmeyen dosya türü. XML veya ZIP yükleyin."
+    );
+  }
+
+  const taxIds = new Set();
+  const periods = new Set();
+
+  const trackMeta = (packageMeta = {}) => {
+    if (packageMeta.taxId) taxIds.add(packageMeta.taxId);
+    if (packageMeta.period) periods.add(normalizePeriodKey(packageMeta.period));
+  };
+
+  const finalizeMixedCheck = () => {
+    if (taxIds.size > 1 || periods.size > 1) {
+      throw makeEDefterError(
+        EDEFTER_ERROR_CODE.MIXED_COMPANY_OR_PERIOD,
+        "Aynı pakette birden fazla firma veya dönem tespit edildi. Analiz durduruldu."
+      );
+    }
+  };
+
+  if (kind === "zip") {
+    let zip;
+    try {
+      zip = await JSZip.loadAsync(arrayBuffer);
+    } catch {
+      throw makeEDefterError(
+        EDEFTER_ERROR_CODE.ENCRYPTED,
+        "ZIP açılamadı. Dosya bozuk veya şifreli olabilir."
+      );
+    }
+    guard.check();
+    assertSafeZipEntries(zip.files, byteLength);
+
     const xmlFiles = Object.values(zip.files).filter(
       (entry) => !entry.dir && entry.name.toLowerCase().endsWith(".xml")
     );
-    const beratFiles = xmlFiles.filter((entry) => entry.name.toLowerCase().includes("berat"));
-    const ledgerFiles = xmlFiles.filter((entry) => !entry.name.toLowerCase().includes("berat"));
+    if (!xmlFiles.length) {
+      throw makeEDefterError(
+        EDEFTER_ERROR_CODE.UNSUPPORTED,
+        "ZIP içinde XML dosyası bulunamadı."
+      );
+    }
 
     let allRows = [];
     const technicalFindings = [];
     let beratMeta = null;
+    let primaryType = "ZIP";
 
-    for (const entry of ledgerFiles) {
+    for (const entry of xmlFiles) {
+      guard.check();
       const xmlText = await entry.async("text");
+      rejectXxePayload(xmlText);
       try {
-        const parsed = parseEDefterXmlText(xmlText, entry.name);
-        allRows = [...allRows, ...parsed.rows];
-        technicalFindings.push(...analyzeEDefterXmlTechnical(parsed.rows, parsed.meta));
-      } catch (error) {
-        technicalFindings.push({
-          code: "XML_BOZUK",
-          message: `${entry.name}: ${error.message}`,
-          level: "Kritik",
+        const parsed = parseEDefterXmlText(xmlText, entry.name, {
+          companyTaxId: options.companyTaxId,
         });
+        trackMeta(parsed.packageMeta);
+        if (parsed.defterType === "berat") {
+          beratMeta = parsed.meta;
+          technicalFindings.push({
+            code: EDEFTER_ERROR_CODE.EXTERNAL_VERIFICATION_REQUIRED,
+            message:
+              "Berat dosyası okundu; GİB/mali mühür kriptografik doğrulaması bu ortamda yapılmaz. Harici doğrulama gerekir.",
+            level: "Bilgi",
+          });
+        } else {
+          allRows = [...allRows, ...parsed.rows];
+          technicalFindings.push(...analyzeEDefterXmlTechnical(parsed.rows, parsed.meta));
+          primaryType = parsed.defterType === "kebir" ? "kebir" : primaryType === "ZIP" ? "yevmiye" : primaryType;
+        }
+      } catch (error) {
+        if (
+          error?.code === EDEFTER_ERROR_CODE.COMPANY_MISMATCH ||
+          error?.code === EDEFTER_ERROR_CODE.XXE_REJECTED ||
+          error?.code === EDEFTER_ERROR_CODE.MIXED_COMPANY_OR_PERIOD
+        ) {
+          throw error;
+        }
+        throw makeEDefterError(
+          error?.code || EDEFTER_ERROR_CODE.XML_BOZUK,
+          error?.message || "XML dosyası okunamadı veya bozuk."
+        );
       }
     }
 
-    if (beratFiles.length) {
-      const beratText = await beratFiles[0].async("text");
-      try {
-        beratMeta = parseEDefterXmlText(beratText, beratFiles[0].name).meta;
-      } catch {
-        technicalFindings.push({
-          code: "BERAT_ESLESMEDI",
-          message: "Berat dosyası okunamadı.",
-          level: "Kritik",
-        });
-      }
-    } else {
+    finalizeMixedCheck();
+    assertRowLimit(allRows.length);
+
+    if (!beratMeta) {
       technicalFindings.push({
         code: "BERAT_ESLESMEDI",
         message: "ZIP içinde berat dosyası bulunamadı.",
-        level: "Yüksek",
+        level: "Uyarı",
       });
     }
 
@@ -277,54 +579,74 @@ export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "") {
       technicalFindings.push({
         code: "BERAT_ESLESMEDI",
         message: "Berat var ancak yevmiye/kebir satırı çıkarılamadı.",
-        level: "Yüksek",
+        level: "Uyarı",
       });
     }
+
+    options.knownFingerprints?.add?.(fingerprint);
 
     return {
       rows: allRows,
       technicalFindings,
-      defterType: "ZIP",
+      defterType: primaryType === "ZIP" ? "ZIP" : primaryType,
       beratMeta,
       fileName,
+      fingerprint,
+      duplicate: false,
+      packageMeta: {
+        taxId: [...taxIds][0] || "",
+        period: [...periods][0] || "",
+      },
     };
   }
 
-  if (lower.endsWith(".xml")) {
-    const xmlText = new TextDecoder().decode(arrayBuffer);
-    try {
-      const parsed = parseEDefterXmlText(xmlText, fileName);
-      return {
-        rows: parsed.rows,
-        technicalFindings: analyzeEDefterXmlTechnical(parsed.rows, parsed.meta),
-        defterType: parsed.defterType,
-        beratMeta: parsed.meta,
-        fileName,
-      };
-    } catch (error) {
-      return {
-        rows: [],
-        technicalFindings: [
-          { code: "XML_BOZUK", message: error.message, level: "Kritik" },
-        ],
-        defterType: detectDefterType(fileName, xmlText),
-        beratMeta: { readable: false },
-        fileName,
-      };
-    }
+  // XML
+  const xmlText = new TextDecoder().decode(arrayBuffer);
+  rejectXxePayload(xmlText);
+  guard.check();
+
+  let parsed;
+  try {
+    parsed = parseEDefterXmlText(xmlText, fileName, {
+      companyTaxId: options.companyTaxId,
+    });
+  } catch (error) {
+    if (error?.code) throw error;
+    throw makeEDefterError(
+      EDEFTER_ERROR_CODE.XML_BOZUK,
+      error?.message || "XML dosyası okunamadı veya bozuk."
+    );
   }
 
-  throw new Error("Desteklenmeyen dosya türü. XML veya ZIP yükleyin.");
+  trackMeta(parsed.packageMeta);
+  finalizeMixedCheck();
+
+  const technicalFindings = analyzeEDefterXmlTechnical(parsed.rows, parsed.meta);
+  if (parsed.defterType === "berat") {
+    technicalFindings.push({
+      code: EDEFTER_ERROR_CODE.EXTERNAL_VERIFICATION_REQUIRED,
+      message:
+        "Berat dosyası okundu; GİB/mali mühür kriptografik doğrulaması bu ortamda yapılmaz. Harici doğrulama gerekir.",
+      level: "Bilgi",
+    });
+  }
+
+  options.knownFingerprints?.add?.(fingerprint);
+
+  return {
+    rows: parsed.rows,
+    technicalFindings,
+    defterType: parsed.defterType,
+    beratMeta: parsed.meta,
+    fileName,
+    fingerprint,
+    duplicate: false,
+    packageMeta: parsed.packageMeta,
+  };
 }
 
-export async function parseEDefterUploadFile(file) {
+export async function parseEDefterUploadFile(file, options = {}) {
   const fileName = file?.name || "";
-  const lower = fileName.toLowerCase();
-
-  if (lower.endsWith(".zip") || lower.endsWith(".xml")) {
-    const arrayBuffer = await file.arrayBuffer();
-    return parseEDefterUploadBuffer(arrayBuffer, fileName);
-  }
-
-  throw new Error("Desteklenmeyen dosya türü. XML veya ZIP yükleyin.");
+  const arrayBuffer = await file.arrayBuffer();
+  return parseEDefterUploadBuffer(arrayBuffer, fileName, options);
 }
