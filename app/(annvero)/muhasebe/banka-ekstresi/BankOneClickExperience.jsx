@@ -316,12 +316,19 @@ export function BankPipelineResultCard({
         </div>
         <div>
           <h3 className="text-xl font-semibold text-white">
-            {result.reviewRequired ? "İnceleme Gerekli" : "İşlem ve Kontrol Tamamlandı"}
+            {result.duplicate || result.terminalStatus === "duplicate"
+              ? "Mükerrer ekstre"
+              : result.reviewRequired
+                ? "İnceleme Gerekli"
+                : "İşlem ve Kontrol Tamamlandı"}
           </h3>
           <p className="mt-1 text-sm text-emerald-100/80">
-            {result.reviewRequired
-              ? "Kritik veya düşük güven satırlar var — otomatik onay / Luca-Elektra aktarımı kapalı."
-              : "Tek tuş zinciri tamamlandı. Çıktıları indirebilir veya Fiş Kontrol’e gidebilirsiniz."}
+            {result.duplicate || result.terminalStatus === "duplicate"
+              ? result.duplicateMessage ||
+                "Mükerrer ekstre — yeniden işlenmedi"
+              : result.reviewRequired
+                ? "Kritik veya düşük güven satırlar var — otomatik onay / Luca-Elektra aktarımı kapalı."
+                : "Tek tuş zinciri tamamlandı. Çıktıları indirebilir veya Fiş Kontrol’e gidebilirsiniz."}
           </p>
         </div>
       </div>
