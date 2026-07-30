@@ -38,6 +38,7 @@ import {
   finalizeStandardLucaRow,
   isStandardLucaPayload,
 } from "@/src/utils/standardLucaRow";
+import { saveAccountMemoryV2Decision } from "@/src/utils/accountMemoryV2";
 
 const FILTER_OPTIONS = [
   { id: "all", label: "Tümü" },
@@ -416,16 +417,66 @@ export default function FisKontrolPage() {
     const currentRow = rows.find((row) => row.id === editingRowId);
     if (!currentRow) return;
 
+    const learnForCompany =
+      draftRow.learnForCompany !== false && draftRow.saveToMemory !== false;
     const updatedRow = finalizeStandardLucaRow(
       applyStandardLucaRowEditDraft(currentRow, draftRow)
     );
 
+    if (learnForCompany) {
+      const companyId =
+        selectedCompanyId ||
+        payload?.firmaId ||
+        payload?.companyId ||
+        updatedRow.firmaId ||
+        "";
+      if (companyId && updatedRow.hesapKodu) {
+        try {
+          saveAccountMemoryV2Decision(
+            {
+              companyId,
+              accountCode: updatedRow.hesapKodu,
+              accountName: updatedRow.hesapAdi,
+              analysisKey: updatedRow.analysisKey || "",
+              normalizedDescription:
+                updatedRow.detayAciklama ||
+                updatedRow.fisAciklama ||
+                updatedRow.aciklama ||
+                "",
+              direction: updatedRow.direction || "",
+              documentType: updatedRow.belgeTuru || "",
+              belgeTuru: updatedRow.belgeTuru || "",
+              transactionType: updatedRow.transactionType || "",
+              source: "user-learn",
+              fisAciklama: updatedRow.fisAciklama,
+              detayAciklama: updatedRow.detayAciklama,
+            },
+            {
+              firmaId: companyId,
+              companyId,
+              kaynakAdi: updatedRow.kaynakAdi || payload?.kaynakAdi || "",
+              source: "user-learn",
+            }
+          );
+        } catch {
+          // öğrenme başarısız olsa da satır kaydı sürer; içerik loglanmaz
+        }
+      }
+    }
+
     const nextRows = rows.map((row) =>
-      row.id === editingRowId ? { ...updatedRow, id: row.id } : row
+      row.id === editingRowId
+        ? { ...updatedRow, id: row.id, manuallyEdited: true, hafizaEslesme: learnForCompany }
+        : row
     );
 
     persistRows(nextRows);
-    showToast("Satır güncellendi", "success");
+    showToast(
+      learnForCompany
+        ? "Satır güncellendi · bu firma için öğrenildi"
+        : "Satır güncellendi",
+      "success"
+    );
     cancelEdit();
   };
 

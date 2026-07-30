@@ -28,6 +28,7 @@
     "lint:security": "eslint src/lib/security src/lib/auth/admin.js src/lib/auth/userAccess.js src/lib/auth/apiGuard.js src/lib/recovery src/lib/backup/companyExport.js src/lib/softDelete.js src/lib/audit app/api/automation/webhook/route.js app/api/backup/company-export/route.js app/api/recovery app/api/tcmb/route.ts app/api/elektraweb/route.ts next.config.ts",
     "test:bank-parser": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-parser-stabilization.mjs",
     "test:fis-kontrol": "node --import ./scripts/_alias-loader.mjs ./scripts/test-fis-kontrol-merkezi.mjs",
+    "test:account-memory": "node --import ./scripts/_alias-loader.mjs ./scripts/test-account-memory-stabilize.mjs",
     "test:cari-biletduk": "node --import ./scripts/_alias-loader.mjs ./scripts/test-cari-biletduk-handler-apply.mjs"
   },
   "dependencies": {
