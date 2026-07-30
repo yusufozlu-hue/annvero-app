@@ -60,6 +60,9 @@ export const E_DEFTER_RISK_LEVEL = {
 export const E_DEFTER_RECORDS_STORAGE_KEY = "annvero_edefter_kontrol_records_v1";
 export const E_DEFTER_FINGERPRINT_STORAGE_KEY = "annvero_edefter_fingerprints_v1";
 
+/** Kalıcı kayıt / revision anahtarı — motor değişince yeni run üretilir */
+export const E_DEFTER_ENGINE_VERSION = "3.1.0";
+
 export const E_DEFTER_KONTROL_GRUP = {
   HATASIZ: "Hatasız kayıtlar",
   KRITIK: "Kritik hatalar",

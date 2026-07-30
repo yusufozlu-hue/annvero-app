@@ -5,8 +5,10 @@ import * as XLSX from "xlsx";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import {
+  E_DEFTER_ENGINE_VERSION,
   E_DEFTER_FINDING_STATUS,
   E_DEFTER_HATA_TURU,
+  E_DEFTER_KAYNAK,
   E_DEFTER_KONTROL_GRUP,
   E_DEFTER_KONTROL_STATUS,
   E_DEFTER_REPORT_DISCLAIMER,
@@ -17,6 +19,7 @@ import {
 import { normalizeCompanyRecord } from "@/src/utils/companyCenter";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
+  buildEDefterResultFingerprints,
   buildEDefterUploadRecord,
   buildFisKontrolDeepLink,
   filterEDefterRows,
@@ -46,6 +49,16 @@ import {
 } from "@/src/utils/workerParserBridge";
 import { parseEDefterUploadBuffer } from "@/src/utils/eDefterXmlParser";
 import { DUPLICATE_EDEFTER_UI_MESSAGE } from "@/src/utils/eDefterSecurity";
+import {
+  buildPersistPayloadFromAnalysis,
+  clearEDefterLegacyLocalStorage,
+  clearEDefterUiCaches,
+  getEDefterControlRun,
+  listEDefterControlRuns,
+  saveEDefterControlRun,
+  updateEDefterFindingResolution,
+} from "@/src/utils/eDefterPersistClient";
+import { EDEFTER_FINDING_RESOLUTION } from "@/src/utils/eDefterPersistSafe";
 import {
   logExcelError,
   SYSTEM_ERROR_TYPES,
@@ -123,8 +136,22 @@ export default function EDefterKontrolPage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [detailLimit, setDetailLimit] = useState(40);
 
+  const [historyRuns, setHistoryRuns] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyPeriodFilter, setHistoryPeriodFilter] = useState("");
+  const [historyStatusFilter, setHistoryStatusFilter] = useState("");
+  const [historyRiskFilter, setHistoryRiskFilter] = useState("");
+  const [selectedRunId, setSelectedRunId] = useState("");
+  const [selectedRunDetail, setSelectedRunDetail] = useState(null);
+  const [selectedRunFindings, setSelectedRunFindings] = useState([]);
+  const [persistError, setPersistError] = useState("");
+  const [persistRetryPayload, setPersistRetryPayload] = useState(null);
+  const [persisting, setPersisting] = useState(false);
+  const [lastPersistMeta, setLastPersistMeta] = useState(null);
+  const lastAnalysisRef = useRef(null);
+
   const fingerprintSessionRef = useRef(null);
-  if (!fingerprintSessionRef.current) {
+  if (fingerprintSessionRef.current == null) {
     fingerprintSessionRef.current = loadEDefterFingerprintSession();
   }
   const abortRef = useRef(null);
@@ -160,14 +187,110 @@ export default function EDefterKontrolPage() {
     setExpandedId("");
     setShowAllDetails(false);
     setDetailLimit(40);
+    setHistoryRuns([]);
+    setSelectedRunId("");
+    setSelectedRunDetail(null);
+    setSelectedRunFindings([]);
+    setPersistError("");
+    setPersistRetryPayload(null);
+    setLastPersistMeta(null);
+    lastAnalysisRef.current = null;
+    setRecords([]);
+    clearEDefterUiCaches();
+    fingerprintSessionRef.current = loadEDefterFingerprintSession();
+  };
+
+  const refreshHistory = async (companyId = selectedCompanyId) => {
+    if (!companyId) {
+      setHistoryRuns([]);
+      return;
+    }
+    setHistoryLoading(true);
+    try {
+      const data = await listEDefterControlRuns({
+        companyId,
+        period: historyPeriodFilter || undefined,
+        status: historyStatusFilter || undefined,
+        risk: historyRiskFilter || undefined,
+      });
+      setHistoryRuns(data);
+    } catch (error) {
+      setToast(error?.message || "Kontrol geçmişi alınamadı.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const persistAnalysisResult = async (payload, { silent = false } = {}) => {
+    setPersisting(true);
+    setPersistError("");
+    try {
+      const result = await saveEDefterControlRun(payload);
+      setPersistRetryPayload(null);
+      setLastPersistMeta({
+        idempotent: Boolean(result?.idempotent),
+        created: Boolean(result?.created),
+        runId: result?.data?.id || "",
+        revision: result?.data?.revision || 1,
+      });
+      clearEDefterLegacyLocalStorage();
+      setRecords([]);
+      await refreshHistory(payload.company_id);
+      if (!silent) {
+        if (result?.idempotent) {
+          setToast("Bu kontrol daha önce kaydedilmiş — mükerrer run oluşturulmadı.");
+        } else {
+          setToast("Kontrol sonucu sunucuya kaydedildi.");
+        }
+      }
+      return result;
+    } catch (error) {
+      setPersistError(error?.message || "Kayıt başarısız.");
+      setPersistRetryPayload(payload);
+      if (!silent) {
+        setToast(
+          `${error?.message || "Kayıt başarısız."} Analiz sonuçları ekranda duruyor — Kaydı yeniden deneyin.`
+        );
+      }
+      throw error;
+    } finally {
+      setPersisting(false);
+    }
   };
 
   useEffect(() => {
     if (prevCompanyRef.current === selectedCompanyId) return;
     prevCompanyRef.current = selectedCompanyId;
     clearAnalysisState();
-    setToast("Firma değişti — kontrol durumu temizlendi.");
+    setToast("Firma değişti — kontrol durumu ve önbellek temizlendi.");
   }, [selectedCompanyId]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      void (async () => {
+        setHistoryLoading(true);
+        try {
+          const data = await listEDefterControlRuns({
+            companyId: selectedCompanyId,
+            period: historyPeriodFilter || undefined,
+            status: historyStatusFilter || undefined,
+            risk: historyRiskFilter || undefined,
+          });
+          if (!cancelled) setHistoryRuns(data);
+        } catch (err) {
+          if (!cancelled) setToast(err?.message || "Kontrol geçmişi alınamadı.");
+        } finally {
+          if (!cancelled) setHistoryLoading(false);
+        }
+      })();
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [selectedCompanyId, historyPeriodFilter, historyStatusFilter, historyRiskFilter]);
 
   const findingRows = useMemo(
     () =>
@@ -202,7 +325,7 @@ export default function EDefterKontrolPage() {
         onProgress: parserJob.onProgress,
       });
       return result.rows;
-    } catch (error) {
+    } catch {
       const workbook = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
@@ -331,7 +454,11 @@ export default function EDefterKontrolPage() {
     }
 
     setAnalyzing(true);
+    setPersistError("");
+    setPersistRetryPayload(null);
+    setLastPersistMeta(null);
     parserJob.begin({ stage: "e-Defter kontrolü", detail: "Tek tuş kontrol" });
+    const startedAt = new Date().toISOString();
 
     try {
       const result = await runOneClickEDefterKontrol({
@@ -367,27 +494,71 @@ export default function EDefterKontrolPage() {
       setShowAllDetails(false);
       setDetailLimit(40);
 
-      persistRecord(
-        buildEDefterUploadRecord({
-          companyId: selectedCompanyId,
-          year,
-          month,
-          period,
-          defterType: uploadMeta?.defterType || "Excel/XML",
-          fileName: uploadMeta?.fileName || "excel-yukleme",
-          controlStatus: E_DEFTER_KONTROL_STATUS.TAMAMLANDI,
-          errorCount: result.summary.kritikHata + result.summary.teknikHata,
-          warningCount: result.summary.uyariSayisi,
-          uploadedAt: new Date().toISOString(),
-        })
+      const localRecord = buildEDefterUploadRecord({
+        companyId: selectedCompanyId,
+        year,
+        month,
+        period,
+        defterType: uploadMeta?.defterType || "Excel/XML",
+        fileName: uploadMeta?.fileName || "excel-yukleme",
+        controlStatus: E_DEFTER_KONTROL_STATUS.TAMAMLANDI,
+        errorCount: result.summary.kritikHata + result.summary.teknikHata,
+        warningCount: result.summary.uyariSayisi,
+        uploadedAt: new Date().toISOString(),
+      });
+      // Geçici UI cache — sunucu kaydı başarılı olunca temizlenir
+      persistRecord(localRecord);
+
+      const journalRows = (result.rows || []).filter((row) =>
+        [E_DEFTER_KAYNAK.YEVMIYE, E_DEFTER_KAYNAK.YEVMIYE_XML].includes(row.kaynak)
       );
+      const ledgerRows = (result.rows || []).filter((row) =>
+        [E_DEFTER_KAYNAK.KEBIR_XML, E_DEFTER_KAYNAK.MUAVIN].includes(row.kaynak)
+      );
+      const fingerprints = buildEDefterResultFingerprints({
+        sourceFingerprint: uploadMeta?.fingerprint || pendingParsed?.fingerprint || "",
+        journalRows,
+        ledgerRows,
+        companyId: selectedCompanyId,
+        period,
+        summary: result.summary,
+      });
+
+      const documentTypes = [
+        uploadMeta?.defterType,
+        muavinRows.length ? "Muavin" : "",
+        yevmiyeRows.length ? "Yevmiye Excel" : "",
+        xmlRows.length || pendingParsed ? "XML/ZIP" : "",
+      ].filter(Boolean);
+
+      const payload = buildPersistPayloadFromAnalysis({
+        companyId: selectedCompanyId,
+        period,
+        engineVersion: E_DEFTER_ENGINE_VERSION,
+        fingerprints,
+        summary: result.summary,
+        rows: result.rows,
+        journalLedger: result.journalLedger,
+        documentTypes,
+        documentCount: result.summary.yuklenenDefterSayisi,
+        startedAt,
+        completedAt: new Date().toISOString(),
+      });
+
+      lastAnalysisRef.current = { result, payload };
 
       parserJob.markSuccess(`${result.rows.length} kayıt · ${result.overallSonuc}`);
-      setToast(
-        result.summary.edefterUygun
-          ? `Kontrol tamamlandı: ${result.overallSonuc}`
-          : `Kontrol tamamlandı: ${result.overallSonuc} (onaylı uygun değil)`
-      );
+
+      try {
+        await persistAnalysisResult(payload);
+        setToast(
+          result.summary.edefterUygun
+            ? `Kontrol tamamlandı ve kaydedildi: ${result.overallSonuc}`
+            : `Kontrol tamamlandı ve kaydedildi: ${result.overallSonuc} (onaylı uygun değil)`
+        );
+      } catch {
+        // Analiz ekranda kalır; retry butonu gösterilir
+      }
     } catch (error) {
       logParserJobError(error, {
         module: "XML / e-Defter",
@@ -401,6 +572,48 @@ export default function EDefterKontrolPage() {
       setToast(error?.message || "Analiz başarısız.");
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  const handlePersistRetry = async () => {
+    const payload = persistRetryPayload || lastAnalysisRef.current?.payload;
+    if (!payload) {
+      setToast("Yeniden denenecek kayıt yok.");
+      return;
+    }
+    try {
+      await persistAnalysisResult({ ...payload, retry: true });
+    } catch {
+      /* toast already set */
+    }
+  };
+
+  const handleOpenHistoryRun = async (runId) => {
+    if (!selectedCompanyId || !runId) return;
+    setSelectedRunId(runId);
+    try {
+      const detail = await getEDefterControlRun(runId, selectedCompanyId);
+      setSelectedRunDetail(detail?.data || null);
+      setSelectedRunFindings(detail?.findings || []);
+    } catch (error) {
+      setToast(error?.message || "Run detayı alınamadı.");
+    }
+  };
+
+  const handleFindingResolution = async (findingId, resolutionStatus) => {
+    if (!selectedCompanyId || !findingId) return;
+    try {
+      const updated = await updateEDefterFindingResolution({
+        findingId,
+        companyId: selectedCompanyId,
+        resolutionStatus,
+      });
+      setSelectedRunFindings((current) =>
+        current.map((item) => (item.id === findingId ? updated : item))
+      );
+      setToast("Bulgu çözüm durumu güncellendi.");
+    } catch (error) {
+      setToast(error?.message || "Bulgu güncellenemedi.");
     }
   };
 
@@ -495,11 +708,21 @@ export default function EDefterKontrolPage() {
             <button
               type="button"
               onClick={handleAnalyze}
-              disabled={analyzing || xmlParsing}
+              disabled={analyzing || xmlParsing || persisting}
               className="rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-950/40 disabled:opacity-60"
             >
-              {analyzing ? "Kontrol çalışıyor..." : "Kontrolü Başlat"}
+              {analyzing ? "Kontrol çalışıyor..." : persisting ? "Kaydediliyor..." : "Kontrolü Başlat"}
             </button>
+            {persistError ? (
+              <button
+                type="button"
+                onClick={handlePersistRetry}
+                disabled={persisting}
+                className="rounded-xl border border-amber-500/50 bg-amber-950/50 px-4 py-3 text-sm font-semibold text-amber-100 hover:bg-amber-900/40 disabled:opacity-60"
+              >
+                Kaydı yeniden dene
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={handleExport}
@@ -515,6 +738,16 @@ export default function EDefterKontrolPage() {
               PDF Özeti
             </button>
           </div>
+          {persistError ? (
+            <p className="mt-2 text-xs text-amber-200">
+              Kayıt başarısız: {persistError}. Analiz sonuçları kaybolmadı.
+            </p>
+          ) : null}
+          {lastPersistMeta?.idempotent ? (
+            <p className="mt-2 text-xs text-emerald-200">
+              Aynı fingerprint + motor sürümü — mükerrer run oluşturulmadı (rev.{lastPersistMeta.revision}).
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -587,7 +820,10 @@ export default function EDefterKontrolPage() {
 
       {companyRecords.length > 0 ? (
         <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/70 p-5">
-          <h2 className="mb-4 text-xl font-semibold">Yükleme Kayıtları</h2>
+          <h2 className="mb-2 text-xl font-semibold">Geçici Yükleme Önbelleği</h2>
+          <p className="mb-4 text-xs text-gray-400">
+            localStorage yalnız geçici UI cache’dir; denetim kaynağı sunucu geçmişidir. Başarılı kayıttan sonra temizlenir.
+          </p>
           <AnnveroDataTable
             showToolbar={false}
             pageSize={15}
@@ -609,6 +845,188 @@ export default function EDefterKontrolPage() {
           />
         </section>
       ) : null}
+
+      <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/70 p-5 shadow-xl shadow-black/20">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold">Kontrol Geçmişi</h2>
+            <p className="mt-1 text-xs text-gray-400">
+              Firma bazlı kalıcı özetler · motor {E_DEFTER_ENGINE_VERSION} · ham XML/ZIP saklanmaz
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => refreshHistory()}
+            disabled={!selectedCompanyId || historyLoading}
+            className="rounded-xl border border-white/10 px-3 py-2 text-xs font-semibold text-gray-200 hover:bg-white/10 disabled:opacity-50"
+          >
+            {historyLoading ? "Yükleniyor..." : "Yenile"}
+          </button>
+        </div>
+        <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+          <Field label="Dönem filtresi">
+            <input
+              value={historyPeriodFilter}
+              onChange={(event) => setHistoryPeriodFilter(event.target.value)}
+              placeholder="örn. 2026/05"
+              className={inputClassName}
+            />
+          </Field>
+          <Field label="Durum">
+            <select
+              value={historyStatusFilter}
+              onChange={(event) => setHistoryStatusFilter(event.target.value)}
+              className={inputClassName}
+            >
+              <option value="">Tümü</option>
+              <option value="completed">completed</option>
+              <option value="superseded">superseded</option>
+              <option value="failed">failed</option>
+            </select>
+          </Field>
+          <Field label="Risk">
+            <select
+              value={historyRiskFilter}
+              onChange={(event) => setHistoryRiskFilter(event.target.value)}
+              className={inputClassName}
+            >
+              <option value="">Tümü</option>
+              <option value="kritik">Kritik</option>
+              <option value="uyari">Uyarı</option>
+            </select>
+          </Field>
+        </div>
+        {!selectedCompanyId ? (
+          <p className="text-sm text-gray-400">Geçmiş için firma seçin.</p>
+        ) : historyRuns.length === 0 ? (
+          <p className="text-sm text-gray-400">
+            {historyLoading ? "Geçmiş yükleniyor..." : "Bu firma için kayıtlı kontrol yok."}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="text-xs uppercase text-gray-400">
+                <tr>
+                  <th className="px-2 py-2">Dönem</th>
+                  <th className="px-2 py-2">Durum</th>
+                  <th className="px-2 py-2">Sonuç</th>
+                  <th className="px-2 py-2">Motor</th>
+                  <th className="px-2 py-2">Rev</th>
+                  <th className="px-2 py-2">Kritik</th>
+                  <th className="px-2 py-2">Tarih</th>
+                  <th className="px-2 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {historyRuns.map((run) => (
+                  <tr
+                    key={run.id}
+                    className={`border-t border-white/5 text-gray-200 ${
+                      selectedRunId === run.id ? "bg-indigo-950/40" : ""
+                    }`}
+                  >
+                    <td className="px-2 py-2">{run.period || "-"}</td>
+                    <td className="px-2 py-2">{run.status}</td>
+                    <td className="px-2 py-2">
+                      {run.result_summary?.overall_sonuc || "-"}
+                    </td>
+                    <td className="px-2 py-2">{run.engine_version}</td>
+                    <td className="px-2 py-2">{run.revision}</td>
+                    <td className="px-2 py-2">{run.severity_counts?.critical ?? 0}</td>
+                    <td className="px-2 py-2">
+                      {run.completed_at
+                        ? new Date(run.completed_at).toLocaleString("tr-TR")
+                        : "-"}
+                    </td>
+                    <td className="px-2 py-2">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenHistoryRun(run.id)}
+                        className="rounded-lg border border-white/10 px-2 py-1 text-xs hover:bg-white/10"
+                      >
+                        Detay
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {selectedRunDetail ? (
+          <div className="mt-5 rounded-xl border border-indigo-500/30 bg-indigo-950/20 p-4">
+            <h3 className="mb-2 text-sm font-semibold text-indigo-100">
+              Güvenli özet · {selectedRunDetail.period} · rev.{selectedRunDetail.revision}
+            </h3>
+            <p className="mb-3 text-xs text-gray-400">
+              Mutabakat: {selectedRunDetail.reconciliation_status} · satır:{" "}
+              {selectedRunDetail.row_count} · doküman: {selectedRunDetail.document_count} ·
+              fingerprint: {String(selectedRunDetail.source_fingerprint || "").slice(0, 16)}…
+            </p>
+            <div className="mb-3 flex flex-wrap gap-2 text-xs text-gray-300">
+              <span>Kritik: {selectedRunDetail.severity_counts?.critical ?? 0}</span>
+              <span>Uyarı: {selectedRunDetail.severity_counts?.warning ?? 0}</span>
+              <span>Teknik: {selectedRunDetail.severity_counts?.technical ?? 0}</span>
+              <span>
+                Sonuç: {selectedRunDetail.result_summary?.overall_sonuc || "-"}
+              </span>
+            </div>
+            {selectedRunFindings.length ? (
+              <ul className="space-y-2">
+                {selectedRunFindings.map((finding) => (
+                  <li
+                    key={finding.id}
+                    className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="font-semibold text-gray-100">
+                          {finding.code} · {finding.severity}
+                        </p>
+                        <p className="mt-1 text-gray-300">{finding.summary}</p>
+                        <p className="mt-1 text-gray-500">
+                          ref: {finding.safe_reference || "-"} · adet:{" "}
+                          {finding.occurrence_count}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleFindingResolution(
+                              finding.id,
+                              EDEFTER_FINDING_RESOLUTION.RESOLVED
+                            )
+                          }
+                          className="rounded border border-emerald-500/40 px-2 py-1 text-emerald-200"
+                        >
+                          Çözüldü
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleFindingResolution(
+                              finding.id,
+                              EDEFTER_FINDING_RESOLUTION.OPEN
+                            )
+                          }
+                          className="rounded border border-white/20 px-2 py-1 text-gray-300"
+                        >
+                          Açık
+                        </button>
+                      </div>
+                    </div>
+                    <p className="mt-1 text-gray-500">Durum: {finding.resolution_status}</p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-gray-400">Bu koşuda kalıcı bulgu yok.</p>
+            )}
+          </div>
+        ) : null}
+      </section>
 
       <section className="mb-4 flex flex-wrap gap-3">
         <input
