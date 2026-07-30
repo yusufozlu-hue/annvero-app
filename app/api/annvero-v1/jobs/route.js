@@ -229,6 +229,32 @@ export async function POST(request) {
     checkpointPhase: incoming.checkpointPhase,
   });
 
+  const idempotencyKey = String(payload.metadata?.idempotency_key || "").trim();
+  if (idempotencyKey && !idempotencyKey.endsWith(":nohash")) {
+    const { data: existingRows, error: existingError } = await ctx.supabase
+      .from(AUDIT_EVENTS_TABLE)
+      .select("id, company_id, entity_type, entity_id, action, metadata, created_at")
+      .eq("company_id", companyId)
+      .eq("entity_type", V1_AUDIT_ENTITY_TYPE)
+      .eq("action", "v1_job_persist")
+      .contains("metadata", { idempotency_key: idempotencyKey })
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (!existingError && existingRows?.[0]) {
+      if (incoming.leaseId) {
+        releaseLease(companyId, incoming.leaseId);
+      }
+      return NextResponse.json({
+        ok: true,
+        action: "persist",
+        companyId,
+        persisted: false,
+        duplicate: true,
+        view: publicV1JobView(existingRows[0]),
+      });
+    }
+  }
+
   const written = await writeAuditEvent({
     actorId: ctx.user?.id,
     actorEmail: ctx.user?.email,
@@ -248,6 +274,7 @@ export async function POST(request) {
     action: "persist",
     companyId,
     persisted: Boolean(written?.ok !== false),
+    duplicate: false,
     view: publicV1JobView({
       company_id: companyId,
       entity_type: payload.entity_type,

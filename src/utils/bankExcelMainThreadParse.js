@@ -219,11 +219,20 @@ export async function parseBankExcelOnMainThread(
     await yieldToMain();
   }
 
+  const { buildSourceFileHash } = await import(
+    "@/src/utils/bankCanonicalTransaction"
+  );
+  const sourceFileHash = arrayBuffer
+    ? buildSourceFileHash(new Uint8Array(arrayBuffer))
+    : "";
+
   return {
     rawCount,
     normalizedRows,
     selectedBank,
     parseMode: "main-thread-fallback",
+    sourceFileHash,
+    sourceType: "xlsx",
   };
 }
 

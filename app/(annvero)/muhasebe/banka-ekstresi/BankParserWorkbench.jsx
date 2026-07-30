@@ -2311,13 +2311,15 @@ export default function BankParserWorkbench() {
 
     // Dosya seçiminde cache varsa XLSX'i tekrar okuma.
     let sheetRows = null;
+    let arrayBuffer = null;
     if (
       fileSheetRowsRef.current &&
       fileSheetSourceRef.current === file?.name
     ) {
       sheetRows = fileSheetRowsRef.current;
+      arrayBuffer = await file.arrayBuffer();
     } else {
-      const arrayBuffer = await file.arrayBuffer();
+      arrayBuffer = await file.arrayBuffer();
       if (signal?.aborted) {
         const err = new Error("İşlem iptal edildi.");
         err.name = "AbortError";
@@ -2372,12 +2374,18 @@ export default function BankParserWorkbench() {
         onProgress,
         timeoutMs: 120_000,
       });
+      const { buildSourceFileHash } = await import(
+        "@/src/utils/bankCanonicalTransaction"
+      );
+      const sourceFileHash = buildSourceFileHash(new Uint8Array(arrayBuffer));
       return {
         rawCount: workerResult.rawCount || sheetRows.length,
         normalizedRows: workerResult.normalizedRows || [],
         parseMode: workerResult.parseMode || "worker",
         timings: workerResult.timings || null,
         bankName: bank,
+        sourceFileHash,
+        sourceType: "xlsx",
       };
     } catch (workerError) {
       if (workerError?.name === "AbortError" || signal?.aborted) throw workerError;
@@ -2393,6 +2401,7 @@ export default function BankParserWorkbench() {
       });
       return parseBankExcelOnMainThread(file, bank, onProgress, {
         sheetRows,
+        arrayBuffer,
       });
     }
   };
@@ -2447,6 +2456,8 @@ export default function BankParserWorkbench() {
       uniqueCount: dedup.uniqueCount,
       inputCount: dedup.inputCount,
       allDuplicate: dedup.allDuplicate,
+      sourceFileHash: mainResult.sourceFileHash || "",
+      sourceType: mainResult.sourceType || "xlsx",
     };
     if (dedup.allDuplicate) {
       const err = new Error(DUPLICATE_STATEMENT_UI_MESSAGE);
@@ -3193,6 +3204,70 @@ export default function BankParserWorkbench() {
       });
       setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
       return;
+    }
+
+    // Sunucu idempotency — aynı içerik ikinci kez tam zincir üretmesin
+    try {
+      const { buildSourceFileHash } = await import(
+        "@/src/utils/bankCanonicalTransaction"
+      );
+      const preHash = buildSourceFileHash(
+        new Uint8Array(await selectedFile.arrayBuffer())
+      );
+      if (preHash) {
+        lastDedupMetaRef.current = {
+          ...(lastDedupMetaRef.current || {}),
+          sourceFileHash: preHash,
+        };
+        const idempotencyKey = buildIdempotencyKey({
+          companyId: selectedCompanyId,
+          contentHash: preHash,
+        });
+        const hist = await listV1JobHistory(selectedCompanyId, 30);
+        const prior = (hist?.runs || []).find(
+          (row) =>
+            String(row?.metadata?.idempotency_key || "") === idempotencyKey
+        );
+        if (prior) {
+          setPipelineResult({
+            movementCount: Number(prior.metadata?.movement_count || 0),
+            lucaRowCount: Number(prior.metadata?.luca_row_count || 0),
+            duplicate: true,
+            terminalStatus: V1_JOB_STATE.DUPLICATE,
+            edefterStatus: prior.metadata?.edefter_status || "",
+            edefterCode: prior.metadata?.edefter_code || "",
+            driveArchived: Boolean(prior.metadata?.drive_archived),
+            reviewRequired: Boolean(prior.metadata?.review_required),
+            canAutoApprove: false,
+            passed: Number(prior.metadata?.passed || 0),
+            warnings: Number(prior.metadata?.warnings || 0),
+            errors: Number(prior.metadata?.errors || 0),
+            totalDurationMs: 0,
+            engineVersion: ANNVERO_V1_ENGINE_VERSION,
+          });
+          setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+          setPipelineProgress({
+            percent: 100,
+            label: "Mükerrer ekstre",
+            detail: DUPLICATE_STATEMENT_UI_MESSAGE,
+            processed: 0,
+            total: 0,
+          });
+          showToast(DUPLICATE_STATEMENT_UI_MESSAGE, "error");
+          parserJob.markSuccess(DUPLICATE_STATEMENT_UI_MESSAGE);
+          setPipelineMode("idle");
+          if (hist?.runs) setV1AuditHistory(hist.runs);
+          try {
+            await releaseV1Lease(selectedCompanyId, leaseId);
+          } catch {
+            /* ignore */
+          }
+          v1LeaseIdRef.current = null;
+          return;
+        }
+      }
+    } catch {
+      /* geçmiş okunamazsa zincire devam */
     }
 
     activeBankRef.current = runBank;
