@@ -4,11 +4,15 @@ import { useMemo, useState } from "react";
 import {
   deleteAccountMemoryV2Record,
   filterAccountMemoryV2Rows,
+  listCompanyMemoryConflicts,
   loadAccountMemoryV2Records,
   MEMORY_DECISION_TYPE,
   mergeAccountMemoryV2Records,
+  reactivateAccountMemoryV2Record,
+  resolveMemoryConflictKeep,
   updateAccountMemoryV2Record,
 } from "@/src/utils/accountMemoryV2";
+import { buildMemoryApplyReason } from "@/src/utils/accountMemoryPolicy";
 
 const inputClass =
   "rounded-lg border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-white outline-none focus:border-indigo-500";
@@ -44,6 +48,11 @@ export default function AccountMemoryV2Panel({
     [records, search, companyId, bankFilter, typeFilter, decisionFilter]
   );
 
+  const conflicts = useMemo(() => {
+    void tick;
+    return listCompanyMemoryConflicts(companyId || selectedCompanyId || "");
+  }, [tick, companyId, selectedCompanyId]);
+
   const refresh = () => setTick((value) => value + 1);
 
   const companyName = (id) => {
@@ -53,12 +62,12 @@ export default function AccountMemoryV2Panel({
 
   return (
     <section className="mb-8 rounded-2xl border border-violet-800/40 bg-violet-950/20 p-4 text-violet-50">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="mt-4 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">Firma Karar Hafızası V2</h2>
           <p className="mt-1 text-xs text-violet-200/80">
             analysisKey / IBAN / VKN / alias ile firma bazlı kalıcı kararlar.
-            Tarayıcı deposunda tutulur; firmalar arası taşmaz.
+            Tarayıcı deposunda tutulur; firmalar arası taşmaz. Hard delete yok.
           </p>
         </div>
         <button
@@ -69,6 +78,36 @@ export default function AccountMemoryV2Panel({
           Yenile ({rows.length}/{records.length})
         </button>
       </div>
+
+      {conflicts.length > 0 ? (
+        <div className="mt-3 rounded-xl border border-amber-700/50 bg-amber-950/40 p-3 text-xs text-amber-100">
+          <div className="font-semibold">
+            {buildMemoryApplyReason({ conflict: true }).text} ({conflicts.length})
+          </div>
+          <ul className="mt-2 space-y-2">
+            {conflicts.slice(0, 5).map((c) => (
+              <li key={c.key} className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[10px]">
+                  hesaplar: {c.accountCodes.join(" | ")}
+                </span>
+                {c.records.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    className="rounded border border-amber-600/60 px-2 py-0.5"
+                    onClick={() => {
+                      resolveMemoryConflictKeep(r.id, r.companyId);
+                      refresh();
+                    }}
+                  >
+                    Bunu tut · {r.accountCode}
+                  </button>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="mt-4 grid gap-2 md:grid-cols-5">
         <select

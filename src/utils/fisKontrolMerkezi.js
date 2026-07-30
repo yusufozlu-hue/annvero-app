@@ -7,6 +7,7 @@
 import { formatDateTR, parseDateTR } from "@/src/utils/formatDateTR";
 import { parseMoneyTR } from "@/src/utils/parseMoneyTR";
 import { MEMORY_MATCH_LABEL } from "@/src/utils/previewRowEdit";
+import { MEMORY_AUTO_APPLY_MIN_CONFIDENCE } from "@/src/utils/accountMemoryPolicy";
 import { resolveSgkAccountingRole } from "@/src/utils/taxObligation/sgkRules.js";
 import { ACCOUNTING_ROLE } from "@/src/utils/taxObligation/types.js";
 
@@ -27,7 +28,7 @@ export const DUPLICATE_VOUCHER_UI_MESSAGE =
   "Mükerrer kayıt — yeniden işlenmedi";
 
 export const LUCA_FIS_GROUP_SIZE = 50;
-export const MEMORY_AUTO_APPLY_MIN_CONFIDENCE = 70;
+export { MEMORY_AUTO_APPLY_MIN_CONFIDENCE };
 
 export const KONTROL_TIP = {
   EKSIK_HESAP: "Eksik hesap kodu",

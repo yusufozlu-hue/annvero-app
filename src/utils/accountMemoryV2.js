@@ -20,6 +20,25 @@ import {
   VERGI_SGK_TYPES,
   VIRMAN_TYPES,
 } from "@/src/utils/bankTransactionType";
+import {
+  MEMORY_AUTO_APPLY_MIN_CONFIDENCE,
+  MEMORY_AUTO_DISABLE_CORRECTION_RATIO,
+  MEMORY_DECISION_CODE,
+  MEMORY_SUGGEST_MIN_CONFIDENCE,
+  buildMemoryApplyReason,
+  buildMemoryIdempotencyKey,
+  evaluateCoreMemoryOverride,
+} from "@/src/utils/accountMemoryPolicy";
+
+export {
+  MEMORY_AUTO_APPLY_MIN_CONFIDENCE,
+  MEMORY_AUTO_DISABLE_CORRECTION_RATIO,
+  MEMORY_DECISION_CODE,
+  MEMORY_SUGGEST_MIN_CONFIDENCE,
+  buildMemoryApplyReason,
+  buildMemoryIdempotencyKey,
+  evaluateCoreMemoryOverride,
+} from "@/src/utils/accountMemoryPolicy";
 
 function isLikelyCariGlAccount(code = "") {
   return /^(120|320)(\.|$)/.test(String(code || "").trim());
@@ -208,12 +227,7 @@ export const MEMORY_MATCH_TIER = {
   NONE: "NONE",
 };
 
-/** Exact/güçlü otomatik uygulama eşiği */
-export const MEMORY_AUTO_APPLY_MIN_CONFIDENCE = 90;
-/** Fuzzy yalnızca öneri */
-export const MEMORY_SUGGEST_MIN_CONFIDENCE = 70;
-/** Düzeltme oranı yüksekse otomatik uygulama kapanır */
-export const MEMORY_AUTO_DISABLE_CORRECTION_RATIO = 0.35;
+// Eşikler accountMemoryPolicy.js — burada sabit tekrar yok.
 
 function canUseStorage() {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
@@ -992,6 +1006,7 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
 
     if (narrowed.conflict) {
       if (telemetry) telemetry.conflicts = (telemetry.conflicts || 0) + 1;
+      const reason = buildMemoryApplyReason({ mode: "conflict", conflict: true });
       return finish({
         mode: "conflict",
         tier: MEMORY_MATCH_TIER.CONFLICT,
@@ -1000,6 +1015,8 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
         record: null,
         candidates: narrowed.conflict.candidates,
         accountCodes: narrowed.conflict.accountCodes,
+        decisionCode: MEMORY_DECISION_CODE.CONFLICT,
+        reason: reason.text,
         message:
           "Aynı analiz anahtarı için birden fazla aktif hafıza kararı var. Otomatik uygulanmadı.",
         rejectReason: "conflict_multiple_account_codes",
@@ -1007,6 +1024,27 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
     }
 
     const record = pickBestRecord(list);
+    const coreGate = evaluateCoreMemoryOverride({
+      transactionType,
+      description: normalizedDescription || analysisKey,
+      accountCode: record?.accountCode,
+      documentType: record?.documentType,
+    });
+    if (coreGate.blocked) {
+      const reason = buildMemoryApplyReason({ coreBlocked: true });
+      return finish({
+        mode: "suggest",
+        tier: MEMORY_MATCH_TIER.CONFLICT,
+        confidence: Math.min(confidence, 69),
+        autoApply: false,
+        record,
+        candidates: list,
+        decisionCode: MEMORY_DECISION_CODE.CORE_OVERRIDE,
+        reason: reason.text,
+        message: coreGate.reason || reason.text,
+        rejectReason: "core_mevzuat_override",
+      });
+    }
     // CARI hafıza kaydı, cari gerektirmeyen tipte otomatik uygulanmaz
     if (
       record?.decisionType === MEMORY_DECISION_TYPE.CARI &&
@@ -1824,6 +1862,120 @@ export function deleteAccountMemoryV2Record(recordId, { soft = true } = {}) {
   }
   persistAccountMemoryV2Records(records.filter((record) => record.id !== recordId));
   return true;
+}
+
+/**
+ * Aynı company + canonical/analysisKey altında farklı hesaplı aktif kurallar.
+ */
+export function listCompanyMemoryConflicts(companyId = "") {
+  const company = String(companyId || "").trim();
+  const active = loadAccountMemoryV2Records().filter(
+    (r) => r.isActive !== false && (!company || r.companyId === company)
+  );
+  const groups = new Map();
+  for (const record of active) {
+    const key = [
+      record.companyId,
+      recordCanonicalKey(record) || record.analysisKey || "",
+      normalizeMemoryDirection(record.direction),
+    ].join("|");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(record);
+  }
+  const conflicts = [];
+  for (const [key, list] of groups) {
+    const codes = new Set(list.map((r) => String(r.accountCode || "").trim()).filter(Boolean));
+    if (codes.size > 1) {
+      conflicts.push({
+        key,
+        code: MEMORY_DECISION_CODE.CONFLICT,
+        accountCodes: Array.from(codes),
+        records: list,
+      });
+    }
+  }
+  return conflicts;
+}
+
+/**
+ * Çelişkide doğru kuralı seç — diğerleri soft pasif; hard delete yok; idempotent.
+ */
+export function resolveMemoryConflictKeep(keepId, companyId = "") {
+  const keep = String(keepId || "").trim();
+  const company = String(companyId || "").trim();
+  if (!keep) return { ok: false, code: "MISSING_KEEP_ID" };
+  const records = loadAccountMemoryV2Records();
+  const keeper = records.find((r) => r.id === keep);
+  if (!keeper) return { ok: false, code: "KEEP_NOT_FOUND" };
+  if (company && keeper.companyId !== company) {
+    return { ok: false, code: MEMORY_DECISION_CODE.TENANT_DENIED };
+  }
+  const canon = recordCanonicalKey(keeper);
+  let changed = 0;
+  const next = records.map((record) => {
+    if (record.id === keep) {
+      if (record.isActive === false) {
+        changed += 1;
+        return {
+          ...normalizeAccountMemoryV2Record(record),
+          isActive: true,
+          supersededBy: "",
+          supersedeReason: "",
+          updatedAt: nowIso(),
+        };
+      }
+      return record;
+    }
+    if (record.isActive === false) return record;
+    if (record.companyId !== keeper.companyId) return record;
+    if (!directionCompatible(record.direction, keeper.direction)) return record;
+    if (recordCanonicalKey(record) !== canon && record.analysisKey !== keeper.analysisKey) {
+      return record;
+    }
+    if (String(record.accountCode || "") === String(keeper.accountCode || "")) {
+      return record;
+    }
+    changed += 1;
+    return {
+      ...normalizeAccountMemoryV2Record(record),
+      isActive: false,
+      supersededBy: keep,
+      supersedeReason: "conflict_resolved_user_choice",
+      updatedAt: nowIso(),
+    };
+  });
+  persistAccountMemoryV2Records(next);
+  return {
+    ok: true,
+    code: changed ? "RESOLVED" : MEMORY_DECISION_CODE.IDEMPOTENT,
+    changed,
+    keepId: keep,
+  };
+}
+
+/**
+ * Geri al — pasif kaydı yeniden aktifleştir (idempotent).
+ */
+export function reactivateAccountMemoryV2Record(recordId, companyId = "") {
+  const id = String(recordId || "").trim();
+  const company = String(companyId || "").trim();
+  const records = loadAccountMemoryV2Records();
+  const idx = records.findIndex((r) => r.id === id);
+  if (idx < 0) return null;
+  if (company && records[idx].companyId !== company) return null;
+  if (records[idx].isActive !== false) {
+    return { record: records[idx], code: MEMORY_DECISION_CODE.IDEMPOTENT };
+  }
+  const next = normalizeAccountMemoryV2Record({
+    ...records[idx],
+    isActive: true,
+    supersededBy: "",
+    supersedeReason: "",
+    updatedAt: nowIso(),
+  });
+  records[idx] = next;
+  persistAccountMemoryV2Records(records);
+  return { record: next, code: "REACTIVATED" };
 }
 
 export function mergeAccountMemoryV2Records(keepId, dropId) {

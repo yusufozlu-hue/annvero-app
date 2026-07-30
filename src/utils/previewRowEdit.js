@@ -165,7 +165,9 @@ export function buildStandardLucaRowEditDraft(row) {
     alacak: row.alacak ?? "",
     controlNote: row.kontrolNotu || "",
     originalAccountCode: row.hesapKodu || "",
-    saveToMemory: false,
+    /** Varsayılan açık: bu firma için öğren */
+    saveToMemory: true,
+    learnForCompany: true,
   };
 }
 
