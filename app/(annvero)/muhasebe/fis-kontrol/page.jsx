@@ -21,8 +21,12 @@ import {
   analyzeStandardLucaRows,
   buildFisKontrolExcelRows,
   buildFisKontrolIssueExcelRows,
+  buildPassedExportPayload,
   filterKontrolRows,
+  filterPassedRowsForExport,
+  KONTROL_DURUM,
   KONTROL_SEVIYE,
+  DUPLICATE_VOUCHER_UI_MESSAGE,
 } from "@/src/utils/fisKontrolMerkezi";
 import {
   applyStandardLucaRowEditDraft,
@@ -39,8 +43,8 @@ const FILTER_OPTIONS = [
   { id: "all", label: "Tümü" },
   { id: "hata", label: "Hata" },
   { id: "uyari", label: "Uyarı" },
+  { id: "gecti", label: "Geçti" },
   { id: "bilgi", label: "Bilgi" },
-  { id: "temiz", label: "Temiz" },
 ];
 
 function formatMoney(value) {
@@ -86,7 +90,7 @@ function riskBadgeClass(riskSeviyesi) {
 }
 
 export default function FisKontrolPage() {
-  const { getCompanyDisplayName } = useCompanyList();
+  const { getCompanyDisplayName, selectedCompanyId } = useCompanyList();
 
   const [payload, setPayload] = useState(null);
   const [rows, setRows] = useState([]);
@@ -97,6 +101,8 @@ export default function FisKontrolPage() {
   const [toast, setToast] = useState(null);
   const [analysis, setAnalysis] = useState({ rows: [], issues: [], summary: {} });
   const [analysisLoading, setAnalysisLoading] = useState(false);
+  const processedKeysRef = useRef(new Set());
+  const analysisAbortRef = useRef(null);
 
   const parserJob = useParserJob({
     logMeta: {
@@ -126,6 +132,19 @@ export default function FisKontrolPage() {
       return;
     }
 
+    const pendingFirma = String(pending.firmaId || pending.companyId || "").trim();
+    if (
+      selectedCompanyId &&
+      pendingFirma &&
+      pendingFirma !== String(selectedCompanyId).trim()
+    ) {
+      // Firma değişiminde önceki firmanın fişleri ekranda kalmaz
+      setPayload(null);
+      setRows([]);
+      processedKeysRef.current = new Set();
+      return;
+    }
+
     const normalizedRows = ensureStandardLucaRowIds(
       pending.rows.map((row) =>
         finalizeStandardLucaRow({
@@ -145,7 +164,7 @@ export default function FisKontrolPage() {
     setRows(normalizedRows);
     setEditingRowId(null);
     setDraftRow(null);
-  }, []);
+  }, [selectedCompanyId]);
 
   useEffect(() => {
     loadPendingData();
@@ -154,13 +173,26 @@ export default function FisKontrolPage() {
   }, [loadPendingData]);
 
   useEffect(() => {
+    processedKeysRef.current = new Set();
+    setPayload(null);
+    setRows([]);
+    setAnalysis({ rows: [], issues: [], summary: {} });
+    loadPendingData();
+  }, [selectedCompanyId]);
+
+  useEffect(() => {
     if (!rows.length) {
       setAnalysis({ rows: [], issues: [], summary: {} });
       return;
     }
 
+    const analyzeOpts = {
+      firmaId: selectedCompanyId || payload?.firmaId || payload?.companyId || "",
+      processedSourceKeys: processedKeysRef.current,
+    };
+
     if (rows.length < FIS_KONTROL_WORKER_THRESHOLD) {
-      setAnalysis(analyzeStandardLucaRows(rows));
+      setAnalysis(analyzeStandardLucaRows(rows, analyzeOpts));
       return;
     }
 
@@ -174,13 +206,12 @@ export default function FisKontrolPage() {
         try {
           const workerResult = await runFisKontrolWorker({
             workerUrl: PARSER_WORKER_URLS.fisKontrol,
-            payload: { rows },
+            payload: { rows, options: analyzeOpts },
             onProgress: parserJob.onProgress,
           });
           nextAnalysis = workerResult.analysis;
         } catch (workerError) {
-          console.warn("[fis-kontrol] worker fallback", workerError);
-          nextAnalysis = analyzeStandardLucaRows(rows);
+          nextAnalysis = analyzeStandardLucaRows(rows, analyzeOpts);
         }
         if (!cancelled) {
           setAnalysis(nextAnalysis);
@@ -196,7 +227,7 @@ export default function FisKontrolPage() {
             jobType: "fis-kontrol",
           });
           parserJob.markError(error);
-          setAnalysis(analyzeStandardLucaRows(rows));
+          setAnalysis(analyzeStandardLucaRows(rows, analyzeOpts));
         }
       } finally {
         if (!cancelled) setAnalysisLoading(false);
@@ -206,7 +237,7 @@ export default function FisKontrolPage() {
     return () => {
       cancelled = true;
     };
-  }, [rows, payload?.companyId, payload?.companyName, payload?.firmaId]);
+  }, [rows, selectedCompanyId, payload?.companyId, payload?.companyName, payload?.firmaId]);
   const riskLoggedRef = useRef("");
 
   useEffect(() => {
@@ -414,6 +445,7 @@ export default function FisKontrolPage() {
         "Hata Kaydı": analysis.summary.hataIssueCount,
         "Uyarı Kaydı": analysis.summary.uyariIssueCount,
         "Bilgi Kaydı": analysis.summary.bilgiIssueCount,
+        "Geçti Satır": analysis.summary.gectiRowCount,
         "Temiz Satır": analysis.summary.temizRowCount,
         "Denge Durumu": analysis.summary.balanceStatus,
       },
@@ -430,6 +462,27 @@ export default function FisKontrolPage() {
     const fileName = `Fis_Kontrol_Raporu_${new Date().toISOString().slice(0, 10)}.xlsx`;
     XLSX.writeFile(workbook, fileName);
     showToast("Kontrol raporu indirildi", "success");
+  };
+
+  const exportPassedOnly = () => {
+    const result = buildPassedExportPayload(analysis, payload || {});
+    if (!result.ok) {
+      showToast(result.message || "Geçti durumunda fiş yok", "error");
+      return;
+    }
+    const workbook = XLSX.utils.book_new();
+    const sheet = XLSX.utils.json_to_sheet(
+      buildFisKontrolExcelRows({ rows: result.rows })
+    );
+    XLSX.utils.book_append_sheet(workbook, sheet, "Gecti");
+    XLSX.writeFile(
+      workbook,
+      `Fis_Kontrol_Gecti_${new Date().toISOString().slice(0, 10)}.xlsx`
+    );
+    showToast(
+      `${result.rows.length} geçen satır dışa aktarıldı (${result.batches.length} grup)`,
+      "success"
+    );
   };
 
   return (
@@ -485,6 +538,14 @@ export default function FisKontrolPage() {
             className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Kontrol Raporu Excel
+          </button>
+          <button
+            type="button"
+            onClick={exportPassedOnly}
+            disabled={!filterPassedRowsForExport(analysis).length}
+            className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Yalnız Geçenleri Dışa Aktar
           </button>
         </div>
       </div>
@@ -544,12 +605,12 @@ export default function FisKontrolPage() {
               tone="neutral"
             />
             <SummaryCard
-              title="Hatalı Satır"
-              value={analysis.summary.hataRowCount}
+              title="Geçti / Uyarı / Hata"
+              value={`${analysis.summary.gectiRowCount || 0} / ${analysis.summary.uyariRowCount || 0} / ${analysis.summary.hataRowCount || 0}`}
               tone={analysis.summary.hataRowCount > 0 ? "error" : "success"}
             />
             <SummaryCard
-              title="Uyarı / Bilgi"
+              title="Uyarı / Bilgi kayıt"
               value={`${analysis.summary.uyariIssueCount} / ${analysis.summary.bilgiIssueCount}`}
               tone={
                 analysis.summary.uyariIssueCount > 0 ? "warning" : "success"
