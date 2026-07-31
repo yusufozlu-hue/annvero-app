@@ -772,18 +772,63 @@ export function hydrateCariResolutionGroupCandidates(
  *   İlk N grubun adaylarını peşinen üret. false → hiç; 'all' → hepsi.
  * @param {boolean} options.collectStats ölçüm için sayaç
  */
-function pushRowIntoCariGroupMap(groups, row, fullContext, options = {}) {
+function resolveGroupCurrency(row = {}) {
+  return String(row.currency || row.paraBirimi || row.dovizKodu || "TRY")
+    .trim()
+    .toUpperCase() || "TRY";
+}
+
+function resolveGroupBank(row = {}, fullContext = {}) {
+  return String(
+    row.bankName ||
+      row.banka ||
+      row.bankCode ||
+      fullContext.selectedBank ||
+      ""
+  )
+    .trim()
+    .toUpperCase()
+    .slice(0, 48);
+}
+
+function resolveGroupTransactionType(row = {}) {
+  return String(row.transactionType || row.islemTuru || "")
+    .trim()
+    .toUpperCase() || "NA";
+}
+
+/**
+ * Aynı ekonomik işlemleri birleştir; yön / işlem türü / para birimi / banka ayrımı korunur.
+ */
+export function buildCariResolutionEconomicGroupKey(row = {}, fullContext = {}, options = {}) {
+  if (options.forceKey) return String(options.forceKey);
   const desc = rowDescription(row);
   const direction = resolveLucaRowBankDirection(row, fullContext) || "";
-  const key =
-    options.forceKey ||
+  const base =
     row.analysisKey ||
     normalizeBankAnalysisKey(desc, direction) ||
     `unknown|${direction || "NA"}`;
+  const txType = resolveGroupTransactionType(row);
+  const currency = resolveGroupCurrency(row);
+  const bank = resolveGroupBank(row, fullContext) || "BANK";
+  return `${base}|${txType}|${currency}|${bank}`;
+}
+
+function pushRowIntoCariGroupMap(groups, row, fullContext, options = {}) {
+  const desc = rowDescription(row);
+  const direction = resolveLucaRowBankDirection(row, fullContext) || "";
+  const txType = resolveGroupTransactionType(row);
+  const currency = resolveGroupCurrency(row);
+  const bank = resolveGroupBank(row, fullContext);
+  const key = buildCariResolutionEconomicGroupKey(row, fullContext, options);
   if (!groups.has(key)) {
     groups.set(key, {
       analysisKey: key,
+      seedAnalysisKey: row.analysisKey || "",
       direction,
+      transactionType: txType,
+      currency,
+      bankName: bank,
       rows: [],
       samples: [],
       dates: [],
@@ -796,7 +841,11 @@ function pushRowIntoCariGroupMap(groups, row, fullContext, options = {}) {
     if (!groups.has(splitKey)) {
       groups.set(splitKey, {
         analysisKey: splitKey,
+        seedAnalysisKey: row.analysisKey || "",
         direction,
+        transactionType: txType,
+        currency,
+        bankName: bank,
         rows: [],
         samples: [],
         dates: [],
@@ -970,6 +1019,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       return {
         id: g.analysisKey,
         analysisKey: g.analysisKey,
+        seedAnalysisKey: g.seedAnalysisKey || "",
         partyName: partyFallback,
         partyUnresolved: partyFallback === PARTY_UNRESOLVED_LABEL,
         selectedCompany,
@@ -980,6 +1030,9 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
             : g.direction === "CIKIS" || g.direction === "GIDEN"
               ? "Giden"
               : "—",
+        transactionType: g.transactionType || "",
+        currency: g.currency || "TRY",
+        bankName: g.bankName || "",
         count: g.rows.length,
         totalAmount: Math.round(totalAmount * 100) / 100,
         samples: g.samples,
@@ -1580,7 +1633,11 @@ export function formatCariApplyButtonLabel(selectedCount = 0) {
   return `Seçilen Hesabı ${n} İşleme Uygula`;
 }
 
-/** Otomatik öğrenme checkbox varsayılanı — güvenli koşullarda bile opt-in. */
+/**
+ * "Bu firma için öğren" varsayılanı — kullanıcı hesap seçtiyse açık.
+ * Düşük güvenli öneriyi kullanıcı onayı olmadan kaydetmez (onay = Uygula tıklaması).
+ * Mükerrer cari / parent kod öğrenmeyi kapatır.
+ */
 export function shouldDefaultCariAutoLearn({
   confidence = 0,
   accountCode = "",
@@ -1588,13 +1645,13 @@ export function shouldDefaultCariAutoLearn({
   partyName = "",
   parentCodes = null,
 } = {}) {
-  if (duplicateAccounts) return false;
-  if (!accountCode || !isSelectableCariLeafAccount(accountCode, parentCodes)) {
-    return false;
-  }
-  if (Number(confidence) < 80) return false;
-  if (!String(partyName || "").trim()) return false;
-  return false; // kullanıcı açıkça işaretlesin
+  void confidence;
+  void partyName;
+  return canEnableCariAutoLearn({
+    accountCode,
+    duplicateAccounts,
+    parentCodes,
+  });
 }
 
 export function canEnableCariAutoLearn({
@@ -1603,10 +1660,10 @@ export function canEnableCariAutoLearn({
   duplicateAccounts = false,
   parentCodes = null,
 } = {}) {
+  void confidence;
   if (duplicateAccounts) return false;
   if (!accountCode || !isSelectableCariLeafAccount(accountCode, parentCodes)) {
     return false;
   }
-  if (Number(confidence) < 80) return false;
   return true;
 }

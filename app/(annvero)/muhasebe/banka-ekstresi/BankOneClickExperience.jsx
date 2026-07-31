@@ -359,6 +359,37 @@ export function BankPipelineResultCard({
         </p>
       ) : null}
 
+      {Array.isArray(result.findingClasses?.classes) &&
+      result.findingClasses.classes.length > 0 ? (
+        <div className="mt-4 rounded-xl border border-slate-700/60 bg-slate-950/50 px-3 py-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Hata sınıfları
+          </p>
+          <ul className="mt-2 space-y-2">
+            {result.findingClasses.classes.slice(0, 8).map((cls) => (
+              <li
+                key={cls.id}
+                className="rounded-lg border border-slate-800/80 bg-slate-900/40 px-2.5 py-2 text-xs text-slate-200"
+              >
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="font-semibold text-white">{cls.label}</span>
+                  <span className="text-slate-400">
+                    {cls.count} bulgu
+                    {cls.errorCount ? ` · ${cls.errorCount} hata` : ""}
+                  </span>
+                </div>
+                <p className="mt-1 text-slate-400">
+                  Neden engellendi: {cls.why}
+                </p>
+                <p className="mt-0.5 text-sky-200/90">
+                  Ne yapmalı: {cls.action}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {result.driveArchived || result.driveSkipped ? (
         <p className="mt-3 text-xs text-slate-400">
           Drive:{" "}
@@ -457,14 +488,27 @@ export function BankPipelineErrorCard({
   disabled,
   onRetry,
   onOpenManual,
+  onSwitchCompany,
 }) {
   if (!error) return null;
 
   const isInfo = error.tone === "info";
+  const isMismatch = error.code === "COMPANY_MISMATCH";
+  const isVerification =
+    error.code === "COMPANY_VERIFICATION_REQUIRED";
+  const isEmptyPlan = error.code === "EMPTY_ACCOUNT_PLAN";
   const wrap = isInfo
     ? "border-sky-700/50 bg-sky-950/35 text-sky-50"
     : "border-red-800/60 bg-red-950/40 text-red-50";
-  const title = isInfo ? "Banka seçimi güncellendi" : "İşlem durdu";
+  const title = isInfo
+    ? "Banka seçimi güncellendi"
+    : isMismatch
+      ? "Firma uyuşmazlığı"
+      : isVerification
+        ? "Firma doğrulaması gerekli"
+        : isEmptyPlan
+          ? "Hesap planı eksik"
+          : "İşlem durdu";
 
   return (
     <section className={`mt-4 rounded-2xl border px-4 py-4 sm:px-5 ${wrap}`}>
@@ -491,18 +535,37 @@ export function BankPipelineErrorCard({
             </p>
           ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={onRetry}
-              disabled={disabled}
-              className={`rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${
-                isInfo
-                  ? "border border-sky-500/40 bg-sky-900/50 hover:bg-sky-900"
-                  : "border border-red-500/40 bg-red-900/50 hover:bg-red-900"
-              }`}
-            >
-              Güvenli Yeniden Dene
-            </button>
+            {error.suggestedCompanyId && typeof onSwitchCompany === "function" ? (
+              <button
+                type="button"
+                onClick={() =>
+                  onSwitchCompany({
+                    companyId: error.suggestedCompanyId,
+                    companyName: error.suggestedCompanyName,
+                  })
+                }
+                disabled={disabled}
+                className="rounded-lg border border-amber-500/50 bg-amber-950/40 px-3 py-1.5 text-xs font-semibold text-amber-50 hover:bg-amber-900/50 disabled:opacity-50"
+              >
+                {error.suggestedCompanyName
+                  ? `${error.suggestedCompanyName} firmasına geç`
+                  : "Doğru firmaya geç"}
+              </button>
+            ) : null}
+            {!isMismatch && !isVerification && !isEmptyPlan ? (
+              <button
+                type="button"
+                onClick={onRetry}
+                disabled={disabled}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${
+                  isInfo
+                    ? "border border-sky-500/40 bg-sky-900/50 hover:bg-sky-900"
+                    : "border border-red-500/40 bg-red-900/50 hover:bg-red-900"
+                }`}
+              >
+                Güvenli Yeniden Dene
+              </button>
+            ) : null}
             {onOpenManual ? (
               <button
                 type="button"

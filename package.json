@@ -33,7 +33,8 @@
     "test:account-memory": "node --import ./scripts/_alias-loader.mjs ./scripts/test-account-memory-stabilize.mjs",
     "test:cari-biletduk": "node --import ./scripts/_alias-loader.mjs ./scripts/test-cari-biletduk-handler-apply.mjs",
     "test:annvero-v1": "node --import ./scripts/_alias-loader.mjs ./scripts/test-annvero-v1-orchestration.mjs",
-    "test:annvero-v1:local-e2e": "node --import ./scripts/_alias-loader.mjs ./scripts/test-annvero-v1-local-e2e.mjs"
+    "test:annvero-v1:local-e2e": "node --import ./scripts/_alias-loader.mjs ./scripts/test-annvero-v1-local-e2e.mjs",
+    "test:bank-company-guard": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-statement-company-guard.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",

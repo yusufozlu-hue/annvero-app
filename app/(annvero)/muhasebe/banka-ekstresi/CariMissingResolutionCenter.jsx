@@ -17,6 +17,7 @@ import {
   buildCariApplyGroupPayload,
   formatCariApplyButtonLabel,
   canEnableCariAutoLearn,
+  shouldDefaultCariAutoLearn,
 } from "@/src/utils/cariMissingResolutionGroups";
 import { isSelectableCariLeafAccount } from "@/src/utils/cariCounterpartyExtract";
 import { isCreditCardAccountCode } from "@/src/utils/creditCardAccountResolver";
@@ -133,13 +134,21 @@ function GroupCard({
   applyingId,
   onRetry,
   showServiceMeta = false,
+  bulkSelected = false,
+  onToggleBulkSelect,
 }) {
   const cardRef = useRef(null);
   const [hydratedGroup, setHydratedGroup] = useState(group);
   const [hydrating, setHydrating] = useState(false);
   const [selectedCode, setSelectedCode] = useState(group.suggestedAccount || "");
   const [selectedName, setSelectedName] = useState(group.suggestedName || "");
-  const [learnNext, setLearnNext] = useState(false);
+  const [learnNext, setLearnNext] = useState(() =>
+    shouldDefaultCariAutoLearn({
+      accountCode: group.suggestedAccount || "",
+      duplicateAccounts: group.duplicateAccounts,
+      partyName: group.partyName || "",
+    })
+  );
   const [searchAll, setSearchAll] = useState(false);
   const [query, setQuery] = useState("");
   const [expandedSearch, setExpandedSearch] = useState(false);
@@ -184,7 +193,14 @@ function GroupCard({
       setHydratedGroup(next);
       setSelectedCode(next.suggestedAccount || "");
       setSelectedName(next.suggestedName || "");
-      setLearnNext(false);
+      setLearnNext(
+        shouldDefaultCariAutoLearn({
+          confidence: next.confidence,
+          accountCode: next.suggestedAccount || "",
+          duplicateAccounts: next.duplicateAccounts,
+          partyName: next.partyName || "",
+        })
+      );
       setHydrating(false);
     }, 0);
   };
@@ -271,6 +287,7 @@ function GroupCard({
     const list = liveSearch.candidates || [];
     if (!selectedCode) return;
     if (!list.some((c) => c.code === selectedCode)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- arama adayı dış kaynak; geçersiz seçimi temizle
       setSelectedCode("");
       setSelectedName("");
       setLearnNext(false);
@@ -327,6 +344,21 @@ function GroupCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
+            {!isResolved &&
+            !isVirmanCandidateCard &&
+            !isTaxObligationCard &&
+            typeof onToggleBulkSelect === "function" ? (
+              <label className="mr-1 flex items-center gap-1.5 text-[11px] text-slate-400">
+                <input
+                  type="checkbox"
+                  checked={bulkSelected}
+                  onChange={() => onToggleBulkSelect(group.id)}
+                  className="rounded border-slate-600"
+                  aria-label="Toplu seç"
+                />
+                Toplu
+              </label>
+            ) : null}
             <h3 className="break-words text-base font-semibold text-white sm:text-lg">
               {hydratedGroup.partyName || "Karşı taraf"}
             </h3>
@@ -379,6 +411,14 @@ function GroupCard({
                     : ""
                 }`
               : ""}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {hydratedGroup.transactionType
+              ? `Tür: ${hydratedGroup.transactionType}`
+              : "Tür: —"}
+            {" · "}
+            {hydratedGroup.currency || "TRY"}
+            {hydratedGroup.bankName ? ` · ${hydratedGroup.bankName}` : ""}
           </p>
           {isCreditCardCard ? (
             <p className="mt-1 text-xs text-slate-400">
@@ -561,7 +601,13 @@ function GroupCard({
               onSelect={(code, name) => {
                 setSelectedCode(code);
                 setSelectedName(name || "");
-                setLearnNext(false);
+                setLearnNext(
+                  shouldDefaultCariAutoLearn({
+                    accountCode: code,
+                    duplicateAccounts: hydratedGroup.duplicateAccounts,
+                    partyName: hydratedGroup.partyName || "",
+                  })
+                );
               }}
               vendorMessage={
                 liveSearch.vendorMessage || hydratedGroup.vendorMessage
@@ -606,7 +652,7 @@ function GroupCard({
                 onChange={(e) => setLearnNext(e.target.checked)}
                 className="rounded border-slate-600"
               />
-              Sonraki işlemlerde otomatik tanı
+              Bu firma için öğren
             </label>
             {learnNext && learnEnabled ? (
               <p className="text-[11px] text-slate-500">
@@ -616,7 +662,8 @@ function GroupCard({
               </p>
             ) : (
               <p className="text-[11px] text-slate-500">
-                Düşük/orta güven, mükerrer veya genel hesapta öğrenme kapalıdır.
+                Mükerrer cari veya parent hesapta öğrenme kapalıdır. Düşük güvenli
+                öneri onayınız olmadan kaydedilmez.
               </p>
             )}
             <button
@@ -674,6 +721,9 @@ export default function CariMissingResolutionCenter({
   resolvedGroupIds,
   resolvedGroups: resolvedGroupsProp = [],
   onApplyGroup,
+  onBulkApplyGroups,
+  onUndoLastApply,
+  canUndo = false,
   applyingId = null,
   lastApplyMessage = "",
   loading = false,
@@ -683,6 +733,10 @@ export default function CariMissingResolutionCenter({
 }) {
   const [filter, setFilter] = useState(CARI_RESOLUTION_FILTERS.REMAINING);
   const [query, setQuery] = useState("");
+  const [bulkSelectedIds, setBulkSelectedIds] = useState(() => new Set());
+  const [bulkCode, setBulkCode] = useState("");
+  const [bulkName, setBulkName] = useState("");
+  const [bulkLearn, setBulkLearn] = useState(true);
 
   const groups = useMemo(() => snapshot?.groups || [], [snapshot?.groups]);
   const resolvedGroups = useMemo(
@@ -725,6 +779,39 @@ export default function CariMissingResolutionCenter({
     if (resolvedGroups.length) return resolvedGroups.length;
     return resolvedSet.size;
   }, [resolvedGroups, resolvedSet]);
+
+  const bulkTargets = useMemo(() => {
+    return (groups || []).filter(
+      (g) =>
+        bulkSelectedIds.has(g.id) &&
+        !resolvedSet.has(g.id) &&
+        !g.virmanCandidate &&
+        !g.taxObligationGroup
+    );
+  }, [groups, bulkSelectedIds, resolvedSet]);
+
+  const bulkAffectedRows = useMemo(
+    () =>
+      bulkTargets.reduce(
+        (sum, g) => sum + (Number(g.count) || (g.rowIds || []).length || 0),
+        0
+      ),
+    [bulkTargets]
+  );
+
+  const bulkLearnEnabled = canEnableCariAutoLearn({
+    accountCode: bulkCode,
+    duplicateAccounts: bulkTargets.some((g) => g.duplicateAccounts),
+  });
+
+  const toggleBulkSelect = (groupId) => {
+    setBulkSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
 
   const visible = useMemo(() => {
     if (filter === CARI_RESOLUTION_FILTERS.RESOLVED) {
@@ -913,6 +1000,84 @@ export default function CariMissingResolutionCenter({
             </p>
           ) : null}
 
+          {!loading && !error && bulkTargets.length > 0 ? (
+            <div className="mt-3 rounded-xl border border-sky-800/50 bg-sky-950/30 px-3 py-3">
+              <p className="text-sm font-semibold text-sky-100">
+                Toplu eşleştirme · {bulkTargets.length} grup · {bulkAffectedRows}{" "}
+                satır etkilenecek
+              </p>
+              <div className="mt-2 flex flex-wrap items-end gap-2">
+                <label className="min-w-[10rem] flex-1 text-[11px] text-slate-400">
+                  Hesap kodu
+                  <input
+                    value={bulkCode}
+                    onChange={(e) => {
+                      const code = e.target.value;
+                      setBulkCode(code);
+                      setBulkLearn(
+                        shouldDefaultCariAutoLearn({ accountCode: code })
+                      );
+                    }}
+                    placeholder="320.01.001"
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-sm text-white"
+                  />
+                </label>
+                <label className="min-w-[10rem] flex-1 text-[11px] text-slate-400">
+                  Hesap adı
+                  <input
+                    value={bulkName}
+                    onChange={(e) => setBulkName(e.target.value)}
+                    placeholder="Opsiyonel"
+                    className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-2 text-sm text-white"
+                  />
+                </label>
+                <label
+                  className={`flex items-center gap-2 pb-2 text-xs ${
+                    bulkLearnEnabled ? "text-slate-200" : "text-slate-500"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={bulkLearn && bulkLearnEnabled}
+                    disabled={!bulkLearnEnabled}
+                    onChange={(e) => setBulkLearn(e.target.checked)}
+                    className="rounded border-slate-600"
+                  />
+                  Bu firma için öğren
+                </label>
+                <button
+                  type="button"
+                  disabled={
+                    !bulkCode ||
+                    !isSelectableCariLeafAccount(bulkCode) ||
+                    applyingId != null
+                  }
+                  onClick={() =>
+                    onBulkApplyGroups?.({
+                      groups: bulkTargets.map((g) =>
+                        buildCariApplyGroupPayload(g, g.rowIds || [])
+                      ),
+                      accountCode: bulkCode,
+                      accountName: bulkName,
+                      learn: Boolean(bulkLearn && bulkLearnEnabled),
+                      affectedRowCount: bulkAffectedRows,
+                    })
+                  }
+                  className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                >
+                  Seçili gruplara uygula ({bulkAffectedRows})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBulkSelectedIds(new Set())}
+                  className="rounded-xl border border-slate-600 px-3 py-2 text-xs text-slate-200 hover:bg-slate-900"
+                >
+                  Seçimi temizle
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {!loading && !error ? (
             <>
               <div className="mt-4 flex flex-wrap gap-2">
@@ -1005,19 +1170,33 @@ export default function CariMissingResolutionCenter({
                 applyingId={applyingId}
                 onRetry={onRetry}
                 showServiceMeta={showServiceMeta}
+                bulkSelected={bulkSelectedIds.has(group.id)}
+                onToggleBulkSelect={toggleBulkSelect}
               />
             ))
           )}
         </div>
 
         <footer className="shrink-0 border-t border-slate-800 px-4 py-3 sm:px-6">
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-full rounded-xl border border-slate-600 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-800 sm:w-auto"
-          >
-            Daha Sonra İncele
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {canUndo && typeof onUndoLastApply === "function" ? (
+              <button
+                type="button"
+                onClick={onUndoLastApply}
+                disabled={applyingId != null}
+                className="rounded-xl border border-amber-600/50 bg-amber-950/30 px-4 py-2.5 text-sm font-semibold text-amber-100 hover:bg-amber-900/40 disabled:opacity-50"
+              >
+                Son uygulamayı geri al
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-full rounded-xl border border-slate-600 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-100 hover:bg-slate-800 sm:w-auto"
+            >
+              Daha Sonra İncele
+            </button>
+          </div>
         </footer>
       </div>
     </div>
