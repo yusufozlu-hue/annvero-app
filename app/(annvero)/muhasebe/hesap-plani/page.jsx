@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import * as XLSX from "xlsx";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
@@ -14,8 +14,10 @@ import { runCompanyAccountAutoDetect } from "@/src/utils/companyAccountMappingMe
 import { buildDetectSignalsFromCompany } from "@/src/utils/companyAccountAutoDetect";
 import {
   activateAccountPlanUpload,
+  archiveAccountPlanFile,
   fetchAccountPlanUploads,
   fetchActiveAccountPlan,
+  fetchFullActiveAccountPlan,
   patchAccountPlanAccount,
   uploadAccountPlan,
 } from "@/src/utils/accountPlanApi";
@@ -23,13 +25,22 @@ import {
   EMPTY_ACCOUNT_PLAN_MESSAGE,
   fingerprintAccountPlanAccounts,
   formatAccountPlanUploadStatus,
-  paginateAccountPlanRows,
   parseAccountPlanSheetRows,
 } from "@/src/utils/accountPlanUpload";
 
 const ROW_HEIGHT = 52;
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 280;
+
+async function sha256Hex(buffer) {
+  if (typeof crypto !== "undefined" && crypto.subtle) {
+    const digest = await crypto.subtle.digest("SHA-256", buffer);
+    return [...new Uint8Array(digest)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  return "";
+}
 
 export default function HesapPlaniPage() {
   const {
@@ -40,13 +51,23 @@ export default function HesapPlaniPage() {
     getCompanyDisplayName,
   } = useCompanyList();
 
-  const [allAccounts, setAllAccounts] = useState([]);
+  const [pageAccounts, setPageAccounts] = useState([]);
   const [uploads, setUploads] = useState([]);
   const [activeUpload, setActiveUpload] = useState(null);
+  const [planCounts, setPlanCounts] = useState({
+    total: 0,
+    activeCount: 0,
+    inactiveCount: 0,
+  });
+  const [pagination, setPagination] = useState({
+    total: 0,
+    page: 1,
+    pageSize: PAGE_SIZE,
+    pageCount: 1,
+  });
   const [source, setSource] = useState("loading");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
   const [detectMessage, setDetectMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -56,21 +77,43 @@ export default function HesapPlaniPage() {
   const listRef = useRef(null);
   const loadGenRef = useRef(0);
   const searchTimerRef = useRef(null);
+  const searchRef = useRef("");
+  const pageRef = useRef(1);
 
-  const refresh = useCallback(async (companyId) => {
+  const wipeCompanyUi = useCallback(() => {
+    setPageAccounts([]);
+    setUploads([]);
+    setActiveUpload(null);
+    setPlanCounts({ total: 0, activeCount: 0, inactiveCount: 0 });
+    setPagination({ total: 0, page: 1, pageSize: PAGE_SIZE, pageCount: 1 });
+    setSearchInput("");
+    setSearch("");
+    searchRef.current = "";
+    pageRef.current = 1;
+    setDetectMessage("");
+    setStatusMessage("");
+    setErrorMessage("");
+    setScrollTop(0);
+  }, []);
+
+  const refresh = useCallback(async (companyId, { page: pageArg = 1, query = "" } = {}) => {
     if (!companyId) {
-      setAllAccounts([]);
-      setUploads([]);
-      setActiveUpload(null);
+      wipeCompanyUi();
       setSource("none");
       return;
     }
     const gen = loadGenRef.current;
+    const nextPage = pageArg;
+    const nextQuery = query;
     setLoading(true);
     setErrorMessage("");
     try {
       const [plan, history] = await Promise.all([
-        fetchActiveAccountPlan(companyId, { all: true }),
+        fetchActiveAccountPlan(companyId, {
+          page: nextPage,
+          pageSize: PAGE_SIZE,
+          q: nextQuery,
+        }),
         fetchAccountPlanUploads(companyId),
       ]);
       if (gen !== loadGenRef.current) return;
@@ -78,31 +121,72 @@ export default function HesapPlaniPage() {
       if (plan.source === "unavailable") {
         const local = loadAccountPlansFromStorage();
         const accounts = getAccountPlanForCompany(local, companyId);
-        setAllAccounts(accounts);
+        const q = String(nextQuery || "")
+          .toLocaleLowerCase("tr")
+          .trim();
+        const filtered = !q
+          ? accounts
+          : accounts.filter((row) =>
+              `${row.accountCode || ""} ${row.accountName || ""}`
+                .toLocaleLowerCase("tr")
+                .includes(q)
+            );
+        const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+        const safePage = Math.min(pageCount, Math.max(1, nextPage));
+        const start = (safePage - 1) * PAGE_SIZE;
+        const slice = filtered.slice(start, start + PAGE_SIZE);
+        const activeCount = accounts.filter((r) => r.isActive !== false).length;
+        setPageAccounts(slice);
         setActiveUpload(null);
         setUploads([]);
+        setPlanCounts({
+          total: accounts.length,
+          activeCount,
+          inactiveCount: accounts.length - activeCount,
+        });
+        setPagination({
+          total: filtered.length,
+          page: safePage,
+          pageSize: PAGE_SIZE,
+          pageCount,
+        });
         setSource("localStorage");
-        if (accounts.length) {
-          saveAccountPlansToStorage(
-            setCompanyAccountPlan(local, companyId, accounts)
-          );
-        }
       } else {
-        setAllAccounts(plan.accounts || []);
+        const pg = plan.pagination || {};
+        setPageAccounts(plan.accounts || []);
         setActiveUpload(plan.upload || null);
         setUploads(history || []);
+        setPlanCounts({
+          total: Number(pg.planTotal ?? pg.total) || 0,
+          activeCount: Number(pg.planActiveCount ?? pg.activeCount) || 0,
+          inactiveCount: Number(pg.planInactiveCount ?? pg.inactiveCount) || 0,
+        });
+        setPagination({
+          total: Number(pg.filteredTotal ?? pg.total) || 0,
+          page: Number(pg.page) || nextPage,
+          pageSize: Number(pg.pageSize) || PAGE_SIZE,
+          pageCount: Number(pg.pageCount) || 1,
+        });
+        pageRef.current = Number(pg.page) || nextPage;
         setSource("api");
-        const local = loadAccountPlansFromStorage();
-        saveAccountPlansToStorage(
-          setCompanyAccountPlan(local, companyId, plan.accounts || [])
-        );
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(
-            new CustomEvent("annvero:account-plan-updated", {
-              detail: { companyId },
-            })
-          );
-        }
+
+        void fetchFullActiveAccountPlan(companyId)
+          .then((full) => {
+            if (loadGenRef.current !== gen) return;
+            if (full.source === "unavailable") return;
+            const local = loadAccountPlansFromStorage();
+            saveAccountPlansToStorage(
+              setCompanyAccountPlan(local, companyId, full.accounts || [])
+            );
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(
+                new CustomEvent("annvero:account-plan-updated", {
+                  detail: { companyId },
+                })
+              );
+            }
+          })
+          .catch(() => {});
       }
     } catch (error) {
       if (gen !== loadGenRef.current) return;
@@ -111,7 +195,7 @@ export default function HesapPlaniPage() {
     } finally {
       if (gen === loadGenRef.current) setLoading(false);
     }
-  }, []);
+  }, [wipeCompanyUi]);
 
   // Firma değişince önceki firmanın hesapları bir an bile görünmesin
   useEffect(() => {
@@ -119,53 +203,37 @@ export default function HesapPlaniPage() {
     const gen = loadGenRef.current;
     const timer = window.setTimeout(() => {
       if (gen !== loadGenRef.current) return;
-      setAllAccounts([]);
-      setUploads([]);
-      setActiveUpload(null);
-      setSearchInput("");
-      setSearch("");
-      setPage(1);
-      setDetectMessage("");
-      setStatusMessage("");
-      setErrorMessage("");
+      wipeCompanyUi();
       setSource("loading");
-      setScrollTop(0);
-      void refresh(selectedCompanyId);
+      void refresh(selectedCompanyId, { page: 1, query: "" });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [selectedCompanyId, refresh]);
+  }, [selectedCompanyId, wipeCompanyUi, refresh]);
 
   useEffect(() => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     searchTimerRef.current = setTimeout(() => {
       startTransition(() => {
+        searchRef.current = searchInput;
+        pageRef.current = 1;
         setSearch(searchInput);
-        setPage(1);
+        if (selectedCompanyId) {
+          void refresh(selectedCompanyId, { page: 1, query: searchInput });
+        }
       });
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     };
-  }, [searchInput]);
+  }, [searchInput, selectedCompanyId, refresh]);
 
-  const pagination = useMemo(
-    () =>
-      paginateAccountPlanRows(allAccounts, {
-        page,
-        pageSize: PAGE_SIZE,
-        query: search,
-      }),
-    [allAccounts, page, search]
-  );
-
-  const pageRows = pagination.rows;
   const viewportHeight = 420;
   const visibleCount = Math.ceil(viewportHeight / ROW_HEIGHT) + 4;
   const startIndex = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - 2);
-  const endIndex = Math.min(pageRows.length, startIndex + visibleCount);
-  const visibleRows = pageRows.slice(startIndex, endIndex);
+  const endIndex = Math.min(pageAccounts.length, startIndex + visibleCount);
+  const visibleRows = pageAccounts.slice(startIndex, endIndex);
   const topPad = startIndex * ROW_HEIGHT;
-  const bottomPad = Math.max(0, (pageRows.length - endIndex) * ROW_HEIGHT);
+  const bottomPad = Math.max(0, (pageAccounts.length - endIndex) * ROW_HEIGHT);
 
   const bootstrapMappings = (parsedPlan) => {
     if (!selectedCompanyId || !parsedPlan?.length) return;
@@ -208,6 +276,7 @@ export default function HesapPlaniPage() {
     setErrorMessage("");
     try {
       const buffer = await file.arrayBuffer();
+      const fileContentHash = await sha256Hex(buffer);
       const workbook = XLSX.read(buffer, { type: "array" });
       if (!workbook.SheetNames?.length) {
         throw new Error("Desteklenmeyen veya boş Excel dosyası.");
@@ -221,8 +290,10 @@ export default function HesapPlaniPage() {
         const result = await uploadAccountPlan({
           companyId: selectedCompanyId,
           fileName: file.name,
+          originalFileName: file.name,
           accounts,
           contentFingerprint: fingerprint,
+          fileContentHash,
           errorCount,
         });
         if (result.duplicate) {
@@ -234,11 +305,29 @@ export default function HesapPlaniPage() {
         } else {
           setStatusMessage(result.message || "Hesap planı yüklendi.");
           bootstrapMappings(accounts);
+          if (result.upload?.id) {
+            const archive = await archiveAccountPlanFile({
+              companyId: selectedCompanyId,
+              uploadId: result.upload.id,
+              file,
+            });
+            if (archive?.archiveStatus === "archived") {
+              setStatusMessage(
+                `${result.message || "Hesap planı yüklendi."} Drive arşivi tamam.`
+              );
+            } else if (
+              archive?.archiveStatus === "archive_pending" ||
+              archive?.ok === false
+            ) {
+              setStatusMessage(
+                `${result.message || "Hesap planı yüklendi."} Drive arşivi bekliyor (aktif plan korundu).`
+              );
+            }
+          }
         }
-        await refresh(selectedCompanyId);
+        await refresh(selectedCompanyId, { page: 1, query: search });
       } catch (apiError) {
         if (apiError?.status === 503 || apiError?.code === "SCHEMA_MISSING") {
-          // Fallback local until migration applied
           if (!accounts.length) {
             setErrorMessage("Yükleme başarısız; aktif sürüm değiştirilmedi.");
           } else {
@@ -246,12 +335,12 @@ export default function HesapPlaniPage() {
             saveAccountPlansToStorage(
               setCompanyAccountPlan(local, selectedCompanyId, accounts)
             );
-            setAllAccounts(accounts);
             setSource("localStorage");
             setStatusMessage(
               "Hesap planı yerel olarak kaydedildi (API şeması henüz yok)."
             );
             bootstrapMappings(accounts);
+            await refresh(selectedCompanyId, { page: 1, query: "" });
           }
         } else {
           throw apiError;
@@ -275,14 +364,14 @@ export default function HesapPlaniPage() {
       await refresh(selectedCompanyId);
       return;
     }
-    const next = allAccounts.map((row) =>
+    const local = loadAccountPlansFromStorage();
+    const all = getAccountPlanForCompany(local, selectedCompanyId).map((row) =>
       row.id === account.id ? { ...row, isActive: !row.isActive } : row
     );
-    setAllAccounts(next);
-    const local = loadAccountPlansFromStorage();
     saveAccountPlansToStorage(
-      setCompanyAccountPlan(local, selectedCompanyId, next)
+      setCompanyAccountPlan(local, selectedCompanyId, all)
     );
+    await refresh(selectedCompanyId);
   };
 
   const deleteAccount = async (account) => {
@@ -297,12 +386,14 @@ export default function HesapPlaniPage() {
       await refresh(selectedCompanyId);
       return;
     }
-    const next = allAccounts.filter((row) => row.id !== account.id);
-    setAllAccounts(next);
     const local = loadAccountPlansFromStorage();
-    saveAccountPlansToStorage(
-      setCompanyAccountPlan(local, selectedCompanyId, next)
+    const all = getAccountPlanForCompany(local, selectedCompanyId).filter(
+      (row) => row.id !== account.id
     );
+    saveAccountPlansToStorage(
+      setCompanyAccountPlan(local, selectedCompanyId, all)
+    );
+    await refresh(selectedCompanyId);
   };
 
   const handleActivate = async (uploadId) => {
@@ -313,10 +404,18 @@ export default function HesapPlaniPage() {
         uploadId,
       });
       setStatusMessage("Önceki güvenli sürüm aktif edildi.");
-      await refresh(selectedCompanyId);
+      await refresh(selectedCompanyId, { page: 1, query: search });
     } catch (error) {
       setErrorMessage(error?.message || "Sürüm etkinleştirilemedi.");
     }
+  };
+
+  const goToPage = (next) => {
+    const safe = Math.max(1, Math.min(pagination.pageCount, next));
+    pageRef.current = safe;
+    setScrollTop(0);
+    if (listRef.current) listRef.current.scrollTop = 0;
+    void refresh(selectedCompanyId, { page: safe, query: searchRef.current || search });
   };
 
   return (
@@ -342,13 +441,13 @@ export default function HesapPlaniPage() {
           </div>
           <div className="flex flex-wrap gap-2 text-xs text-gray-300">
             <span className="rounded-md bg-gray-800 px-2 py-1">
-              Toplam: {pagination.total}
+              Toplam: {planCounts.total}
             </span>
             <span className="rounded-md bg-emerald-900/50 px-2 py-1">
-              Aktif: {pagination.activeCount}
+              Aktif: {planCounts.activeCount}
             </span>
             <span className="rounded-md bg-slate-800 px-2 py-1">
-              Pasif: {pagination.inactiveCount}
+              Pasif: {planCounts.inactiveCount}
             </span>
           </div>
         </div>
@@ -401,7 +500,7 @@ export default function HesapPlaniPage() {
           <div className="p-8 text-center text-sm text-gray-400">
             Firma seçin.
           </div>
-        ) : pagination.total === 0 && !loading ? (
+        ) : planCounts.total === 0 && !loading ? (
           <div className="p-8 text-center text-sm text-gray-400">
             {EMPTY_ACCOUNT_PLAN_MESSAGE}
           </div>
@@ -472,12 +571,13 @@ export default function HesapPlaniPage() {
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-800 px-4 py-3 text-xs text-gray-400">
               <span>
                 Sayfa {pagination.page} / {pagination.pageCount}
+                {search ? ` · ${pagination.total} sonuç` : ""}
               </span>
               <div className="flex gap-2">
                 <button
                   type="button"
                   disabled={pagination.page <= 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  onClick={() => goToPage(pagination.page - 1)}
                   className="rounded border border-gray-700 px-3 py-1 disabled:opacity-40"
                 >
                   Önceki
@@ -485,9 +585,7 @@ export default function HesapPlaniPage() {
                 <button
                   type="button"
                   disabled={pagination.page >= pagination.pageCount}
-                  onClick={() =>
-                    setPage((p) => Math.min(pagination.pageCount, p + 1))
-                  }
+                  onClick={() => goToPage(pagination.page + 1)}
                   className="rounded border border-gray-700 px-3 py-1 disabled:opacity-40"
                 >
                   Sonraki
@@ -527,6 +625,7 @@ export default function HesapPlaniPage() {
                   <th className="px-3 py-2 font-semibold">Satır</th>
                   <th className="px-3 py-2 font-semibold">+ / ~ / skip / err</th>
                   <th className="px-3 py-2 font-semibold">Durum</th>
+                  <th className="px-3 py-2 font-semibold">Arşiv</th>
                   <th className="px-3 py-2 font-semibold">Aktif</th>
                   <th className="px-3 py-2 font-semibold">İşlem</th>
                 </tr>
@@ -550,6 +649,17 @@ export default function HesapPlaniPage() {
                     </td>
                     <td className="px-3 py-2">
                       {formatAccountPlanUploadStatus(u.status)}
+                    </td>
+                    <td className="px-3 py-2 text-gray-400">
+                      {u.archiveStatus === "archived"
+                        ? "Arşivli"
+                        : u.archiveStatus === "archive_pending"
+                          ? "Bekliyor"
+                          : u.archiveStatus === "duplicate_archived"
+                            ? "Mükerrer arşiv"
+                            : u.archiveStatus === "archive_skipped"
+                              ? "Atlandı"
+                              : "—"}
                     </td>
                     <td className="px-3 py-2">
                       {u.isActive ? (

@@ -2180,6 +2180,17 @@ test("Hesap planı + bildirim: tenant fail-closed ve yanlış rozet kaynağı yo
   );
   assert.match(plansApi, /requireManagementApi/);
   assert.match(plansApi, /assertCompanyAccess/);
+  assert.match(plansApi, /countAccountsForUpload|loadAllAccountsForUpload/);
+  assert.match(plansApi, /planTotal/);
+
+  const archiveApi = fs.readFileSync(
+    path.join(root, "app/api/account-plans/archive/route.js"),
+    "utf8"
+  );
+  assert.match(archiveApi, /requireManagementApi/);
+  assert.match(archiveApi, /assertCompanyAccess/);
+  assert.match(archiveApi, /01 - Hesap Planı/);
+  assert.doesNotMatch(archiveApi, /return[\s\S]{0,200}providerFileId/);
 
   const notifApi = fs.readFileSync(
     path.join(root, "app/api/user-notifications/route.js"),
@@ -2199,6 +2210,13 @@ test("Hesap planı + bildirim: tenant fail-closed ve yanlış rozet kaynağı yo
   assert.match(migration, /user_app_notifications/);
   assert.match(migration, /annvero_can_access_company/);
   assert.doesNotMatch(migration, /\bdrop table\b/i);
+
+  const migration030 = fs.readFileSync(
+    path.join(root, "supabase/migrations/030_account_plan_drive_archive.sql"),
+    "utf8"
+  );
+  assert.match(migration030, /archive_status/);
+  assert.doesNotMatch(migration030, /\bdrop table\b/i);
 });
 
 for (const { name, fn } of __securityTestQueue) {

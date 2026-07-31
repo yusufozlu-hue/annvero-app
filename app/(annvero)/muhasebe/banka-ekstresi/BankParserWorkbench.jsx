@@ -706,12 +706,10 @@ export default function BankParserWorkbench() {
     async function hydrateCanonicalPlan() {
       if (!selectedCompanyId) return;
       try {
-        const { fetchActiveAccountPlan } = await import(
+        const { fetchFullActiveAccountPlan } = await import(
           "@/src/utils/accountPlanApi"
         );
-        const plan = await fetchActiveAccountPlan(selectedCompanyId, {
-          all: true,
-        });
+        const plan = await fetchFullActiveAccountPlan(selectedCompanyId);
         if (cancelled || plan.source === "unavailable") return;
         setAccountPlans((prev) =>
           setCompanyAccountPlan(prev, selectedCompanyId, plan.accounts || [])
