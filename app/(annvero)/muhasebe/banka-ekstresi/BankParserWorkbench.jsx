@@ -204,6 +204,13 @@ import {
   releaseV1Lease,
   requestV1Lease,
 } from "@/src/utils/annveroV1Client";
+import {
+  BANK_COMPANY_GUARD_CODE,
+  buildCrossCompanyContaminationReport,
+  formatEmptyAccountPlanMessage,
+  shouldBlockCariResolutionForCompanyGuard,
+  verifyBankStatementCompanyMatch,
+} from "@/src/utils/bankStatementCompanyGuard";
 
 const RowSearchToolbar = dynamic(
   () => import("../components/RowSearchToolbar"),
@@ -482,6 +489,7 @@ export default function BankParserWorkbench() {
   const [applyingCariGroupId, setApplyingCariGroupId] = useState(null);
   const [lastCariApplyMessage, setLastCariApplyMessage] = useState("");
   const [cariApplyUndoStack, setCariApplyUndoStack] = useState([]);
+  const [companyGuardResult, setCompanyGuardResult] = useState(null);
   const cariResolutionCancelRef = useRef(null);
   const cariResolutionGenerationRef = useRef(0);
   const showCariResolutionCenterRef = useRef(false);
@@ -510,6 +518,8 @@ export default function BankParserWorkbench() {
     selectedCompanyId,
     selectedCompany: selectedCompanyRaw,
     isLoading: isLoadingCompanies,
+    companies: workspaceCompanies = [],
+    setSelectedCompanyId,
   } = useCompanyList();
 
   const selectedCompany = useMemo(
@@ -578,6 +588,7 @@ export default function BankParserWorkbench() {
     setCariApplyUndoStack([]);
     setCariResolutionSnapshot(null);
     setLastCariApplyMessage("");
+    setCompanyGuardResult(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCompanyId]);
 
@@ -740,6 +751,14 @@ export default function BankParserWorkbench() {
         total: null,
       });
       setPipelineError(null);
+      setCompanyGuardResult(null);
+      setResolvedCariGroupIds(new Set());
+      setResolvedCariGroups([]);
+      setCariApplyUndoStack([]);
+      setCariResolutionSnapshot(null);
+      setCariResolutionLoading(false);
+      setCariResolutionError("");
+      setLastCariApplyMessage("");
       unrecognizedCountRef.current = 0;
       parserJob.reset();
     };
@@ -1435,6 +1454,14 @@ export default function BankParserWorkbench() {
   };
 
   const handleReviewMissingAccounts = () => {
+    if (shouldBlockCariResolutionForCompanyGuard(companyGuardResult)) {
+      showToast(
+        companyGuardResult?.message ||
+          "Firma uyuşmazlığı varken eksik hesap çözümü açılamaz.",
+        "error"
+      );
+      return;
+    }
     if (
       shouldIgnoreCariResolutionOpen({
         isOpen: showCariResolutionCenter,
@@ -1468,6 +1495,14 @@ export default function BankParserWorkbench() {
     accountName = "",
     learn = false,
   } = {}) => {
+    if (shouldBlockCariResolutionForCompanyGuard(companyGuardResult)) {
+      showToast(
+        companyGuardResult?.message ||
+          "Firma uyuşmazlığı varken hesap uygulanamaz.",
+        "error"
+      );
+      return;
+    }
     const code = String(accountCode || "").trim();
     if (!group?.seedRow || !code) return;
     if (!isAccountAllowedForDirection(code, group.direction)) {
@@ -1593,6 +1628,14 @@ export default function BankParserWorkbench() {
     learn = false,
     affectedRowCount = 0,
   } = {}) => {
+    if (shouldBlockCariResolutionForCompanyGuard(companyGuardResult)) {
+      showToast(
+        companyGuardResult?.message ||
+          "Firma uyuşmazlığı varken toplu uygulama yapılamaz.",
+        "error"
+      );
+      return;
+    }
     const code = String(accountCode || "").trim();
     if (!code || !groups.length) return;
     const confirmed = window.confirm(
@@ -3513,12 +3556,81 @@ export default function BankParserWorkbench() {
     let elektraRowCount = 0;
 
     try {
-      // 1) validating
+      // 1) validating — firma kimliği (Drive/parse/persist öncesi)
       if (shouldRunV1Stage(resumeFrom, V1_JOB_STATE.VALIDATING) || !resumeFrom) {
         emitV1(V1_JOB_STATE.VALIDATING, 40, "Dosya ve firma doğrulanıyor…");
         assertPipelineSignal(signal, isRunActive, runId);
+
+        let sheetRows = fileSheetRowsRef.current;
+        if (!sheetRows && selectedFile && !/\.pdf$/i.test(selectedFile.name || "")) {
+          const arrayBuffer = await selectedFile.arrayBuffer();
+          sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
+          fileSheetRowsRef.current = sheetRows;
+        }
+
+        const guard = verifyBankStatementCompanyMatch({
+          sheetRows,
+          fileName: selectedFile?.name || fileName || "",
+          selectedCompany,
+          companies: workspaceCompanies,
+        });
+        setCompanyGuardResult(guard);
+
+        if (guard.blockPipeline) {
+          const contamination = buildCrossCompanyContaminationReport({
+            activeCompanyId: selectedCompanyId,
+            activeCompanyName: guard.activeCompanyName,
+            statementFingerprint: guard.signals?.signalFingerprint || "",
+          });
+          if (typeof window !== "undefined") {
+            window.__ANNVERO_BANK_COMPANY_GUARD__ = {
+              code: guard.code,
+              reasons: guard.reasons,
+              contamination,
+            };
+          }
+          setPipelineError({
+            phase: PIPELINE_PHASES.PARSING,
+            phaseLabel: "Firma doğrulama",
+            message: guard.message,
+            recoverable: false,
+            tone: "error",
+            code: guard.code,
+            suggestedCompanyId: guard.suggestedCompanyId || "",
+            suggestedCompanyName: guard.suggestedCompanyName || "",
+            contamination,
+          });
+          setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+          showToast(guard.message, "error");
+          failedPhase = V1_JOB_STATE.VALIDATING;
+          throw Object.assign(new Error(guard.message), {
+            code: guard.code,
+            name: "CompanyGuardError",
+          });
+        }
+
+        if (!Array.isArray(companyPlans) || companyPlans.length === 0) {
+          const planMsg = formatEmptyAccountPlanMessage();
+          setPipelineError({
+            phase: PIPELINE_PHASES.PARSING,
+            phaseLabel: "Hesap planı",
+            message: planMsg,
+            recoverable: false,
+            tone: "error",
+            code: BANK_COMPANY_GUARD_CODE.EMPTY_ACCOUNT_PLAN,
+          });
+          setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+          showToast(planMsg, "error");
+          failedPhase = V1_JOB_STATE.VALIDATING;
+          throw Object.assign(new Error(planMsg), {
+            code: BANK_COMPANY_GUARD_CODE.EMPTY_ACCOUNT_PLAN,
+            name: "EmptyAccountPlanError",
+          });
+        }
+
         stageOutputs[V1_JOB_STATE.VALIDATING] = {
           ok: true,
+          companyGuard: guard.code,
           accountingPriority: ACCOUNTING_PRIORITY,
           engineVersion: ANNVERO_V1_ENGINE_VERSION,
         };
@@ -3526,6 +3638,7 @@ export default function BankParserWorkbench() {
       }
 
       // 2) archiving (Drive) — bağlantı yoksa banka akışını engelleme
+      // COMPANY_MISMATCH / verification fail yukarıda throw → buraya gelinmez.
       if (shouldRunV1Stage(resumeFrom, V1_JOB_STATE.ARCHIVING) || shouldRunV1Stage(null, V1_JOB_STATE.ARCHIVING)) {
         if (!stageOutputs[V1_JOB_STATE.ARCHIVING]) {
           emitV1(V1_JOB_STATE.ARCHIVING, 20, "Drive arşivleniyor…");
@@ -3891,6 +4004,20 @@ export default function BankParserWorkbench() {
       if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
         setPipelinePhaseSafe(PIPELINE_PHASES.CANCELLED);
         setPipelineMode("idle");
+        await releaseV1Lease(selectedCompanyId, leaseId);
+        v1LeaseIdRef.current = null;
+        return;
+      }
+      if (
+        error?.name === "CompanyGuardError" ||
+        error?.name === "EmptyAccountPlanError" ||
+        error?.code === BANK_COMPANY_GUARD_CODE.MISMATCH ||
+        error?.code === BANK_COMPANY_GUARD_CODE.VERIFICATION_REQUIRED ||
+        error?.code === BANK_COMPANY_GUARD_CODE.EMPTY_ACCOUNT_PLAN
+      ) {
+        // PipelineError zaten set; Drive/persist/hafıza yok.
+        setPipelineMode("idle");
+        parserJob.reset();
         await releaseV1Lease(selectedCompanyId, leaseId);
         v1LeaseIdRef.current = null;
         return;
@@ -4447,6 +4574,14 @@ export default function BankParserWorkbench() {
             error={pipelineError}
             disabled={isJobBusy}
             onRetry={handleRetryPipeline}
+            onSwitchCompany={({ companyId }) => {
+              if (!companyId || typeof setSelectedCompanyId !== "function") return;
+              setSelectedCompanyId(companyId);
+              showToast(
+                "Firma değiştirildi. Dosyayı yeniden seçip işlemi tekrar başlatın.",
+                "success"
+              );
+            }}
             onOpenManual={
               showBankServiceUi
                 ? () => {

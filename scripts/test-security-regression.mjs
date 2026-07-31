@@ -2122,6 +2122,51 @@ test("ADH Drive: goruntuleme admin route ve nav kapalı", () => {
   assert.equal(canSeeNavGroup(ANNVERO_ROLES.VIEWER, "Sistem Yönetimi"), false);
 });
 
+test("Banka ekstresi: COMPANY_MISMATCH Drive/persist öncesi fail-closed", () => {
+  const guardSrc = fs.readFileSync(
+    path.join(root, "src/utils/bankStatementCompanyGuard.js"),
+    "utf8"
+  );
+  assert.match(guardSrc, /COMPANY_MISMATCH/);
+  assert.match(guardSrc, /COMPANY_VERIFICATION_REQUIRED/);
+  assert.match(guardSrc, /verifyBankStatementCompanyMatch/);
+  assert.match(guardSrc, /deletionRequiresUserApproval/);
+  assert.match(guardSrc, /Bu ekstre \$\{owner\} firmasına ait görünüyor/);
+
+  const workbenchSrc = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"
+    ),
+    "utf8"
+  );
+  assert.match(workbenchSrc, /verifyBankStatementCompanyMatch/);
+  assert.match(workbenchSrc, /CompanyGuardError/);
+  assert.match(workbenchSrc, /shouldBlockCariResolutionForCompanyGuard/);
+  assert.match(
+    workbenchSrc,
+    /PipelineError zaten set; Drive\/persist\/hafıza yok/
+  );
+  // VALIDATING aşamasında guard; ARCHIVING (Drive) sonra
+  const validatingDetail = workbenchSrc.indexOf(
+    "Dosya ve firma doğrulanıyor"
+  );
+  const archivingDetail = workbenchSrc.indexOf("Drive arşivleniyor");
+  assert.ok(
+    validatingDetail > 0 &&
+      archivingDetail > validatingDetail,
+    "firma doğrulama Drive arşivinden önce"
+  );
+  assert.match(
+    workbenchSrc.slice(validatingDetail, archivingDetail),
+    /verifyBankStatementCompanyMatch/
+  );
+  assert.match(
+    workbenchSrc.slice(validatingDetail, archivingDetail),
+    /blockPipeline/
+  );
+});
+
 for (const { name, fn } of __securityTestQueue) {
   try {
     await fn();
