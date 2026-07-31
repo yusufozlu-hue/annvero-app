@@ -28,7 +28,9 @@ import {
   loadAccountPlansFromStorage,
   loadRuleEngineFromStorage,
   normalizeCompanyRecord,
+  saveAccountPlansToStorage,
   saveLucaTransferDataset,
+  setCompanyAccountPlan,
 } from "@/src/utils/companyCenter";
 import { loadAccountingRulesFromStorage } from "@/src/utils/accountingRuleEngine";
 import {
@@ -685,11 +687,51 @@ export default function BankParserWorkbench() {
 
     reloadLocalWorkspace();
     window.addEventListener("annvero:refresh-modules", reloadLocalWorkspace);
+    const onPlanUpdated = (event) => {
+      const companyId = event?.detail?.companyId;
+      if (!companyId || companyId === selectedCompanyId) {
+        reloadLocalWorkspace();
+      }
+    };
+    window.addEventListener("annvero:account-plan-updated", onPlanUpdated);
 
     return () => {
       window.removeEventListener("annvero:refresh-modules", reloadLocalWorkspace);
+      window.removeEventListener("annvero:account-plan-updated", onPlanUpdated);
     };
-  }, []);
+  }, [selectedCompanyId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function hydrateCanonicalPlan() {
+      if (!selectedCompanyId) return;
+      try {
+        const { fetchActiveAccountPlan } = await import(
+          "@/src/utils/accountPlanApi"
+        );
+        const plan = await fetchActiveAccountPlan(selectedCompanyId, {
+          all: true,
+        });
+        if (cancelled || plan.source === "unavailable") return;
+        setAccountPlans((prev) =>
+          setCompanyAccountPlan(prev, selectedCompanyId, plan.accounts || [])
+        );
+        saveAccountPlansToStorage(
+          setCompanyAccountPlan(
+            loadAccountPlansFromStorage(),
+            selectedCompanyId,
+            plan.accounts || []
+          )
+        );
+      } catch {
+        /* localStorage fallback */
+      }
+    }
+    void hydrateCanonicalPlan();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCompanyId]);
 
   useEffect(() => {
     const handleCompanyChange = () => {
