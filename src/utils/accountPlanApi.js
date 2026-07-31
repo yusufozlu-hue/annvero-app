@@ -42,6 +42,14 @@ export async function fetchActiveAccountPlan(companyId, options = {}) {
   };
 }
 
+/**
+ * Bank Parser / Eksik Hesap — tam aktif plan (1000+ satır dahil).
+ * İstemci tarafında ek sayfalama gerekmez; sunucu range döngüsü yapar.
+ */
+export async function fetchFullActiveAccountPlan(companyId) {
+  return fetchActiveAccountPlan(companyId, { all: true });
+}
+
 export async function fetchAccountPlanUploads(companyId) {
   if (!companyId) return [];
   const params = companyQuery(companyId);
@@ -61,8 +69,10 @@ export async function fetchAccountPlanUploads(companyId) {
 export async function uploadAccountPlan({
   companyId,
   fileName,
+  originalFileName,
   accounts,
   contentFingerprint,
+  fileContentHash,
   errorCount = 0,
 }) {
   const response = await fetch("/api/account-plans", {
@@ -72,8 +82,11 @@ export async function uploadAccountPlan({
     body: JSON.stringify({
       companyId,
       fileName,
+      originalFileName: originalFileName || fileName,
       accounts,
       contentFingerprint,
+      fileContentHash: fileContentHash || "",
+      contentHash: fileContentHash || "",
       errorCount,
     }),
   });
@@ -84,6 +97,35 @@ export async function uploadAccountPlan({
     err.status = response.status;
     err.body = body;
     throw err;
+  }
+  return body;
+}
+
+/**
+ * Orijinal Excel’i “01 - Hesap Planı” klasörüne arşivler.
+ * Drive id/token dönmez. Başarısızlık aktif planı bozmaz.
+ */
+export async function archiveAccountPlanFile({ companyId, uploadId, file }) {
+  if (!companyId || !uploadId || !file) {
+    return { ok: false, skipped: true, code: "MISSING_INPUT" };
+  }
+  const form = new FormData();
+  form.set("companyId", companyId);
+  form.set("uploadId", uploadId);
+  form.set("file", file, file.name || "hesap-plani.xlsx");
+  const response = await fetch("/api/account-plans/archive", {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok && response.status !== 502) {
+    return {
+      ok: false,
+      archiveStatus: body.archiveStatus || "archive_pending",
+      code: body.code || response.status,
+      message: body.message || body.error || "Arşiv başarısız.",
+    };
   }
   return body;
 }

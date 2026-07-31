@@ -193,6 +193,22 @@ export function classifyUploadTarget({ fileName = "", mimeType = "" } = {}) {
     };
   }
 
+  if (
+    name.includes("hesap plan") ||
+    name.includes("hesap_plan") ||
+    name.includes("hesapplani") ||
+    name.includes("account plan") ||
+    name.includes("chart of accounts")
+  ) {
+    return {
+      targetFolderPath: denySystem("01 - Hesap Planı"),
+      documentType: "hesap_plani",
+      confidence: "high",
+      needsReview: false,
+      reason: "filename_hesap_plani",
+    };
+  }
+
   if (isTahakkukWord || name.includes("tahakkuk")) {
     const sub = matchSubfolder(name, BEYANNAME_KEYWORDS) || "Düzeltmeler";
     return {

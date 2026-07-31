@@ -93,6 +93,30 @@ export function sanitizeUploadFileName(fileName) {
 }
 
 /**
+ * Görünür Drive adı: `<orijinal>__YYYY-MM-DD_HHmmss.<ext>`
+ * Orijinal ad metadata'da ayrı tutulur; mevcut dosyalar toplu yeniden adlandırılmaz.
+ * @param {string} originalFileName
+ * @param {Date|number|string} [when]
+ * @returns {{ driveFileName: string, originalFileName: string, stampedAt: string }}
+ */
+export function buildDatedArchiveFileName(originalFileName, when = new Date()) {
+  const safeOriginal = sanitizeUploadFileName(originalFileName || "evrak");
+  const ext = getFileExtension(safeOriginal);
+  const stem = ext ? safeOriginal.slice(0, -ext.length) : safeOriginal;
+  const d = when instanceof Date ? when : new Date(when);
+  const safeDate = Number.isNaN(d.getTime()) ? new Date() : d;
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = `${safeDate.getFullYear()}-${pad(safeDate.getMonth() + 1)}-${pad(safeDate.getDate())}_${pad(safeDate.getHours())}${pad(safeDate.getMinutes())}${pad(safeDate.getSeconds())}`;
+  const maxStem = Math.max(20, 160 - ext.length - stamp.length - 2);
+  const clipped = stem.length > maxStem ? stem.slice(0, maxStem).trim() : stem;
+  return {
+    driveFileName: `${clipped || "evrak"}__${stamp}${ext}`,
+    originalFileName: safeOriginal,
+    stampedAt: safeDate.toISOString(),
+  };
+}
+
+/**
  * Uzantı + MIME birlikte doğrulanır.
  * @returns {{ ok: true, ext: string, mimeType: string } | { ok: false, code: string, message: string }}
  */

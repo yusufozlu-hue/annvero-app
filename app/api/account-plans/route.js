@@ -10,8 +10,12 @@ import {
   diffAccountPlanVersions,
   fingerprintAccountPlanAccounts,
   normalizeAccountPlanRowInput,
-  paginateAccountPlanRows,
 } from "@/src/utils/accountPlanUpload";
+import {
+  countAccountsForUpload,
+  loadAllAccountsForUpload,
+  queryAccountsPage,
+} from "@/src/utils/accountPlanQuery";
 
 const UPLOADS = "company_account_plan_uploads";
 const ACCOUNTS = "company_account_plan_accounts";
@@ -42,7 +46,9 @@ function publicUpload(row) {
     id: row.id,
     companyId: row.company_id,
     fileName: row.file_name,
+    originalFileName: row.original_file_name || row.file_name || "",
     contentFingerprint: row.content_fingerprint,
+    fileContentHash: row.file_content_hash || "",
     uploadedBy: row.uploaded_by_label || row.uploaded_by || "",
     uploadedAt: row.created_at,
     status: row.status,
@@ -54,6 +60,8 @@ function publicUpload(row) {
     errorCount: row.error_count,
     safeErrorSummary: row.safe_error_summary || "",
     activatedAt: row.activated_at,
+    archiveStatus: row.archive_status || "none",
+    archivedAt: row.archived_at || null,
   };
 }
 
@@ -81,15 +89,26 @@ async function loadActiveUpload(supabase, companyId) {
 }
 
 async function loadAccountsForUpload(supabase, companyId, uploadId) {
+  return loadAllAccountsForUpload(supabase, ACCOUNTS, companyId, uploadId);
+}
+
+/** 030 kolonları yoksa sessizce atlanır — aktif plan bozulmaz. */
+async function patchUploadArchiveMeta(supabase, uploadId, patch) {
+  if (!uploadId || !patch) return;
+  const { error } = await supabase.from(UPLOADS).update(patch).eq("id", uploadId);
+  if (error && !/column|schema cache/i.test(String(error.message || ""))) {
+    throw error;
+  }
+}
+
+async function reloadUpload(supabase, uploadId) {
   const { data, error } = await supabase
-    .from(ACCOUNTS)
-    .select("id, company_id, upload_id, account_code, account_name, currency, is_active")
-    .eq("company_id", companyId)
-    .eq("upload_id", uploadId)
-    .is("deleted_at", null)
-    .order("account_code", { ascending: true });
+    .from(UPLOADS)
+    .select("*")
+    .eq("id", uploadId)
+    .maybeSingle();
   if (error) throw error;
-  return data || [];
+  return data;
 }
 
 export async function GET(request) {
@@ -119,25 +138,43 @@ export async function GET(request) {
           pageCount: 1,
           activeCount: 0,
           inactiveCount: 0,
+          planTotal: 0,
+          planActiveCount: 0,
+          planInactiveCount: 0,
         },
       });
     }
 
-    const rows = await loadAccountsForUpload(ctx.supabase, companyId, upload.id);
-    const mapped = rows.map(publicAccount);
+    const planCounts = await countAccountsForUpload(
+      ctx.supabase,
+      ACCOUNTS,
+      companyId,
+      upload.id
+    );
+
     const wantAll = request.nextUrl.searchParams.get("all") === "1";
     if (wantAll) {
+      // Bank Parser / Eksik Hesap — tam plan (1000+). Sayfalı döngü.
+      const rows = await loadAccountsForUpload(
+        ctx.supabase,
+        companyId,
+        upload.id
+      );
+      const mapped = rows.map(publicAccount);
       return NextResponse.json({
         accounts: mapped,
         upload: publicUpload(upload),
         source: "api",
         pagination: {
-          total: mapped.length,
+          total: planCounts.total,
           page: 1,
-          pageSize: mapped.length || 1,
+          pageSize: planCounts.total || 1,
           pageCount: 1,
-          activeCount: mapped.filter((r) => r.isActive !== false).length,
-          inactiveCount: mapped.filter((r) => r.isActive === false).length,
+          activeCount: planCounts.activeCount,
+          inactiveCount: planCounts.inactiveCount,
+          planTotal: planCounts.total,
+          planActiveCount: planCounts.activeCount,
+          planInactiveCount: planCounts.inactiveCount,
         },
       });
     }
@@ -145,19 +182,30 @@ export async function GET(request) {
     const page = Number(request.nextUrl.searchParams.get("page") || 1);
     const pageSize = Number(request.nextUrl.searchParams.get("pageSize") || 50);
     const q = request.nextUrl.searchParams.get("q") || "";
-    const pagination = paginateAccountPlanRows(mapped, { page, pageSize, query: q });
+    const pageResult = await queryAccountsPage(ctx.supabase, ACCOUNTS, {
+      companyId,
+      uploadId: upload.id,
+      page,
+      pageSize,
+      query: q,
+    });
 
     return NextResponse.json({
-      accounts: pagination.rows,
+      accounts: pageResult.rows.map(publicAccount),
       upload: publicUpload(upload),
       source: "api",
       pagination: {
-        total: pagination.total,
-        page: pagination.page,
-        pageSize: pagination.pageSize,
-        pageCount: pagination.pageCount,
-        activeCount: pagination.activeCount,
-        inactiveCount: pagination.inactiveCount,
+        total: pageResult.total,
+        page: pageResult.page,
+        pageSize: pageResult.pageSize,
+        pageCount: pageResult.pageCount,
+        // Rozetler: gerçek plan sayıları (sayfa/arama kesiti değil)
+        activeCount: planCounts.activeCount,
+        inactiveCount: planCounts.inactiveCount,
+        planTotal: planCounts.total,
+        planActiveCount: planCounts.activeCount,
+        planInactiveCount: planCounts.inactiveCount,
+        filteredTotal: pageResult.total,
       },
     });
   } catch (error) {
@@ -190,6 +238,13 @@ export async function POST(request) {
   const fileName = String(body.fileName || body.file_name || "")
     .replace(/[^\w.\- \u00C0-\u024F]/g, "")
     .slice(0, 180);
+  const originalFileName = String(body.originalFileName || fileName || "")
+    .replace(/[^\w.\- \u00C0-\u024F]/g, "")
+    .slice(0, 180);
+  const fileContentHash = String(body.fileContentHash || body.contentHash || "")
+    .trim()
+    .toLowerCase()
+    .slice(0, 128);
   const rawAccounts = Array.isArray(body.accounts) ? body.accounts : [];
   const accounts = rawAccounts
     .map((row) => normalizeAccountPlanRowInput(row))
@@ -218,10 +273,16 @@ export async function POST(request) {
         .select("*")
         .single();
       if (error) throw error;
+      await patchUploadArchiveMeta(supabase, data.id, {
+        original_file_name: originalFileName || fileName || "unknown.xlsx",
+        file_content_hash: fileContentHash,
+        archive_status: "none",
+      });
+      const refreshed = await reloadUpload(supabase, data.id);
       return NextResponse.json({
         ok: false,
         duplicate: false,
-        upload: publicUpload(data),
+        upload: publicUpload(refreshed || data),
         message: "Yükleme başarısız; aktif sürüm değiştirilmedi.",
       });
     } catch (error) {
@@ -260,10 +321,16 @@ export async function POST(request) {
         .select("*")
         .single();
       if (dupErr) throw dupErr;
+      await patchUploadArchiveMeta(supabase, dup.id, {
+        original_file_name: originalFileName || fileName || "duplicate.xlsx",
+        file_content_hash: fileContentHash,
+        archive_status: fileContentHash ? "duplicate_archived" : "none",
+      });
+      const refreshedDup = await reloadUpload(supabase, dup.id);
       return NextResponse.json({
         ok: true,
         duplicate: true,
-        upload: publicUpload(dup),
+        upload: publicUpload(refreshedDup || dup),
         message: "Mükerrer yükleme — yeniden işlenmedi",
         accounts: [],
       });
@@ -298,6 +365,12 @@ export async function POST(request) {
       .select("*")
       .single();
     if (uploadErr) throw uploadErr;
+
+    await patchUploadArchiveMeta(supabase, uploadRow.id, {
+      original_file_name: originalFileName || fileName || "plan.xlsx",
+      file_content_hash: fileContentHash,
+      archive_status: "none",
+    });
 
     const accountRows = accounts.map((a) => ({
       company_id: companyId,
@@ -347,10 +420,16 @@ export async function POST(request) {
       .single();
     if (actErr) throw actErr;
 
+    // Drive arşivi ayrı adım; başarısız olursa archive_pending — aktif plan bozulmaz
+    await patchUploadArchiveMeta(supabase, activated.id, {
+      archive_status: "archive_pending",
+    });
+    const refreshed = await reloadUpload(supabase, activated.id);
+
     return NextResponse.json({
       ok: true,
       duplicate: false,
-      upload: publicUpload(activated),
+      upload: publicUpload(refreshed || activated),
       message: "Hesap planı yüklendi.",
       stats: diff,
     });

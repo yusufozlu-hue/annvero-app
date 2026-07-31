@@ -20,7 +20,9 @@ function publicUpload(row) {
     id: row.id,
     companyId: row.company_id,
     fileName: row.file_name,
+    originalFileName: row.original_file_name || row.file_name || "",
     contentFingerprint: row.content_fingerprint,
+    fileContentHash: row.file_content_hash || "",
     uploadedBy: row.uploaded_by_label || row.uploaded_by || "",
     uploadedAt: row.created_at,
     status: row.status,
@@ -32,6 +34,8 @@ function publicUpload(row) {
     errorCount: row.error_count,
     safeErrorSummary: row.safe_error_summary || "",
     activatedAt: row.activated_at,
+    archiveStatus: row.archive_status || "none",
+    archivedAt: row.archived_at || null,
   };
 }
 
@@ -51,15 +55,27 @@ export async function GET(request) {
   if (ctx.error) return ctx.error;
 
   try {
-    const { data, error } = await ctx.supabase
+    let { data, error } = await ctx.supabase
       .from(UPLOADS)
       .select(
-        "id, company_id, file_name, content_fingerprint, uploaded_by, uploaded_by_label, status, is_active, total_rows, added_count, updated_count, skipped_count, error_count, safe_error_summary, created_at, activated_at"
+        "id, company_id, file_name, original_file_name, content_fingerprint, file_content_hash, uploaded_by, uploaded_by_label, status, is_active, total_rows, added_count, updated_count, skipped_count, error_count, safe_error_summary, created_at, activated_at, archive_status, archived_at"
       )
       .eq("company_id", companyId)
       .is("deleted_at", null)
       .order("created_at", { ascending: false })
       .limit(100);
+
+    if (error && /column|schema cache/i.test(String(error.message || ""))) {
+      ({ data, error } = await ctx.supabase
+        .from(UPLOADS)
+        .select(
+          "id, company_id, file_name, content_fingerprint, uploaded_by, uploaded_by_label, status, is_active, total_rows, added_count, updated_count, skipped_count, error_count, safe_error_summary, created_at, activated_at"
+        )
+        .eq("company_id", companyId)
+        .is("deleted_at", null)
+        .order("created_at", { ascending: false })
+        .limit(100));
+    }
     if (error) throw error;
     return NextResponse.json({ data: (data || []).map(publicUpload) });
   } catch (error) {
