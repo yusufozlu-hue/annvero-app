@@ -299,9 +299,9 @@ test("duplicate upload + archive_pending sözleşmesi (kaynak)", () => {
     path.join(process.cwd(), "app/api/account-plans/archive/route.js"),
     "utf8"
   );
-  assert.match(archiveSrc, /01 - Hesap Planı/);
-  assert.match(archiveSrc, /buildDatedArchiveFileName/);
-  assert.match(archiveSrc, /findDriveFileByCompanyContentHash/);
+  assert.match(archiveSrc, /01 - Hesap Planı|accountPlanArchive/);
+  assert.match(archiveSrc, /archiveAccountPlanBufferToDrive|buildDatedArchiveFileName/);
+  assert.match(archiveSrc, /findDriveFileByCompanyContentHash|reconcileArchiveByStoredHash/);
   assert.match(archiveSrc, /archive_pending/);
   assert.match(archiveSrc, /Drive id \/ token asla/);
   const publicFn = archiveSrc.slice(
@@ -309,6 +309,15 @@ test("duplicate upload + archive_pending sözleşmesi (kaynak)", () => {
     archiveSrc.indexOf("async function patchArchiveSafe")
   );
   assert.doesNotMatch(publicFn, /accessToken|providerFileId|fileId|rootFolderId/);
+  const core = fs.readFileSync(
+    path.join(process.cwd(), "src/utils/accountPlanArchive.js"),
+    "utf8"
+  );
+  assert.match(core, /01 - Hesap Planı/);
+  assert.match(core, /buildDatedArchiveFileName/);
+  assert.match(core, /findDriveFileByCompanyContentHash/);
+  assert.match(core, /reconcileArchiveByStoredHash/);
+  assert.doesNotMatch(core, /return[\s\S]{0,120}providerFileId/);
 });
 
 test("Bank Parser full plan hydrate", () => {

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import {
   assertCompanyAccess,
@@ -9,29 +8,16 @@ import {
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import { enforceBodySizeLimit } from "@/src/lib/security/requestGuards";
 import {
-  COMPANY_DRIVE_ERROR,
-  resolveCompanyDriveConnection,
-} from "@/src/lib/googleDrive/resolveCompanyDriveConnection";
-import {
-  findDriveFileByCompanyContentHash,
-  resolveDriveFolderPathFromRoot,
-  uploadGoogleDriveBinaryFile,
-} from "@/src/utils/cloudStorage/googleDriveAdapter";
-import {
-  buildDatedArchiveFileName,
-  DRIVE_UPLOAD_MAX_BYTES,
-  DRIVE_UPLOAD_SCHEMA_VERSION,
-  sanitizeUploadFileName,
-  validateUploadFileSize,
-  validateUploadFileType,
-} from "@/src/utils/cloudStorage/uploadPolicy";
+  archiveAccountPlanBufferToDrive,
+  reconcileArchiveByStoredHash,
+} from "@/src/utils/accountPlanArchive";
+import { DRIVE_UPLOAD_MAX_BYTES } from "@/src/utils/cloudStorage/uploadPolicy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const UPLOADS = "company_account_plan_uploads";
-const HESAP_PLANI_FOLDER = "01 - Hesap Planı";
 
 function isMissingRelation(error) {
   const msg = String(error?.message || error?.code || "");
@@ -73,7 +59,7 @@ async function patchArchiveSafe(supabase, uploadId, companyId, patch) {
 }
 
 /**
- * POST multipart: companyId, uploadId, file
+ * POST multipart: companyId, uploadId, file? (opsiyonel — yalnız hash reconcile)
  * Drive arşivi. Başarısızlık aktif planı silmez — archive_pending.
  */
 export async function POST(request) {
@@ -109,16 +95,12 @@ export async function POST(request) {
   });
   const uploadId = String(form.get("uploadId") || "").trim();
   const file = form.get("file");
+  const hasFile =
+    file && typeof file !== "string" && typeof file.arrayBuffer === "function";
 
   if (!companyId || !uploadId) {
     return NextResponse.json(
       { ok: false, error: "companyId ve uploadId zorunlu." },
-      { status: 400 }
-    );
-  }
-  if (!file || typeof file === "string" || typeof file.arrayBuffer !== "function") {
-    return NextResponse.json(
-      { ok: false, error: "Dosya zorunlu." },
       { status: 400 }
     );
   }
@@ -156,152 +138,90 @@ export async function POST(request) {
       );
     }
 
-    const originalName = sanitizeUploadFileName(
-      String(file.name || upload.file_name || "hesap-plani.xlsx")
-    );
-    const typeCheck = validateUploadFileType({
-      fileName: originalName,
-      mimeType: file.type || "",
-    });
-    if (!typeCheck.ok) {
-      await patchArchiveSafe(supabase, uploadId, companyId, {
-        archive_status: "archive_pending",
-        original_file_name: originalName,
-      });
-      return NextResponse.json(
-        {
-          ok: false,
-          code: typeCheck.code,
-          message: typeCheck.message,
-          archiveStatus: "archive_pending",
-        },
-        { status: 415 }
-      );
-    }
-
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const sizeCheck = validateUploadFileSize(buffer.byteLength);
-    if (!sizeCheck.ok) {
-      await patchArchiveSafe(supabase, uploadId, companyId, {
-        archive_status: "archive_pending",
-        original_file_name: originalName,
-      });
-      return NextResponse.json(
-        {
-          ok: false,
-          code: sizeCheck.code,
-          message: "Dosya boyutu geçersiz.",
-          archiveStatus: "archive_pending",
-        },
-        { status: sizeCheck.status || 400 }
-      );
-    }
-
-    const contentHash = createHash("sha256").update(buffer).digest("hex");
-    const { driveFileName } = buildDatedArchiveFileName(originalName);
-
-    // Aynı contentHash → ikinci Drive kopyası yok
-    let drive;
-    try {
-      drive = await resolveCompanyDriveConnection(companyId);
-    } catch (error) {
-      const code = error?.code || "OFFICE_CONNECTION_PENDING";
-      const soft = [
-        COMPANY_DRIVE_ERROR.FOLDER_BINDING_MISSING,
-        COMPANY_DRIVE_ERROR.OFFICE_CONNECTION_PENDING,
-        COMPANY_DRIVE_ERROR.ROOT_FOLDER_INVALID,
-        COMPANY_DRIVE_ERROR.ROOT_COMPANY_MISMATCH,
-        COMPANY_DRIVE_ERROR.CONNECTION_FOREIGN,
-      ].includes(code);
-      const patched = await patchArchiveSafe(supabase, uploadId, companyId, {
-        archive_status: soft ? "archive_skipped" : "archive_pending",
-        original_file_name: originalName,
-        file_content_hash: contentHash,
-      });
-      return NextResponse.json(
-        publicArchiveResult(patched || upload, {
-          ok: soft,
-          skipped: soft,
-          code,
-          archiveStatus: soft ? "archive_skipped" : "archive_pending",
-          message: "Drive arşivi ertelendi; aktif plan korundu.",
-        }),
-        { status: soft ? 200 : 502 }
-      );
-    }
-
-    try {
-      const existing = await findDriveFileByCompanyContentHash({
-        accessToken: drive.accessToken,
+    if (!hasFile) {
+      const reconciled = await reconcileArchiveByStoredHash({
         companyId,
-        contentHash,
+        contentHash: upload.file_content_hash || "",
+        originalFileName: upload.original_file_name || upload.file_name || "",
       });
-      if (existing) {
+      if (!reconciled.ok) {
         const patched = await patchArchiveSafe(supabase, uploadId, companyId, {
-          archive_status: "duplicate_archived",
-          original_file_name: originalName,
-          file_content_hash: contentHash,
-          archived_at: new Date().toISOString(),
+          archive_status: "archive_pending",
         });
         return NextResponse.json(
           publicArchiveResult(patched || upload, {
-            duplicate: true,
-            message: "Aynı içerik zaten Drive’da; ikinci kopya oluşturulmadı.",
-          })
+            ok: false,
+            code: reconciled.code || "FILE_REQUIRED",
+            archiveStatus: "archive_pending",
+            message:
+              reconciled.message ||
+              "Arşiv için orijinal Excel ekleyin (plan yeniden yüklenmez).",
+          }),
+          { status: reconciled.code === "FILE_REQUIRED" ? 400 : 502 }
         );
       }
-
-      const parentFolderId = await resolveDriveFolderPathFromRoot({
-        accessToken: drive.accessToken,
-        rootFolderId: drive.rootFolderId,
-        targetFolderPath: HESAP_PLANI_FOLDER,
-      });
-
-      await uploadGoogleDriveBinaryFile({
-        accessToken: drive.accessToken,
-        parentFolderId,
-        fileName: driveFileName,
-        mimeType: typeCheck.mimeType,
-        bytes: buffer,
-        appProperties: {
-          annveroCompanyId: String(companyId),
-          annveroContentHash: contentHash,
-          annveroSchemaVersion: DRIVE_UPLOAD_SCHEMA_VERSION,
-          annveroUploadId: String(uploadId),
-          annveroOriginalFileName: originalName.slice(0, 100),
-          annveroUploadedAt: new Date().toISOString(),
-          annveroDocumentType: "hesap_plani",
-        },
-      });
-
       const patched = await patchArchiveSafe(supabase, uploadId, companyId, {
-        archive_status: "archived",
-        original_file_name: originalName,
-        file_content_hash: contentHash,
+        archive_status: reconciled.archiveStatus,
+        original_file_name:
+          reconciled.originalFileName ||
+          upload.original_file_name ||
+          upload.file_name ||
+          "",
+        file_content_hash: reconciled.fileContentHash || upload.file_content_hash,
         archived_at: new Date().toISOString(),
       });
-
       return NextResponse.json(
         publicArchiveResult(patched || upload, {
-          message: "Hesap planı Drive’a arşivlendi.",
+          duplicate: true,
+          message: reconciled.message,
         })
       );
-    } catch {
-      const patched = await patchArchiveSafe(supabase, uploadId, companyId, {
-        archive_status: "archive_pending",
-        original_file_name: originalName,
-        file_content_hash: contentHash,
-      });
-      return NextResponse.json(
-        publicArchiveResult(patched || upload, {
-          ok: false,
-          code: "DRIVE_UPLOAD_FAILED",
-          archiveStatus: "archive_pending",
-          message: "Drive arşivi başarısız; aktif plan korundu.",
-        }),
-        { status: 502 }
-      );
     }
+
+    const originalName = String(
+      file.name || upload.original_file_name || upload.file_name || "hesap-plani.xlsx"
+    );
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const result = await archiveAccountPlanBufferToDrive({
+      companyId,
+      uploadId,
+      buffer,
+      originalFileName: originalName,
+      mimeType: file.type || "",
+    });
+
+    const patch = {
+      archive_status: result.archiveStatus || "archive_pending",
+      original_file_name: result.originalFileName || originalName,
+    };
+    if (result.fileContentHash) patch.file_content_hash = result.fileContentHash;
+    if (
+      result.archiveStatus === "archived" ||
+      result.archiveStatus === "duplicate_archived"
+    ) {
+      patch.archived_at = new Date().toISOString();
+    }
+
+    const patched = await patchArchiveSafe(supabase, uploadId, companyId, patch);
+    const softOk = result.ok === true || result.skipped === true;
+    const status =
+      softOk || result.archiveStatus === "archive_skipped"
+        ? 200
+        : result.code === "UNSUPPORTED_FILE_TYPE"
+          ? 415
+          : 502;
+
+    return NextResponse.json(
+      publicArchiveResult(patched || upload, {
+        ok: softOk,
+        skipped: Boolean(result.skipped),
+        duplicate: Boolean(result.duplicate),
+        code: result.code,
+        archiveStatus: result.archiveStatus,
+        message: result.message,
+      }),
+      { status }
+    );
   } catch (error) {
     if (isMissingRelation(error)) {
       return NextResponse.json(

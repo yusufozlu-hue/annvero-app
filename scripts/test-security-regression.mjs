@@ -2189,8 +2189,15 @@ test("Hesap planı + bildirim: tenant fail-closed ve yanlış rozet kaynağı yo
   );
   assert.match(archiveApi, /requireManagementApi/);
   assert.match(archiveApi, /assertCompanyAccess/);
-  assert.match(archiveApi, /01 - Hesap Planı/);
+  assert.match(archiveApi, /archiveAccountPlanBufferToDrive|reconcileArchiveByStoredHash/);
   assert.doesNotMatch(archiveApi, /return[\s\S]{0,200}providerFileId/);
+  const archiveCore = fs.readFileSync(
+    path.join(root, "src/utils/accountPlanArchive.js"),
+    "utf8"
+  );
+  assert.match(archiveCore, /01 - Hesap Planı/);
+  assert.match(archiveCore, /findDriveFileByCompanyContentHash/);
+  assert.doesNotMatch(archiveCore, /return[\s\S]{0,200}providerFileId/);
 
   const notifApi = fs.readFileSync(
     path.join(root, "app/api/user-notifications/route.js"),
