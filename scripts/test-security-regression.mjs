@@ -2147,7 +2147,6 @@ test("Banka ekstresi: COMPANY_MISMATCH Drive/persist öncesi fail-closed", () =>
     workbenchSrc,
     /PipelineError zaten set; Drive\/persist\/hafıza yok/
   );
-  // VALIDATING aşamasında guard; ARCHIVING (Drive) sonra
   const validatingDetail = workbenchSrc.indexOf(
     "Dosya ve firma doğrulanıyor"
   );
@@ -2165,6 +2164,41 @@ test("Banka ekstresi: COMPANY_MISMATCH Drive/persist öncesi fail-closed", () =>
     workbenchSrc.slice(validatingDetail, archivingDetail),
     /blockPipeline/
   );
+});
+
+test("Hesap planı + bildirim: tenant fail-closed ve yanlış rozet kaynağı yok", () => {
+  const topbar = fs.readFileSync(
+    path.join(root, "src/components/AnnveroTopbar.jsx"),
+    "utf8"
+  );
+  assert.doesNotMatch(topbar, /fetchPendingTransactionCount/);
+  assert.match(topbar, /fetchUnreadNotificationCount/);
+
+  const plansApi = fs.readFileSync(
+    path.join(root, "app/api/account-plans/route.js"),
+    "utf8"
+  );
+  assert.match(plansApi, /requireManagementApi/);
+  assert.match(plansApi, /assertCompanyAccess/);
+
+  const notifApi = fs.readFileSync(
+    path.join(root, "app/api/user-notifications/route.js"),
+    "utf8"
+  );
+  assert.match(notifApi, /eq\("user_id", userId\)/);
+  assert.match(notifApi, /status: 403/);
+
+  const migration = fs.readFileSync(
+    path.join(
+      root,
+      "supabase/migrations/029_account_plan_uploads_and_user_notifications.sql"
+    ),
+    "utf8"
+  );
+  assert.match(migration, /company_account_plan_uploads/);
+  assert.match(migration, /user_app_notifications/);
+  assert.match(migration, /annvero_can_access_company/);
+  assert.doesNotMatch(migration, /\bdrop table\b/i);
 });
 
 for (const { name, fn } of __securityTestQueue) {

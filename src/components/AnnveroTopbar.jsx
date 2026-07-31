@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AuthUserBar from "@/src/components/AuthUserBar";
 import { useCompanyList } from "@/app/(annvero)/muhasebe/hooks/useCompanyList";
@@ -9,7 +8,13 @@ import {
   loadRecentCompanyIds,
   toggleFavoriteCompanyId,
 } from "@/src/utils/companyPreferences";
-import { fetchPendingTransactionCount } from "@/src/utils/transactionMemoryApi";
+import {
+  fetchUserNotifications,
+  fetchUnreadNotificationCount,
+  formatNotificationBadgeCount,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from "@/src/utils/userNotificationsApi";
 import { annveroInputClass } from "@/src/styles/annveroDesign";
 
 const DROPDOWN_MAX_WIDTH = 520;
@@ -37,11 +42,17 @@ export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
   const [favoriteIds, setFavoriteIds] = useState([]);
   const [recentIds, setRecentIds] = useState([]);
   const [notificationCount, setNotificationCount] = useState(0);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifItems, setNotifItems] = useState([]);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [notifPage, setNotifPage] = useState(1);
   const [highlightIndex, setHighlightIndex] = useState(-1);
 
   const dropdownRef = useRef(null);
+  const notifRef = useRef(null);
   const searchInputRef = useRef(null);
   const listRef = useRef(null);
+  const badgeLabel = formatNotificationBadgeCount(notificationCount);
 
   useEffect(() => {
     // Client-only prefs — SSR ile ilk paint aynı (React #418); setState sync effect yasak
@@ -67,6 +78,15 @@ export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
     setDropdownOpen(true);
   }, []);
 
+  const refreshUnreadCount = useCallback(async () => {
+    try {
+      const count = await fetchUnreadNotificationCount();
+      setNotificationCount(count);
+    } catch {
+      setNotificationCount(0);
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
     let idleId = null;
@@ -75,14 +95,7 @@ export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
     function scheduleLoad() {
       const run = () => {
         if (!active) return;
-        void (async () => {
-          try {
-            const pendingCount = await fetchPendingTransactionCount(selectedCompanyId || "");
-            if (active) setNotificationCount(pendingCount);
-          } catch {
-            if (active) setNotificationCount(0);
-          }
-        })();
+        void refreshUnreadCount();
       };
 
       if (typeof window !== "undefined" && "requestIdleCallback" in window) {
@@ -105,7 +118,56 @@ export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
       }
       if (interval) clearInterval(interval);
     };
-  }, [selectedCompanyId]);
+  }, [refreshUnreadCount]);
+
+  const openNotifications = useCallback(async () => {
+    setNotifOpen(true);
+    setNotifLoading(true);
+    try {
+      const result = await fetchUserNotifications({ page: 1, pageSize: 20 });
+      setNotifItems(Array.isArray(result.data) ? result.data : []);
+      setNotificationCount(Number(result.unreadCount) || 0);
+      setNotifPage(1);
+    } catch {
+      setNotifItems([]);
+    } finally {
+      setNotifLoading(false);
+    }
+  }, []);
+
+  const loadMoreNotifications = useCallback(async () => {
+    const next = notifPage + 1;
+    setNotifLoading(true);
+    try {
+      const result = await fetchUserNotifications({ page: next, pageSize: 20 });
+      const rows = Array.isArray(result.data) ? result.data : [];
+      setNotifItems((prev) => [...prev, ...rows]);
+      setNotifPage(next);
+      setNotificationCount(Number(result.unreadCount) || 0);
+    } catch {
+      /* ignore */
+    } finally {
+      setNotifLoading(false);
+    }
+  }, [notifPage]);
+
+  useEffect(() => {
+    if (!notifOpen) return;
+    function handlePointerOutside(event) {
+      if (notifRef.current && !notifRef.current.contains(event.target)) {
+        setNotifOpen(false);
+      }
+    }
+    function handleEscape(event) {
+      if (event.key === "Escape") setNotifOpen(false);
+    }
+    document.addEventListener("mousedown", handlePointerOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [notifOpen]);
 
   useEffect(() => {
     if (!dropdownOpen) return;
@@ -433,20 +495,136 @@ export default function AnnveroTopbar({ onMenuToggle, menuOpen = false }) {
         </div>
 
         <div className="flex items-center gap-2">
-          <Link
-            href="/muhasebe/islem-hafizasi"
-            className="relative rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] p-2.5 text-[var(--annvero-text-muted)] transition hover:border-amber-500/40 hover:text-amber-600"
-            title="Bildirimler"
-          >
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M15 17H9l-1 5h8l-1-5ZM18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" />
-            </svg>
-            {notificationCount > 0 ? (
-              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-slate-950">
-                {notificationCount > 99 ? "99+" : notificationCount}
-              </span>
+          <div className="relative" ref={notifRef}>
+            <button
+              type="button"
+              onClick={() => {
+                if (notifOpen) {
+                  setNotifOpen(false);
+                  return;
+                }
+                void openNotifications();
+              }}
+              className="relative rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] p-2.5 text-[var(--annvero-text-muted)] transition hover:border-amber-500/40 hover:text-amber-600"
+              title="Bildirimler"
+              aria-expanded={notifOpen}
+              aria-haspopup="dialog"
+            >
+              <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M15 17H9l-1 5h8l-1-5ZM18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" />
+              </svg>
+              {badgeLabel ? (
+                <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-slate-950">
+                  {badgeLabel}
+                </span>
+              ) : null}
+            </button>
+
+            {notifOpen ? (
+              <div
+                role="dialog"
+                aria-label="Bildirimler"
+                className="absolute right-0 z-50 mt-2 w-[min(100vw-1.5rem,22rem)] overflow-hidden rounded-xl border border-[var(--annvero-border)] bg-[var(--annvero-surface)] shadow-xl"
+              >
+                <div className="flex items-center justify-between border-b border-[var(--annvero-border)] px-3 py-2">
+                  <p className="text-sm font-semibold text-[var(--annvero-text)]">
+                    Bildirimler
+                  </p>
+                  <button
+                    type="button"
+                    className="text-[11px] font-semibold text-amber-600 hover:underline disabled:opacity-40"
+                    disabled={!notificationCount}
+                    onClick={async () => {
+                      await markAllNotificationsRead();
+                      setNotifItems((prev) =>
+                        prev.map((n) => ({
+                          ...n,
+                          unread: false,
+                          readAt: n.readAt || new Date().toISOString(),
+                        }))
+                      );
+                      setNotificationCount(0);
+                    }}
+                  >
+                    Tümünü okundu
+                  </button>
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {notifLoading && notifItems.length === 0 ? (
+                    <p className="px-3 py-6 text-center text-xs text-[var(--annvero-text-muted)]">
+                      Yükleniyor…
+                    </p>
+                  ) : notifItems.length === 0 ? (
+                    <p className="px-3 py-6 text-center text-xs text-[var(--annvero-text-muted)]">
+                      Okunmamış bildirim yok.
+                    </p>
+                  ) : (
+                    notifItems.map((item) => (
+                      <div
+                        key={item.id}
+                        className={`border-b border-[var(--annvero-border)]/60 px-3 py-2.5 ${
+                          item.unread ? "bg-amber-500/5" : ""
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-[var(--annvero-text)]">
+                              {item.title}
+                            </p>
+                            {item.body ? (
+                              <p className="mt-0.5 line-clamp-2 text-xs text-[var(--annvero-text-muted)]">
+                                {item.body}
+                              </p>
+                            ) : null}
+                            <p className="mt-1 text-[10px] text-[var(--annvero-text-muted)]">
+                              {item.companyId ? `${item.companyId.slice(0, 8)}… · ` : ""}
+                              {item.createdAt
+                                ? new Date(item.createdAt).toLocaleString("tr-TR")
+                                : ""}
+                            </p>
+                          </div>
+                          {item.unread ? (
+                            <button
+                              type="button"
+                              className="shrink-0 text-[10px] font-semibold text-amber-600 hover:underline"
+                              onClick={async () => {
+                                const result = await markNotificationRead(item.id);
+                                setNotifItems((prev) =>
+                                  prev.map((n) =>
+                                    n.id === item.id
+                                      ? {
+                                          ...n,
+                                          unread: false,
+                                          readAt: new Date().toISOString(),
+                                        }
+                                      : n
+                                  )
+                                );
+                                setNotificationCount(
+                                  Number(result.unreadCount) || 0
+                                );
+                              }}
+                            >
+                              Okundu
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {notifItems.length >= 20 ? (
+                  <button
+                    type="button"
+                    onClick={() => void loadMoreNotifications()}
+                    className="w-full border-t border-[var(--annvero-border)] py-2 text-xs font-semibold text-[var(--annvero-text-muted)] hover:bg-[var(--annvero-hover)]"
+                  >
+                    Daha fazla
+                  </button>
+                ) : null}
+              </div>
             ) : null}
-          </Link>
+          </div>
 
           <div className="hidden sm:block">
             <AuthUserBar variant="embedded" showAdminLink />
