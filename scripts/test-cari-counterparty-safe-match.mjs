@@ -193,20 +193,20 @@ test("E: Genel 120/320 leaf yerine seçilemez", () => {
   assert.equal(isSelectableCariLeafAccount("120.10.B0001", parents), true);
 });
 
-test("F: Düşük güven — otomatik öğrenme varsayılan/izin kapalı", () => {
+test("F: Leaf seçimde öğrenme varsayılan açık; parent kapalı", () => {
   assert.equal(
     shouldDefaultCariAutoLearn({
       confidence: 40,
       accountCode: "120.10.B0001",
     }),
-    false
+    true
   );
   assert.equal(
     canEnableCariAutoLearn({
       confidence: 40,
       accountCode: "120.10.B0001",
     }),
-    false
+    true
   );
   assert.equal(
     canEnableCariAutoLearn({

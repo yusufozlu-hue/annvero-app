@@ -55,6 +55,12 @@ import {
 } from "@/src/utils/accountMemoryV2";
 import { runCariResolutionGroupApply } from "@/src/utils/cariResolutionGroupApply";
 import {
+  reanalyzeAfterMissingAccountApply,
+  snapshotLucaRowsForUndo,
+  restoreLucaRowsFromUndoSnapshot,
+} from "@/src/utils/missingAccountsReanalyze";
+import { classifyFisKontrolFindings } from "@/src/utils/fisKontrolFindingClasses";
+import {
   recordCariStageFinalMissing,
   recordCariStageHydrate,
   resetCariStageTrace,
@@ -475,6 +481,7 @@ export default function BankParserWorkbench() {
   const [resolvedCariGroups, setResolvedCariGroups] = useState([]);
   const [applyingCariGroupId, setApplyingCariGroupId] = useState(null);
   const [lastCariApplyMessage, setLastCariApplyMessage] = useState("");
+  const [cariApplyUndoStack, setCariApplyUndoStack] = useState([]);
   const cariResolutionCancelRef = useRef(null);
   const cariResolutionGenerationRef = useRef(0);
   const showCariResolutionCenterRef = useRef(false);
@@ -566,6 +573,11 @@ export default function BankParserWorkbench() {
   useEffect(() => {
     // Mount + firma değişimi: senkron localStorage hydrate (stale closure yok)
     refreshAccountMemorySnapshot(selectedCompanyId || "");
+    setResolvedCariGroupIds(new Set());
+    setResolvedCariGroups([]);
+    setCariApplyUndoStack([]);
+    setCariResolutionSnapshot(null);
+    setLastCariApplyMessage("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCompanyId]);
 
@@ -1475,6 +1487,10 @@ export default function BankParserWorkbench() {
 
     setApplyingCariGroupId(group.id);
     try {
+      const undoSnap = snapshotLucaRowsForUndo(
+        lucaRef.current || [],
+        group.rowIds || []
+      );
       const applyResult = runCariResolutionGroupApply({
         lucaRows: lucaRef.current || [],
         group,
@@ -1485,16 +1501,39 @@ export default function BankParserWorkbench() {
         resolveMemoryLearnContext,
       });
       lucaRef.current = applyResult.lucaRows;
-      const updated = applyResult.updated;
-      const learned = Boolean(applyResult.learned);
-      const learnPersistFailed = Boolean(applyResult.learnPersistFailed);
-      const learnSaveTrace = applyResult.learnSaveTrace;
-      if (typeof window !== "undefined" && learn && learnSaveTrace) {
-        window.__ANNVERO_CARI_LEARN_SAVE_TRACE__ = learnSaveTrace;
+
+      const reanalyze = reanalyzeAfterMissingAccountApply({
+        lucaRows: lucaRef.current || [],
+        companyId: selectedCompanyId,
+        bankName: selectedBank,
+        skipMemoryPass: !learn,
+      });
+      lucaRef.current = reanalyze.lucaRows;
+
+      if (typeof window !== "undefined" && learn && applyResult.learnSaveTrace) {
+        window.__ANNVERO_CARI_LEARN_SAVE_TRACE__ = applyResult.learnSaveTrace;
       }
 
       syncLucaPage(lucaPage);
       const { report, snapshot } = rebuildCariResolutionSnapshot();
+      setPipelineResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...reanalyze.pipelinePatch,
+              lucaRowCount: (lucaRef.current || []).length,
+            }
+          : prev
+      );
+      setCariApplyUndoStack((prev) => [
+        ...prev,
+        {
+          kind: "single",
+          groupIds: [group.id],
+          rowSnapshot: undoSnap,
+          learned: Boolean(applyResult.learned),
+        },
+      ]);
       setResolvedCariGroupIds((prev) => {
         const next = new Set(prev);
         next.add(group.id);
@@ -1513,29 +1552,184 @@ export default function BankParserWorkbench() {
           },
         ];
       });
+      const memNote =
+        learn && applyResult.learned
+          ? " · firma hafızasına kaydedildi"
+          : reanalyze.memoryApplied
+            ? ` · hafızadan +${reanalyze.memoryApplied} satır`
+            : "";
       setLastCariApplyMessage(
-        `${updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik hesap sayısı ${applyResult.beforeMissing}’ten ${report.missingCount}’e düştü.`
+        `${applyResult.updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${memNote}. Yeniden analiz ${reanalyze.durationMs} ms.`
       );
       setCariResolutionSnapshot(snapshot);
-      if (learn && learnPersistFailed) {
+      if (learn && applyResult.learnPersistFailed) {
         const reason =
-          learnSaveTrace?.immediateReadBack?.rejectReason ||
+          applyResult.learnSaveTrace?.immediateReadBack?.rejectReason ||
           "save_or_readback_failed";
         showToast(
-          `Otomatik tanı kaydedilemedi (${reason}). Satırlar bu oturumda güncellendi; yenilemede BİLET tekrar Kalanlar’a düşebilir.`,
+          `Otomatik tanı kaydedilemedi (${reason}). Satırlar bu oturumda güncellendi.`,
           "error"
         );
-      } else if (learn && learned) {
+      } else if (learn && applyResult.learned) {
         showToast(
-          `${updated} satıra uygulandı (öğrenildi; sonraki işlemlerde otomatik)`,
+          `${applyResult.updated} satıra uygulandı (öğrenildi; yeniden analiz edildi)`,
           "success"
         );
       } else {
-        showToast(`${updated} satıra uygulandı`, "success");
+        showToast(
+          `${applyResult.updated} satıra uygulandı (yeniden analiz ${reanalyze.durationMs} ms)`,
+          "success"
+        );
       }
     } finally {
       setApplyingCariGroupId(null);
     }
+  };
+
+  const handleBulkApplyCariResolutionGroups = ({
+    groups = [],
+    accountCode,
+    accountName = "",
+    learn = false,
+    affectedRowCount = 0,
+  } = {}) => {
+    const code = String(accountCode || "").trim();
+    if (!code || !groups.length) return;
+    const confirmed = window.confirm(
+      `${groups.length} gruba / yaklaşık ${affectedRowCount || "?"} satıra ${code} uygulanacak.\nBu firma için öğren: ${learn ? "Evet" : "Hayır"}\nDevam edilsin mi?`
+    );
+    if (!confirmed) return;
+
+    setApplyingCariGroupId("__bulk__");
+    try {
+      const allRowIds = groups.flatMap((g) => g.rowIds || []);
+      const undoSnap = snapshotLucaRowsForUndo(lucaRef.current || [], allRowIds);
+      let nextRows = lucaRef.current || [];
+      let totalUpdated = 0;
+      let anyLearned = false;
+      let learnFailed = false;
+      for (const group of groups) {
+        if (!isAccountAllowedForDirection(code, group.direction)) continue;
+        if (group.foreignVendor && isExpenseAccountCode(code)) continue;
+        const applyResult = runCariResolutionGroupApply({
+          lucaRows: nextRows,
+          group,
+          accountCode: code,
+          learn: Boolean(learn),
+          selectedCompanyId,
+          selectedBank,
+          resolveMemoryLearnContext,
+        });
+        nextRows = applyResult.lucaRows;
+        totalUpdated += applyResult.updated || 0;
+        if (applyResult.learned) anyLearned = true;
+        if (applyResult.learnPersistFailed) learnFailed = true;
+      }
+      lucaRef.current = nextRows;
+      const reanalyze = reanalyzeAfterMissingAccountApply({
+        lucaRows: lucaRef.current || [],
+        companyId: selectedCompanyId,
+        bankName: selectedBank,
+        skipMemoryPass: !learn,
+      });
+      lucaRef.current = reanalyze.lucaRows;
+      syncLucaPage(lucaPage);
+      const { report, snapshot } = rebuildCariResolutionSnapshot();
+      setPipelineResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...reanalyze.pipelinePatch,
+              lucaRowCount: (lucaRef.current || []).length,
+            }
+          : prev
+      );
+      setCariApplyUndoStack((prev) => [
+        ...prev,
+        {
+          kind: "bulk",
+          groupIds: groups.map((g) => g.id),
+          rowSnapshot: undoSnap,
+          learned: anyLearned,
+        },
+      ]);
+      setResolvedCariGroupIds((prev) => {
+        const next = new Set(prev);
+        for (const g of groups) next.add(g.id);
+        return next;
+      });
+      setResolvedCariGroups((prev) => {
+        const ids = new Set(groups.map((g) => g.id));
+        const without = prev.filter((g) => !ids.has(g.id));
+        return [
+          ...without,
+          ...groups.map((g) => ({
+            ...g,
+            status: "resolved",
+            suggestedAccount: code,
+            suggestedName: String(accountName || ""),
+            isResolved: true,
+          })),
+        ];
+      });
+      setCariResolutionSnapshot(snapshot);
+      setLastCariApplyMessage(
+        `Toplu: ${groups.length} grup · ${totalUpdated} satır → ${code}. Eksik kalan: ${report.missingCount}. Yeniden analiz ${reanalyze.durationMs} ms.`
+      );
+      if (learnFailed) {
+        showToast("Bazı öğrenme kayıtları başarısız; satırlar güncellendi.", "error");
+      } else {
+        showToast(
+          `Toplu uygulandı: ${totalUpdated} satır${anyLearned ? " (öğrenildi)" : ""}`,
+          "success"
+        );
+      }
+    } finally {
+      setApplyingCariGroupId(null);
+    }
+  };
+
+  const handleUndoLastCariApply = () => {
+    setCariApplyUndoStack((prev) => {
+      if (!prev.length) return prev;
+      const last = prev[prev.length - 1];
+      lucaRef.current = restoreLucaRowsFromUndoSnapshot(
+        lucaRef.current || [],
+        last.rowSnapshot || []
+      );
+      const reanalyze = reanalyzeAfterMissingAccountApply({
+        lucaRows: lucaRef.current || [],
+        companyId: selectedCompanyId,
+        bankName: selectedBank,
+        skipMemoryPass: true,
+      });
+      lucaRef.current = reanalyze.lucaRows;
+      syncLucaPage(lucaPage);
+      const { report, snapshot } = rebuildCariResolutionSnapshot();
+      setPipelineResult((p) =>
+        p
+          ? {
+              ...p,
+              ...reanalyze.pipelinePatch,
+              lucaRowCount: (lucaRef.current || []).length,
+            }
+          : p
+      );
+      setResolvedCariGroupIds((ids) => {
+        const next = new Set(ids);
+        for (const id of last.groupIds || []) next.delete(id);
+        return next;
+      });
+      setResolvedCariGroups((groups) =>
+        groups.filter((g) => !(last.groupIds || []).includes(g.id))
+      );
+      setCariResolutionSnapshot(snapshot);
+      setLastCariApplyMessage(
+        `Son uygulama geri alındı. Eksik hesap: ${report.missingCount}.`
+      );
+      showToast("Son eşleştirme geri alındı.", "success");
+      return prev.slice(0, -1);
+    });
   };
 
   const handleDownloadMissingReport = async () => {
@@ -3493,6 +3687,9 @@ export default function BankParserWorkbench() {
             companyId: selectedCompanyId,
             firmaId: selectedCompanyId,
           });
+          const findingClasses = classifyFisKontrolFindings(
+            fisKontrolResult.analysis || {}
+          );
           stageOutputs[V1_JOB_STATE.CONTROLLING_VOUCHERS] = {
             passed: fisKontrolResult.passed,
             warnings: fisKontrolResult.warnings,
@@ -3506,6 +3703,11 @@ export default function BankParserWorkbench() {
             uniqueMatchedMovements: validation.uniqueMatchedMovements,
             uniqueUnresolvedMovements: validation.uniqueUnresolvedMovements,
             readyCount: validation.readyCount,
+            findingClasses,
+          };
+          fisKontrolResult = {
+            ...fisKontrolResult,
+            findingClasses,
           };
           stageDurations.fisKontrolMs = validation.durationMs;
         } else {
@@ -3629,6 +3831,10 @@ export default function BankParserWorkbench() {
         reviewRequired: resultSummary.reviewRequired,
         canAutoApprove: resultSummary.canAutoApprove,
         fisKontrolHref: resultSummary.fisKontrolHref,
+        findingClasses:
+          fisKontrolResult?.findingClasses ||
+          validationMeta.findingClasses ||
+          null,
         terminalStatus,
         totalDurationMs,
         stageDurations,
@@ -5024,6 +5230,9 @@ export default function BankParserWorkbench() {
             resolvedGroupIds={resolvedCariGroupIds}
             resolvedGroups={resolvedCariGroups}
             onApplyGroup={handleApplyCariResolutionGroup}
+            onBulkApplyGroups={handleBulkApplyCariResolutionGroups}
+            onUndoLastApply={handleUndoLastCariApply}
+            canUndo={cariApplyUndoStack.length > 0}
             applyingId={applyingCariGroupId}
             lastApplyMessage={lastCariApplyMessage}
             loading={cariResolutionLoading}

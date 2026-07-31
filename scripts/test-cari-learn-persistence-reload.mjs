@@ -66,7 +66,7 @@ const LONG_DESC =
 const SHORT_PARTY = "TURKIYE CUMHURIYETI ZIRAAT BANKASI AS 90001 BILETDUK";
 const SHORT_CODE = "BILETDUK";
 
-test("checkbox güvenli öğrenme: yalnız yüksek güven leaf, varsayılan kapalı", () => {
+test("checkbox güvenli öğrenme: leaf varsayılan açık; mükerrer/parent kapalı", () => {
   assert.equal(
     shouldDefaultCariAutoLearn({
       confidence: 95,
@@ -74,7 +74,7 @@ test("checkbox güvenli öğrenme: yalnız yüksek güven leaf, varsayılan kapa
       duplicateAccounts: false,
       partyName: SHORT_PARTY,
     }),
-    false
+    true
   );
   assert.equal(
     canEnableCariAutoLearn({
@@ -90,7 +90,7 @@ test("checkbox güvenli öğrenme: yalnız yüksek güven leaf, varsayılan kapa
       accountCode: ACCOUNT,
       duplicateAccounts: false,
     }),
-    false
+    true
   );
   assert.equal(
     canEnableCariAutoLearn({

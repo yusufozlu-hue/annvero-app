@@ -359,6 +359,37 @@ export function BankPipelineResultCard({
         </p>
       ) : null}
 
+      {Array.isArray(result.findingClasses?.classes) &&
+      result.findingClasses.classes.length > 0 ? (
+        <div className="mt-4 rounded-xl border border-slate-700/60 bg-slate-950/50 px-3 py-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Hata sınıfları
+          </p>
+          <ul className="mt-2 space-y-2">
+            {result.findingClasses.classes.slice(0, 8).map((cls) => (
+              <li
+                key={cls.id}
+                className="rounded-lg border border-slate-800/80 bg-slate-900/40 px-2.5 py-2 text-xs text-slate-200"
+              >
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="font-semibold text-white">{cls.label}</span>
+                  <span className="text-slate-400">
+                    {cls.count} bulgu
+                    {cls.errorCount ? ` · ${cls.errorCount} hata` : ""}
+                  </span>
+                </div>
+                <p className="mt-1 text-slate-400">
+                  Neden engellendi: {cls.why}
+                </p>
+                <p className="mt-0.5 text-sky-200/90">
+                  Ne yapmalı: {cls.action}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {result.driveArchived || result.driveSkipped ? (
         <p className="mt-3 text-xs text-slate-400">
           Drive:{" "}
