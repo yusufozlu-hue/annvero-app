@@ -103,16 +103,19 @@ export async function uploadAccountPlan({
 
 /**
  * Orijinal Excel’i “01 - Hesap Planı” klasörüne arşivler.
+ * file opsiyonel: kayıtlı contentHash ile Drive reconcile (ikinci kopya yok).
  * Drive id/token dönmez. Başarısızlık aktif planı bozmaz.
  */
 export async function archiveAccountPlanFile({ companyId, uploadId, file }) {
-  if (!companyId || !uploadId || !file) {
+  if (!companyId || !uploadId) {
     return { ok: false, skipped: true, code: "MISSING_INPUT" };
   }
   const form = new FormData();
   form.set("companyId", companyId);
   form.set("uploadId", uploadId);
-  form.set("file", file, file.name || "hesap-plani.xlsx");
+  if (file) {
+    form.set("file", file, file.name || "hesap-plani.xlsx");
+  }
   const response = await fetch("/api/account-plans/archive", {
     method: "POST",
     credentials: "include",
