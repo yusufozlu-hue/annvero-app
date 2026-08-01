@@ -266,6 +266,8 @@ export function BankPipelineResultCard({
   onPartialExport,
   onGoToLucaProducer,
   onGoToFisKontrol,
+  onReanalyzeWithNewPlan,
+  isReanalyzing = false,
   auditHistory = [],
   primaryBtnClass = "",
   secondaryBtnClass = "",
@@ -276,6 +278,11 @@ export function BankPipelineResultCard({
 
   const missing = Number(result.missingCount) || 0;
   const hint = buildMissingAccountsHint(missing);
+  const isDuplicate =
+    Boolean(result.duplicate) || result.terminalStatus === "duplicate";
+  const compareRows = Array.isArray(result.revisionCompare?.rows)
+    ? result.revisionCompare.rows
+    : null;
   const stats = [
     { label: "Hareket", value: result.movementCount },
     { label: "Luca satırı", value: result.lucaRowCount },
@@ -316,19 +323,23 @@ export function BankPipelineResultCard({
         </div>
         <div>
           <h3 className="text-xl font-semibold text-white">
-            {result.duplicate || result.terminalStatus === "duplicate"
+            {isDuplicate
               ? "Mükerrer ekstre"
-              : result.reviewRequired
-                ? "İnceleme Gerekli"
-                : "İşlem ve Kontrol Tamamlandı"}
+              : result.reanalyze
+                ? "Yeniden analiz tamamlandı"
+                : result.reviewRequired
+                  ? "İnceleme Gerekli"
+                  : "İşlem ve Kontrol Tamamlandı"}
           </h3>
           <p className="mt-1 text-sm text-emerald-100/80">
-            {result.duplicate || result.terminalStatus === "duplicate"
+            {isDuplicate
               ? result.duplicateMessage ||
                 "Mükerrer ekstre — yeniden işlenmedi"
-              : result.reviewRequired
-                ? "Kritik veya düşük güven satırlar var — otomatik onay / Luca-Elektra aktarımı kapalı."
-                : "Tek tuş zinciri tamamlandı. Çıktıları indirebilir veya Fiş Kontrol’e gidebilirsiniz."}
+              : result.reanalyze
+                ? "Mevcut arşiv kaynağı yeni hesap planıyla yeniden analiz edildi."
+                : result.reviewRequired
+                  ? "Kritik veya düşük güven satırlar var — otomatik onay / Luca-Elektra aktarımı kapalı."
+                  : "Tek tuş zinciri tamamlandı. Çıktıları indirebilir veya Fiş Kontrol’e gidebilirsiniz."}
           </p>
         </div>
       </div>
@@ -352,6 +363,32 @@ export function BankPipelineResultCard({
           </div>
         ))}
       </div>
+
+      {compareRows ? (
+        <div className="mt-4 rounded-xl border border-sky-700/40 bg-sky-950/25 px-3 py-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-sky-200/90">
+            Önceki vs yeni analiz
+          </p>
+          <ul className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {compareRows.map((row) => (
+              <li
+                key={row.key}
+                className="rounded-lg border border-sky-900/50 bg-slate-950/40 px-2.5 py-2 text-xs text-slate-200"
+              >
+                <span className="font-semibold text-white">{row.label}</span>
+                <p className="mt-1 text-slate-300">
+                  Önceki: {row.previous ?? "—"} → Yeni: {row.next ?? "—"}
+                </p>
+              </li>
+            ))}
+          </ul>
+          {result.accountPlanCount ? (
+            <p className="mt-2 text-[11px] text-sky-200/70">
+              Aktif hesap planı: {result.accountPlanCount} hesap tarandı
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       {hint ? (
         <p className="mt-4 rounded-xl border border-amber-600/40 bg-amber-950/30 px-3 py-2.5 text-sm text-amber-100/90">
@@ -394,12 +431,27 @@ export function BankPipelineResultCard({
         <p className="mt-3 text-xs text-slate-400">
           Drive:{" "}
           {result.driveArchived
-            ? "kaynak arşivlendi"
+            ? result.reanalyze
+              ? "mevcut arşiv yeniden kullanıldı (ikinci kopya yok)"
+              : "kaynak arşivlendi"
             : "arşiv atlandı (bağlantı yok) — banka akışı engellenmedi"}
         </p>
       ) : null}
 
       <div className="mt-5 flex flex-wrap gap-2">
+        {isDuplicate && typeof onReanalyzeWithNewPlan === "function" ? (
+          <button
+            type="button"
+            onClick={onReanalyzeWithNewPlan}
+            disabled={isReanalyzing || isExporting}
+            className="rounded-xl bg-sky-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+            data-testid="bank-reanalyze-with-new-plan"
+          >
+            {isReanalyzing
+              ? "Yeniden analiz ediliyor…"
+              : "Yeni hesap planıyla yeniden analiz et"}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={onDownloadExcel}
@@ -467,7 +519,12 @@ export function BankPipelineResultCard({
           <ul className="mt-2 space-y-1 text-xs text-slate-300">
             {auditHistory.slice(0, 5).map((run) => (
               <li key={run.id || run.createdAt}>
-                {(run.metadata?.terminal_status || "kayıt").toString()} ·{" "}
+                {(run.metadata?.terminal_status || "kayıt").toString()}
+                {run.metadata?.reanalyze ? " · revision" : ""}
+                {run.metadata?.revision != null
+                  ? ` #${run.metadata.revision}`
+                  : ""}{" "}
+                ·{" "}
                 {run.createdAt
                   ? new Date(run.createdAt).toLocaleString("tr-TR")
                   : "—"}

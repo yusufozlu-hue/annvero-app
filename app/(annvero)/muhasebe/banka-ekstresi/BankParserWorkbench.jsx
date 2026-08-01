@@ -176,6 +176,20 @@ import {
   registerProcessedKeys,
 } from "@/src/utils/bankStatementDedup";
 import {
+  REANALYZE_BUTTON_LABEL,
+  assertSameTenantReanalyze,
+  buildRevisionCompareView,
+  buildRevisionIdempotencyKey,
+  buildSkippedArchiveSummaryFromPrior,
+  countTrulyNotFoundFromGroups,
+  deriveRevisionCounters,
+  extractAnalysisCounters,
+  nextRevisionNumber,
+  shouldBypassIdempotencyHistoryBlock,
+  shouldBypassSessionDedupBlock,
+  shouldSkipDriveArchiveOnReanalyze,
+} from "@/src/utils/bankStatementReanalyze";
+import {
   BANK_JOB_STATE,
   createInitialBankJobState,
   shouldBlockNewBankJob,
@@ -465,6 +479,10 @@ export default function BankParserWorkbench() {
   const v1StageOutputsRef = useRef({});
   const [v1AuditHistory, setV1AuditHistory] = useState([]);
   const lastDedupMetaRef = useRef(null);
+  const duplicatePriorJobRef = useRef(null);
+  const reanalyzeOptionsRef = useRef(null);
+  const previousAnalysisCountersRef = useRef(null);
+  const [isReanalyzing, setIsReanalyzing] = useState(false);
   const bankJobStateRef = useRef(createInitialBankJobState());
   /** Pipeline/parse bankası — React state'ten bağımsız (stale closure yok) */
   const activeBankRef = useRef("");
@@ -657,6 +675,10 @@ export default function BankParserWorkbench() {
     v1StageOutputsRef.current = {};
     v1LeaseIdRef.current = null;
     v1JobIdRef.current = null;
+    duplicatePriorJobRef.current = null;
+    reanalyzeOptionsRef.current = null;
+    previousAnalysisCountersRef.current = null;
+    setIsReanalyzing(false);
     setV1AuditHistory([]);
   }, [selectedCompanyId]);
 
@@ -792,6 +814,10 @@ export default function BankParserWorkbench() {
       });
       setPipelineError(null);
       setCompanyGuardResult(null);
+      duplicatePriorJobRef.current = null;
+      reanalyzeOptionsRef.current = null;
+      previousAnalysisCountersRef.current = null;
+      setIsReanalyzing(false);
       setResolvedCariGroupIds(new Set());
       setResolvedCariGroups([]);
       setCariApplyUndoStack([]);
@@ -2717,9 +2743,13 @@ export default function BankParserWorkbench() {
     normalizedRef.current = mainResult.normalizedRows || [];
 
     // Oturum dedup — aynı Excel/PDF hareketleri ikinci kez işlenmez
+    // Reanalyze: açık revision yolu; oturum mükerrer engeli bypass (global dedup korunur)
+    const reanalyzeActive = shouldBypassSessionDedupBlock(
+      reanalyzeOptionsRef.current?.reanalyze
+    );
     const dedup = applySessionMovementDedup(
       normalizedRef.current,
-      processedMovementKeysRef.current,
+      reanalyzeActive ? new Set() : processedMovementKeysRef.current,
       {
         companyId: selectedCompanyId || "",
         selectedBank: bank,
@@ -2728,15 +2758,16 @@ export default function BankParserWorkbench() {
       }
     );
     lastDedupMetaRef.current = {
-      suppressedMovements: dedup.suppressedMovements,
-      suppressedLucaRows: dedup.suppressedLucaRows,
-      uniqueCount: dedup.uniqueCount,
+      suppressedMovements: reanalyzeActive ? 0 : dedup.suppressedMovements,
+      suppressedLucaRows: reanalyzeActive ? 0 : dedup.suppressedLucaRows,
+      uniqueCount: reanalyzeActive ? dedup.inputCount : dedup.uniqueCount,
       inputCount: dedup.inputCount,
-      allDuplicate: dedup.allDuplicate,
+      allDuplicate: reanalyzeActive ? false : dedup.allDuplicate,
       sourceFileHash: mainResult.sourceFileHash || "",
       sourceType: mainResult.sourceType || "xlsx",
+      reanalyze: reanalyzeActive,
     };
-    if (dedup.allDuplicate) {
+    if (!reanalyzeActive && dedup.allDuplicate) {
       const err = new Error(DUPLICATE_STATEMENT_UI_MESSAGE);
       err.code = "DUPLICATE_STATEMENT";
       err.suppressedMovements = dedup.suppressedMovements;
@@ -2744,7 +2775,7 @@ export default function BankParserWorkbench() {
       err.uiMessage = DUPLICATE_STATEMENT_UI_MESSAGE;
       throw err;
     }
-    if (dedup.suppressedMovements > 0) {
+    if (!reanalyzeActive && dedup.suppressedMovements > 0) {
       normalizedRef.current = dedup.unique.map(canonicalToLegacyBankRow);
     }
 
@@ -3375,7 +3406,13 @@ export default function BankParserWorkbench() {
   };
 
   /** Tek tuş — ANNVERO V1 orkestrasyon (İşle ve Kontrol Et) */
-  const runFullBankPipeline = async ({ resumeFrom = null } = {}) => {
+  const runFullBankPipeline = async ({
+    resumeFrom = null,
+    reanalyze = false,
+    revisionOf = "",
+    priorRevision = 1,
+    priorJob = null,
+  } = {}) => {
     if (isJobBusy) {
       showToast("Başka bir işlem sürüyor.", "error");
       return;
@@ -3386,8 +3423,39 @@ export default function BankParserWorkbench() {
       return;
     }
     if (!selectedFile) {
-      showToast("Önce dosya seçmelisin.", "error");
+      showToast(
+        reanalyze
+          ? "Yeniden analiz için arşivdeki kaynak dosya oturumda gerekli."
+          : "Önce dosya seçmelisin.",
+        "error"
+      );
       return;
+    }
+
+    const reanalyzeOpts = reanalyze
+      ? {
+          reanalyze: true,
+          revisionOf: String(revisionOf || priorJob?.id || "").trim(),
+          priorRevision: nextRevisionNumber(priorRevision) - 1,
+          revision: nextRevisionNumber(priorRevision),
+          priorJob,
+        }
+      : null;
+    reanalyzeOptionsRef.current = reanalyzeOpts;
+
+    if (reanalyze && reanalyzeOpts.revisionOf) {
+      const tenantCheck = assertSameTenantReanalyze({
+        requestCompanyId: selectedCompanyId,
+        priorCompanyId:
+          priorJob?.companyId ||
+          priorJob?.company_id ||
+          selectedCompanyId,
+      });
+      if (!tenantCheck.ok) {
+        showToast(tenantCheck.message, "error");
+        reanalyzeOptionsRef.current = null;
+        return;
+      }
     }
     const runBank = getRunBank();
     if (!runBank) {
@@ -3505,7 +3573,9 @@ export default function BankParserWorkbench() {
           (row) =>
             String(row?.metadata?.idempotency_key || "") === idempotencyKey
         );
-        if (prior) {
+        if (prior && !shouldBypassIdempotencyHistoryBlock(reanalyzeOpts?.reanalyze)) {
+          duplicatePriorJobRef.current = prior;
+          previousAnalysisCountersRef.current = extractAnalysisCounters(prior);
           setPipelineResult({
             movementCount: Number(prior.metadata?.movement_count || 0),
             lucaRowCount: Number(prior.metadata?.luca_row_count || 0),
@@ -3519,9 +3589,14 @@ export default function BankParserWorkbench() {
             passed: Number(prior.metadata?.passed || 0),
             warnings: Number(prior.metadata?.warnings || 0),
             errors: Number(prior.metadata?.errors || 0),
+            autoMatchedCount: Number(prior.metadata?.auto_matched_count || 0),
+            uniqueUnresolvedMovements: Number(
+              prior.metadata?.review_count || 0
+            ),
             totalDurationMs: 0,
             engineVersion: ANNVERO_V1_ENGINE_VERSION,
             duplicateMessage: DUPLICATE_STATEMENT_UI_MESSAGE,
+            priorJobId: prior.id,
           });
           setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
           setPipelineError({
@@ -3549,6 +3624,10 @@ export default function BankParserWorkbench() {
           }
           v1LeaseIdRef.current = null;
           return;
+        }
+        if (prior && reanalyzeOpts?.reanalyze) {
+          duplicatePriorJobRef.current = prior;
+          previousAnalysisCountersRef.current = extractAnalysisCounters(prior);
         }
       }
     } catch {
@@ -3679,18 +3758,30 @@ export default function BankParserWorkbench() {
 
       // 2) archiving (Drive) — bağlantı yoksa banka akışını engelleme
       // COMPANY_MISMATCH / verification fail yukarıda throw → buraya gelinmez.
+      // Reanalyze: mevcut arşivi yeniden kullan; ikinci Drive/source kaydı yok.
       if (shouldRunV1Stage(resumeFrom, V1_JOB_STATE.ARCHIVING) || shouldRunV1Stage(null, V1_JOB_STATE.ARCHIVING)) {
         if (!stageOutputs[V1_JOB_STATE.ARCHIVING]) {
-          emitV1(V1_JOB_STATE.ARCHIVING, 20, "Drive arşivleniyor…");
-          assertPipelineSignal(signal, isRunActive, runId);
-          const tArch = performance.now();
-          archiveResult = await archiveStatementToDrive({
-            companyId: selectedCompanyId,
-            file: selectedFile,
-            signal,
-          });
-          stageOutputs[V1_JOB_STATE.ARCHIVING] = archiveResult;
-          stageDurations.archivingMs = Math.round(performance.now() - tArch);
+          if (shouldSkipDriveArchiveOnReanalyze(reanalyzeOpts?.reanalyze)) {
+            emitV1(V1_JOB_STATE.ARCHIVING, 80, "Mevcut Drive arşivi yeniden kullanılıyor…");
+            archiveResult = buildSkippedArchiveSummaryFromPrior(
+              reanalyzeOpts?.priorJob?.metadata ||
+                duplicatePriorJobRef.current?.metadata ||
+                {}
+            );
+            stageOutputs[V1_JOB_STATE.ARCHIVING] = archiveResult;
+            stageDurations.archivingMs = 0;
+          } else {
+            emitV1(V1_JOB_STATE.ARCHIVING, 20, "Drive arşivleniyor…");
+            assertPipelineSignal(signal, isRunActive, runId);
+            const tArch = performance.now();
+            archiveResult = await archiveStatementToDrive({
+              companyId: selectedCompanyId,
+              file: selectedFile,
+              signal,
+            });
+            stageOutputs[V1_JOB_STATE.ARCHIVING] = archiveResult;
+            stageDurations.archivingMs = Math.round(performance.now() - tArch);
+          }
         } else {
           archiveResult = stageOutputs[V1_JOB_STATE.ARCHIVING];
         }
@@ -3947,19 +4038,66 @@ export default function BankParserWorkbench() {
         chainMs: totalDurationMs,
       });
 
+      const accountPlanCount = Array.isArray(companyPlans)
+        ? companyPlans.length
+        : 0;
+      const trulyNotFoundPreview = countTrulyNotFoundFromGroups(
+        validationMeta.cariGroups ||
+          missingHesapReport?.cariGroups ||
+          []
+      );
+      const revisionCompare = reanalyzeOpts?.reanalyze
+        ? buildRevisionCompareView(
+            deriveRevisionCounters({
+              previous:
+                previousAnalysisCountersRef.current ||
+                extractAnalysisCounters(reanalyzeOpts.priorJob || {}),
+              next: {
+                autoMatchedCount: resultSummary.autoMatchedCount,
+                uniqueUnresolvedMovements:
+                  validationMeta.uniqueUnresolvedMovements ??
+                  resultSummary.reviewCount,
+                accountPlanCount,
+              },
+              trulyNotFoundCount: trulyNotFoundPreview,
+            })
+          )
+        : null;
+
       emitV1(V1_JOB_STATE.PERSISTING, 60, "Güvenli özet kaydediliyor…");
-      const idempotencyKey = buildIdempotencyKey({
-        companyId: selectedCompanyId,
-        contentHash: lastDedupMetaRef.current?.sourceFileHash || "",
-      });
+      const contentHash = lastDedupMetaRef.current?.sourceFileHash || "";
+      const revision = reanalyzeOpts?.revision || 2;
+      const idempotencyKey = reanalyzeOpts?.reanalyze
+        ? buildRevisionIdempotencyKey({
+            companyId: selectedCompanyId,
+            contentHash,
+            revision,
+          })
+        : buildIdempotencyKey({
+            companyId: selectedCompanyId,
+            contentHash,
+          });
       await persistV1JobSummary({
         companyId: selectedCompanyId,
         jobId,
         leaseId,
         idempotencyKey,
-        summary: resultSummary,
+        summary: {
+          ...resultSummary,
+          reanalyze: Boolean(reanalyzeOpts?.reanalyze),
+          revision: reanalyzeOpts?.reanalyze ? revision : undefined,
+          revisionOf: reanalyzeOpts?.revisionOf || "",
+          supersedesJobId: reanalyzeOpts?.revisionOf || "",
+          accountPlanCount,
+          resolvedMissingCount: revisionCompare?.resolvedMissing ?? 0,
+          trulyNotFoundCount: revisionCompare?.trulyNotFound ?? 0,
+        },
         checkpointPhase: V1_JOB_STATE.PERSISTING,
         action: "persist",
+        reanalyze: Boolean(reanalyzeOpts?.reanalyze),
+        revisionOf: reanalyzeOpts?.revisionOf || "",
+        revision: reanalyzeOpts?.reanalyze ? revision : null,
+        supersedesJobId: reanalyzeOpts?.revisionOf || "",
       });
       stageOutputs[V1_JOB_STATE.PERSISTING] = { ok: true };
 
@@ -3993,9 +4131,18 @@ export default function BankParserWorkbench() {
         stageDurations,
         parseMode: stageDurations.parseMode || null,
         engineVersion: ANNVERO_V1_ENGINE_VERSION,
+        reanalyze: Boolean(reanalyzeOpts?.reanalyze),
+        revision: reanalyzeOpts?.reanalyze ? revision : null,
+        supersedesJobId: reanalyzeOpts?.revisionOf || null,
+        accountPlanCount,
+        revisionCompare,
+        trulyNotFound: revisionCompare?.trulyNotFound ?? 0,
+        resolvedMissing: revisionCompare?.resolvedMissing ?? 0,
       };
       setPipelineResult(result);
       setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+      reanalyzeOptionsRef.current = null;
+      setIsReanalyzing(false);
 
       {
         const canon = legacyBankRowsToCanonical(movementsRef.current, {
@@ -4064,7 +4211,40 @@ export default function BankParserWorkbench() {
       }
       if (error?.code === "DUPLICATE_STATEMENT") {
         terminalDuplicate = true;
-        setPipelinePhaseSafe(PIPELINE_PHASES.ERROR);
+        const priorFromHistory =
+          duplicatePriorJobRef.current ||
+          (v1AuditHistory || []).find((row) =>
+            String(row?.metadata?.idempotency_key || "").includes(
+              lastDedupMetaRef.current?.sourceFileHash || "___"
+            )
+          ) ||
+          null;
+        if (priorFromHistory) {
+          duplicatePriorJobRef.current = priorFromHistory;
+          previousAnalysisCountersRef.current =
+            extractAnalysisCounters(priorFromHistory);
+        }
+        setPipelineResult({
+          movementCount: 0,
+          lucaRowCount: 0,
+          duplicate: true,
+          terminalStatus: V1_JOB_STATE.DUPLICATE,
+          reviewRequired: false,
+          canAutoApprove: false,
+          duplicateMessage: DUPLICATE_STATEMENT_UI_MESSAGE,
+          priorJobId: priorFromHistory?.id || null,
+          driveArchived: Boolean(
+            priorFromHistory?.metadata?.drive_archived
+          ),
+          autoMatchedCount: Number(
+            priorFromHistory?.metadata?.auto_matched_count || 0
+          ),
+          uniqueUnresolvedMovements: Number(
+            priorFromHistory?.metadata?.review_count || 0
+          ),
+          engineVersion: ANNVERO_V1_ENGINE_VERSION,
+        });
+        setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
         setPipelineError({
           phase: PIPELINE_PHASES.PREVIEW,
           phaseLabel: "Mükerrer",
@@ -4157,11 +4337,103 @@ export default function BankParserWorkbench() {
       v1LeaseIdRef.current = null;
     } finally {
       setPipelineRunning(false);
+      setIsReanalyzing(false);
+      if (!reanalyzeOptionsRef.current?.reanalyze) {
+        reanalyzeOptionsRef.current = null;
+      }
       bankJobStateRef.current = createInitialBankJobState();
       if (v1LeaseIdRef.current) {
         await releaseV1Lease(selectedCompanyId, v1LeaseIdRef.current);
         v1LeaseIdRef.current = null;
       }
+    }
+  };
+
+  const handleReanalyzeWithNewPlan = async () => {
+    if (isJobBusy || isReanalyzing) return;
+    if (!selectedCompanyId) {
+      showToast("Önce firma seçmelisin.", "error");
+      return;
+    }
+    if (!selectedFile) {
+      showToast(
+        "Yeniden analiz için oturumdaki arşiv kaynağı gerekli (dosya yeniden yüklenmez).",
+        "error"
+      );
+      return;
+    }
+    const prior =
+      duplicatePriorJobRef.current ||
+      (pipelineResult?.priorJobId
+        ? { id: pipelineResult.priorJobId, companyId: selectedCompanyId }
+        : null) ||
+      (v1AuditHistory || []).find(
+        (row) =>
+          row?.metadata?.terminal_status === V1_JOB_STATE.DUPLICATE ||
+          row?.metadata?.duplicate ||
+          row?.id === pipelineResult?.priorJobId
+      ) ||
+      (v1AuditHistory || [])[0] ||
+      null;
+    if (!prior?.id) {
+      showToast("Önceki analiz kaydı bulunamadı; yeniden analiz yapılamadı.", "error");
+      return;
+    }
+    const tenantCheck = assertSameTenantReanalyze({
+      requestCompanyId: selectedCompanyId,
+      priorCompanyId: prior.companyId || prior.company_id || selectedCompanyId,
+    });
+    if (!tenantCheck.ok) {
+      showToast(tenantCheck.message, "error");
+      return;
+    }
+
+    setIsReanalyzing(true);
+    previousAnalysisCountersRef.current = extractAnalysisCounters(
+      prior.metadata ? prior : pipelineResult || {}
+    );
+    try {
+      const { fetchFullActiveAccountPlan } = await import(
+        "@/src/utils/accountPlanApi"
+      );
+      const plan = await fetchFullActiveAccountPlan(selectedCompanyId);
+      const accounts = plan.accounts || [];
+      setAccountPlans((prev) =>
+        setCompanyAccountPlan(prev, selectedCompanyId, accounts)
+      );
+      saveAccountPlansToStorage(
+        setCompanyAccountPlan(
+          loadAccountPlansFromStorage(),
+          selectedCompanyId,
+          accounts
+        )
+      );
+      if (!accounts.length) {
+        showToast(formatEmptyAccountPlanMessage(), "error");
+        setIsReanalyzing(false);
+        return;
+      }
+      // Oturum mükerrer anahtarlarını temizle — revision yolu tüm hareketleri yeniden işler
+      processedMovementKeysRef.current = new Set();
+      v1StageOutputsRef.current = {};
+      showToast(
+        `${REANALYZE_BUTTON_LABEL} · ${accounts.length} hesap planı yüklendi`,
+        "success"
+      );
+      await runFullBankPipeline({
+        reanalyze: true,
+        revisionOf: prior.id,
+        priorRevision: Number(prior.metadata?.revision || 1) || 1,
+        priorJob: prior,
+      });
+    } catch (error) {
+      console.error("[banka-ekstresi] reanalyze failed", error);
+      showToast(
+        error?.message || "Yeniden analiz tamamlanamadı.",
+        "error"
+      );
+      setIsReanalyzing(false);
+      reanalyzeOptionsRef.current = null;
     }
   };
 
@@ -4654,6 +4926,8 @@ export default function BankParserWorkbench() {
                   router.push("/muhasebe/fis-kontrol");
                 }
               }}
+              onReanalyzeWithNewPlan={handleReanalyzeWithNewPlan}
+              isReanalyzing={isReanalyzing}
               auditHistory={v1AuditHistory}
               secondaryBtnClass={annveroBtnSecondary}
               isReviewMissingLoading={cariResolutionLoading}

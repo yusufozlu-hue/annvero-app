@@ -225,12 +225,72 @@ export async function POST(request) {
     jobId: incoming.jobId,
     idempotencyKey: incoming.idempotencyKey,
     leaseId: incoming.leaseId,
-    summary: incoming.summary,
+    summary: {
+      ...incoming.summary,
+      reanalyze: incoming.reanalyze,
+      revision: incoming.revision,
+      revisionOf: incoming.revisionOf,
+      supersedesJobId: incoming.supersedesJobId || incoming.revisionOf,
+    },
     checkpointPhase: incoming.checkpointPhase,
   });
 
+  // Explicit reanalyze/revision — prior job aynı tenant’ta olmalı; eski kayıt silinmez.
+  if (incoming.reanalyze) {
+    const priorId = String(
+      incoming.revisionOf || incoming.supersedesJobId || ""
+    ).trim();
+    if (!priorId) {
+      return jsonError(
+        "MISSING_REVISION_OF",
+        "Yeniden analiz için önceki iş kimliği gerekli.",
+        400
+      );
+    }
+    const { data: priorRow, error: priorError } = await ctx.supabase
+      .from(AUDIT_EVENTS_TABLE)
+      .select("id, company_id, entity_type, entity_id, action, metadata, created_at")
+      .eq("id", priorId)
+      .maybeSingle();
+    if (priorError || !priorRow) {
+      return jsonError(
+        "PRIOR_JOB_NOT_FOUND",
+        "Önceki analiz kaydı bulunamadı.",
+        404
+      );
+    }
+    if (String(priorRow.company_id || "") !== String(companyId)) {
+      return jsonError(
+        "CROSS_TENANT_FORBIDDEN",
+        "Başka firmanın kaynağı veya planı kullanılamaz.",
+        403
+      );
+    }
+    const priorRev = Number(priorRow.metadata?.revision || 1) || 1;
+    const nextRev =
+      Number(incoming.revision) > 0
+        ? Number(incoming.revision)
+        : priorRev + 1;
+    payload.metadata.reanalyze = true;
+    payload.metadata.revision = nextRev;
+    payload.metadata.revision_of = priorId;
+    payload.metadata.supersedes_job_id = priorId;
+    // Revision yolu: base idempotency ile çakışmasın — :rev:N anahtarı kullanılır.
+    if (
+      payload.metadata.idempotency_key &&
+      !String(payload.metadata.idempotency_key).includes(":rev:")
+    ) {
+      payload.metadata.idempotency_key = `${payload.metadata.idempotency_key}:rev:${nextRev}`;
+    }
+  }
+
   const idempotencyKey = String(payload.metadata?.idempotency_key || "").trim();
-  if (idempotencyKey && !idempotencyKey.endsWith(":nohash")) {
+  // Normal yükleme: aynı anahtar → duplicate. Reanalyze :rev:N ile yeni kayıt açar.
+  if (
+    idempotencyKey &&
+    !idempotencyKey.endsWith(":nohash") &&
+    !incoming.reanalyze
+  ) {
     const { data: existingRows, error: existingError } = await ctx.supabase
       .from(AUDIT_EVENTS_TABLE)
       .select("id, company_id, entity_type, entity_id, action, metadata, created_at")
@@ -275,6 +335,9 @@ export async function POST(request) {
     companyId,
     persisted: Boolean(written?.ok !== false),
     duplicate: false,
+    reanalyze: Boolean(incoming.reanalyze),
+    revision: payload.metadata?.revision || null,
+    supersedesJobId: payload.metadata?.supersedes_job_id || null,
     view: publicV1JobView({
       company_id: companyId,
       entity_type: payload.entity_type,

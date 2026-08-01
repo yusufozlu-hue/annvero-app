@@ -33,6 +33,13 @@ export const V1_SAFE_METADATA_KEYS = Object.freeze([
   "chain_ms",
   "content_hash_present",
   "lease_id",
+  "reanalyze",
+  "revision",
+  "revision_of",
+  "supersedes_job_id",
+  "account_plan_count",
+  "resolved_missing_count",
+  "truly_not_found_count",
 ]);
 
 const FORBIDDEN_KEY_RE =
@@ -122,11 +129,54 @@ export function buildSafeV1PersistPayload({
     content_hash_present: Boolean(
       summary.contentHashPresent ?? summary.content_hash_present
     ),
+    reanalyze: Boolean(summary.reanalyze),
+    revision: sanitizeNumber(summary.revision, null),
+    revision_of: sanitizeString(
+      summary.revisionOf || summary.revision_of || "",
+      80
+    ),
+    supersedes_job_id: sanitizeString(
+      summary.supersedesJobId || summary.supersedes_job_id || "",
+      80
+    ),
+    account_plan_count: sanitizeNumber(
+      summary.accountPlanCount ?? summary.account_plan_count,
+      null
+    ),
+    resolved_missing_count: sanitizeNumber(
+      summary.resolvedMissingCount ?? summary.resolved_missing_count,
+      null
+    ),
+    truly_not_found_count: sanitizeNumber(
+      summary.trulyNotFoundCount ?? summary.truly_not_found_count,
+      null
+    ),
   };
 
   // null sayısal alanları temizle
   if (meta.parse_ms == null || Number.isNaN(meta.parse_ms)) delete meta.parse_ms;
   if (meta.chain_ms == null || Number.isNaN(meta.chain_ms)) delete meta.chain_ms;
+  if (meta.revision == null || Number.isNaN(meta.revision) || !meta.reanalyze) {
+    delete meta.revision;
+  }
+  if (!meta.revision_of) delete meta.revision_of;
+  if (!meta.supersedes_job_id) delete meta.supersedes_job_id;
+  if (!meta.reanalyze) delete meta.reanalyze;
+  if (meta.account_plan_count == null || Number.isNaN(meta.account_plan_count)) {
+    delete meta.account_plan_count;
+  }
+  if (
+    meta.resolved_missing_count == null ||
+    Number.isNaN(meta.resolved_missing_count)
+  ) {
+    delete meta.resolved_missing_count;
+  }
+  if (
+    meta.truly_not_found_count == null ||
+    Number.isNaN(meta.truly_not_found_count)
+  ) {
+    delete meta.truly_not_found_count;
+  }
 
   const payload = {
     company_id: sanitizeString(companyId, 80),
@@ -187,5 +237,12 @@ export function sanitizeIncomingV1JobBody(body = {}) {
       40
     ),
     action: sanitizeString(body.action || "persist", 32),
+    reanalyze: Boolean(body.reanalyze),
+    revisionOf: sanitizeString(body.revisionOf || body.revision_of, 80),
+    revision: sanitizeNumber(body.revision, null),
+    supersedesJobId: sanitizeString(
+      body.supersedesJobId || body.supersedes_job_id,
+      80
+    ),
   };
 }
