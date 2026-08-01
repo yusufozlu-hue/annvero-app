@@ -48,6 +48,10 @@ export async function persistV1JobSummary({
   summary,
   checkpointPhase = null,
   action = "persist",
+  reanalyze = false,
+  revisionOf = "",
+  revision = null,
+  supersedesJobId = "",
 } = {}) {
   try {
     const response = await fetch("/api/annvero-v1/jobs", {
@@ -62,10 +66,14 @@ export async function persistV1JobSummary({
         idempotencyKey,
         summary,
         checkpointPhase,
+        reanalyze: Boolean(reanalyze),
+        revisionOf: revisionOf || "",
+        revision,
+        supersedesJobId: supersedesJobId || revisionOf || "",
       }),
     });
     const body = await response.json().catch(() => ({}));
-    return { ok: response.ok, ...body };
+    return { ok: response.ok, status: response.status, ...body };
   } catch {
     return { ok: false, skipped: true, code: "PERSIST_NETWORK" };
   }
