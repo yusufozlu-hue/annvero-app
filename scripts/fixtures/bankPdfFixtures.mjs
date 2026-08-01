@@ -100,6 +100,41 @@ export function buildScannedPdfStub() {
   return out;
 }
 
+/** Çok sayfalı taranmış stub (metin katmanı yok). */
+export function buildScannedMultipagePdfStub(pageCount = 2) {
+  const n = Math.max(2, Math.min(Number(pageCount) || 2, 10));
+  const kids = [];
+  const objects = [];
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  let next = 3;
+  for (let i = 0; i < n; i += 1) {
+    const pageObj = next;
+    const contentObj = next + 1;
+    kids.push(`${pageObj} 0 R`);
+    objects[pageObj] =
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents ${contentObj} 0 R >>`;
+    objects[contentObj] = "<< /Length 5 >>\nstream\nBT ET\nendstream";
+    next += 2;
+  }
+  objects[2] = `<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${n} >>`;
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (let i = 1; i < next; i += 1) {
+    offsets[i] = Buffer.byteLength(pdf, "latin1");
+    pdf += `${i} 0 obj\n${objects[i]}\nendobj\n`;
+  }
+  const xrefPos = Buffer.byteLength(pdf, "latin1");
+  pdf += `xref\n0 ${next}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let i = 1; i < next; i += 1) {
+    pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${next} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`;
+  const out = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i += 1) out[i] = pdf.charCodeAt(i) & 0xff;
+  return out;
+}
+
 export function buildCorruptPdfStub() {
   const body = "%PDF-1.4\nthis is not a valid pdf structure";
   const out = new Uint8Array(body.length);

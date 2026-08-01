@@ -44,6 +44,7 @@ function empty(value) {
 }
 
 function toNumber(value, fallback = 0) {
+  if (value == null || value === "") return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
@@ -172,6 +173,13 @@ export function createCanonicalBankTransaction(partial = {}) {
     documentNo,
     sourceType: empty(partial.sourceType || partial.source_file_type) || BANK_STATEMENT_SOURCE.XLSX,
     status: empty(partial.status) || BANK_PARSE_STATUS.OK,
+    ocrConfidence:
+      partial.ocrConfidence == null || partial.ocrConfidence === ""
+        ? null
+        : toNumber(partial.ocrConfidence, null),
+    lowOcrConfidence: Boolean(partial.lowOcrConfidence),
+    reviewRequired: Boolean(partial.reviewRequired),
+    sourceBoundingBox: partial.sourceBoundingBox || null,
   });
 }
 

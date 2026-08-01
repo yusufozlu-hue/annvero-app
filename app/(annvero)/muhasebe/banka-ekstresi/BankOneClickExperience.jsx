@@ -555,23 +555,29 @@ export function BankPipelineErrorCard({
     error.code === "COMPANY_VERIFICATION_REQUIRED";
   const isEmptyPlan = error.code === "EMPTY_ACCOUNT_PLAN";
   const isOcr = error.code === "OCR_REQUIRED";
+  const isOcrFailed = error.code === "OCR_FAILED" || error.code === "OCR_TIMEOUT";
+  const isOcrUnconfigured = error.code === "OCR_PROVIDER_NOT_CONFIGURED";
   const isBalanceMismatch = error.code === "BALANCE_MISMATCH";
   const wrap = isInfo
     ? "border-sky-700/50 bg-sky-950/35 text-sky-50"
     : "border-red-800/60 bg-red-950/40 text-red-50";
-  const title = isOcr
-    ? "OCR gerekli"
-    : isBalanceMismatch
-      ? "Bakiye uyuşmazlığı"
-      : isInfo
-        ? "Banka seçimi güncellendi"
-        : isMismatch
-          ? "Firma uyuşmazlığı"
-          : isVerification
-            ? "Firma doğrulaması gerekli"
-            : isEmptyPlan
-              ? "Hesap planı eksik"
-              : "İşlem durdu";
+  const title = isOcrUnconfigured
+    ? "OCR yapılandırılmamış"
+    : isOcrFailed
+      ? "OCR başarısız"
+      : isOcr
+        ? "OCR gerekli"
+        : isBalanceMismatch
+          ? "Bakiye uyuşmazlığı"
+          : isInfo
+            ? "Banka seçimi güncellendi"
+            : isMismatch
+              ? "Firma uyuşmazlığı"
+              : isVerification
+                ? "Firma doğrulaması gerekli"
+                : isEmptyPlan
+                  ? "Hesap planı eksik"
+                  : "İşlem durdu";
 
   return (
     <section className={`mt-4 rounded-2xl border px-4 py-4 sm:px-5 ${wrap}`}>

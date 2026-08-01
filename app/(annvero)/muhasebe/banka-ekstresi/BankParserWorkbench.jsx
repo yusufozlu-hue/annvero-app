@@ -165,6 +165,10 @@ import {
   legacyBankRowsToCanonical,
 } from "@/src/utils/bankCanonicalTransaction";
 import { parseBankStatementPdf } from "@/src/utils/bankStatementPdf";
+import { runBankStatementOcr } from "@/src/utils/bankOcr/runBankStatementOcr";
+import { cancelBankOcrJob } from "@/src/utils/bankOcr/ocrWorkerBridge";
+import { OCR_STATUS, OCR_SAFE_MESSAGES } from "@/src/utils/bankOcr/ocrPolicy";
+import { isOcrProviderConfigured } from "@/src/utils/bankOcr/ocrProvider";
 import {
   BALANCE_MISMATCH,
   reconcileStatementBalances,
@@ -482,6 +486,7 @@ export default function BankParserWorkbench() {
   const duplicatePriorJobRef = useRef(null);
   const reanalyzeOptionsRef = useRef(null);
   const previousAnalysisCountersRef = useRef(null);
+  const ocrAbortRef = useRef(null);
   const [isReanalyzing, setIsReanalyzing] = useState(false);
   const bankJobStateRef = useRef(createInitialBankJobState());
   /** Pipeline/parse bankası — React state'ten bağımsız (stale closure yok) */
@@ -1110,6 +1115,8 @@ export default function BankParserWorkbench() {
   const handleCancelJob = () => {
     pipelineRunIdRef.current += 1;
     abortRef.current?.abort();
+    ocrAbortRef.current?.abort();
+    cancelBankOcrJob("user");
     parserJob.cancel("user");
     setIsParsing(false);
     setIsAnalyzing(false);
@@ -2265,24 +2272,158 @@ export default function BankParserWorkbench() {
           pdfLegacyRowsRef.current = [];
           fileSheetRowsRef.current = [];
           fileSheetSourceRef.current = file.name;
-          setBankDetection({
-            status: "unknown",
-            bankId: null,
-            message: pdfResult.message || "OCR gerekli — inceleme kuyruğu.",
-          });
+          const ocrConfigured =
+            isOcrProviderConfigured() ||
+            (await fetch("/api/bank-ocr/status")
+              .then((r) => r.json())
+              .then((j) => Boolean(j?.configured))
+              .catch(() => false));
+
+          if (!ocrConfigured) {
+            setBankDetection({
+              status: "unknown",
+              bankId: null,
+              message: "OCR gerekli — inceleme kuyruğu.",
+            });
+            setPipelineResult(null);
+            setToast(null);
+            setPipelineError({
+              phase: PIPELINE_PHASES.PREVIEW,
+              phaseLabel: "OCR",
+              code: OCR_STATUS.OCR_PROVIDER_NOT_CONFIGURED,
+              message: OCR_SAFE_MESSAGES.OCR_PROVIDER_NOT_CONFIGURED,
+              recoverable: true,
+              tone: "info",
+            });
+            return;
+          }
+
           setPipelineResult(null);
           setToast(null);
-          setPipelineError({
-            phase: PIPELINE_PHASES.PREVIEW,
-            phaseLabel: "PDF",
-            code: "OCR_REQUIRED",
-            message:
-              pdfResult.message ||
-              "Taranmış PDF için OCR gerekli (OCR_REQUIRED).",
-            recoverable: false,
-            tone: "info",
+          setPipelineError(null);
+          setPipelineMode("auto");
+          setPipelinePhaseSafe(PIPELINE_PHASES.PARSING);
+          setPipelineProgress({
+            percent: 2,
+            label: "OCR hazırlanıyor",
+            detail: "Sayfalar okunacak",
+            processed: 0,
+            total: pdfResult.pageCount || null,
           });
-          return;
+          const ocrCtrl = new AbortController();
+          ocrAbortRef.current = ocrCtrl;
+          const ocrStarted = Date.now();
+          let firstProgressAt = null;
+          try {
+            const ocrOut = await runBankStatementOcr(arrayBuffer, {
+              companyId: selectedCompanyId || "",
+              fileName: file.name,
+              pageCount: pdfResult.pageCount || 1,
+              signal: ocrCtrl.signal,
+              env: {
+                ANNVERO_OCR_PROVIDER:
+                  typeof process !== "undefined"
+                    ? process.env?.NEXT_PUBLIC_ANNVERO_OCR_PROVIDER ||
+                      process.env?.ANNVERO_OCR_PROVIDER
+                    : "local-test",
+              },
+              onProgress: (p) => {
+                if (!firstProgressAt) firstProgressAt = Date.now();
+                setPipelineProgress({
+                  percent: Number(p.percent) || 5,
+                  label: p.detail || "OCR",
+                  detail: p.detail || "",
+                  processed: p.page || null,
+                  total: p.pageCount || pdfResult.pageCount || null,
+                });
+              },
+            });
+            void firstProgressAt;
+            void ocrStarted;
+            if (
+              ocrOut.code === OCR_STATUS.OCR_PROVIDER_NOT_CONFIGURED ||
+              ocrOut.ocrRequired
+            ) {
+              setPipelineError({
+                phase: PIPELINE_PHASES.PREVIEW,
+                phaseLabel: "OCR",
+                code: ocrOut.code || OCR_STATUS.OCR_REQUIRED,
+                message: ocrOut.message || OCR_SAFE_MESSAGES.OCR_REQUIRED,
+                recoverable: true,
+                tone: "info",
+              });
+              setPipelineMode("idle");
+              return;
+            }
+            if (!ocrOut.ok && !(ocrOut.transactions || []).length) {
+              setPipelineError({
+                phase: PIPELINE_PHASES.PREVIEW,
+                phaseLabel: "OCR",
+                code: ocrOut.code || OCR_STATUS.OCR_FAILED,
+                message: ocrOut.message || OCR_SAFE_MESSAGES.OCR_FAILED,
+                recoverable: true,
+                tone: ocrOut.code === "OCR_CANCELLED" ? "info" : "error",
+              });
+              setPipelineMode("idle");
+              return;
+            }
+            pdfMetaRef.current = ocrOut;
+            const legacy = (ocrOut.transactions || []).map(canonicalToLegacyBankRow);
+            pdfLegacyRowsRef.current = legacy;
+            fileSheetRowsRef.current = ocrOut.sheetRows || [];
+            fileSheetSourceRef.current = file.name;
+            const bankId = String(ocrOut.detectedBank || "").toUpperCase();
+            if (bankId && bankId !== "UNKNOWN") {
+              const label =
+                BANK_PARSER_OPTIONS.find((b) => b.id === bankId)?.label || bankId;
+              setActiveBank(bankId, {
+                status: "detected",
+                bankId,
+                message: `${label} — OCR otomatik tespit`,
+              });
+            } else {
+              setBankDetection({
+                status: "unknown",
+                bankId: null,
+                message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+              });
+            }
+            setPipelineProgress({
+              percent: 100,
+              label: ocrOut.reviewRequired ? "İnceleme gerekli" : "OCR tamamlandı",
+              detail: `${legacy.length} hareket`,
+              processed: legacy.length,
+              total: legacy.length,
+            });
+            setPipelineMode("idle");
+            setPipelinePhaseSafe(PIPELINE_PHASES.IDLE);
+            if (ocrOut.reviewRequired || ocrOut.code === BALANCE_MISMATCH) {
+              setPipelineError({
+                phase: PIPELINE_PHASES.PREVIEW,
+                phaseLabel: "OCR",
+                code: ocrOut.code || "OCR_LOW_CONFIDENCE",
+                message:
+                  ocrOut.message ||
+                  "Düşük güvenli veya mutabakatsız OCR satırları inceleme gerektirir.",
+                recoverable: true,
+                tone: "info",
+              });
+            }
+            return;
+          } catch (ocrErr) {
+            setPipelineError({
+              phase: PIPELINE_PHASES.PREVIEW,
+              phaseLabel: "OCR",
+              code: ocrErr?.code || OCR_STATUS.OCR_FAILED,
+              message: ocrErr?.message || OCR_SAFE_MESSAGES.OCR_FAILED,
+              recoverable: true,
+              tone: "error",
+            });
+            setPipelineMode("idle");
+            return;
+          } finally {
+            ocrAbortRef.current = null;
+          }
         }
         if (!pdfResult.ok && !pdfResult.transactions?.length) {
           pdfLegacyRowsRef.current = [];
@@ -2533,12 +2674,14 @@ export default function BankParserWorkbench() {
     ) {
       const meta = pdfMetaRef.current;
       if (meta?.ocrRequired || meta?.code === "OCR_REQUIRED") {
-        const err = new Error(
-          meta.message ||
-            "Bu PDF taranmış görünüyor; OCR tamamlanana kadar inceleme kuyruğuna alındı."
-        );
-        err.code = "OCR_REQUIRED";
-        throw err;
+        if (!(pdfLegacyRowsRef.current || []).length) {
+          const err = new Error(
+            meta.message ||
+              "Bu PDF taranmış görünüyor; OCR tamamlanana kadar inceleme kuyruğuna alındı."
+          );
+          err.code = meta.code || "OCR_REQUIRED";
+          throw err;
+        }
       }
       if (meta && meta.ok === false && !pdfLegacyRowsRef.current.length) {
         const err = new Error(meta.message || "PDF okunamadı.");

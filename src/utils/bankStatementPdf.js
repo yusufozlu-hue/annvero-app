@@ -487,6 +487,16 @@ export async function parseBankStatementPdf(bytes, options = {}) {
 
   const letters = (text.match(/[A-Za-zÇĞİÖŞÜçğıöşü]/g) || []).length;
   if (!text || letters < 40) {
+    if (options.enableOcr || options.ocrProvider || options.env) {
+      const { runBankStatementOcr } = await import(
+        "@/src/utils/bankOcr/runBankStatementOcr.js"
+      );
+      return runBankStatementOcr(buf, {
+        ...options,
+        pageCount: pages,
+        sourceFileHash,
+      });
+    }
     return {
       ok: false,
       status: BANK_PARSE_STATUS.OCR_REQUIRED,
