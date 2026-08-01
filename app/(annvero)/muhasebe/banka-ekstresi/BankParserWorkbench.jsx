@@ -2270,7 +2270,18 @@ export default function BankParserWorkbench() {
             bankId: null,
             message: pdfResult.message || "OCR gerekli — inceleme kuyruğu.",
           });
-          setPipelineError(pdfResult.message || "OCR_REQUIRED");
+          setPipelineResult(null);
+          setToast(null);
+          setPipelineError({
+            phase: PIPELINE_PHASES.PREVIEW,
+            phaseLabel: "PDF",
+            code: "OCR_REQUIRED",
+            message:
+              pdfResult.message ||
+              "Taranmış PDF için OCR gerekli (OCR_REQUIRED).",
+            recoverable: false,
+            tone: "info",
+          });
           return;
         }
         if (!pdfResult.ok && !pdfResult.transactions?.length) {
@@ -2282,7 +2293,16 @@ export default function BankParserWorkbench() {
             bankId: null,
             message: pdfResult.message || "PDF okunamadı.",
           });
-          setPipelineError(pdfResult.message || "PDF okunamadı.");
+          setPipelineResult(null);
+          setToast(null);
+          setPipelineError({
+            phase: PIPELINE_PHASES.PREVIEW,
+            phaseLabel: "PDF",
+            code: pdfResult.code || "PDF_PARSE_FAILED",
+            message: pdfResult.message || "PDF okunamadı.",
+            recoverable: false,
+            tone: "error",
+          });
           return;
         }
         const legacy = (pdfResult.transactions || []).map(canonicalToLegacyBankRow);
@@ -3599,13 +3619,8 @@ export default function BankParserWorkbench() {
             priorJobId: prior.id,
           });
           setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
-          setPipelineError({
-            phase: PIPELINE_PHASES.PARSING,
-            phaseLabel: "Mükerrer",
-            message: DUPLICATE_STATEMENT_UI_MESSAGE,
-            recoverable: false,
-            tone: "error",
-          });
+          // Tek kanonik yüzey: mükerrer sonuç kartı (error kartı + toast yok)
+          setPipelineError(null);
           setPipelineProgress({
             percent: 100,
             label: "Mükerrer ekstre",
@@ -3613,8 +3628,7 @@ export default function BankParserWorkbench() {
             processed: 0,
             total: 0,
           });
-          showToast(DUPLICATE_STATEMENT_UI_MESSAGE, "error");
-          parserJob.markSuccess(DUPLICATE_STATEMENT_UI_MESSAGE);
+          parserJob.reset();
           setPipelineMode("idle");
           if (hist?.runs) setV1AuditHistory(hist.runs);
           try {
@@ -4171,12 +4185,8 @@ export default function BankParserWorkbench() {
       });
       parserJob.markSuccess("İşlem ve kontrol tamamlandı.");
       setPipelineMode("idle");
-      showToast(
-        result.reviewRequired
-          ? `İnceleme gerekli. ${result.lucaRowCount} Luca satırı · ${result.errors} hata.`
-          : `Tamamlandı. ${result.lucaRowCount} Luca satırı hazır.`,
-        result.reviewRequired ? "error" : "success"
-      );
+      // Sonuç kartı kanonik; toast ile çift mesaj yok
+      setToast(null);
 
       try {
         const hist = await listV1JobHistory(selectedCompanyId, 10);
@@ -4245,15 +4255,8 @@ export default function BankParserWorkbench() {
           engineVersion: ANNVERO_V1_ENGINE_VERSION,
         });
         setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
-        setPipelineError({
-          phase: PIPELINE_PHASES.PREVIEW,
-          phaseLabel: "Mükerrer",
-          message: DUPLICATE_STATEMENT_UI_MESSAGE,
-          suppressedMovements: error?.suppressedMovements ?? null,
-          suppressedLucaRows: error?.suppressedLucaRows ?? null,
-          recoverable: false,
-          tone: "info",
-        });
+        // Tek kanonik yüzey: sonuç kartı (error + toast yok)
+        setPipelineError(null);
         setPipelineMode("idle");
         parserJob.reset();
         await persistV1JobSummary({
@@ -4298,11 +4301,15 @@ export default function BankParserWorkbench() {
           ? `Dosya ${error.detectedBank === "VAKIFBANK" ? "Vakıfbank" : "Garanti"} olarak algılandı. Banka seçimi güncellendi.`
           : error?.code === "OCR_REQUIRED"
             ? error.message || "Taranmış PDF için OCR gerekli (OCR_REQUIRED)."
-            : buildManagedFailureMessage(error, failedPhase);
+            : error?.code === "BALANCE_MISMATCH"
+              ? error.message ||
+                "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
+              : buildManagedFailureMessage(error, failedPhase);
       if (
         error?.code === "BANK_FORMAT_MISMATCH" ||
         error?.code === "DUPLICATE_STATEMENT" ||
         error?.code === "OCR_REQUIRED" ||
+        error?.code === "BALANCE_MISMATCH" ||
         failedPhase === PIPELINE_PHASES.PARSING ||
         failedPhase === PIPELINE_PHASES.PREVIEW
       ) {
@@ -4312,9 +4319,12 @@ export default function BankParserWorkbench() {
       }
       parserJob.reset();
       setPreviewErrorDetail("");
+      setPipelineResult(null);
+      setToast(null);
       setPipelineError({
         phase: failedPhase,
         phaseLabel: getPipelinePhaseTitle(failedPhase),
+        code: error?.code || null,
         message,
         suppressedMovements: error?.suppressedMovements ?? null,
         suppressedLucaRows: error?.suppressedLucaRows ?? null,
@@ -4325,7 +4335,9 @@ export default function BankParserWorkbench() {
             ? Boolean(movementsRef.current.length)
             : false),
         tone:
-          error?.code === "DUPLICATE_STATEMENT" || error?.code === "OCR_REQUIRED"
+          error?.code === "DUPLICATE_STATEMENT" ||
+          error?.code === "OCR_REQUIRED" ||
+          error?.code === "BALANCE_MISMATCH"
             ? "info"
             : error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
               ? "info"
@@ -4909,7 +4921,9 @@ export default function BankParserWorkbench() {
             }
           />
 
-          {pipelinePhase === PIPELINE_PHASES.READY_FOR_EXPORT && pipelineResult ? (
+          {!pipelineError &&
+          pipelinePhase === PIPELINE_PHASES.READY_FOR_EXPORT &&
+          pipelineResult ? (
             <BankPipelineResultCard
               result={pipelineResult}
               isExporting={isExporting}
