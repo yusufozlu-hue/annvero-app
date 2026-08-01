@@ -1,6 +1,7 @@
 /**
  * OCR sağlayıcı çözümleme — production’da credential yoksa sahte başarı yok.
  * NEXT_PUBLIC_* kullanılmaz; provider seçimi yalnız sunucu env.
+ * Google Vision / canvas yalnız server-side dynamic import (client bundle’a girmez).
  */
 
 import { OCR_SAFE_MESSAGES, OCR_STATUS } from "@/src/utils/bankOcr/ocrPolicy.js";
@@ -14,7 +15,6 @@ import {
 } from "@/src/utils/bankOcr/ocrEnv.js";
 import { createLocalTestOcrProvider } from "@/src/utils/bankOcr/localTestOcrProvider.js";
 import { createNullOcrProvider } from "@/src/utils/bankOcr/nullOcrProvider.js";
-import { createGoogleVisionOcrProvider } from "@/src/utils/bankOcr/googleVisionOcrProvider.js";
 
 function readProviderRaw(env) {
   if (env && typeof env === "object" && env[OCR_ENV_KEYS.provider] != null) {
@@ -47,6 +47,24 @@ export function resolveOcrProviderName(env) {
   return OCR_PROVIDER_NONE;
 }
 
+function createLazyGoogleVisionOcrProvider(options = {}) {
+  const env = options.env;
+  let innerPromise = null;
+  return {
+    name: OCR_PROVIDER_GOOGLE_VISION,
+    configured: hasGoogleVisionCredentials(env),
+    async recognize(args) {
+      if (!innerPromise) {
+        innerPromise = import("@/src/utils/bankOcr/googleVisionOcrProvider.js").then(
+          (mod) => mod.createGoogleVisionOcrProvider(options)
+        );
+      }
+      const inner = await innerPromise;
+      return inner.recognize(args);
+    },
+  };
+}
+
 export function createOcrProvider(options = {}) {
   const env = options.env || {};
   const name = resolveOcrProviderName(env);
@@ -54,7 +72,7 @@ export function createOcrProvider(options = {}) {
     return createLocalTestOcrProvider(options);
   }
   if (name === OCR_PROVIDER_GOOGLE_VISION) {
-    return createGoogleVisionOcrProvider({ ...options, env });
+    return createLazyGoogleVisionOcrProvider({ ...options, env });
   }
   return createNullOcrProvider({
     name: OCR_PROVIDER_NONE,

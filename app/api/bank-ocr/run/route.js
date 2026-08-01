@@ -189,14 +189,28 @@ export async function POST(request) {
     timeoutMs: OCR_POLICY.TIMEOUT_MS,
   });
 
-  const status =
-    result?.code === OCR_STATUS.OCR_PROVIDER_NOT_CONFIGURED
-      ? 503
-      : result?.ok || (result?.transactions || []).length
-        ? 200
-        : result?.code === "OCR_CANCELLED"
-          ? 499
-          : 422;
+  const code = result?.code;
+  let status = 422;
+  if (code === OCR_STATUS.OCR_PROVIDER_NOT_CONFIGURED) status = 503;
+  else if (result?.ok || (result?.transactions || []).length) status = 200;
+  else if (code === "OCR_CANCELLED") status = 499;
+  else if (code === OCR_STATUS.OCR_AUTH_FAILED) status = 401;
+  else if (code === OCR_STATUS.OCR_PERMISSION_DENIED) status = 403;
+  else if (code === OCR_STATUS.OCR_RATE_LIMITED) status = 429;
+  else if (
+    code === OCR_STATUS.OCR_PROVIDER_TIMEOUT ||
+    code === "OCR_TIMEOUT"
+  )
+    status = 504;
+  else if (
+    code === "PDF_TOO_LARGE" ||
+    code === "PDF_TOO_MANY_PAGES" ||
+    code === "PDF_ENCRYPTED" ||
+    code === "NOT_PDF" ||
+    code === "EMPTY_PDF" ||
+    code === OCR_STATUS.OCR_INVALID_DOCUMENT
+  )
+    status = 400;
 
   return NextResponse.json(publicOcrResult(result), { status });
 }

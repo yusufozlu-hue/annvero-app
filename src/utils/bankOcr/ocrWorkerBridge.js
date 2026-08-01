@@ -6,30 +6,15 @@
  */
 
 import { OCR_POLICY, OCR_SAFE_MESSAGES } from "@/src/utils/bankOcr/ocrPolicy.js";
+import {
+  cancelBankOcrJob,
+  getOcrJobHandles,
+  setOcrJobHandles,
+} from "@/src/utils/bankOcr/ocrJobCancel.js";
 
-let activeWorker = null;
+export { cancelBankOcrJob } from "@/src/utils/bankOcr/ocrJobCancel.js";
+
 let activeJobId = 0;
-let activeAbort = null;
-
-export function cancelBankOcrJob(reason = "cancelled") {
-  if (activeAbort) {
-    try {
-      activeAbort.abort();
-    } catch {
-      /* ignore */
-    }
-    activeAbort = null;
-  }
-  if (activeWorker) {
-    try {
-      activeWorker.terminate();
-    } catch {
-      /* ignore */
-    }
-    activeWorker = null;
-  }
-  return { cancelled: true, reason };
-}
 
 function runInNode(bytes, options, onProgress) {
   return import("@/src/utils/bankOcr/runBankStatementOcr.js").then(({ runBankStatementOcr }) =>
@@ -100,7 +85,7 @@ export async function runBankOcrJob({
     const { runBankOcrViaServer } = await import("@/src/utils/bankOcr/ocrServerClient.js");
     cancelBankOcrJob("superseded");
     const ctrl = new AbortController();
-    activeAbort = ctrl;
+    setOcrJobHandles({ abort: ctrl });
     const onAbort = () => ctrl.abort();
     signal?.addEventListener?.("abort", onAbort, { once: true });
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -117,7 +102,7 @@ export async function runBankOcrJob({
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener?.("abort", onAbort);
-      if (activeAbort === ctrl) activeAbort = null;
+      setOcrJobHandles({ abort: null });
     }
   }
 
@@ -140,12 +125,12 @@ export async function runBankOcrJob({
       } catch {
         /* ignore */
       }
-      if (activeWorker === worker) activeWorker = null;
+      if (getOcrJobHandles().worker === worker) setOcrJobHandles({ worker: null });
       fn(value);
     };
 
     const worker = new Worker(workerUrl /* classic */);
-    activeWorker = worker;
+    setOcrJobHandles({ worker });
 
     const timer = setTimeout(() => {
       finish(resolve, {

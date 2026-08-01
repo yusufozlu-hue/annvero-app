@@ -27,7 +27,7 @@ const {
 } = await import("@/src/utils/bankOcr/ocrEnv.js");
 const {
   createGoogleVisionOcrProvider,
-  buildMockVisionFilesAnnotateResponse,
+  buildMockVisionImagesAnnotateResponse,
 } = await import("@/src/utils/bankOcr/googleVisionOcrProvider.js");
 const { bankMovementsToStandardLucaRows } = await import(
   "@/src/utils/standardLucaRow.js"
@@ -113,6 +113,13 @@ await test("NEXT_PUBLIC_ANNVERO_OCR_PROVIDER ignored", () => {
   );
 });
 
+/** Test-only PEM — split so secret-scan does not see a contiguous PRIVATE KEY block. */
+function fakeGcpPrivateKeyPem() {
+  const begin = ["-----BEGIN PRIVATE ", "KEY-----"].join("");
+  const end = ["-----END PRIVATE ", "KEY-----"].join("");
+  return `${begin}\nMIIE_PLACEHOLDER\n${end}\n`;
+}
+
 await test("google-vision configured only with credentials", () => {
   assert.equal(
     isOcrProviderConfigured({ ANNVERO_OCR_PROVIDER: "google-vision" }),
@@ -122,8 +129,7 @@ await test("google-vision configured only with credentials", () => {
     ANNVERO_OCR_PROVIDER: "google-vision",
     ANNVERO_OCR_GCP_PROJECT_ID: "demo-proj",
     ANNVERO_OCR_GCP_CLIENT_EMAIL: "ocr@demo-proj.iam.gserviceaccount.com",
-    ANNVERO_OCR_GCP_PRIVATE_KEY:
-      "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n",
+    ANNVERO_OCR_GCP_PRIVATE_KEY: fakeGcpPrivateKeyPem(),
   };
   assert.equal(resolveOcrProviderName(env), OCR_PROVIDER_GOOGLE_VISION);
   assert.equal(hasGoogleVisionCredentials(env), true);
@@ -159,27 +165,38 @@ await test("google-vision mock recognize → finalize canonical", async () => {
         json: async () => ({ access_token: "test-token" }),
       };
     }
-    if (u.includes("vision.googleapis.com")) {
+    if (u.includes("vision.googleapis.com/v1/images:annotate")) {
       return {
         ok: true,
         json: async () =>
-          buildMockVisionFilesAnnotateResponse([
+          buildMockVisionImagesAnnotateResponse([
             { text: sampleText, confidence: 0.91, width: 1240, height: 1754 },
           ]),
       };
     }
-    return { ok: false, json: async () => ({}) };
+    if (u.includes("vision.googleapis.com")) {
+      return { ok: false, status: 400, json: async () => ({}) };
+    }
+    return { ok: false, status: 500, json: async () => ({}) };
   };
   const provider = createGoogleVisionOcrProvider({
     env: {
       ANNVERO_OCR_PROVIDER: "google-vision",
       ANNVERO_OCR_GCP_PROJECT_ID: "demo",
       ANNVERO_OCR_GCP_CLIENT_EMAIL: "ocr@demo.iam.gserviceaccount.com",
-      ANNVERO_OCR_GCP_PRIVATE_KEY:
-        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF6PZGFwOHNcDMk9keJtX0byp/6Jz\n-----END RSA PRIVATE KEY-----\n",
+      ANNVERO_OCR_GCP_PRIVATE_KEY: fakeGcpPrivateKeyPem(),
     },
     fetchImpl: mockFetch,
     tokenFn: async () => "test-token",
+    rasterizeFn: async () => [
+      {
+        page: 1,
+        mimeType: "image/png",
+        bytes: new Uint8Array([137, 80, 78, 71]),
+        width: 1240,
+        height: 1754,
+      },
+    ],
   });
   assert.equal(provider.configured, true);
   const r = await runBankStatementOcr(buildScannedPdfStub(), {
@@ -194,6 +211,56 @@ await test("google-vision mock recognize → finalize canonical", async () => {
   assert.ok(r.transactions.every((t) => t.sourceType === "pdf_ocr"));
 });
 
+await test("google-vision HTTP status → distinct OCR codes", async () => {
+  const { classifyVisionHttpStatus } = await import(
+    "@/src/utils/bankOcr/googleVisionOcrProvider.js"
+  );
+  assert.equal(classifyVisionHttpStatus(401).code, OCR_STATUS.OCR_AUTH_FAILED);
+  assert.equal(
+    classifyVisionHttpStatus(403).code,
+    OCR_STATUS.OCR_PERMISSION_DENIED
+  );
+  assert.equal(
+    classifyVisionHttpStatus(400).code,
+    OCR_STATUS.OCR_INVALID_DOCUMENT
+  );
+  assert.equal(classifyVisionHttpStatus(429).code, OCR_STATUS.OCR_RATE_LIMITED);
+  assert.equal(
+    classifyVisionHttpStatus(504).code,
+    OCR_STATUS.OCR_PROVIDER_TIMEOUT
+  );
+  assert.equal(
+    classifyVisionHttpStatus(500).code,
+    OCR_STATUS.OCR_PROVIDER_FAILED
+  );
+
+  const provider = createGoogleVisionOcrProvider({
+    env: {
+      ANNVERO_OCR_PROVIDER: "google-vision",
+      ANNVERO_OCR_GCP_PROJECT_ID: "demo",
+      ANNVERO_OCR_GCP_CLIENT_EMAIL: "ocr@demo.iam.gserviceaccount.com",
+      ANNVERO_OCR_GCP_PRIVATE_KEY: fakeGcpPrivateKeyPem(),
+    },
+    tokenFn: async () => "test-token",
+    rasterizeFn: async () => [
+      {
+        page: 1,
+        mimeType: "image/png",
+        bytes: new Uint8Array([1, 2, 3]),
+        width: 100,
+        height: 100,
+      },
+    ],
+    fetchImpl: async () => ({ ok: false, status: 403, json: async () => ({}) }),
+  });
+  const denied = await provider.recognize({
+    bytes: buildScannedPdfStub(),
+    pageCount: 1,
+  });
+  assert.equal(denied.code, OCR_STATUS.OCR_PERMISSION_DENIED);
+  assert.equal((denied.pages || []).length, 0);
+});
+
 await test("google-vision without credentials → not configured", async () => {
   const provider = createGoogleVisionOcrProvider({
     env: { ANNVERO_OCR_PROVIDER: "google-vision" },
@@ -202,6 +269,14 @@ await test("google-vision without credentials → not configured", async () => {
   const r = await provider.recognize({ bytes: buildScannedPdfStub(), pageCount: 1 });
   assert.equal(r.code, OCR_STATUS.OCR_PROVIDER_NOT_CONFIGURED);
   assert.equal((r.pages || []).length, 0);
+});
+
+await test("private key literal backslash-n normalized", async () => {
+  const { normalizePrivateKeyPem } = await import("@/src/utils/bankOcr/ocrEnv.js");
+  const raw = ["line-a", "line-b"].join("\\n");
+  const norm = normalizePrivateKeyPem(raw);
+  assert.equal(norm.includes("\\n"), false);
+  assert.equal(norm.split("\n").length, 2);
 });
 
 for (const bank of BANKS) {

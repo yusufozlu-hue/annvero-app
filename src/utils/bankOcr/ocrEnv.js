@@ -38,6 +38,26 @@ function parseSaJson(raw) {
 }
 
 /**
+ * Vercel/env PEM: gerçek satır sonları veya literal `\n` / `\r\n` dizileri.
+ * Anahtar değeri asla loglanmaz.
+ */
+export function normalizePrivateKeyPem(raw) {
+  let key = String(raw || "").trim();
+  if (!key) return "";
+  if (
+    (key.startsWith('"') && key.endsWith('"')) ||
+    (key.startsWith("'") && key.endsWith("'"))
+  ) {
+    key = key.slice(1, -1).trim();
+  }
+  // Önce kaçışlı CRLF, sonra kaçışlı LF (çift reverse-escape yok)
+  if (key.includes("\\r\\n")) key = key.split("\\r\\n").join("\n");
+  if (key.includes("\\n")) key = key.split("\\n").join("\n");
+  if (key.includes("\\r")) key = key.split("\\r").join("\n");
+  return key.trim();
+}
+
+/**
  * Google Vision için credential parçalarını oku (değerleri dışarı sızdırma).
  * @returns {{ projectId: string, clientEmail: string, privateKey: string } | null}
  */
@@ -52,9 +72,7 @@ export function resolveGoogleVisionCredentials(env) {
   let privateKey =
     readEnv(env, OCR_ENV_KEYS.privateKey) ||
     String(sa?.private_key || "").trim();
-  if (privateKey.includes("\\n")) {
-    privateKey = privateKey.replace(/\\n/g, "\n");
-  }
+  privateKey = normalizePrivateKeyPem(privateKey);
   if (!projectId || !clientEmail || !privateKey) return null;
   // Drive OAuth secret’ını OCR olarak reddet (yanlış env bağlama)
   if (

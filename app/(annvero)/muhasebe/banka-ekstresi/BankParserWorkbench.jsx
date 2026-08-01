@@ -165,7 +165,7 @@ import {
   legacyBankRowsToCanonical,
 } from "@/src/utils/bankCanonicalTransaction";
 import { parseBankStatementPdf } from "@/src/utils/bankStatementPdf";
-import { cancelBankOcrJob } from "@/src/utils/bankOcr/ocrWorkerBridge";
+import { cancelBankOcrJob } from "@/src/utils/bankOcr/ocrJobCancel";
 import { runBankOcrViaServer } from "@/src/utils/bankOcr/ocrServerClient";
 import { OCR_STATUS, OCR_SAFE_MESSAGES } from "@/src/utils/bankOcr/ocrPolicy";
 import {
