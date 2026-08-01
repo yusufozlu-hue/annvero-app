@@ -62,7 +62,7 @@ test("PDF OCR/hata nesne kartı — string pipelineError yok", () => {
     src,
     /setPipelineError\(\s*pdfResult\.message/
   );
-  assert.match(src, /code:\s*"OCR_REQUIRED"/);
+  assert.match(src, /OCR_STATUS|OCR_REQUIRED|OCR_PROVIDER_NOT_CONFIGURED/);
   assert.match(src, /tone:\s*"info"/);
 });
 

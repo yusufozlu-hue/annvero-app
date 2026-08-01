@@ -15,6 +15,8 @@ export const BANK_JOB_STATE = Object.freeze({
   ERROR: "error",
   CANCELLED: "cancelled",
   OCR_REQUIRED: "OCR_REQUIRED",
+  OCR_FAILED: "OCR_FAILED",
+  OCR_PROVIDER_NOT_CONFIGURED: "OCR_PROVIDER_NOT_CONFIGURED",
 });
 
 const TRANSITIONS = Object.freeze({
