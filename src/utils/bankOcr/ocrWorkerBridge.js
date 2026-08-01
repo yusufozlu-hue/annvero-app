@@ -1,14 +1,25 @@
 /**
  * Bank OCR worker bridge — ana UI thread’i bloklamaz.
- * Browser: classic Worker; Node test: doğrudan runBankStatementOcr.
+ * Browser (gerçek provider): sunucu round-trip (/api/bank-ocr/run).
+ * Browser (local-test worker): classic Worker.
+ * Node test: doğrudan runBankStatementOcr.
  */
 
 import { OCR_POLICY, OCR_SAFE_MESSAGES } from "@/src/utils/bankOcr/ocrPolicy.js";
 
 let activeWorker = null;
 let activeJobId = 0;
+let activeAbort = null;
 
 export function cancelBankOcrJob(reason = "cancelled") {
+  if (activeAbort) {
+    try {
+      activeAbort.abort();
+    } catch {
+      /* ignore */
+    }
+    activeAbort = null;
+  }
   if (activeWorker) {
     try {
       activeWorker.terminate();
@@ -75,6 +86,7 @@ export async function runBankOcrJob({
   signal,
   timeoutMs = OCR_POLICY.TIMEOUT_MS,
   workerUrl = null,
+  preferServer = true,
 } = {}) {
   const started = Date.now();
   onProgress?.({
@@ -82,6 +94,32 @@ export async function runBankOcrJob({
     detail: "OCR hazırlanıyor",
     percent: 1,
   });
+
+  // Tarayıcıda gerçek OCR yalnız sunucu üzerinden (credential sızıntısı yok)
+  if (preferServer && typeof window !== "undefined" && typeof fetch === "function") {
+    const { runBankOcrViaServer } = await import("@/src/utils/bankOcr/ocrServerClient.js");
+    cancelBankOcrJob("superseded");
+    const ctrl = new AbortController();
+    activeAbort = ctrl;
+    const onAbort = () => ctrl.abort();
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      return await runBankOcrViaServer({
+        bytes,
+        companyId: options.companyId || "",
+        fileName: options.fileName || "",
+        pageCount: options.pageCount || 0,
+        selectedBank: options.selectedBank || "",
+        signal: ctrl.signal,
+        onProgress,
+      });
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+      if (activeAbort === ctrl) activeAbort = null;
+    }
+  }
 
   if (typeof Worker === "undefined" || !workerUrl) {
     return runInNode(bytes, { ...options, signal, timeoutMs }, onProgress);
