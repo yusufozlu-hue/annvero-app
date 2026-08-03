@@ -111,6 +111,47 @@ assert.match(label, /MARE RESORT/);
 assert.equal(COMPANY_VERIFY_CONFIRM_BUTTON_LABEL, "Firmayı Onayla ve Devam Et");
 console.log("PASS  manual confirm unlocks pipeline on same source (no re-upload)");
 
+// 3b) Immutable checkpoint — onay sonrası File input'a bağımlı değil
+const {
+  createBankStatementSourceCheckpoint,
+  getCheckpointArrayBufferAsync,
+  getCheckpointFile,
+  hasUsableSourceCheckpoint,
+  rememberArchiveOnCheckpoint,
+  shouldReuseArchiveFromCheckpoint,
+  buildArchiveReuseFromCheckpoint,
+  shouldBypassDedupForCompanyApproveResume,
+  clearBankStatementSourceCheckpoint,
+} = await import("@/src/utils/bankStatementSourceCheckpoint.js");
+
+const fixturePdf = new File(
+  [new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 7, 7, 7])],
+  "redacted-ambiguous-mare.pdf",
+  { type: "application/pdf" }
+);
+const sourceCp = await createBankStatementSourceCheckpoint(fixturePdf);
+assert.equal(hasUsableSourceCheckpoint(sourceCp), true);
+assert.ok(sourceCp.contentHash);
+// Simüle: input temizlendi, yalnız checkpoint kaldı
+const resumeBytes = await getCheckpointArrayBufferAsync(sourceCp);
+assert.ok(resumeBytes.byteLength > 0);
+assert.ok(getCheckpointFile(sourceCp) instanceof File);
+assert.equal(shouldBypassDedupForCompanyApproveResume(true), true);
+rememberArchiveOnCheckpoint(sourceCp, {
+  ok: true,
+  code: "ARCHIVED",
+  safeSummary: { archived: true },
+});
+assert.equal(shouldReuseArchiveFromCheckpoint(sourceCp), true);
+assert.equal(
+  buildArchiveReuseFromCheckpoint(sourceCp).code,
+  "CHECKPOINT_REUSE_ARCHIVE"
+);
+assert.equal(clearBankStatementSourceCheckpoint(sourceCp), null);
+console.log(
+  "PASS  approve → checkpoint parse source intact; no 2nd Drive; no file-read error path"
+);
+
 // 4) MISMATCH manuel onay bypass YOK
 const mismatchConfirm = assertManualCompanyConfirmation({
   guardCode: BANK_COMPANY_GUARD_CODE.MISMATCH,
@@ -239,6 +280,12 @@ assert.match(workbench, /handleConfirmCompanyAndContinue/);
 assert.match(workbench, /applyManualCompanyConfirmationToGuard/);
 assert.match(workbench, /companyManualConfirmedRef/);
 assert.match(workbench, /ANNVERO_COMPANY_CHANGED_EVENT/);
+assert.match(workbench, /createBankStatementSourceCheckpoint/);
+assert.match(workbench, /sourceCheckpointRef/);
+assert.match(workbench, /companyApproveResume:\s*true/);
+assert.match(workbench, /shouldReuseArchiveFromCheckpoint/);
+assert.match(workbench, /clearBankStatementSourceCheckpoint/);
 console.log("PASS  UI confirm checkbox + button wired; company change clears state");
+console.log("PASS  approve resume uses immutable source checkpoint (no file re-pick)");
 
 console.log("All bank-company-verify staging E2E checks passed.");
