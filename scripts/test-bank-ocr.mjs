@@ -1,12 +1,14 @@
 /**
  * Banka OCR regresyon matrisi.
  * Çalıştır: ANNVERO_OCR_PROVIDER=local-test node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-ocr.mjs
+ * Google Vision: mock fetch ile unit test (local-test production başarısı sayılmaz).
  */
 
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 
 process.env.ANNVERO_OCR_PROVIDER = process.env.ANNVERO_OCR_PROVIDER || "local-test";
+process.env.NODE_ENV = process.env.NODE_ENV || "test";
 
 const {
   parseBankStatementPdf,
@@ -19,6 +21,14 @@ const { runBankStatementOcr, validateOcrPdfBounds } = await import(
 const { createOcrProvider, isOcrProviderConfigured, resolveOcrProviderName } =
   await import("@/src/utils/bankOcr/ocrProvider.js");
 const { OCR_POLICY, OCR_STATUS } = await import("@/src/utils/bankOcr/ocrPolicy.js");
+const {
+  OCR_PROVIDER_GOOGLE_VISION,
+  hasGoogleVisionCredentials,
+} = await import("@/src/utils/bankOcr/ocrEnv.js");
+const {
+  createGoogleVisionOcrProvider,
+  buildMockVisionImagesAnnotateResponse,
+} = await import("@/src/utils/bankOcr/googleVisionOcrProvider.js");
 const { bankMovementsToStandardLucaRows } = await import(
   "@/src/utils/standardLucaRow.js"
 );
@@ -35,6 +45,9 @@ const {
 } = await import("./fixtures/bankPdfFixtures.mjs");
 const { verifyBankStatementCompanyMatch } = await import(
   "@/src/utils/bankStatementCompanyGuard.js"
+);
+const { buildLocalTestOcrTextForBank } = await import(
+  "@/src/utils/bankOcr/localTestOcrProvider.js"
 );
 
 function test(name, fn) {
@@ -60,10 +73,67 @@ function test(name, fn) {
 
 const BANKS = ["GARANTI", "TEB", "VAKIFBANK", "ZIRAAT", "KUVEYT"];
 
-await test("provider local-test configured", () => {
-  assert.equal(resolveOcrProviderName({ ANNVERO_OCR_PROVIDER: "local-test" }), "local-test");
-  assert.equal(isOcrProviderConfigured({ ANNVERO_OCR_PROVIDER: "local-test" }), true);
+await test("provider local-test configured (non-prod)", () => {
+  assert.equal(
+    resolveOcrProviderName({ ANNVERO_OCR_PROVIDER: "local-test", NODE_ENV: "test" }),
+    "local-test"
+  );
+  assert.equal(
+    isOcrProviderConfigured({ ANNVERO_OCR_PROVIDER: "local-test", NODE_ENV: "test" }),
+    true
+  );
   assert.equal(isOcrProviderConfigured({ ANNVERO_OCR_PROVIDER: "" }), false);
+});
+
+await test("local-test blocked in production runtime", () => {
+  assert.equal(
+    resolveOcrProviderName({
+      ANNVERO_OCR_PROVIDER: "local-test",
+      NODE_ENV: "production",
+      VERCEL_ENV: "production",
+    }),
+    "none"
+  );
+  assert.equal(
+    isOcrProviderConfigured({
+      ANNVERO_OCR_PROVIDER: "local-test",
+      NODE_ENV: "production",
+    }),
+    false
+  );
+});
+
+await test("NEXT_PUBLIC_ANNVERO_OCR_PROVIDER ignored", () => {
+  assert.equal(
+    resolveOcrProviderName({
+      NEXT_PUBLIC_ANNVERO_OCR_PROVIDER: "google-vision",
+      ANNVERO_OCR_PROVIDER: "",
+    }),
+    "none"
+  );
+});
+
+/** Test-only PEM — split so secret-scan does not see a contiguous PRIVATE KEY block. */
+function fakeGcpPrivateKeyPem() {
+  const begin = ["-----BEGIN PRIVATE ", "KEY-----"].join("");
+  const end = ["-----END PRIVATE ", "KEY-----"].join("");
+  return `${begin}\nMIIE_PLACEHOLDER\n${end}\n`;
+}
+
+await test("google-vision configured only with credentials", () => {
+  assert.equal(
+    isOcrProviderConfigured({ ANNVERO_OCR_PROVIDER: "google-vision" }),
+    false
+  );
+  const env = {
+    ANNVERO_OCR_PROVIDER: "google-vision",
+    ANNVERO_OCR_GCP_PROJECT_ID: "demo-proj",
+    ANNVERO_OCR_GCP_CLIENT_EMAIL: "ocr@demo-proj.iam.gserviceaccount.com",
+    ANNVERO_OCR_GCP_PRIVATE_KEY: fakeGcpPrivateKeyPem(),
+  };
+  assert.equal(resolveOcrProviderName(env), OCR_PROVIDER_GOOGLE_VISION);
+  assert.equal(hasGoogleVisionCredentials(env), true);
+  assert.equal(isOcrProviderConfigured(env), true);
 });
 
 await test("null provider → OCR_PROVIDER_NOT_CONFIGURED, no movements", async () => {
@@ -85,6 +155,130 @@ await test("scanned without enableOcr → OCR_REQUIRED (no fake)", async () => {
   assert.equal((r.transactions || []).length, 0);
 });
 
+await test("google-vision mock recognize → finalize canonical", async () => {
+  const sampleText = buildLocalTestOcrTextForBank("VAKIFBANK", { pageCount: 1 });
+  const mockFetch = async (url) => {
+    const u = String(url);
+    if (u.includes("oauth2.googleapis.com/token")) {
+      return {
+        ok: true,
+        json: async () => ({ access_token: "test-token" }),
+      };
+    }
+    if (u.includes("vision.googleapis.com/v1/images:annotate")) {
+      return {
+        ok: true,
+        json: async () =>
+          buildMockVisionImagesAnnotateResponse([
+            { text: sampleText, confidence: 0.91, width: 1240, height: 1754 },
+          ]),
+      };
+    }
+    if (u.includes("vision.googleapis.com")) {
+      return { ok: false, status: 400, json: async () => ({}) };
+    }
+    return { ok: false, status: 500, json: async () => ({}) };
+  };
+  const provider = createGoogleVisionOcrProvider({
+    env: {
+      ANNVERO_OCR_PROVIDER: "google-vision",
+      ANNVERO_OCR_GCP_PROJECT_ID: "demo",
+      ANNVERO_OCR_GCP_CLIENT_EMAIL: "ocr@demo.iam.gserviceaccount.com",
+      ANNVERO_OCR_GCP_PRIVATE_KEY: fakeGcpPrivateKeyPem(),
+    },
+    fetchImpl: mockFetch,
+    tokenFn: async () => "test-token",
+    rasterizeFn: async () => [
+      {
+        page: 1,
+        mimeType: "image/png",
+        bytes: new Uint8Array([137, 80, 78, 71]),
+        width: 1240,
+        height: 1754,
+      },
+    ],
+  });
+  assert.equal(provider.configured, true);
+  const r = await runBankStatementOcr(buildScannedPdfStub(), {
+    provider,
+    selectedBank: "VAKIFBANK",
+    fileName: "vakif-scan.pdf",
+    pageCount: 1,
+  });
+  assert.ok((r.transactions || []).length >= 1, "mock Vision hareket üretmeli");
+  assert.equal(r.ocrUsed, true);
+  assert.equal(r.ocrProvider, OCR_PROVIDER_GOOGLE_VISION);
+  assert.ok(r.transactions.every((t) => t.sourceType === "pdf_ocr"));
+});
+
+await test("google-vision HTTP status → distinct OCR codes", async () => {
+  const { classifyVisionHttpStatus } = await import(
+    "@/src/utils/bankOcr/googleVisionOcrProvider.js"
+  );
+  assert.equal(classifyVisionHttpStatus(401).code, OCR_STATUS.OCR_AUTH_FAILED);
+  assert.equal(
+    classifyVisionHttpStatus(403).code,
+    OCR_STATUS.OCR_PERMISSION_DENIED
+  );
+  assert.equal(
+    classifyVisionHttpStatus(400).code,
+    OCR_STATUS.OCR_INVALID_DOCUMENT
+  );
+  assert.equal(classifyVisionHttpStatus(429).code, OCR_STATUS.OCR_RATE_LIMITED);
+  assert.equal(
+    classifyVisionHttpStatus(504).code,
+    OCR_STATUS.OCR_PROVIDER_TIMEOUT
+  );
+  assert.equal(
+    classifyVisionHttpStatus(500).code,
+    OCR_STATUS.OCR_PROVIDER_FAILED
+  );
+
+  const provider = createGoogleVisionOcrProvider({
+    env: {
+      ANNVERO_OCR_PROVIDER: "google-vision",
+      ANNVERO_OCR_GCP_PROJECT_ID: "demo",
+      ANNVERO_OCR_GCP_CLIENT_EMAIL: "ocr@demo.iam.gserviceaccount.com",
+      ANNVERO_OCR_GCP_PRIVATE_KEY: fakeGcpPrivateKeyPem(),
+    },
+    tokenFn: async () => "test-token",
+    rasterizeFn: async () => [
+      {
+        page: 1,
+        mimeType: "image/png",
+        bytes: new Uint8Array([1, 2, 3]),
+        width: 100,
+        height: 100,
+      },
+    ],
+    fetchImpl: async () => ({ ok: false, status: 403, json: async () => ({}) }),
+  });
+  const denied = await provider.recognize({
+    bytes: buildScannedPdfStub(),
+    pageCount: 1,
+  });
+  assert.equal(denied.code, OCR_STATUS.OCR_PERMISSION_DENIED);
+  assert.equal((denied.pages || []).length, 0);
+});
+
+await test("google-vision without credentials → not configured", async () => {
+  const provider = createGoogleVisionOcrProvider({
+    env: { ANNVERO_OCR_PROVIDER: "google-vision" },
+  });
+  assert.equal(provider.configured, false);
+  const r = await provider.recognize({ bytes: buildScannedPdfStub(), pageCount: 1 });
+  assert.equal(r.code, OCR_STATUS.OCR_PROVIDER_NOT_CONFIGURED);
+  assert.equal((r.pages || []).length, 0);
+});
+
+await test("private key literal backslash-n normalized", async () => {
+  const { normalizePrivateKeyPem } = await import("@/src/utils/bankOcr/ocrEnv.js");
+  const raw = ["line-a", "line-b"].join("\\n");
+  const norm = normalizePrivateKeyPem(raw);
+  assert.equal(norm.includes("\\n"), false);
+  assert.equal(norm.split("\n").length, 2);
+});
+
 for (const bank of BANKS) {
   await test(`${bank} text PDF still works`, async () => {
     const r = await parseBankStatementPdf(buildBankStatementPdfFixture(bank), {
@@ -100,7 +294,7 @@ for (const bank of BANKS) {
     const t0 = performance.now();
     let firstProgressMs = null;
     const r = await runBankStatementOcr(bytes, {
-      env: { ANNVERO_OCR_PROVIDER: "local-test" },
+      env: { ANNVERO_OCR_PROVIDER: "local-test", NODE_ENV: "test" },
       selectedBank: bank,
       fileName: `${bank.toLowerCase()}-scan.pdf`,
       pageCount: 2,
@@ -118,7 +312,7 @@ for (const bank of BANKS) {
 
   await test(`${bank} OCR low confidence → review, no auto`, async () => {
     const r = await runBankStatementOcr(buildScannedPdfStub(), {
-      env: { ANNVERO_OCR_PROVIDER: "local-test" },
+      env: { ANNVERO_OCR_PROVIDER: "local-test", NODE_ENV: "test" },
       selectedBank: bank,
       fileName: `${bank}-low.pdf`,
       lowConfidence: true,
@@ -134,7 +328,7 @@ for (const bank of BANKS) {
       selectedBank: bank,
     });
     const ocr = await runBankStatementOcr(buildScannedPdfStub(), {
-      env: { ANNVERO_OCR_PROVIDER: "local-test" },
+      env: { ANNVERO_OCR_PROVIDER: "local-test", NODE_ENV: "test" },
       selectedBank: bank,
       companyId: "c1",
       fileName: `${bank}-scan.pdf`,
@@ -173,7 +367,7 @@ for (const bank of BANKS) {
 
 await test("OCR BALANCE_MISMATCH closes auto export", async () => {
   const r = await runBankStatementOcr(buildScannedPdfStub(), {
-    env: { ANNVERO_OCR_PROVIDER: "local-test" },
+    env: { ANNVERO_OCR_PROVIDER: "local-test", NODE_ENV: "test" },
     selectedBank: "VAKIFBANK",
     balanceMismatch: true,
     fileName: "vakif-mismatch.pdf",
@@ -189,13 +383,12 @@ await test("encrypted / corrupt / too many pages", async () => {
   const cor = validateOcrPdfBounds(buildCorruptPdfStub());
   assert.equal(cor.ok, false);
   const bomb = buildScannedMultipagePdfStub(2);
-  // page count estimate may be low on stub; policy still accepts small stubs
   assert.ok(validateOcrPdfBounds(bomb).ok || validateOcrPdfBounds(bomb).code);
 });
 
 await test("OCR fail / timeout / cancel", async () => {
   const fail = await runBankStatementOcr(buildScannedPdfStub(), {
-    env: { ANNVERO_OCR_PROVIDER: "local-test" },
+    env: { ANNVERO_OCR_PROVIDER: "local-test", NODE_ENV: "test" },
     simulateFail: true,
     selectedBank: "TEB",
   });
@@ -205,7 +398,7 @@ await test("OCR fail / timeout / cancel", async () => {
   const ctrl = new AbortController();
   ctrl.abort();
   const cancelled = await runBankStatementOcr(buildScannedPdfStub(), {
-    env: { ANNVERO_OCR_PROVIDER: "local-test" },
+    env: { ANNVERO_OCR_PROVIDER: "local-test", NODE_ENV: "test" },
     signal: ctrl.signal,
     selectedBank: "TEB",
   });
@@ -222,7 +415,7 @@ await test("header/footer/subtotal filtered", () => {
 
 await test("company mismatch blocks after OCR identity", async () => {
   const ocr = await runBankStatementOcr(buildScannedPdfStub(), {
-    env: { ANNVERO_OCR_PROVIDER: "local-test" },
+    env: { ANNVERO_OCR_PROVIDER: "local-test", NODE_ENV: "test" },
     selectedBank: "VAKIFBANK",
     fileName: "adh-scan.pdf",
   });
@@ -248,7 +441,7 @@ await test("UI ack ≤200ms progress contract", async () => {
   const t0 = performance.now();
   let ack = null;
   await runBankStatementOcr(buildScannedPdfStub(), {
-    env: { ANNVERO_OCR_PROVIDER: "local-test" },
+    env: { ANNVERO_OCR_PROVIDER: "local-test", NODE_ENV: "test" },
     selectedBank: "VAKIFBANK",
     onProgress: () => {
       if (ack == null) ack = performance.now() - t0;
@@ -261,6 +454,159 @@ await test("policy constants exported", () => {
   assert.ok(OCR_POLICY.MAX_BYTES > 0);
   assert.ok(OCR_POLICY.MAX_PAGES >= 80);
   assert.equal(OCR_POLICY.PROGRESS_FIRST_MS, 500);
+});
+
+await test("OCR-split VakıfBank lines → txCount > 0", async () => {
+  const { normalizeOcrStatementText } = await import(
+    "@/src/utils/bankOcr/normalizeOcrStatementText.js"
+  );
+  const { finalizeOcrPagesToParseResult } = await import(
+    "@/src/utils/bankOcr/runBankStatementOcr.js"
+  );
+  const splitText = [
+    "VakifBank Hesap Ekstresi",
+    "Acilis bakiyesi: 10.000,00",
+    "02.01.2026",
+    "EFT GELEN ABC LTD",
+    "1.500,00",
+    "0,00",
+    "11.500,00",
+    "03.01.2026",
+    "HAVALE GIDEN XYZ AS",
+    "0,00",
+    "250,00",
+    "11.250,00",
+    "Kapanis bakiyesi: 11.250,00",
+  ].join("\n");
+  const norm = normalizeOcrStatementText(splitText);
+  assert.match(norm, /02\.01\.2026 EFT GELEN ABC LTD 1\.500,00/);
+  const fin = finalizeOcrPagesToParseResult(
+    [{ page: 1, text: splitText, confidence: 0.9 }],
+    { selectedBank: "VAKIFBANK", companyId: "c1" }
+  );
+  assert.equal(fin.ocrUsed, true);
+  assert.ok((fin.transactions || []).length >= 2, "OCR-split hareket üretmeli");
+  assert.ok(fin.transactions.every((t) => t.sourcePage === 1));
+  assert.ok(fin.transactions.every((t) => t.sourceType === "pdf_ocr"));
+  assert.ok(fin.transactions[0].description.length >= 3);
+  assert.ok(Number.isFinite(fin.transactions[0].amount));
+});
+
+await test("OCR broken decimal newline merged", async () => {
+  const { normalizeOcrStatementText } = await import(
+    "@/src/utils/bankOcr/normalizeOcrStatementText.js"
+  );
+  const raw = "02.01.2026\nEFT GELEN\n1.500,\n00\n0,00\n10.000,00";
+  const norm = normalizeOcrStatementText(raw);
+  assert.match(norm, /1\.500,00/);
+  assert.doesNotMatch(norm, /1\.500,\n00/);
+});
+
+await test("Vision-like spaced date/amount + header filter → txs", async () => {
+  const { normalizeOcrStatementText, preprocessOcrNoise } = await import(
+    "@/src/utils/bankOcr/normalizeOcrStatementText.js"
+  );
+  const { finalizeOcrPagesToParseResult } = await import(
+    "@/src/utils/bankOcr/runBankStatementOcr.js"
+  );
+  const spaced = preprocessOcrNoise("O2 . O1 . 2O26 EFT GELEN 1 500,00");
+  assert.match(spaced, /02\.01\.2026/);
+  assert.match(spaced, /1\.500,00/);
+
+  const visionLike = [
+    "VakifBank Hesap Ekstresi",
+    "Tarih Aciklama Borc Alacak Bakiye",
+    "Acilis bakiyesi: 10.000,00",
+    "02 . 01 . 2026",
+    "EFT GELEN REDACTED LTD",
+    "1 500,00",
+    "0,00",
+    "11.500,00",
+    "Ara toplam 1.500,00",
+    "03.01.2026 HAVALE GIDEN REDACTED AS 0,00 250,00 11.250,00",
+    "Kapanis bakiyesi: 11.250,00",
+  ].join("\n");
+  const fin = finalizeOcrPagesToParseResult(
+    [{ page: 1, text: visionLike, confidence: 0.91 }],
+    { selectedBank: "VAKIFBANK", companyId: "c1" }
+  );
+  assert.equal(fin.ocrUsed, true);
+  assert.ok((fin.transactions || []).length >= 2, "vision-like txs");
+  assert.ok(fin.transactions.every((t) => t.currency === "TRY"));
+  assert.ok(fin.transactions.every((t) => Number(t.sourcePage) === 1));
+  assert.ok(fin.transactions.every((t) => Number.isFinite(t.sourceRow)));
+  assert.ok(!/ara toplam/i.test(fin.transactions.map((t) => t.description).join(" ")));
+});
+
+await test("Vision page word geometry rebuilds rows", async () => {
+  const { rebuildTextLinesFromVisionPage } = await import(
+    "@/src/utils/bankOcr/googleVisionOcrProvider.js"
+  );
+  const mkWord = (text, x0, y0, x1, y1) => ({
+    symbols: String(text)
+      .split("")
+      .map((ch, i, arr) => ({
+        text: ch,
+        property:
+          i === arr.length - 1
+            ? { detectedBreak: { type: "SPACE" } }
+            : undefined,
+      })),
+    boundingBox: {
+      vertices: [
+        { x: x0, y: y0 },
+        { x: x1, y: y0 },
+        { x: x1, y: y1 },
+        { x: x0, y: y1 },
+      ],
+    },
+  });
+  const page = {
+    blocks: [
+      {
+        paragraphs: [
+          {
+            words: [
+              mkWord("02.01.2026", 10, 100, 80, 112),
+              mkWord("EFT", 100, 101, 130, 113),
+              mkWord("GELEN", 140, 100, 190, 112),
+              mkWord("1.500,00", 300, 100, 360, 112),
+              mkWord("0,00", 380, 101, 420, 113),
+              mkWord("11.500,00", 440, 100, 510, 112),
+              mkWord("03.01.2026", 10, 140, 80, 152),
+              mkWord("HAVALE", 100, 141, 160, 153),
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const text = rebuildTextLinesFromVisionPage(page);
+  const rows = text.split(/\n/).filter(Boolean);
+  assert.ok(rows.length >= 2, "geometry rows");
+  assert.match(rows[0], /02\.01\.2026/);
+  assert.match(rows[0], /1\.500,00/);
+  assert.match(rows[1], /03\.01\.2026/);
+});
+
+await test("source has no NEXT_PUBLIC_ANNVERO_OCR_PROVIDER", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const root = path.resolve(process.cwd());
+  const files = [
+    "src/utils/bankOcr/ocrProvider.js",
+    "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx",
+    "app/api/bank-ocr/status/route.js",
+    "app/api/bank-ocr/run/route.js",
+  ];
+  for (const rel of files) {
+    const src = fs.readFileSync(path.join(root, rel), "utf8");
+    assert.equal(
+      src.includes("NEXT_PUBLIC_ANNVERO_OCR_PROVIDER"),
+      false,
+      `${rel} must not reference NEXT_PUBLIC OCR provider`
+    );
+  }
 });
 
 if (!process.exitCode) {

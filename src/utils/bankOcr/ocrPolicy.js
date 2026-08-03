@@ -23,6 +23,18 @@ export const OCR_SAFE_MESSAGES = Object.freeze({
     "Bu PDF taranmış görünüyor; metin katmanı yok. OCR tamamlanana kadar inceleme kuyruğuna alındı.",
   OCR_FAILED:
     "OCR tamamlanamadı. Dosyayı kontrol edip güvenli biçimde yeniden deneyin.",
+  OCR_AUTH_FAILED:
+    "OCR kimlik doğrulaması başarısız. Servis yapılandırmasını kontrol edin.",
+  OCR_PERMISSION_DENIED:
+    "OCR servisine erişim reddedildi. Yetkileri kontrol edin.",
+  OCR_INVALID_DOCUMENT:
+    "PDF OCR için geçersiz veya okunamadı. Dosyayı kontrol edip yeniden deneyin.",
+  OCR_PROVIDER_TIMEOUT:
+    "OCR sağlayıcısı zaman aşımına uğradı. Dosyayı bölüp tekrar deneyin.",
+  OCR_RATE_LIMITED:
+    "OCR isteği kota sınırına takıldı. Kısa süre sonra yeniden deneyin.",
+  OCR_PROVIDER_FAILED:
+    "OCR sağlayıcısı yanıt veremedi. Daha sonra yeniden deneyin.",
   OCR_PROVIDER_NOT_CONFIGURED:
     "OCR servisi yapılandırılmamış. Taranmış PDF’ler inceleme kuyruğunda bekler.",
   OCR_TIMEOUT: "OCR zaman aşımına uğradı. Dosyayı bölüp tekrar deneyin.",
@@ -44,6 +56,12 @@ export const OCR_STATUS = Object.freeze({
   REVIEW_REQUIRED: "review_required",
   OCR_REQUIRED: "OCR_REQUIRED",
   OCR_FAILED: "OCR_FAILED",
+  OCR_AUTH_FAILED: "OCR_AUTH_FAILED",
+  OCR_PERMISSION_DENIED: "OCR_PERMISSION_DENIED",
+  OCR_INVALID_DOCUMENT: "OCR_INVALID_DOCUMENT",
+  OCR_PROVIDER_TIMEOUT: "OCR_PROVIDER_TIMEOUT",
+  OCR_RATE_LIMITED: "OCR_RATE_LIMITED",
+  OCR_PROVIDER_FAILED: "OCR_PROVIDER_FAILED",
   OCR_PROVIDER_NOT_CONFIGURED: "OCR_PROVIDER_NOT_CONFIGURED",
   COMPLETED: "completed",
   CANCELLED: "cancelled",

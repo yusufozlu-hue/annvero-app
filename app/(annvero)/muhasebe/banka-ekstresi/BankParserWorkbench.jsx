@@ -165,10 +165,9 @@ import {
   legacyBankRowsToCanonical,
 } from "@/src/utils/bankCanonicalTransaction";
 import { parseBankStatementPdf } from "@/src/utils/bankStatementPdf";
-import { runBankStatementOcr } from "@/src/utils/bankOcr/runBankStatementOcr";
-import { cancelBankOcrJob } from "@/src/utils/bankOcr/ocrWorkerBridge";
+import { cancelBankOcrJob } from "@/src/utils/bankOcr/ocrJobCancel";
+import { runBankOcrViaServer } from "@/src/utils/bankOcr/ocrServerClient";
 import { OCR_STATUS, OCR_SAFE_MESSAGES } from "@/src/utils/bankOcr/ocrPolicy";
-import { isOcrProviderConfigured } from "@/src/utils/bankOcr/ocrProvider";
 import {
   BALANCE_MISMATCH,
   reconcileStatementBalances,
@@ -2272,32 +2271,6 @@ export default function BankParserWorkbench() {
           pdfLegacyRowsRef.current = [];
           fileSheetRowsRef.current = [];
           fileSheetSourceRef.current = file.name;
-          const ocrConfigured =
-            isOcrProviderConfigured() ||
-            (await fetch("/api/bank-ocr/status")
-              .then((r) => r.json())
-              .then((j) => Boolean(j?.configured))
-              .catch(() => false));
-
-          if (!ocrConfigured) {
-            setBankDetection({
-              status: "unknown",
-              bankId: null,
-              message: "OCR gerekli — inceleme kuyruğu.",
-            });
-            setPipelineResult(null);
-            setToast(null);
-            setPipelineError({
-              phase: PIPELINE_PHASES.PREVIEW,
-              phaseLabel: "OCR",
-              code: OCR_STATUS.OCR_PROVIDER_NOT_CONFIGURED,
-              message: OCR_SAFE_MESSAGES.OCR_PROVIDER_NOT_CONFIGURED,
-              recoverable: true,
-              tone: "info",
-            });
-            return;
-          }
-
           setPipelineResult(null);
           setToast(null);
           setPipelineError(null);
@@ -2315,18 +2288,13 @@ export default function BankParserWorkbench() {
           const ocrStarted = Date.now();
           let firstProgressAt = null;
           try {
-            const ocrOut = await runBankStatementOcr(arrayBuffer, {
+            const ocrOut = await runBankOcrViaServer({
+              bytes: arrayBuffer,
               companyId: selectedCompanyId || "",
               fileName: file.name,
               pageCount: pdfResult.pageCount || 1,
+              selectedBank: activeBankRef.current || selectedBank || "",
               signal: ocrCtrl.signal,
-              env: {
-                ANNVERO_OCR_PROVIDER:
-                  typeof process !== "undefined"
-                    ? process.env?.NEXT_PUBLIC_ANNVERO_OCR_PROVIDER ||
-                      process.env?.ANNVERO_OCR_PROVIDER
-                    : "local-test",
-              },
               onProgress: (p) => {
                 if (!firstProgressAt) firstProgressAt = Date.now();
                 setPipelineProgress({

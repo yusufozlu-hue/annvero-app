@@ -4,6 +4,7 @@ import { buildSecurityHeaders } from "./src/lib/security/securityHeaders";
 const isDev = process.env.NODE_ENV !== "production";
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ["@napi-rs/canvas", "pdfjs-dist"],
   env: {
     NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA:
       process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA || "local",

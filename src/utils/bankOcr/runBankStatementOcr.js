@@ -31,6 +31,7 @@ import {
   OCR_STATUS,
 } from "@/src/utils/bankOcr/ocrPolicy.js";
 import { createOcrProvider } from "@/src/utils/bankOcr/ocrProvider.js";
+import { normalizeOcrStatementText } from "@/src/utils/bankOcr/normalizeOcrStatementText.js";
 
 function asBytes(input) {
   if (!input) return new Uint8Array(0);
@@ -87,7 +88,7 @@ function joinOcrPages(pages = []) {
   return (pages || [])
     .map((p) => {
       const pageNo = Number(p.page) || 1;
-      const body = String(p.text || "").trim();
+      const body = normalizeOcrStatementText(String(p.text || "").trim());
       return `--- page ${pageNo} ---\n${body}`;
     })
     .join("\n");
@@ -134,6 +135,8 @@ export function finalizeOcrPagesToParseResult(ocrPages = [], options = {}) {
     ...options,
     sourceFileHash,
     selectedBank: options.selectedBank || options.detectedBank || undefined,
+    ocrUsed: true,
+    sourceType: BANK_STATEMENT_SOURCE.PDF_OCR,
   });
   const withConf = applyOcrConfidence(parsed.transactions, ocrPages, options);
   const hints = extractBalanceHintsFromText(text);
@@ -266,8 +269,8 @@ export async function runBankStatementOcr(bytes, options = {}) {
           simulateTimeout: options.simulateTimeout,
         }),
         new Promise((_, reject) => {
-          const err = new Error(OCR_SAFE_MESSAGES.OCR_TIMEOUT);
-          err.code = "OCR_TIMEOUT";
+          const err = new Error(OCR_SAFE_MESSAGES.OCR_PROVIDER_TIMEOUT);
+          err.code = OCR_STATUS.OCR_PROVIDER_TIMEOUT;
           setTimeout(() => reject(err), timeoutMs);
         }),
       ]);
@@ -282,12 +285,12 @@ export async function runBankStatementOcr(bytes, options = {}) {
           sourceFileHash,
         };
       }
-      if (error?.code === "OCR_TIMEOUT") {
+      if (error?.code === "OCR_TIMEOUT" || error?.code === OCR_STATUS.OCR_PROVIDER_TIMEOUT) {
         return {
           ok: false,
           status: BANK_PARSE_STATUS.ERROR,
-          code: "OCR_TIMEOUT",
-          message: OCR_SAFE_MESSAGES.OCR_TIMEOUT,
+          code: OCR_STATUS.OCR_PROVIDER_TIMEOUT,
+          message: OCR_SAFE_MESSAGES.OCR_PROVIDER_TIMEOUT,
           transactions: [],
           sourceFileHash,
         };

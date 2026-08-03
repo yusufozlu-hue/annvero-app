@@ -1,6 +1,7 @@
 /**
  * Bank OCR classic Worker — zero-import (Turbopack media güvenliği).
- * Local-test sağlayıcı mantığı inline; sahte üretim yok (provider yoksa FAILED/NOT_CONFIGURED).
+ * Yalnız local-test / fixture (Node/dev); gerçek Google Vision sunucu API’sinde çalışır.
+ * Production browser yolu /api/bank-ocr/run kullanır — bu worker credential taşımaz.
  *
  * Protocol:
  *  in:  { type:"ocr", jobId, bytes, options }
