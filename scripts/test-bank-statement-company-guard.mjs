@@ -227,17 +227,20 @@ test("firma değişiminde state temizlik sözleşmesi", () => {
   let result = { missing: 1 };
   let centerOpen = true;
   let guard = { code: "COMPANY_MATCH" };
+  let checkpoint = { fileName: "x.xlsx", contentHash: "h" };
   const onCompanyChange = () => {
     file = null;
     result = null;
     centerOpen = false;
     guard = null;
+    checkpoint = null;
   };
   onCompanyChange();
   assert.equal(file, null);
   assert.equal(result, null);
   assert.equal(centerOpen, false);
   assert.equal(guard, null);
+  assert.equal(checkpoint, null);
 });
 
 test("tenant izolasyonu — başka firma profili score düşürür", () => {

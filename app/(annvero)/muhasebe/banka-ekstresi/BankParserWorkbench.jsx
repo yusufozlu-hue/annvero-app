@@ -193,6 +193,19 @@ import {
   shouldSkipDriveArchiveOnReanalyze,
 } from "@/src/utils/bankStatementReanalyze";
 import {
+  buildArchiveReuseFromCheckpoint,
+  clearBankStatementSourceCheckpoint,
+  createBankStatementSourceCheckpoint,
+  getCheckpointArrayBuffer,
+  getCheckpointArrayBufferAsync,
+  getCheckpointFile,
+  hasUsableSourceCheckpoint,
+  rememberArchiveOnCheckpoint,
+  shouldBypassDedupForCompanyApproveResume,
+  shouldBypassIdempotencyForCompanyApproveResume,
+  shouldReuseArchiveFromCheckpoint,
+} from "@/src/utils/bankStatementSourceCheckpoint";
+import {
   BANK_JOB_STATE,
   createInitialBankJobState,
   shouldBlockNewBankJob,
@@ -479,6 +492,9 @@ export default function BankParserWorkbench() {
   const fileSheetSourceRef = useRef(null);
   const pdfLegacyRowsRef = useRef(null);
   const pdfMetaRef = useRef(null);
+  /** Immutable kaynak — input File / stale ref'e bağlı kalmaz */
+  const sourceCheckpointRef = useRef(null);
+  const companyApproveResumeRef = useRef(false);
   /** Firma oturumu: işlenmiş hareket kimlikleri (Excel↔PDF çapraz dedup) */
   const processedMovementKeysRef = useRef(new Set());
   const v1LeaseIdRef = useRef(null);
@@ -800,6 +816,10 @@ export default function BankParserWorkbench() {
       fileSheetSourceRef.current = null;
       pdfLegacyRowsRef.current = null;
       pdfMetaRef.current = null;
+      sourceCheckpointRef.current = clearBankStatementSourceCheckpoint(
+        sourceCheckpointRef.current
+      );
+      companyApproveResumeRef.current = false;
       activeBankRef.current = "";
       setSelectedBank("");
       setBankDetection({ status: "idle", bankId: null, message: "" });
@@ -2284,7 +2304,7 @@ export default function BankParserWorkbench() {
     }
   };
 
-  /** Dosya seçimi: state + banka otomatik tespit (parse/pipeline başlamaz) */
+  /** Dosya seçimi: immutable checkpoint + banka otomatik tespit (parse/pipeline başlamaz) */
   const handleFileSelect = async (event) => {
     const file = event.target.files?.[0] || null;
 
@@ -2295,17 +2315,20 @@ export default function BankParserWorkbench() {
       fileSheetSourceRef.current = null;
       pdfLegacyRowsRef.current = null;
       pdfMetaRef.current = null;
+      sourceCheckpointRef.current = clearBankStatementSourceCheckpoint(
+        sourceCheckpointRef.current
+      );
+      companyApproveResumeRef.current = false;
       clearActiveBank();
       resetFileInput();
       return;
     }
 
-    setSelectedFile(file);
-    setFileName(file.name);
     clearPreviewState();
     setPipelineError(null);
     setCompanyVerifyChecked(false);
     companyManualConfirmedRef.current = null;
+    companyApproveResumeRef.current = false;
     fileSheetRowsRef.current = null;
     fileSheetSourceRef.current = null;
     pdfLegacyRowsRef.current = null;
@@ -2317,10 +2340,39 @@ export default function BankParserWorkbench() {
       bankId: null,
       message: "Banka formatı kontrol ediliyor…",
     });
+
+    let checkpoint;
+    try {
+      checkpoint = await createBankStatementSourceCheckpoint(file);
+    } catch (error) {
+      sourceCheckpointRef.current = null;
+      setSelectedFile(null);
+      setFileName("");
+      resetFileInput();
+      setBankDetection({
+        status: "unknown",
+        bankId: null,
+        message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+      });
+      setPipelineError({
+        phase: PIPELINE_PHASES.PARSING,
+        phaseLabel: getPipelinePhaseTitle(PIPELINE_PHASES.PARSING),
+        code: error?.code || "FILE_READ",
+        message: error?.message || "Dosya okunamadı.",
+        recoverable: false,
+        tone: "error",
+      });
+      return;
+    }
+
+    sourceCheckpointRef.current = checkpoint;
+    setSelectedFile(checkpoint.file);
+    setFileName(checkpoint.fileName);
+    // Input temiz — devam checkpoint File/Blob'dan
     resetFileInput();
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
+      const arrayBuffer = getCheckpointArrayBuffer(checkpoint);
       if (!arrayBuffer?.byteLength) {
         activeBankRef.current = "";
         setSelectedBank("");
@@ -2332,8 +2384,8 @@ export default function BankParserWorkbench() {
         return;
       }
 
-      const isPdf = /\.pdf$/i.test(file.name || "") ||
-        String(file.type || "").includes("pdf");
+      const isPdf = /\.pdf$/i.test(checkpoint.fileName || "") ||
+        String(checkpoint.mimeType || "").includes("pdf");
       if (isPdf) {
         const pdfResult = await parseBankStatementPdf(arrayBuffer, {
           companyId: selectedCompanyId || "",
@@ -2342,7 +2394,7 @@ export default function BankParserWorkbench() {
         if (pdfResult.code === "OCR_REQUIRED" || pdfResult.ocrRequired) {
           pdfLegacyRowsRef.current = [];
           fileSheetRowsRef.current = [];
-          fileSheetSourceRef.current = file.name;
+          fileSheetSourceRef.current = checkpoint.fileName;
           setPipelineResult(null);
           setToast(null);
           setPipelineError(null);
@@ -2361,9 +2413,9 @@ export default function BankParserWorkbench() {
           let firstProgressAt = null;
           try {
             const ocrOut = await runBankOcrViaServer({
-              bytes: arrayBuffer,
+              bytes: getCheckpointArrayBuffer(checkpoint),
               companyId: selectedCompanyId || "",
-              fileName: file.name,
+              fileName: checkpoint.fileName,
               pageCount: pdfResult.pageCount || 1,
               selectedBank: activeBankRef.current || selectedBank || "",
               signal: ocrCtrl.signal,
@@ -2411,7 +2463,7 @@ export default function BankParserWorkbench() {
             const legacy = (ocrOut.transactions || []).map(canonicalToLegacyBankRow);
             pdfLegacyRowsRef.current = legacy;
             fileSheetRowsRef.current = ocrOut.sheetRows || [];
-            fileSheetSourceRef.current = file.name;
+            fileSheetSourceRef.current = checkpoint.fileName;
             const bankId = String(ocrOut.detectedBank || "").toUpperCase();
             if (bankId && bankId !== "UNKNOWN") {
               const label =
@@ -2489,7 +2541,7 @@ export default function BankParserWorkbench() {
         const legacy = (pdfResult.transactions || []).map(canonicalToLegacyBankRow);
         pdfLegacyRowsRef.current = legacy;
         fileSheetRowsRef.current = pdfResult.sheetRows || [];
-        fileSheetSourceRef.current = file.name;
+        fileSheetSourceRef.current = checkpoint.fileName;
         const bankId = String(pdfResult.detectedBank || "").toUpperCase();
         if (bankId && bankId !== "UNKNOWN") {
           const label =
@@ -2515,7 +2567,7 @@ export default function BankParserWorkbench() {
       pdfMetaRef.current = null;
       const sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
       fileSheetRowsRef.current = sheetRows;
-      fileSheetSourceRef.current = file.name;
+      fileSheetSourceRef.current = checkpoint.fileName;
       const resolved = resolveParserBankFromSheet(sheetRows);
       if (resolved.status === "detected" && resolved.bankId) {
         const label =
@@ -2708,10 +2760,16 @@ export default function BankParserWorkbench() {
       }
     };
 
+    const checkpoint = sourceCheckpointRef.current;
+    const sourceFile =
+      getCheckpointFile(checkpoint) || file || selectedFile || null;
+    const sourceName =
+      checkpoint?.fileName || sourceFile?.name || file?.name || "";
+
     // PDF: dosya seçiminde canonicalize edilmiş satırlar varsa Excel worker'a gitme.
     if (
       pdfLegacyRowsRef.current &&
-      fileSheetSourceRef.current === file?.name
+      fileSheetSourceRef.current === sourceName
     ) {
       const meta = pdfMetaRef.current;
       if (meta?.ocrRequired || meta?.code === "OCR_REQUIRED") {
@@ -2752,19 +2810,27 @@ export default function BankParserWorkbench() {
         timings: meta?.elapsedMs ? { pdfMs: meta.elapsedMs } : null,
         bankName: bank,
         sourceType: "pdf",
-        sourceFileHash: meta?.sourceFileHash || "",
+        sourceFileHash:
+          meta?.sourceFileHash || checkpoint?.contentHash || "",
         balance: meta?.balance || null,
       };
     }
 
     const isPdf =
-      /\.pdf$/i.test(file?.name || "") ||
-      String(file?.type || "").includes("pdf");
+      /\.pdf$/i.test(sourceName || "") ||
+      String(sourceFile?.type || checkpoint?.mimeType || "").includes("pdf");
     if (isPdf) {
-      const arrayBuffer = await file.arrayBuffer();
+      const arrayBuffer =
+        (await getCheckpointArrayBufferAsync(checkpoint)) ||
+        (sourceFile ? await sourceFile.arrayBuffer() : null);
       if (signal?.aborted) {
         const err = new Error("İşlem iptal edildi.");
         err.name = "AbortError";
+        throw err;
+      }
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+        const err = new Error("Dosya içeriği boş veya okunamadı.");
+        err.code = "FILE_READ";
         throw err;
       }
       const pdfResult = await parseBankStatementPdf(arrayBuffer, {
@@ -2788,7 +2854,7 @@ export default function BankParserWorkbench() {
       const legacy = (pdfResult.transactions || []).map(canonicalToLegacyBankRow);
       pdfLegacyRowsRef.current = legacy;
       fileSheetRowsRef.current = pdfResult.sheetRows || [];
-      fileSheetSourceRef.current = file?.name || null;
+      fileSheetSourceRef.current = sourceName || null;
       if (pdfResult.balance?.reviewRequired) {
         const err = new Error(
           pdfResult.message ||
@@ -2811,7 +2877,8 @@ export default function BankParserWorkbench() {
         timings: pdfResult.elapsedMs ? { pdfMs: pdfResult.elapsedMs } : null,
         bankName: bank,
         sourceType: "pdf",
-        sourceFileHash: pdfResult.sourceFileHash || "",
+        sourceFileHash:
+          pdfResult.sourceFileHash || checkpoint?.contentHash || "",
         balance: pdfResult.balance || null,
       };
     }
@@ -2821,12 +2888,16 @@ export default function BankParserWorkbench() {
     let arrayBuffer = null;
     if (
       fileSheetRowsRef.current &&
-      fileSheetSourceRef.current === file?.name
+      fileSheetSourceRef.current === sourceName
     ) {
       sheetRows = fileSheetRowsRef.current;
-      arrayBuffer = await file.arrayBuffer();
+      arrayBuffer =
+        (await getCheckpointArrayBufferAsync(checkpoint)) ||
+        (sourceFile ? await sourceFile.arrayBuffer() : null);
     } else {
-      arrayBuffer = await file.arrayBuffer();
+      arrayBuffer =
+        (await getCheckpointArrayBufferAsync(checkpoint)) ||
+        (sourceFile ? await sourceFile.arrayBuffer() : null);
       if (signal?.aborted) {
         const err = new Error("İşlem iptal edildi.");
         err.name = "AbortError";
@@ -2839,7 +2910,7 @@ export default function BankParserWorkbench() {
       }
       sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
       fileSheetRowsRef.current = sheetRows;
-      fileSheetSourceRef.current = file?.name || null;
+      fileSheetSourceRef.current = sourceName || null;
     }
 
     if (signal?.aborted) {
@@ -2884,7 +2955,9 @@ export default function BankParserWorkbench() {
       const { buildSourceFileHash } = await import(
         "@/src/utils/bankCanonicalTransaction"
       );
-      const sourceFileHash = buildSourceFileHash(new Uint8Array(arrayBuffer));
+      const sourceFileHash =
+        checkpoint?.contentHash ||
+        buildSourceFileHash(new Uint8Array(arrayBuffer || []));
       return {
         rawCount: workerResult.rawCount || sheetRows.length,
         normalizedRows: workerResult.normalizedRows || [],
@@ -2906,7 +2979,7 @@ export default function BankParserWorkbench() {
         stage: BANK_PARSE_STAGES.READING,
         detail: "Worker kullanılamadı — ana thread",
       });
-      return parseBankExcelOnMainThread(file, bank, onProgress, {
+      return parseBankExcelOnMainThread(sourceFile, bank, onProgress, {
         sheetRows,
         arrayBuffer,
       });
@@ -2941,37 +3014,50 @@ export default function BankParserWorkbench() {
     });
 
     setPipelinePhaseSafe(PIPELINE_PHASES.PARSING);
-    const mainResult = await parseExcelFile(selectedFile, signal, bank);
+    const sourceForParse =
+      getCheckpointFile(sourceCheckpointRef.current) || selectedFile;
+    const mainResult = await parseExcelFile(sourceForParse, signal, bank);
     assertPipelineSignal(signal, isRunActive, runId);
 
     normalizedRef.current = mainResult.normalizedRows || [];
 
     // Oturum dedup — aynı Excel/PDF hareketleri ikinci kez işlenmez
-    // Reanalyze: açık revision yolu; oturum mükerrer engeli bypass (global dedup korunur)
+    // Reanalyze / firma-onay resume: açık yol; oturum mükerrer engeli bypass (global dedup korunur)
     const reanalyzeActive = shouldBypassSessionDedupBlock(
       reanalyzeOptionsRef.current?.reanalyze
     );
+    const approveResumeActive = shouldBypassDedupForCompanyApproveResume(
+      companyApproveResumeRef.current
+    );
+    const bypassSessionDedup = reanalyzeActive || approveResumeActive;
     const dedup = applySessionMovementDedup(
       normalizedRef.current,
-      reanalyzeActive ? new Set() : processedMovementKeysRef.current,
+      bypassSessionDedup ? new Set() : processedMovementKeysRef.current,
       {
         companyId: selectedCompanyId || "",
         selectedBank: bank,
-        sourceFileHash: mainResult.sourceFileHash || "",
+        sourceFileHash:
+          mainResult.sourceFileHash ||
+          sourceCheckpointRef.current?.contentHash ||
+          "",
         sourceType: mainResult.sourceType || "xlsx",
       }
     );
     lastDedupMetaRef.current = {
-      suppressedMovements: reanalyzeActive ? 0 : dedup.suppressedMovements,
-      suppressedLucaRows: reanalyzeActive ? 0 : dedup.suppressedLucaRows,
-      uniqueCount: reanalyzeActive ? dedup.inputCount : dedup.uniqueCount,
+      suppressedMovements: bypassSessionDedup ? 0 : dedup.suppressedMovements,
+      suppressedLucaRows: bypassSessionDedup ? 0 : dedup.suppressedLucaRows,
+      uniqueCount: bypassSessionDedup ? dedup.inputCount : dedup.uniqueCount,
       inputCount: dedup.inputCount,
-      allDuplicate: reanalyzeActive ? false : dedup.allDuplicate,
-      sourceFileHash: mainResult.sourceFileHash || "",
+      allDuplicate: bypassSessionDedup ? false : dedup.allDuplicate,
+      sourceFileHash:
+        mainResult.sourceFileHash ||
+        sourceCheckpointRef.current?.contentHash ||
+        "",
       sourceType: mainResult.sourceType || "xlsx",
       reanalyze: reanalyzeActive,
+      companyApproveResume: approveResumeActive,
     };
-    if (!reanalyzeActive && dedup.allDuplicate) {
+    if (!bypassSessionDedup && dedup.allDuplicate) {
       const err = new Error(DUPLICATE_STATEMENT_UI_MESSAGE);
       err.code = "DUPLICATE_STATEMENT";
       err.suppressedMovements = dedup.suppressedMovements;
@@ -2979,7 +3065,7 @@ export default function BankParserWorkbench() {
       err.uiMessage = DUPLICATE_STATEMENT_UI_MESSAGE;
       throw err;
     }
-    if (!reanalyzeActive && dedup.suppressedMovements > 0) {
+    if (!bypassSessionDedup && dedup.suppressedMovements > 0) {
       normalizedRef.current = dedup.unique.map(canonicalToLegacyBankRow);
     }
 
@@ -3616,6 +3702,7 @@ export default function BankParserWorkbench() {
     revisionOf = "",
     priorRevision = 1,
     priorJob = null,
+    companyApproveResume = false,
   } = {}) => {
     if (isJobBusy) {
       showToast("Başka bir işlem sürüyor.", "error");
@@ -3626,15 +3713,29 @@ export default function BankParserWorkbench() {
       showToast("Önce firma seçmelisin.", "error");
       return;
     }
-    if (!selectedFile) {
+    const checkpoint = sourceCheckpointRef.current;
+    const pipelineFile =
+      getCheckpointFile(checkpoint) || selectedFile || null;
+    if (!pipelineFile && !hasUsableSourceCheckpoint(checkpoint)) {
       showToast(
         reanalyze
           ? "Yeniden analiz için arşivdeki kaynak dosya oturumda gerekli."
-          : "Önce dosya seçmelisin.",
+          : companyApproveResume || resumeFrom
+            ? "Onay/yeniden deneme için oturum kaynağı gerekli (dosya yeniden seçilmez)."
+            : "Önce dosya seçmelisin.",
         "error"
       );
       return;
     }
+    if (pipelineFile && !selectedFile) {
+      setSelectedFile(pipelineFile);
+    }
+    if (companyApproveResume) {
+      companyApproveResumeRef.current = true;
+    }
+    const approveResume =
+      Boolean(companyApproveResume) ||
+      Boolean(companyApproveResumeRef.current);
 
     const reanalyzeOpts = reanalyze
       ? {
@@ -3676,7 +3777,7 @@ export default function BankParserWorkbench() {
 
     const inputCheck = validateV1Inputs({
       companyId: selectedCompanyId,
-      file: selectedFile,
+      file: pipelineFile,
       bankId: runBank,
     });
     if (!inputCheck.ok) {
@@ -3695,7 +3796,7 @@ export default function BankParserWorkbench() {
       !canStartFullPipeline({
         selectedCompanyId,
         selectedBank: runBank,
-        selectedFile,
+        selectedFile: pipelineFile,
         isJobBusy: false,
         pipelinePhase,
       })
@@ -3760,9 +3861,14 @@ export default function BankParserWorkbench() {
       const { buildSourceFileHash } = await import(
         "@/src/utils/bankCanonicalTransaction"
       );
-      const preHash = buildSourceFileHash(
-        new Uint8Array(await selectedFile.arrayBuffer())
-      );
+      const preBytes =
+        (await getCheckpointArrayBufferAsync(sourceCheckpointRef.current)) ||
+        (pipelineFile ? await pipelineFile.arrayBuffer() : null);
+      const preHash =
+        sourceCheckpointRef.current?.contentHash ||
+        (preBytes
+          ? buildSourceFileHash(new Uint8Array(preBytes))
+          : "");
       if (preHash) {
         lastDedupMetaRef.current = {
           ...(lastDedupMetaRef.current || {}),
@@ -3777,7 +3883,10 @@ export default function BankParserWorkbench() {
           (row) =>
             String(row?.metadata?.idempotency_key || "") === idempotencyKey
         );
-        if (prior && !shouldBypassIdempotencyHistoryBlock(reanalyzeOpts?.reanalyze)) {
+        const bypassHistory =
+          shouldBypassIdempotencyHistoryBlock(reanalyzeOpts?.reanalyze) ||
+          shouldBypassIdempotencyForCompanyApproveResume(approveResume);
+        if (prior && !bypassHistory) {
           duplicatePriorJobRef.current = prior;
           previousAnalysisCountersRef.current = extractAnalysisCounters(prior);
           setPipelineResult({
@@ -3821,9 +3930,10 @@ export default function BankParserWorkbench() {
             /* ignore */
           }
           v1LeaseIdRef.current = null;
+          companyApproveResumeRef.current = false;
           return;
         }
-        if (prior && reanalyzeOpts?.reanalyze) {
+        if (prior && (reanalyzeOpts?.reanalyze || approveResume)) {
           duplicatePriorJobRef.current = prior;
           previousAnalysisCountersRef.current = extractAnalysisCounters(prior);
         }
@@ -3879,15 +3989,27 @@ export default function BankParserWorkbench() {
         assertPipelineSignal(signal, isRunActive, runId);
 
         let sheetRows = fileSheetRowsRef.current;
-        if (!sheetRows && selectedFile && !/\.pdf$/i.test(selectedFile.name || "")) {
-          const arrayBuffer = await selectedFile.arrayBuffer();
+        if (
+          !sheetRows &&
+          pipelineFile &&
+          !/\.pdf$/i.test(
+            sourceCheckpointRef.current?.fileName || pipelineFile.name || ""
+          )
+        ) {
+          const arrayBuffer =
+            (await getCheckpointArrayBufferAsync(sourceCheckpointRef.current)) ||
+            (await pipelineFile.arrayBuffer());
           sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
           fileSheetRowsRef.current = sheetRows;
         }
 
         const guardRaw = verifyBankStatementCompanyMatch({
           sheetRows,
-          fileName: selectedFile?.name || fileName || "",
+          fileName:
+            sourceCheckpointRef.current?.fileName ||
+            pipelineFile?.name ||
+            fileName ||
+            "",
           selectedCompany,
           companies: workspaceCompanies,
         });
@@ -3963,7 +4085,7 @@ export default function BankParserWorkbench() {
 
       // 2) archiving (Drive) — bağlantı yoksa banka akışını engelleme
       // COMPANY_MISMATCH / verification fail yukarıda throw → buraya gelinmez.
-      // Reanalyze: mevcut arşivi yeniden kullan; ikinci Drive/source kaydı yok.
+      // Reanalyze / checkpoint: mevcut arşivi yeniden kullan; ikinci Drive/source kaydı yok.
       if (shouldRunV1Stage(resumeFrom, V1_JOB_STATE.ARCHIVING) || shouldRunV1Stage(null, V1_JOB_STATE.ARCHIVING)) {
         if (!stageOutputs[V1_JOB_STATE.ARCHIVING]) {
           if (shouldSkipDriveArchiveOnReanalyze(reanalyzeOpts?.reanalyze)) {
@@ -3975,20 +4097,40 @@ export default function BankParserWorkbench() {
             );
             stageOutputs[V1_JOB_STATE.ARCHIVING] = archiveResult;
             stageDurations.archivingMs = 0;
+          } else if (shouldReuseArchiveFromCheckpoint(sourceCheckpointRef.current)) {
+            emitV1(V1_JOB_STATE.ARCHIVING, 80, "Oturum arşivi yeniden kullanılıyor…");
+            archiveResult = buildArchiveReuseFromCheckpoint(
+              sourceCheckpointRef.current
+            );
+            stageOutputs[V1_JOB_STATE.ARCHIVING] = archiveResult;
+            stageDurations.archivingMs = 0;
           } else {
             emitV1(V1_JOB_STATE.ARCHIVING, 20, "Drive arşivleniyor…");
             assertPipelineSignal(signal, isRunActive, runId);
             const tArch = performance.now();
             archiveResult = await archiveStatementToDrive({
               companyId: selectedCompanyId,
-              file: selectedFile,
+              file:
+                getCheckpointFile(sourceCheckpointRef.current) || pipelineFile,
               signal,
             });
+            if (sourceCheckpointRef.current) {
+              rememberArchiveOnCheckpoint(
+                sourceCheckpointRef.current,
+                archiveResult
+              );
+            }
             stageOutputs[V1_JOB_STATE.ARCHIVING] = archiveResult;
             stageDurations.archivingMs = Math.round(performance.now() - tArch);
           }
         } else {
           archiveResult = stageOutputs[V1_JOB_STATE.ARCHIVING];
+          if (sourceCheckpointRef.current && archiveResult) {
+            rememberArchiveOnCheckpoint(
+              sourceCheckpointRef.current,
+              archiveResult
+            );
+          }
         }
       }
 
@@ -4544,6 +4686,13 @@ export default function BankParserWorkbench() {
       if (!reanalyzeOptionsRef.current?.reanalyze) {
         reanalyzeOptionsRef.current = null;
       }
+      // Başarılı tamamlanmada approve bayrağını kapat; hata/retry'da checkpoint korunur
+      if (
+        pipelinePhaseRef.current === PIPELINE_PHASES.READY_FOR_EXPORT ||
+        pipelinePhaseRef.current === PIPELINE_PHASES.IDLE
+      ) {
+        companyApproveResumeRef.current = false;
+      }
       bankJobStateRef.current = createInitialBankJobState();
       if (v1LeaseIdRef.current) {
         await releaseV1Lease(selectedCompanyId, v1LeaseIdRef.current);
@@ -4558,12 +4707,20 @@ export default function BankParserWorkbench() {
       showToast("Önce firma seçmelisin.", "error");
       return;
     }
-    if (!selectedFile) {
+    if (
+      !selectedFile &&
+      !hasUsableSourceCheckpoint(sourceCheckpointRef.current)
+    ) {
       showToast(
         "Yeniden analiz için oturumdaki arşiv kaynağı gerekli (dosya yeniden yüklenmez).",
         "error"
       );
       return;
+    }
+    const sourceFile =
+      getCheckpointFile(sourceCheckpointRef.current) || selectedFile;
+    if (sourceFile && !selectedFile) {
+      setSelectedFile(sourceFile);
     }
     const prior =
       duplicatePriorJobRef.current ||
@@ -4651,36 +4808,57 @@ export default function BankParserWorkbench() {
       showToast(check.message, "error");
       return;
     }
-    if (!selectedFile) {
+    const checkpoint = sourceCheckpointRef.current;
+    const sourceFile = getCheckpointFile(checkpoint) || selectedFile;
+    if (!sourceFile && !hasUsableSourceCheckpoint(checkpoint)) {
       showToast(
         "Onay sonrası devam için oturumdaki kaynak dosya gerekli (yeniden yükleme yok).",
         "error"
       );
       return;
     }
+    if (sourceFile && !selectedFile) {
+      setSelectedFile(sourceFile);
+    }
     // Oturumdaki erişilebilir aktif firma — otomatik tahmin/seçim yok
     companyManualConfirmedRef.current = {
       companyId: check.companyId,
       confirmedAt: Date.now(),
     };
+    companyApproveResumeRef.current = true;
     setPipelineError(null);
     setCompanyVerifyChecked(false);
     showToast("Firma onaylandı; mevcut kaynakla devam ediliyor…", "success");
-    void runFullBankPipeline();
+    void runFullBankPipeline({ companyApproveResume: true });
   };
 
   const handleRetryPipeline = () => {
     // Format auto-fix sonrası veya recover edilemeyen durumda baştan çalıştır.
+    // Kaynak checkpoint'ten devam — dosya yeniden seçilmez.
+    const hasSource =
+      hasUsableSourceCheckpoint(sourceCheckpointRef.current) || selectedFile;
+    if (!hasSource) {
+      showToast(
+        "Güvenli yeniden deneme için oturum kaynağı gerekli (dosya yeniden seçilmez).",
+        "error"
+      );
+      return;
+    }
     if (
       !pipelineError?.recoverable ||
       !pipelineError?.phase ||
       pipelineError.phase === PIPELINE_PHASES.PARSING ||
       pipelineError.phase === PIPELINE_PHASES.PREVIEW
     ) {
-      void runFullBankPipeline();
+      void runFullBankPipeline({
+        companyApproveResume: Boolean(companyManualConfirmedRef.current),
+      });
       return;
     }
-    void runFullBankPipeline({ resumeFrom: pipelineError.phase });
+    void runFullBankPipeline({
+      resumeFrom: pipelineError.phase,
+      companyApproveResume: Boolean(companyManualConfirmedRef.current),
+    });
   };
 
   const handleApplyCoreToAllRows = async () => {

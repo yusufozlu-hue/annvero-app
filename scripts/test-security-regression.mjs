@@ -2146,6 +2146,11 @@ test("Banka ekstresi: COMPANY_MISMATCH Drive/persist öncesi fail-closed", () =>
   assert.match(workbenchSrc, /applyManualCompanyConfirmationToGuard/);
   assert.match(workbenchSrc, /handleConfirmCompanyAndContinue/);
   assert.match(workbenchSrc, /COMPANY_VERIFY_CONFIRM_BUTTON_LABEL/);
+  assert.match(workbenchSrc, /createBankStatementSourceCheckpoint/);
+  assert.match(workbenchSrc, /sourceCheckpointRef/);
+  assert.match(workbenchSrc, /companyApproveResume:\s*true/);
+  assert.match(workbenchSrc, /shouldReuseArchiveFromCheckpoint/);
+  assert.match(workbenchSrc, /shouldBypassIdempotencyForCompanyApproveResume/);
   assert.match(
     workbenchSrc,
     /PipelineError zaten set; Drive\/persist\/hafıza yok/
