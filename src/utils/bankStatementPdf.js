@@ -175,7 +175,7 @@ function normalizeLine(line = "") {
 const HEADER_FOOTER_RE =
   /^(sayfa\s*\d+|page\s*\d+|devam\s* ediyor|continued|www\.|telefon|müşteri\s*hizmet|copyright|---\s*page)/i;
 const SUBTOTAL_RE =
-  /(ara\s*toplam|günlük\s*toplam|toplam\s*borç|toplam\s*alacak|opening\s*balance|açılış\s*bakiyesi|kapanış\s*bakiyesi|previous\s*balance|devreden\s*bakiye)/i;
+  /(ara\s*toplam|g[uü]nl[uü]k\s*toplam|toplam\s*bor[cç]|toplam\s*alacak|opening\s*balance|a[cç][iı]l[iı][sş]\s*bakiyesi|kapan[iı][sş]\s*bakiyesi|previous\s*balance|closing\s*balance|devreden\s*bakiye)/i;
 
 export function isPdfNonMovementLine(line = "") {
   const t = normalizeLine(line);
@@ -253,6 +253,9 @@ export function parsePdfMovementLines(text = "", context = {}) {
   const out = [];
   const warnings = [];
   let currentPage = Number(context.pageHint) || 1;
+  const sourceType =
+    context.sourceType ||
+    (context.ocrUsed ? BANK_STATEMENT_SOURCE.PDF_OCR : BANK_STATEMENT_SOURCE.PDF);
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
@@ -263,6 +266,7 @@ export function parsePdfMovementLines(text = "", context = {}) {
     }
     if (isPdfNonMovementLine(line)) continue;
 
+    // OCR sonrası birleşik satır: tarih + açıklama + 1–3 tutar
     const m = line.match(
       new RegExp(
         `^(\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4})\\s+(.+?)\\s+(${AMOUNT_TOKEN})(?:\\s+(${AMOUNT_TOKEN}))?(?:\\s+(${AMOUNT_TOKEN}))?$`
@@ -270,8 +274,10 @@ export function parsePdfMovementLines(text = "", context = {}) {
     );
     if (!m) continue;
 
-    const amounts = [m[3], m[4], m[5]]
-      .filter((x) => x != null && String(x).trim() !== "")
+    const amountTokens = [m[3], m[4], m[5]].filter(
+      (x) => x != null && String(x).trim() !== ""
+    );
+    const amounts = amountTokens
       .map(parseTrAmount)
       .filter((n) => Number.isFinite(n));
 
@@ -281,24 +287,38 @@ export function parsePdfMovementLines(text = "", context = {}) {
     let signed = 0;
 
     if (amounts.length >= 3) {
-      debit = amounts[0];
-      credit = amounts[1];
+      debit = Math.abs(amounts[0]) > 0 && amounts[0] !== 0 ? Math.abs(amounts[0]) : 0;
+      credit = Math.abs(amounts[1]) > 0 && amounts[1] !== 0 ? Math.abs(amounts[1]) : 0;
+      // OCR bazen borç/alacak kolonlarını ters okur — yalnız biri doluysa onu kullan
+      if (amounts[0] !== 0 && amounts[1] === 0) {
+        debit = Math.abs(amounts[0]);
+        credit = 0;
+        signed = debit;
+      } else if (amounts[1] !== 0 && amounts[0] === 0) {
+        credit = Math.abs(amounts[1]);
+        debit = 0;
+        signed = -credit;
+      } else if (amounts[0] !== 0 && amounts[1] !== 0) {
+        // İkisi de dolu: borç/alacak modeli
+        debit = Math.abs(amounts[0]);
+        credit = Math.abs(amounts[1]);
+        signed = debit > 0 ? debit : credit > 0 ? -credit : 0;
+      }
       balance = amounts[2];
-      signed = debit > 0 ? debit : credit > 0 ? -credit : 0;
+      if (!signed) {
+        signed = debit > 0 ? debit : credit > 0 ? -credit : 0;
+      }
     } else if (amounts.length === 2) {
-      // borç + alacak veya tutar + bakiye
       if (amounts[0] > 0 && amounts[1] === 0) {
         debit = amounts[0];
         signed = debit;
       } else if (amounts[1] > 0 && amounts[0] === 0) {
         credit = amounts[1];
         signed = -credit;
-      } else if (amounts[0] !== 0 && amounts[1] !== 0 && Math.abs(amounts[0]) < 1e12) {
-        // tutar + bakiye (işaretli tutar)
+      } else if (amounts[0] < 0 && amounts[1] !== 0) {
         signed = amounts[0];
+        credit = Math.abs(amounts[0]);
         balance = amounts[1];
-        if (signed >= 0) debit = Math.abs(signed);
-        else credit = Math.abs(signed);
       } else {
         signed = amounts[0];
         balance = amounts[1];
@@ -320,13 +340,21 @@ export function parsePdfMovementLines(text = "", context = {}) {
     }
 
     const direction = signed < 0 ? "CIKIS" : "GIRIS";
+    const description = String(m[2] || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!description || description.length < 2) {
+      warnings.push({ row: i + 1, code: "desc_skip" });
+      continue;
+    }
+
     out.push(
       createCanonicalBankTransaction({
         companyId: context.companyId,
         bank,
         accountIdentity: context.accountIdentity || "",
-        transactionDate: m[1].replace(/-/g, "."),
-        description: m[2],
+        transactionDate: m[1].replace(/-/g, ".").replace(/\//g, "."),
+        description,
         amount: signed,
         debit_amount: debit,
         credit_amount: credit,
@@ -336,8 +364,9 @@ export function parsePdfMovementLines(text = "", context = {}) {
         sourceRow: i + 1,
         sourcePage: currentPage,
         sourceFileHash: context.sourceFileHash,
-        sourceType: BANK_STATEMENT_SOURCE.PDF,
+        sourceType,
         parseWarnings: [],
+        reviewRequired: Boolean(context.forceReview),
       })
     );
   }

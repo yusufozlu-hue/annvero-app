@@ -31,6 +31,7 @@ import {
   OCR_STATUS,
 } from "@/src/utils/bankOcr/ocrPolicy.js";
 import { createOcrProvider } from "@/src/utils/bankOcr/ocrProvider.js";
+import { normalizeOcrStatementText } from "@/src/utils/bankOcr/normalizeOcrStatementText.js";
 
 function asBytes(input) {
   if (!input) return new Uint8Array(0);
@@ -87,7 +88,7 @@ function joinOcrPages(pages = []) {
   return (pages || [])
     .map((p) => {
       const pageNo = Number(p.page) || 1;
-      const body = String(p.text || "").trim();
+      const body = normalizeOcrStatementText(String(p.text || "").trim());
       return `--- page ${pageNo} ---\n${body}`;
     })
     .join("\n");
@@ -134,6 +135,8 @@ export function finalizeOcrPagesToParseResult(ocrPages = [], options = {}) {
     ...options,
     sourceFileHash,
     selectedBank: options.selectedBank || options.detectedBank || undefined,
+    ocrUsed: true,
+    sourceType: BANK_STATEMENT_SOURCE.PDF_OCR,
   });
   const withConf = applyOcrConfidence(parsed.transactions, ocrPages, options);
   const hints = extractBalanceHintsFromText(text);
