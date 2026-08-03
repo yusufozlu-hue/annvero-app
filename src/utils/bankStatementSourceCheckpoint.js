@@ -1,15 +1,33 @@
 /**
- * Banka ekstresi kaynak checkpoint — dosya seçiminde immutable kopya.
- * Firma doğrulama / güvenli yeniden dene input File'a veya stale ref'e bağlı kalmaz.
- * Ham dosya / token / Drive ID loglanmaz veya persist edilmez.
+ * Banka ekstresi kaynak checkpoint — dosya seçiminde sahipli Uint8Array kopyası.
+ * Drive FormData / transfer ArrayBuffer'ı detach etse bile parse/OCR/retry aynı
+ * baytlardan devam eder. Ham dosya / token / Drive ID loglanmaz veya persist edilmez.
  */
 
 import { buildSourceFileHash } from "@/src/utils/bankCanonicalTransaction";
 
 export const SOURCE_CHECKPOINT_KIND = "bank_statement_source_v1";
 
+function copyOwnedBytes(raw) {
+  if (!raw) return new Uint8Array(0);
+  if (raw instanceof Uint8Array) {
+    const out = new Uint8Array(raw.byteLength);
+    out.set(raw);
+    return out;
+  }
+  if (raw instanceof ArrayBuffer) {
+    return new Uint8Array(raw.slice(0));
+  }
+  if (ArrayBuffer.isView(raw)) {
+    return new Uint8Array(
+      raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)
+    );
+  }
+  return new Uint8Array(0);
+}
+
 /**
- * File/Blob'dan bağımsız, transfer-safe checkpoint üretir.
+ * File/Blob'dan bağımsız, FormData-safe checkpoint üretir.
  * @param {File|Blob} file
  * @param {{ fileName?: string }} [opts]
  */
@@ -39,26 +57,17 @@ export async function createBankStatementSourceCheckpoint(file, opts = {}) {
     err.code = "FILE_READ";
     throw err;
   }
-  // Transfer/neutering'den bağımsız saklama kopyası
-  const arrayBuffer = raw.slice(0);
-  const blob = new Blob([arrayBuffer], { type: mimeType });
-  const stableFile = new File([blob], fileName, {
-    type: mimeType,
-    lastModified:
-      typeof file.lastModified === "number" ? file.lastModified : Date.now(),
-  });
-  const contentHash = buildSourceFileHash(new Uint8Array(arrayBuffer));
+  // Sahipli kopya — FormData/worker transfer bu baytları detach edemez
+  const uint8Bytes = copyOwnedBytes(raw);
+  const contentHash = buildSourceFileHash(uint8Bytes);
   return {
     kind: SOURCE_CHECKPOINT_KIND,
     fileName,
     mimeType,
-    byteLength: arrayBuffer.byteLength,
+    byteLength: uint8Bytes.byteLength,
     contentHash: contentHash || "",
-    blob,
-    /** @type {ArrayBuffer} */
-    arrayBuffer,
-    /** API / FormData için bağımsız File */
-    file: stableFile,
+    /** @type {Uint8Array} birincil kaynak — FormData tüketimine dayanıklı */
+    uint8Bytes,
     archived: false,
     /** Drive özeti — fileId/token yok */
     archiveSafeSummary: null,
@@ -66,48 +75,81 @@ export async function createBankStatementSourceCheckpoint(file, opts = {}) {
   };
 }
 
-/** Transfer öncesi her zaman taze dilim — saklanan buffer neuter olmaz. */
-export function getCheckpointArrayBuffer(checkpoint) {
-  if (!checkpoint) return null;
-  if (checkpoint.arrayBuffer?.byteLength > 0) {
-    return checkpoint.arrayBuffer.slice(0);
+export function getCheckpointBlob(checkpoint) {
+  const bytes = resolveOwnedBytes(checkpoint);
+  if (!bytes?.byteLength) return null;
+  return new Blob([copyOwnedBytes(bytes)], {
+    type: checkpoint.mimeType || "application/octet-stream",
+  });
+}
+
+function resolveOwnedBytes(checkpoint) {
+  if (checkpoint?.uint8Bytes?.byteLength > 0) {
+    return checkpoint.uint8Bytes;
+  }
+  // Eski checkpoint: doğrudan arrayBuffer alanı (getter değil)
+  if (
+    checkpoint &&
+    Object.prototype.hasOwnProperty.call(checkpoint, "arrayBuffer") &&
+    checkpoint.arrayBuffer instanceof ArrayBuffer &&
+    checkpoint.arrayBuffer.byteLength > 0
+  ) {
+    return new Uint8Array(checkpoint.arrayBuffer);
   }
   return null;
+}
+
+/** Transfer öncesi her zaman taze dilim — saklanan uint8Bytes neuter olmaz. */
+export function getCheckpointArrayBuffer(checkpoint) {
+  const bytes = resolveOwnedBytes(checkpoint);
+  if (!bytes?.byteLength) return null;
+  return copyOwnedBytes(bytes).buffer;
 }
 
 export async function getCheckpointArrayBufferAsync(checkpoint) {
   const sliced = getCheckpointArrayBuffer(checkpoint);
-  if (sliced) return sliced;
-  if (checkpoint?.blob) {
-    const ab = await checkpoint.blob.arrayBuffer();
-    return ab?.byteLength ? ab.slice(0) : ab;
+  if (sliced?.byteLength) return sliced;
+  // Son çare: eski blob/file alanları (test fixture)
+  if (checkpoint?.blob && typeof checkpoint.blob.arrayBuffer === "function") {
+    try {
+      const ab = await checkpoint.blob.arrayBuffer();
+      return ab?.byteLength ? ab.slice(0) : null;
+    } catch {
+      return null;
+    }
   }
-  if (checkpoint?.file) {
-    const ab = await checkpoint.file.arrayBuffer();
-    return ab?.byteLength ? ab.slice(0) : ab;
+  if (checkpoint?.file && typeof checkpoint.file.arrayBuffer === "function") {
+    try {
+      const ab = await checkpoint.file.arrayBuffer();
+      return ab?.byteLength ? ab.slice(0) : null;
+    } catch {
+      return null;
+    }
   }
   return null;
 }
 
+/**
+ * Her çağrıda yeni File — FormData upload önceki File'ı tüketse bile
+ * sonraki parse/OCR taze kopya alır.
+ */
 export function getCheckpointFile(checkpoint) {
   if (!checkpoint) return null;
-  if (checkpoint.file instanceof File) return checkpoint.file;
-  if (checkpoint.blob) {
-    return new File([checkpoint.blob], checkpoint.fileName || "ekstre", {
+  const bytes = resolveOwnedBytes(checkpoint);
+  if (bytes?.byteLength) {
+    return new File([copyOwnedBytes(bytes)], checkpoint.fileName || "ekstre", {
       type: checkpoint.mimeType || "application/octet-stream",
+      lastModified: checkpoint.createdAt || Date.now(),
     });
   }
   return null;
 }
 
 export function hasUsableSourceCheckpoint(checkpoint) {
-  return Boolean(
-    checkpoint &&
-      (checkpoint.arrayBuffer?.byteLength > 0 ||
-        checkpoint.blob ||
-        checkpoint.file) &&
-      checkpoint.fileName
-  );
+  if (!checkpoint?.fileName) return false;
+  if (resolveOwnedBytes(checkpoint)?.byteLength > 0) return true;
+  if (Number(checkpoint.byteLength) > 0 && checkpoint.uint8Bytes) return true;
+  return false;
 }
 
 /**
@@ -140,7 +182,8 @@ export function rememberArchiveOnCheckpoint(checkpoint, archiveResult) {
       archiveResult.duplicate ||
       archiveResult.code === "ARCHIVED" ||
       archiveResult.code === "DUPLICATE_CONTENT" ||
-      archiveResult.code === "REANALYZE_REUSE_ARCHIVE"
+      archiveResult.code === "REANALYZE_REUSE_ARCHIVE" ||
+      archiveResult.code === "CHECKPOINT_REUSE_ARCHIVE"
   );
   checkpoint.archiveSafeSummary = {
     ok: Boolean(archiveResult.ok ?? true),
@@ -152,7 +195,6 @@ export function rememberArchiveOnCheckpoint(checkpoint, archiveResult) {
       archived: Boolean(archiveResult.safeSummary?.archived),
       skipped: Boolean(archiveResult.safeSummary?.skipped),
       duplicate: Boolean(archiveResult.safeSummary?.duplicate),
-      // fileId / token asla
     },
   };
   return checkpoint;
@@ -201,6 +243,53 @@ export function shouldBypassIdempotencyForCompanyApproveResume(
   return Boolean(companyApproveResume);
 }
 
-export function clearBankStatementSourceCheckpoint(_checkpoint) {
+/**
+ * Simüle FormData tüketimi — upload sonrası File boşalsa bile
+ * sahipli uint8Bytes okunabilir kalmalı.
+ */
+export async function assertCheckpointSurvivesFormDataConsume(checkpoint) {
+  const before = resolveOwnedBytes(checkpoint)?.byteLength || 0;
+  if (before <= 0) {
+    const err = new Error("checkpoint empty before consume");
+    err.code = "FILE_READ";
+    throw err;
+  }
+  const disposable = getCheckpointFile(checkpoint);
+  if (!disposable?.size) {
+    const err = new Error("disposable file empty");
+    err.code = "FILE_READ";
+    throw err;
+  }
+  const form = new FormData();
+  form.set("file", disposable, disposable.name || "ekstre");
+  const ab = await disposable.arrayBuffer();
+  if (typeof ab.transfer === "function") {
+    try {
+      ab.transfer(ab.byteLength);
+    } catch {
+      /* ignore */
+    }
+  }
+  const after = await getCheckpointArrayBufferAsync(checkpoint);
+  if (after?.byteLength !== before) {
+    const err = new Error("checkpoint bytes lost after FormData");
+    err.code = "FILE_READ";
+    throw err;
+  }
+  const again = getCheckpointFile(checkpoint);
+  if (again?.size !== before) {
+    const err = new Error("fresh file size mismatch");
+    err.code = "FILE_READ";
+    throw err;
+  }
+  return true;
+}
+
+export function clearBankStatementSourceCheckpoint() {
   return null;
+}
+
+/** PDF erken cache: boş dizi usable sayılmaz. */
+export function hasParsedPdfRows(rows) {
+  return Array.isArray(rows) && rows.length > 0;
 }

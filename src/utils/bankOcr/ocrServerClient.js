@@ -63,9 +63,11 @@ export async function runBankOcrViaServer({
   if (pageCount) form.set("pageCount", String(pageCount));
   if (selectedBank) form.set("selectedBank", String(selectedBank));
   const ab = asArrayBuffer(bytes);
+  // FormData Blob için bağımsız kopya — çağıranın buffer'ı transfer edilmesin
+  const uploadBytes = ab.byteLength ? ab.slice(0) : ab;
   form.set(
     "file",
-    new Blob([ab], { type: "application/pdf" }),
+    new Blob([uploadBytes], { type: "application/pdf" }),
     fileName || "statement.pdf"
   );
 

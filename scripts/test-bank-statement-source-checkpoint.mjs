@@ -69,10 +69,10 @@ await testAsync("PDF select → immutable checkpoint + hash once", async () => {
   assert.equal(hasUsableSourceCheckpoint(cp), true);
   assert.equal(cp.fileName, "belirsiz-ekstre.pdf");
   assert.ok(cp.contentHash);
-  assert.ok(cp.arrayBuffer.byteLength > 0);
+  assert.ok(cp.uint8Bytes.byteLength > 0);
   const ab1 = getCheckpointArrayBuffer(cp);
   const ab2 = getCheckpointArrayBuffer(cp);
-  assert.notEqual(ab1, cp.arrayBuffer);
+  assert.notEqual(ab1, ab2);
   assert.equal(ab1.byteLength, ab2.byteLength);
   // Slice neuter must not kill stored copy
   if (typeof ab1.transfer === "function") {
@@ -83,7 +83,26 @@ await testAsync("PDF select → immutable checkpoint + hash once", async () => {
   const stable = getCheckpointFile(cp);
   assert.ok(stable instanceof File);
   assert.equal(stable.name, "belirsiz-ekstre.pdf");
+  assert.equal(stable.size, bytes.byteLength);
 });
+
+await testAsync(
+  "FormData archive consume must not empty checkpoint for parse",
+  async () => {
+    const { assertCheckpointSurvivesFormDataConsume } = await import(
+      "@/src/utils/bankStatementSourceCheckpoint.js"
+    );
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 9, 8, 7, 6, 5]);
+    const cp = await createBankStatementSourceCheckpoint(
+      new File([bytes], "belirsiz-ekstre.pdf", { type: "application/pdf" })
+    );
+    await assertCheckpointSurvivesFormDataConsume(cp);
+    // Simulate archive-then-parse: fresh file after FormData
+    const parseFile = getCheckpointFile(cp);
+    const parseAb = await parseFile.arrayBuffer();
+    assert.equal(parseAb.byteLength, bytes.byteLength);
+  }
+);
 
 await testAsync(
   "COMPANY_VERIFICATION_REQUIRED → approve → checkpoint parse bytes intact",
@@ -172,7 +191,11 @@ test("normal re-upload still duplicate-blocked; approve resume bypasses session 
 });
 
 test("company change clears source checkpoint fully", () => {
-  let cp = { fileName: "x.pdf", arrayBuffer: new ArrayBuffer(4) };
+  let cp = {
+    fileName: "x.pdf",
+    uint8Bytes: new Uint8Array([1, 2, 3, 4]),
+    byteLength: 4,
+  };
   assert.equal(hasUsableSourceCheckpoint(cp), true);
   cp = clearBankStatementSourceCheckpoint(cp);
   assert.equal(cp, null);
@@ -219,7 +242,9 @@ test("workbench wires checkpoint + companyApproveResume", () => {
   assert.match(src, /shouldReuseArchiveFromCheckpoint/);
   assert.match(src, /shouldBypassIdempotencyForCompanyApproveResume/);
   assert.match(src, /clearBankStatementSourceCheckpoint/);
-  assert.match(src, /Güvenli yeniden deneme için oturum kaynağı/);
+  assert.match(src, /Dosyayı yeniden seçmeniz gerekiyor/);
+  assert.match(src, /hasParsedPdfRows/);
+  assert.match(src, /uint8Bytes|getCheckpointFile\(sourceCheckpointRef/);
 });
 
 console.log("All bank-statement-source-checkpoint tests passed.");

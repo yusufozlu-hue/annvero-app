@@ -198,6 +198,7 @@ import {
   createBankStatementSourceCheckpoint,
   getCheckpointArrayBuffer,
   getCheckpointArrayBufferAsync,
+  hasParsedPdfRows,
   getCheckpointFile,
   hasUsableSourceCheckpoint,
   rememberArchiveOnCheckpoint,
@@ -695,6 +696,8 @@ export default function BankParserWorkbench() {
     }
     return (
       error?.userMessage ||
+      (error?.code === "FILE_READ" ? error?.message : null) ||
+      (error?.message && error?.code ? error.message : null) ||
       userFacingPipelineError(fallbackPhase) ||
       "İşlem tamamlanamadı. Lütfen tekrar deneyin."
     );
@@ -2366,9 +2369,10 @@ export default function BankParserWorkbench() {
     }
 
     sourceCheckpointRef.current = checkpoint;
-    setSelectedFile(checkpoint.file);
+    // State'te taze File — input File'a bağlı kalma
+    setSelectedFile(getCheckpointFile(checkpoint));
     setFileName(checkpoint.fileName);
-    // Input temiz — devam checkpoint File/Blob'dan
+    // Input temiz — devam checkpoint Uint8Array'dan
     resetFileInput();
 
     try {
@@ -2767,13 +2771,14 @@ export default function BankParserWorkbench() {
       checkpoint?.fileName || sourceFile?.name || file?.name || "";
 
     // PDF: dosya seçiminde canonicalize edilmiş satırlar varsa Excel worker'a gitme.
+    // Boş dizi usable değildir (OCR beklerken [] truthy tuzağı → sahte başarı/FILE_READ).
     if (
-      pdfLegacyRowsRef.current &&
+      hasParsedPdfRows(pdfLegacyRowsRef.current) &&
       fileSheetSourceRef.current === sourceName
     ) {
       const meta = pdfMetaRef.current;
       if (meta?.ocrRequired || meta?.code === "OCR_REQUIRED") {
-        if (!(pdfLegacyRowsRef.current || []).length) {
+        if (!hasParsedPdfRows(pdfLegacyRowsRef.current)) {
           const err = new Error(
             meta.message ||
               "Bu PDF taranmış görünüyor; OCR tamamlanana kadar inceleme kuyruğuna alındı."
@@ -2782,7 +2787,7 @@ export default function BankParserWorkbench() {
           throw err;
         }
       }
-      if (meta && meta.ok === false && !pdfLegacyRowsRef.current.length) {
+      if (meta && meta.ok === false && !hasParsedPdfRows(pdfLegacyRowsRef.current)) {
         const err = new Error(meta.message || "PDF okunamadı.");
         err.code = meta.code || "PDF_ERROR";
         throw err;
@@ -2822,7 +2827,7 @@ export default function BankParserWorkbench() {
     if (isPdf) {
       const arrayBuffer =
         (await getCheckpointArrayBufferAsync(checkpoint)) ||
-        (sourceFile ? await sourceFile.arrayBuffer() : null);
+        (sourceFile ? await sourceFile.arrayBuffer().catch(() => null) : null);
       if (signal?.aborted) {
         const err = new Error("İşlem iptal edildi.");
         err.name = "AbortError";
@@ -3727,8 +3732,11 @@ export default function BankParserWorkbench() {
       );
       return;
     }
-    if (pipelineFile && !selectedFile) {
-      setSelectedFile(pipelineFile);
+    // validateV1Inputs File.size'a bakar — taze checkpoint File kullan
+    const fileForValidate =
+      getCheckpointFile(checkpoint) || pipelineFile;
+    if (fileForValidate) {
+      setSelectedFile(fileForValidate);
     }
     if (companyApproveResume) {
       companyApproveResumeRef.current = true;
@@ -3777,7 +3785,7 @@ export default function BankParserWorkbench() {
 
     const inputCheck = validateV1Inputs({
       companyId: selectedCompanyId,
-      file: pipelineFile,
+      file: fileForValidate,
       bankId: runBank,
     });
     if (!inputCheck.ok) {
@@ -3793,10 +3801,10 @@ export default function BankParserWorkbench() {
     }
 
     if (
-      !canStartFullPipeline({
+      !      canStartFullPipeline({
         selectedCompanyId,
         selectedBank: runBank,
-        selectedFile: pipelineFile,
+        selectedFile: fileForValidate,
         isJobBusy: false,
         pipelinePhase,
       })
@@ -4110,8 +4118,9 @@ export default function BankParserWorkbench() {
             const tArch = performance.now();
             archiveResult = await archiveStatementToDrive({
               companyId: selectedCompanyId,
-              file:
-                getCheckpointFile(sourceCheckpointRef.current) || pipelineFile,
+              // Her seferinde taze File — FormData önceki kopyayı tüketse bile
+              // checkpoint.uint8Bytes bozulmaz; parse aynı kaynaktan okur.
+              file: getCheckpointFile(sourceCheckpointRef.current) || pipelineFile,
               signal,
             });
             if (sourceCheckpointRef.current) {
@@ -4663,6 +4672,10 @@ export default function BankParserWorkbench() {
         suppressedLucaRows: error?.suppressedLucaRows ?? null,
         recoverable:
           Boolean(error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank) ||
+          Boolean(
+            error?.code === "FILE_READ" &&
+              hasUsableSourceCheckpoint(sourceCheckpointRef.current)
+          ) ||
           (failedPhase !== PIPELINE_PHASES.PARSING &&
           failedPhase !== PIPELINE_PHASES.PREVIEW
             ? Boolean(movementsRef.current.length)
@@ -4833,14 +4846,31 @@ export default function BankParserWorkbench() {
   };
 
   const handleRetryPipeline = () => {
-    // Format auto-fix sonrası veya recover edilemeyen durumda baştan çalıştır.
-    // Kaynak checkpoint'ten devam — dosya yeniden seçilmez.
-    const hasSource =
-      hasUsableSourceCheckpoint(sourceCheckpointRef.current) || selectedFile;
+    // Kaynak checkpoint'ten devam — yoksa yeniden seçim zorunlu (sahte retry yok)
+    const hasSource = hasUsableSourceCheckpoint(sourceCheckpointRef.current);
     if (!hasSource) {
       showToast(
-        "Güvenli yeniden deneme için oturum kaynağı gerekli (dosya yeniden seçilmez).",
+        "Dosyayı yeniden seçmeniz gerekiyor. Oturum kaynağı bulunamadı.",
         "error"
+      );
+      setPipelineError((prev) =>
+        prev
+          ? {
+              ...prev,
+              recoverable: false,
+              message:
+                "Dosyayı yeniden seçmeniz gerekiyor. Oturum kaynağı bulunamadı.",
+              code: prev.code || "FILE_READ",
+            }
+          : {
+              phase: PIPELINE_PHASES.PARSING,
+              phaseLabel: getPipelinePhaseTitle(PIPELINE_PHASES.PARSING),
+              message:
+                "Dosyayı yeniden seçmeniz gerekiyor. Oturum kaynağı bulunamadı.",
+              code: "FILE_READ",
+              recoverable: false,
+              tone: "error",
+            }
       );
       return;
     }
