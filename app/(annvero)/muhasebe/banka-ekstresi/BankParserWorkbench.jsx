@@ -512,6 +512,7 @@ export default function BankParserWorkbench() {
   const [resolvedCariGroups, setResolvedCariGroups] = useState([]);
   const [applyingCariGroupId, setApplyingCariGroupId] = useState(null);
   const [lastCariApplyMessage, setLastCariApplyMessage] = useState("");
+  const [lastCariApplyCompare, setLastCariApplyCompare] = useState(null);
   const [cariApplyUndoStack, setCariApplyUndoStack] = useState([]);
   const [companyGuardResult, setCompanyGuardResult] = useState(null);
   const cariResolutionCancelRef = useRef(null);
@@ -612,6 +613,7 @@ export default function BankParserWorkbench() {
     setCariApplyUndoStack([]);
     setCariResolutionSnapshot(null);
     setLastCariApplyMessage("");
+    setLastCariApplyCompare(null);
     setCompanyGuardResult(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCompanyId]);
@@ -829,6 +831,7 @@ export default function BankParserWorkbench() {
       setCariResolutionLoading(false);
       setCariResolutionError("");
       setLastCariApplyMessage("");
+    setLastCariApplyCompare(null);
       unrecognizedCountRef.current = 0;
       parserJob.reset();
     };
@@ -1544,6 +1547,7 @@ export default function BankParserWorkbench() {
     }
 
     setLastCariApplyMessage("");
+    setLastCariApplyCompare(null);
     // 1) Modal shell anında — ağır hesap click içinde değil
     showCariResolutionCenterRef.current = true;
     setShowCariResolutionCenter(true);
@@ -1594,6 +1598,18 @@ export default function BankParserWorkbench() {
 
     setApplyingCariGroupId(group.id);
     try {
+      const previousCounters = extractAnalysisCounters({
+        autoMatchedCount: pipelineResult?.autoMatchedCount,
+        uniqueUnresolvedMovements:
+          pipelineResult?.unresolvedMovementCount ??
+          pipelineResult?.uniqueUnresolvedMovements,
+        review_count:
+          pipelineResult?.unresolvedMovementCount ??
+          missingHesapReport?.missingCount,
+        trulyNotFoundCount: countTrulyNotFoundFromGroups(
+          cariResolutionSnapshot?.groups || []
+        ),
+      });
       const undoSnap = snapshotLucaRowsForUndo(
         lucaRef.current || [],
         group.rowIds || []
@@ -1665,6 +1681,21 @@ export default function BankParserWorkbench() {
           : reanalyze.memoryApplied
             ? ` · hafızadan +${reanalyze.memoryApplied} satır`
             : "";
+      const compare = buildRevisionCompareView(
+        deriveRevisionCounters({
+          previous: previousCounters,
+          next: reanalyze.pipelinePatch,
+          trulyNotFoundCount: countTrulyNotFoundFromGroups(snapshot.groups || []),
+        })
+      );
+      setLastCariApplyCompare({
+        ...compare,
+        fisKontrol: {
+          errors: reanalyze.pipelinePatch?.errors ?? 0,
+          warnings: reanalyze.pipelinePatch?.warnings ?? 0,
+          passed: reanalyze.pipelinePatch?.passed ?? 0,
+        },
+      });
       setLastCariApplyMessage(
         `${applyResult.updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${memNote}. Yeniden analiz ${reanalyze.durationMs} ms.`
       );
@@ -1717,6 +1748,18 @@ export default function BankParserWorkbench() {
 
     setApplyingCariGroupId("__bulk__");
     try {
+      const previousCounters = extractAnalysisCounters({
+        autoMatchedCount: pipelineResult?.autoMatchedCount,
+        uniqueUnresolvedMovements:
+          pipelineResult?.unresolvedMovementCount ??
+          pipelineResult?.uniqueUnresolvedMovements,
+        review_count:
+          pipelineResult?.unresolvedMovementCount ??
+          missingHesapReport?.missingCount,
+        trulyNotFoundCount: countTrulyNotFoundFromGroups(
+          cariResolutionSnapshot?.groups || []
+        ),
+      });
       const allRowIds = groups.flatMap((g) => g.rowIds || []);
       const undoSnap = snapshotLucaRowsForUndo(lucaRef.current || [], allRowIds);
       let nextRows = lucaRef.current || [];
@@ -1788,6 +1831,21 @@ export default function BankParserWorkbench() {
         ];
       });
       setCariResolutionSnapshot(snapshot);
+      const compare = buildRevisionCompareView(
+        deriveRevisionCounters({
+          previous: previousCounters,
+          next: reanalyze.pipelinePatch,
+          trulyNotFoundCount: countTrulyNotFoundFromGroups(snapshot.groups || []),
+        })
+      );
+      setLastCariApplyCompare({
+        ...compare,
+        fisKontrol: {
+          errors: reanalyze.pipelinePatch?.errors ?? 0,
+          warnings: reanalyze.pipelinePatch?.warnings ?? 0,
+          passed: reanalyze.pipelinePatch?.passed ?? 0,
+        },
+      });
       setLastCariApplyMessage(
         `Toplu: ${groups.length} grup · ${totalUpdated} satır → ${code}. Eksik kalan: ${report.missingCount}. Yeniden analiz ${reanalyze.durationMs} ms.`
       );
@@ -1839,6 +1897,7 @@ export default function BankParserWorkbench() {
         groups.filter((g) => !(last.groupIds || []).includes(g.id))
       );
       setCariResolutionSnapshot(snapshot);
+      setLastCariApplyCompare(null);
       setLastCariApplyMessage(
         `Son uygulama geri alındı. Eksik hesap: ${report.missingCount}.`
       );
@@ -2535,6 +2594,7 @@ export default function BankParserWorkbench() {
     setResolvedCariGroups([]);
     setApplyingCariGroupId(null);
     setLastCariApplyMessage("");
+    setLastCariApplyCompare(null);
     if (cariResolutionCancelRef.current) {
       cariResolutionCancelRef.current();
       cariResolutionCancelRef.current = null;
@@ -5801,6 +5861,7 @@ export default function BankParserWorkbench() {
             onClose={handleCloseCariResolutionCenter}
             snapshot={cariResolutionSnapshot}
             companyPlans={companyPlans}
+            selectedCompany={selectedCompany}
             resolvedGroupIds={resolvedCariGroupIds}
             resolvedGroups={resolvedCariGroups}
             onApplyGroup={handleApplyCariResolutionGroup}
@@ -5809,6 +5870,7 @@ export default function BankParserWorkbench() {
             canUndo={cariApplyUndoStack.length > 0}
             applyingId={applyingCariGroupId}
             lastApplyMessage={lastCariApplyMessage}
+            applyCompare={lastCariApplyCompare}
             loading={cariResolutionLoading}
             error={cariResolutionError}
             onRetry={handleRetryCariResolutionLoad}

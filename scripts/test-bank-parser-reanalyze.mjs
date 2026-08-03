@@ -254,6 +254,20 @@ test("UI button label + duplicate card wiring present", () => {
   assert.match(workbench, /buildRevisionIdempotencyKey/);
   assert.match(workbench, /ANNVERO_COMPANY_CHANGED_EVENT/);
   assert.match(workbench, /duplicatePriorJobRef/);
+  assert.match(workbench, /lastCariApplyCompare/);
+  assert.match(workbench, /applyCompare=\{lastCariApplyCompare\}/);
+
+  const resolution = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/banka-ekstresi/CariMissingResolutionCenter.jsx"
+    ),
+    "utf8"
+  );
+  assert.match(resolution, /searchAll, setSearchAll\] = useState\(true\)/);
+  assert.match(resolution, /fetchActiveAccountPlan/);
+  assert.match(resolution, /Önce \/ sonra/);
+  assert.match(resolution, /Bu firma için öğren/);
 
   const jobsRoute = fs.readFileSync(
     path.join(root, "app/api/annvero-v1/jobs/route.js"),
