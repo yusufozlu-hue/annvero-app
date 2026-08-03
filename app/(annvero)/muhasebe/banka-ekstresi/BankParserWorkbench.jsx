@@ -225,7 +225,11 @@ import {
 } from "@/src/utils/annveroV1Client";
 import {
   BANK_COMPANY_GUARD_CODE,
+  COMPANY_VERIFY_CONFIRM_BUTTON_LABEL,
+  applyManualCompanyConfirmationToGuard,
+  assertManualCompanyConfirmation,
   buildCrossCompanyContaminationReport,
+  formatCompanyVerificationConfirmLabel,
   formatEmptyAccountPlanMessage,
   shouldBlockCariResolutionForCompanyGuard,
   verifyBankStatementCompanyMatch,
@@ -515,6 +519,9 @@ export default function BankParserWorkbench() {
   const [lastCariApplyCompare, setLastCariApplyCompare] = useState(null);
   const [cariApplyUndoStack, setCariApplyUndoStack] = useState([]);
   const [companyGuardResult, setCompanyGuardResult] = useState(null);
+  const [companyVerifyChecked, setCompanyVerifyChecked] = useState(false);
+  /** Kullanıcının açıkça onayladığı firma — yalnız VERIFICATION_REQUIRED bypass */
+  const companyManualConfirmedRef = useRef(null);
   const cariResolutionCancelRef = useRef(null);
   const cariResolutionGenerationRef = useRef(0);
   const showCariResolutionCenterRef = useRef(false);
@@ -615,6 +622,8 @@ export default function BankParserWorkbench() {
     setLastCariApplyMessage("");
     setLastCariApplyCompare(null);
     setCompanyGuardResult(null);
+    setCompanyVerifyChecked(false);
+    companyManualConfirmedRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCompanyId]);
 
@@ -820,6 +829,8 @@ export default function BankParserWorkbench() {
       });
       setPipelineError(null);
       setCompanyGuardResult(null);
+      setCompanyVerifyChecked(false);
+      companyManualConfirmedRef.current = null;
       duplicatePriorJobRef.current = null;
       reanalyzeOptionsRef.current = null;
       previousAnalysisCountersRef.current = null;
@@ -2293,6 +2304,8 @@ export default function BankParserWorkbench() {
     setFileName(file.name);
     clearPreviewState();
     setPipelineError(null);
+    setCompanyVerifyChecked(false);
+    companyManualConfirmedRef.current = null;
     fileSheetRowsRef.current = null;
     fileSheetSourceRef.current = null;
     pdfLegacyRowsRef.current = null;
@@ -3872,11 +3885,15 @@ export default function BankParserWorkbench() {
           fileSheetRowsRef.current = sheetRows;
         }
 
-        const guard = verifyBankStatementCompanyMatch({
+        const guardRaw = verifyBankStatementCompanyMatch({
           sheetRows,
           fileName: selectedFile?.name || fileName || "",
           selectedCompany,
           companies: workspaceCompanies,
+        });
+        const guard = applyManualCompanyConfirmationToGuard(guardRaw, {
+          confirmedCompanyId: companyManualConfirmedRef.current?.companyId || "",
+          activeCompanyId: selectedCompanyId || "",
         });
         setCompanyGuardResult(guard);
 
@@ -3893,6 +3910,7 @@ export default function BankParserWorkbench() {
               contamination,
             };
           }
+          setCompanyVerifyChecked(false);
           setPipelineError({
             phase: PIPELINE_PHASES.PARSING,
             phaseLabel: "Firma doğrulama",
@@ -3900,6 +3918,8 @@ export default function BankParserWorkbench() {
             recoverable: false,
             tone: "error",
             code: guard.code,
+            activeCompanyName: guard.activeCompanyName || "",
+            activeCompanyId: selectedCompanyId || "",
             suggestedCompanyId: guard.suggestedCompanyId || "",
             suggestedCompanyName: guard.suggestedCompanyName || "",
             contamination,
@@ -4620,6 +4640,35 @@ export default function BankParserWorkbench() {
     }
   };
 
+  const handleConfirmCompanyAndContinue = () => {
+    const check = assertManualCompanyConfirmation({
+      guardCode: pipelineError?.code || companyGuardResult?.code || "",
+      checkboxChecked: companyVerifyChecked,
+      confirmedCompanyId: selectedCompanyId || "",
+      activeCompanyId: selectedCompanyId || "",
+    });
+    if (!check.ok) {
+      showToast(check.message, "error");
+      return;
+    }
+    if (!selectedFile) {
+      showToast(
+        "Onay sonrası devam için oturumdaki kaynak dosya gerekli (yeniden yükleme yok).",
+        "error"
+      );
+      return;
+    }
+    // Oturumdaki erişilebilir aktif firma — otomatik tahmin/seçim yok
+    companyManualConfirmedRef.current = {
+      companyId: check.companyId,
+      confirmedAt: Date.now(),
+    };
+    setPipelineError(null);
+    setCompanyVerifyChecked(false);
+    showToast("Firma onaylandı; mevcut kaynakla devam ediliyor…", "success");
+    void runFullBankPipeline();
+  };
+
   const handleRetryPipeline = () => {
     // Format auto-fix sonrası veya recover edilemeyen durumda baştan çalıştır.
     if (
@@ -5071,12 +5120,27 @@ export default function BankParserWorkbench() {
             onRetry={handleRetryPipeline}
             onSwitchCompany={({ companyId }) => {
               if (!companyId || typeof setSelectedCompanyId !== "function") return;
+              setCompanyVerifyChecked(false);
+              companyManualConfirmedRef.current = null;
               setSelectedCompanyId(companyId);
               showToast(
                 "Firma değiştirildi. Dosyayı yeniden seçip işlemi tekrar başlatın.",
                 "success"
               );
             }}
+            confirmCompanyChecked={companyVerifyChecked}
+            onConfirmCompanyCheckedChange={setCompanyVerifyChecked}
+            confirmCompanyLabel={formatCompanyVerificationConfirmLabel(
+              pipelineError?.activeCompanyName ||
+                (selectedCompany ? getCompanyDisplayName(selectedCompany) : "")
+            )}
+            confirmCompanyButtonLabel={COMPANY_VERIFY_CONFIRM_BUTTON_LABEL}
+            onConfirmCompanyAndContinue={
+              pipelineError?.code ===
+              BANK_COMPANY_GUARD_CODE.VERIFICATION_REQUIRED
+                ? handleConfirmCompanyAndContinue
+                : undefined
+            }
             onOpenManual={
               showBankServiceUi
                 ? () => {

@@ -2143,10 +2143,34 @@ test("Banka ekstresi: COMPANY_MISMATCH Drive/persist öncesi fail-closed", () =>
   assert.match(workbenchSrc, /verifyBankStatementCompanyMatch/);
   assert.match(workbenchSrc, /CompanyGuardError/);
   assert.match(workbenchSrc, /shouldBlockCariResolutionForCompanyGuard/);
+  assert.match(workbenchSrc, /applyManualCompanyConfirmationToGuard/);
+  assert.match(workbenchSrc, /handleConfirmCompanyAndContinue/);
+  assert.match(workbenchSrc, /COMPANY_VERIFY_CONFIRM_BUTTON_LABEL/);
   assert.match(
     workbenchSrc,
     /PipelineError zaten set; Drive\/persist\/hafıza yok/
   );
+
+  const oneClickSrc = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/banka-ekstresi/BankOneClickExperience.jsx"
+    ),
+    "utf8"
+  );
+  assert.match(oneClickSrc, /company-verification-confirm/);
+  assert.match(oneClickSrc, /onConfirmCompanyAndContinue/);
+  assert.match(oneClickSrc, /Firmayı Onayla ve Devam Et/);
+  assert.match(oneClickSrc, /COMPANY_VERIFICATION_REQUIRED/);
+  // MISMATCH kartında manuel onay UI yolu yok — yalnız verification
+  assert.match(
+    oneClickSrc,
+    /isVerification && typeof onConfirmCompanyAndContinue === "function"/
+  );
+  assert.match(guardSrc, /canAcceptManualCompanyConfirmation/);
+  assert.match(guardSrc, /MANUAL_CONFIRM_FORBIDDEN/);
+  assert.match(guardSrc, /COMPANY_MISMATCH asla bypass/);
+  assert.match(guardSrc, /Firmayı Onayla ve Devam Et/);
   const validatingDetail = workbenchSrc.indexOf(
     "Dosya ve firma doğrulanıyor"
   );

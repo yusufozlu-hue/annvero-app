@@ -487,10 +487,109 @@ export function buildCrossCompanyContaminationReport({
 
 export function shouldBlockCariResolutionForCompanyGuard(guardResult = null) {
   if (!guardResult) return false;
+  if (guardResult.manuallyConfirmed && !guardResult.blockPipeline) {
+    return false;
+  }
   return (
     guardResult.code === BANK_COMPANY_GUARD_CODE.MISMATCH ||
     guardResult.code === BANK_COMPANY_GUARD_CODE.VERIFICATION_REQUIRED
   );
+}
+
+/**
+ * Manuel onay yalnız COMPANY_VERIFICATION_REQUIRED için.
+ * COMPANY_MISMATCH asla bypass edilemez.
+ */
+export function canAcceptManualCompanyConfirmation(guardCode = "") {
+  return String(guardCode || "") === BANK_COMPANY_GUARD_CODE.VERIFICATION_REQUIRED;
+}
+
+export function formatCompanyVerificationConfirmLabel(companyDisplayName = "") {
+  const name = String(companyDisplayName || "").trim() || "aktif firma";
+  return `Bu ekstre ${name} firmasına aittir`;
+}
+
+export const COMPANY_VERIFY_CONFIRM_BUTTON_LABEL =
+  "Firmayı Onayla ve Devam Et";
+
+/**
+ * Kullanıcı açıkça onaylamadan pipeline devam etmez.
+ * Onaylanan companyId oturumdaki aktif firmayla aynı olmalı.
+ * @returns {{ ok: true, companyId: string } | { ok: false, code: string, message: string }}
+ */
+export function assertManualCompanyConfirmation({
+  guardCode = "",
+  checkboxChecked = false,
+  confirmedCompanyId = "",
+  activeCompanyId = "",
+} = {}) {
+  if (!canAcceptManualCompanyConfirmation(guardCode)) {
+    return {
+      ok: false,
+      code: "MANUAL_CONFIRM_FORBIDDEN",
+      message:
+        "Firma uyuşmazlığında manuel onay ile devam edilemez. Doğru firmayı seçin.",
+    };
+  }
+  if (!checkboxChecked) {
+    return {
+      ok: false,
+      code: "CONFIRM_CHECKBOX_REQUIRED",
+      message: "Devam etmek için firma onay kutusunu işaretleyin.",
+    };
+  }
+  const active = String(activeCompanyId || "").trim();
+  const confirmed = String(confirmedCompanyId || "").trim();
+  if (!active) {
+    return {
+      ok: false,
+      code: "MISSING_COMPANY_ID",
+      message: "Firma seçilmedi.",
+    };
+  }
+  if (!confirmed || confirmed !== active) {
+    return {
+      ok: false,
+      code: "CONFIRM_COMPANY_MISMATCH",
+      message:
+        "Onaylanan firma, oturumdaki aktif firma ile aynı olmalıdır.",
+    };
+  }
+  return { ok: true, companyId: active };
+}
+
+/**
+ * Guard sonucu + oturum onayı: yalnızca VERIFICATION_REQUIRED + aynı companyId.
+ * MISMATCH her zaman bloklanır.
+ */
+export function applyManualCompanyConfirmationToGuard(
+  guardResult = null,
+  {
+    confirmedCompanyId = "",
+    activeCompanyId = "",
+  } = {}
+) {
+  if (!guardResult?.blockPipeline) return guardResult;
+  if (guardResult.code === BANK_COMPANY_GUARD_CODE.MISMATCH) {
+    return guardResult;
+  }
+  if (!canAcceptManualCompanyConfirmation(guardResult.code)) {
+    return guardResult;
+  }
+  const check = assertManualCompanyConfirmation({
+    guardCode: guardResult.code,
+    checkboxChecked: true,
+    confirmedCompanyId,
+    activeCompanyId,
+  });
+  if (!check.ok) return guardResult;
+  return {
+    ...guardResult,
+    ok: true,
+    blockPipeline: false,
+    manuallyConfirmed: true,
+    message: "",
+  };
 }
 
 /** Test / UI: unvan varyasyonu normalize karşılaştırması */

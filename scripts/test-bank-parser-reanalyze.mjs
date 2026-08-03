@@ -256,6 +256,10 @@ test("UI button label + duplicate card wiring present", () => {
   assert.match(workbench, /duplicatePriorJobRef/);
   assert.match(workbench, /lastCariApplyCompare/);
   assert.match(workbench, /applyCompare=\{lastCariApplyCompare\}/);
+  assert.match(workbench, /handleConfirmCompanyAndContinue/);
+  assert.match(workbench, /applyManualCompanyConfirmationToGuard/);
+  assert.match(oneClick, /company-verification-confirm/);
+  assert.match(oneClick, /onConfirmCompanyAndContinue/);
 
   const resolution = fs.readFileSync(
     path.join(

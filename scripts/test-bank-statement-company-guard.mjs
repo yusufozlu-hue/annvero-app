@@ -5,9 +5,14 @@
 import assert from "node:assert/strict";
 import {
   BANK_COMPANY_GUARD_CODE,
+  COMPANY_VERIFY_CONFIRM_BUTTON_LABEL,
+  applyManualCompanyConfirmationToGuard,
+  assertManualCompanyConfirmation,
   buildCrossCompanyContaminationReport,
+  canAcceptManualCompanyConfirmation,
   extractBankStatementCompanySignals,
   formatCompanyMismatchMessage,
+  formatCompanyVerificationConfirmLabel,
   formatEmptyAccountPlanMessage,
   shouldBlockCariResolutionForCompanyGuard,
   titlesMatchForGuard,
@@ -243,6 +248,105 @@ test("tenant izolasyonu — başka firma profili score düşürür", () => {
   });
   assert.notEqual(result.suggestedCompanyId, "adh-1");
   assert.equal(result.suggestedCompanyId, "mare-1");
+});
+
+test("manuel onay yalnız VERIFICATION_REQUIRED; MISMATCH bypass yok", () => {
+  const ambiguous = verifyBankStatementCompanyMatch({
+    sheetRows: [
+      ["Hareket", "Tutar"],
+      ["01.01.2025", "100"],
+    ],
+    fileName: "ekstre.pdf",
+    selectedCompany: mare,
+    companies: [adh, mare],
+  });
+  assert.equal(ambiguous.code, BANK_COMPANY_GUARD_CODE.VERIFICATION_REQUIRED);
+  assert.equal(canAcceptManualCompanyConfirmation(ambiguous.code), true);
+
+  const mismatch = verifyBankStatementCompanyMatch({
+    sheetRows: mareSheetRows(),
+    selectedCompany: adh,
+    companies: [adh, mare],
+  });
+  assert.equal(mismatch.code, BANK_COMPANY_GUARD_CODE.MISMATCH);
+  assert.equal(canAcceptManualCompanyConfirmation(mismatch.code), false);
+
+  const mismatchBypass = assertManualCompanyConfirmation({
+    guardCode: BANK_COMPANY_GUARD_CODE.MISMATCH,
+    checkboxChecked: true,
+    confirmedCompanyId: "adh-1",
+    activeCompanyId: "adh-1",
+  });
+  assert.equal(mismatchBypass.ok, false);
+  assert.equal(mismatchBypass.code, "MANUAL_CONFIRM_FORBIDDEN");
+
+  const stillMismatch = applyManualCompanyConfirmationToGuard(mismatch, {
+    confirmedCompanyId: "adh-1",
+    activeCompanyId: "adh-1",
+  });
+  assert.equal(stillMismatch.blockPipeline, true);
+  assert.equal(stillMismatch.code, BANK_COMPANY_GUARD_CODE.MISMATCH);
+});
+
+test("checkbox + aynı companyId olmadan pipeline devam etmez", () => {
+  const noCheck = assertManualCompanyConfirmation({
+    guardCode: BANK_COMPANY_GUARD_CODE.VERIFICATION_REQUIRED,
+    checkboxChecked: false,
+    confirmedCompanyId: "mare-1",
+    activeCompanyId: "mare-1",
+  });
+  assert.equal(noCheck.ok, false);
+  assert.equal(noCheck.code, "CONFIRM_CHECKBOX_REQUIRED");
+
+  const wrongCompany = assertManualCompanyConfirmation({
+    guardCode: BANK_COMPANY_GUARD_CODE.VERIFICATION_REQUIRED,
+    checkboxChecked: true,
+    confirmedCompanyId: "adh-1",
+    activeCompanyId: "mare-1",
+  });
+  assert.equal(wrongCompany.ok, false);
+  assert.equal(wrongCompany.code, "CONFIRM_COMPANY_MISMATCH");
+
+  const ok = assertManualCompanyConfirmation({
+    guardCode: BANK_COMPANY_GUARD_CODE.VERIFICATION_REQUIRED,
+    checkboxChecked: true,
+    confirmedCompanyId: "mare-1",
+    activeCompanyId: "mare-1",
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.companyId, "mare-1");
+});
+
+test("onay sonrası VERIFICATION_REQUIRED blok kalkar; cari çözüm açılır", () => {
+  const raw = verifyBankStatementCompanyMatch({
+    sheetRows: [["Tarih", "Tutar"], ["01.01.2025", "50"]],
+    fileName: "belirsiz.pdf",
+    selectedCompany: mare,
+    companies: [adh, mare],
+  });
+  assert.equal(raw.blockPipeline, true);
+  const confirmed = applyManualCompanyConfirmationToGuard(raw, {
+    confirmedCompanyId: "mare-1",
+    activeCompanyId: "mare-1",
+  });
+  assert.equal(confirmed.ok, true);
+  assert.equal(confirmed.blockPipeline, false);
+  assert.equal(confirmed.manuallyConfirmed, true);
+  assert.equal(shouldBlockCariResolutionForCompanyGuard(confirmed), false);
+});
+
+test("onay kutusu etiketi seçili firma unvanını kullanır", () => {
+  const label = formatCompanyVerificationConfirmLabel(
+    "MARE RESORT TURİZM VE OTELCİLİK TİCARET A.Ş"
+  );
+  assert.equal(
+    label,
+    "Bu ekstre MARE RESORT TURİZM VE OTELCİLİK TİCARET A.Ş firmasına aittir"
+  );
+  assert.equal(
+    COMPANY_VERIFY_CONFIRM_BUTTON_LABEL,
+    "Firmayı Onayla ve Devam Et"
+  );
 });
 
 console.log("All bank-statement-company-guard tests passed.");
