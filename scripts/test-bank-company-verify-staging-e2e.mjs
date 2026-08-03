@@ -137,6 +137,13 @@ const resumeBytes = await getCheckpointArrayBufferAsync(sourceCp);
 assert.ok(resumeBytes.byteLength > 0);
 assert.ok(getCheckpointFile(sourceCp) instanceof File);
 assert.equal(shouldBypassDedupForCompanyApproveResume(true), true);
+// Drive FormData upload simülasyonu — parse baytları bozulmamalı
+const { assertCheckpointSurvivesFormDataConsume } = await import(
+  "@/src/utils/bankStatementSourceCheckpoint.js"
+);
+await assertCheckpointSurvivesFormDataConsume(sourceCp);
+const afterArchiveBytes = await getCheckpointArrayBufferAsync(sourceCp);
+assert.equal(afterArchiveBytes.byteLength, resumeBytes.byteLength);
 rememberArchiveOnCheckpoint(sourceCp, {
   ok: true,
   code: "ARCHIVED",

@@ -673,14 +673,17 @@ export function BankPipelineErrorCard({
               <button
                 type="button"
                 onClick={onRetry}
-                disabled={disabled}
+                disabled={disabled || error.recoverable === false}
                 className={`rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${
                   isInfo
                     ? "border border-sky-500/40 bg-sky-900/50 hover:bg-sky-900"
-                    : "border border-red-500/40 bg-red-900/50 hover:bg-red-900"
+                    : "border border-rose-500/40 bg-rose-900/40 hover:bg-rose-900/60"
                 }`}
+                data-testid="bank-pipeline-safe-retry"
               >
-                Güvenli Yeniden Dene
+                {error.recoverable === false
+                  ? "Dosyayı yeniden seçmeniz gerekiyor"
+                  : "Güvenli Yeniden Dene"}
               </button>
             ) : null}
             {onOpenManual ? (
