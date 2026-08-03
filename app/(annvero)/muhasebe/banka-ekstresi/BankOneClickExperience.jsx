@@ -546,6 +546,11 @@ export function BankPipelineErrorCard({
   onRetry,
   onOpenManual,
   onSwitchCompany,
+  onConfirmCompanyAndContinue,
+  confirmCompanyChecked = false,
+  onConfirmCompanyCheckedChange,
+  confirmCompanyLabel = "",
+  confirmCompanyButtonLabel = "Firmayı Onayla ve Devam Et",
 }) {
   if (!error) return null;
 
@@ -579,8 +584,18 @@ export function BankPipelineErrorCard({
                   ? "Hesap planı eksik"
                   : "İşlem durdu";
 
+  const verificationLabel =
+    confirmCompanyLabel ||
+    (error.activeCompanyName
+      ? `Bu ekstre ${error.activeCompanyName} firmasına aittir`
+      : "Bu ekstre aktif firmaya aittir");
+
   return (
-    <section className={`mt-4 rounded-2xl border px-4 py-4 sm:px-5 ${wrap}`}>
+    <section
+      className={`mt-4 rounded-2xl border px-4 py-4 sm:px-5 ${wrap}`}
+      data-testid="bank-pipeline-error-card"
+      data-error-code={error.code || ""}
+    >
       <div className="flex items-start gap-3">
         <div
           className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
@@ -603,6 +618,39 @@ export function BankPipelineErrorCard({
               Durduğu aşama: {error.phaseLabel}
             </p>
           ) : null}
+
+          {isVerification && typeof onConfirmCompanyAndContinue === "function" ? (
+            <div
+              className="mt-3 space-y-3 rounded-xl border border-amber-500/35 bg-amber-950/25 px-3 py-3"
+              data-testid="company-verification-confirm"
+            >
+              <label className="flex cursor-pointer items-start gap-2.5 text-sm text-amber-50">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-amber-400/60 bg-slate-950"
+                  checked={Boolean(confirmCompanyChecked)}
+                  disabled={disabled}
+                  onChange={(e) =>
+                    typeof onConfirmCompanyCheckedChange === "function"
+                      ? onConfirmCompanyCheckedChange(e.target.checked)
+                      : null
+                  }
+                  data-testid="company-verification-checkbox"
+                />
+                <span>{verificationLabel}</span>
+              </label>
+              <button
+                type="button"
+                onClick={onConfirmCompanyAndContinue}
+                disabled={disabled || !confirmCompanyChecked}
+                className="rounded-lg border border-emerald-500/50 bg-emerald-950/50 px-3 py-1.5 text-xs font-semibold text-emerald-50 hover:bg-emerald-900/55 disabled:cursor-not-allowed disabled:opacity-50"
+                data-testid="company-verification-confirm-btn"
+              >
+                {confirmCompanyButtonLabel}
+              </button>
+            </div>
+          ) : null}
+
           <div className="mt-3 flex flex-wrap gap-2">
             {error.suggestedCompanyId && typeof onSwitchCompany === "function" ? (
               <button
