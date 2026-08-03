@@ -267,7 +267,11 @@ export function parsePdfMovementLines(text = "", context = {}) {
     if (isPdfNonMovementLine(line)) continue;
 
     // OCR sonrası birleşik satır: tarih + açıklama + 1–3 tutar
-    const m = line.match(
+    // Boş kolon / tire → 0,00 kabul (OCR tablo boşluğu)
+    const ocrLine = line
+      .replace(/\s+[-–—]\s+/g, " 0,00 ")
+      .replace(/\s+[-–—]$/g, " 0,00");
+    const m = ocrLine.match(
       new RegExp(
         `^(\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4})\\s+(.+?)\\s+(${AMOUNT_TOKEN})(?:\\s+(${AMOUNT_TOKEN}))?(?:\\s+(${AMOUNT_TOKEN}))?$`
       )

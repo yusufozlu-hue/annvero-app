@@ -191,6 +191,84 @@ function pageConfidence(page) {
   return n ? sum / n : 0.75;
 }
 
+function vertexCenter(vertices = []) {
+  if (!Array.isArray(vertices) || !vertices.length) return null;
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (const v of vertices) {
+    const x = Number(v?.x);
+    const y = Number(v?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    sx += x;
+    sy += y;
+    n += 1;
+  }
+  if (!n) return null;
+  return { x: sx / n, y: sy / n };
+}
+
+function wordTextFromSymbols(word) {
+  const symbols = word?.symbols || [];
+  let out = "";
+  for (const s of symbols) {
+    out += String(s?.text || "");
+    const br = s?.property?.detectedBreak?.type;
+    if (br === "SPACE" || br === "SURE_SPACE") out += " ";
+    else if (br === "EOL_SURE_SPACE" || br === "LINE_BREAK") out += "\n";
+  }
+  return out;
+}
+
+/**
+ * Vision tablo OCR: kelimeleri Y bandına göre satırlara diz.
+ * fullText tek blok olduğunda tarih/tutar kırılmalarını azaltır.
+ * Ham metin loglanmaz.
+ */
+export function rebuildTextLinesFromVisionPage(page) {
+  const words = [];
+  for (const block of page?.blocks || []) {
+    for (const para of block?.paragraphs || []) {
+      for (const word of para?.words || []) {
+        const text = wordTextFromSymbols(word).replace(/\s+/g, " ").trim();
+        if (!text) continue;
+        const c = vertexCenter(word?.boundingBox?.vertices);
+        if (!c) continue;
+        const ys = (word?.boundingBox?.vertices || [])
+          .map((v) => Number(v?.y))
+          .filter((y) => Number.isFinite(y));
+        const height = ys.length ? Math.max(...ys) - Math.min(...ys) : 12;
+        words.push({ text, x: c.x, y: c.y, height: Math.max(8, height) });
+      }
+    }
+  }
+  if (!words.length) return "";
+
+  words.sort((a, b) => (a.y === b.y ? a.x - b.x : a.y - b.y));
+  const lines = [];
+  let current = null;
+  for (const w of words) {
+    const band = Math.max(10, (current?.avgHeight || w.height) * 0.55);
+    if (!current || Math.abs(w.y - current.y) > band) {
+      if (current) {
+        current.words.sort((a, b) => a.x - b.x);
+        lines.push(current.words.map((x) => x.text).join(" ").trim());
+      }
+      current = { y: w.y, avgHeight: w.height, words: [w] };
+    } else {
+      const n = current.words.length + 1;
+      current.y = (current.y * (n - 1) + w.y) / n;
+      current.avgHeight = (current.avgHeight * (n - 1) + w.height) / n;
+      current.words.push(w);
+    }
+  }
+  if (current) {
+    current.words.sort((a, b) => a.x - b.x);
+    lines.push(current.words.map((x) => x.text).join(" ").trim());
+  }
+  return lines.filter(Boolean).join("\n");
+}
+
 function extractPagesFromImagesResponse(visionJson, pageStart = 1) {
   const responses = visionJson?.responses || [];
   const out = [];
@@ -208,8 +286,10 @@ function extractPagesFromImagesResponse(visionJson, pageStart = 1) {
       continue;
     }
     const full = pr?.fullTextAnnotation;
-    const text = String(full?.text || "").trim();
     const pageMeta = (full?.pages || [])[0];
+    const geometric = rebuildTextLinesFromVisionPage(pageMeta);
+    const fallback = String(full?.text || "").trim();
+    const text = (geometric || fallback).trim();
     out.push({
       page: pageStart + i,
       text,
