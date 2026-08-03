@@ -21,7 +21,19 @@ import {
 } from "@/src/utils/cariMissingResolutionGroups";
 import { isSelectableCariLeafAccount } from "@/src/utils/cariCounterpartyExtract";
 import { isCreditCardAccountCode } from "@/src/utils/creditCardAccountResolver";
+import { fetchActiveAccountPlan } from "@/src/utils/accountPlanApi";
 import dynamic from "next/dynamic";
+
+/** İstemci planı + sunucu araması birleşimi (1000+ satır / PostgREST). */
+function mergeAccountPlanRows(primary = [], secondary = []) {
+  const byCode = new Map();
+  for (const row of [...(primary || []), ...(secondary || [])]) {
+    const code = String(row?.account_code || row?.code || "").trim();
+    if (!code) continue;
+    if (!byCode.has(code)) byCode.set(code, row);
+  }
+  return [...byCode.values()];
+}
 
 const CariGroupTransactionPanel = dynamic(
   () => import("./CariGroupTransactionPanel"),
@@ -149,14 +161,20 @@ function GroupCard({
       partyName: group.partyName || "",
     })
   );
-  const [searchAll, setSearchAll] = useState(false);
+  /** Varsayılan: tüm aktif hesap planı (4.166+); tercih listesine kullanıcı geçebilir. */
+  const [searchAll, setSearchAll] = useState(true);
   const [query, setQuery] = useState("");
   const [expandedSearch, setExpandedSearch] = useState(false);
   const [showTransactions, setShowTransactions] = useState(false);
   const [selectedRowIds, setSelectedRowIds] = useState(() =>
     createInitialCariRowSelection(group.rowIds || [])
   );
+  const [serverPlanRows, setServerPlanRows] = useState([]);
+  const [serverSearchLoading, setServerSearchLoading] = useState(false);
   const hydrateRequested = useRef(Boolean(group.candidatesReady));
+  const companyIdForSearch = String(
+    selectedCompany?.id || selectedCompany?.companyId || ""
+  ).trim();
 
   const rowIdsKey = (group.rowIds || []).join("|");
   const [rowSelectionKey, setRowSelectionKey] = useState(rowIdsKey);
@@ -228,6 +246,49 @@ function GroupCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/visibility hydrate once per group id
   }, [group.id, group.candidatesReady, group.virmanCandidate, isResolved]);
 
+  // Sunucu tarafı hesap planı araması — ilk 1000 dışı kodlar dahil (q=).
+  useEffect(() => {
+    const q = String(query || "").trim();
+    if (!companyIdForSearch || q.length < 2) {
+      return undefined;
+    }
+    if (group.virmanCandidate || hydratedGroup.virmanCandidate) {
+      return undefined;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setServerSearchLoading(true);
+      try {
+        const result = await fetchActiveAccountPlan(companyIdForSearch, {
+          q,
+          page: 1,
+          pageSize: 50,
+        });
+        if (cancelled) return;
+        setServerPlanRows(Array.isArray(result.accounts) ? result.accounts : []);
+      } catch {
+        if (!cancelled) setServerPlanRows([]);
+      } finally {
+        if (!cancelled) setServerSearchLoading(false);
+      }
+    }, 280);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    companyIdForSearch,
+    query,
+    group.virmanCandidate,
+    hydratedGroup.virmanCandidate,
+  ]);
+
+  const searchablePlans = useMemo(() => {
+    const q = String(query || "").trim();
+    const serverRows = q.length >= 2 ? serverPlanRows : [];
+    return mergeAccountPlanRows(companyPlans, serverRows);
+  }, [companyPlans, serverPlanRows, query]);
+
   const liveSearch = useMemo(() => {
     if (group.virmanCandidate || hydratedGroup.virmanCandidate) {
       return { candidates: [], vendorMessage: VIRMAN_CANDIDATE_LABEL_UI };
@@ -240,7 +301,7 @@ function GroupCard({
         };
       }
       return {
-        candidates: searchCreditCardResolutionCandidates(companyPlans, {
+        candidates: searchCreditCardResolutionCandidates(searchablePlans, {
           query,
           lastFourDigits: hydratedGroup.lastFourDigits || "",
           periodMonth: hydratedGroup.periodMonth || null,
@@ -258,7 +319,7 @@ function GroupCard({
         ownCompanyFiltered: hydratedGroup.ownCompanyFiltered || 0,
       };
     }
-    return searchCariResolutionCandidates(companyPlans, {
+    return searchCariResolutionCandidates(searchablePlans, {
       query,
       direction: hydratedGroup.direction,
       description:
@@ -266,16 +327,15 @@ function GroupCard({
       limit: expandedSearch ? 25 : 5,
       foreignVendor: hydratedGroup.foreignVendor,
       searchAll,
-      planCache,
+      planCache: null,
       selectedCompany,
     });
   }, [
-    companyPlans,
+    searchablePlans,
     expandedSearch,
     group.virmanCandidate,
     group.creditCardGroup,
     hydratedGroup,
-    planCache,
     query,
     searchAll,
     selectedCompany,
@@ -326,6 +386,7 @@ function GroupCard({
 
   const showCandidateLoading =
     hydrating ||
+    serverSearchLoading ||
     (!hydratedGroup.candidatesReady &&
       !expandedSearch &&
       !query &&
@@ -726,6 +787,7 @@ export default function CariMissingResolutionCenter({
   canUndo = false,
   applyingId = null,
   lastApplyMessage = "",
+  applyCompare = null,
   loading = false,
   error = "",
   onRetry,
@@ -737,6 +799,24 @@ export default function CariMissingResolutionCenter({
   const [bulkCode, setBulkCode] = useState("");
   const [bulkName, setBulkName] = useState("");
   const [bulkLearn, setBulkLearn] = useState(true);
+
+  const resolutionCompanyKey = String(
+    selectedCompanyProp?.id ||
+      selectedCompanyProp?.companyId ||
+      snapshot?.selectedCompany?.id ||
+      snapshot?.selectedCompany?.companyId ||
+      ""
+  );
+  const [companyResetKey, setCompanyResetKey] = useState(resolutionCompanyKey);
+  if (companyResetKey !== resolutionCompanyKey) {
+    setCompanyResetKey(resolutionCompanyKey);
+    setBulkSelectedIds(new Set());
+    setBulkCode("");
+    setBulkName("");
+    setBulkLearn(true);
+    setFilter(CARI_RESOLUTION_FILTERS.REMAINING);
+    setQuery("");
+  }
 
   const groups = useMemo(() => snapshot?.groups || [], [snapshot?.groups]);
   const resolvedGroups = useMemo(
@@ -998,6 +1078,34 @@ export default function CariMissingResolutionCenter({
             <p className="mt-3 break-words rounded-xl border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-100">
               {lastApplyMessage}
             </p>
+          ) : null}
+
+          {applyCompare?.rows?.length ? (
+            <div className="mt-3 rounded-xl border border-slate-700 bg-slate-900/60 px-3 py-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Önce / sonra · yeniden analiz
+              </p>
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {applyCompare.rows.map((row) => (
+                  <div
+                    key={row.key}
+                    className="rounded-lg border border-slate-800 bg-slate-950/50 px-2.5 py-2"
+                  >
+                    <p className="text-[11px] text-slate-500">{row.label}</p>
+                    <p className="text-sm font-semibold text-white">
+                      {row.previous} → {row.next}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              {applyCompare.fisKontrol ? (
+                <p className="mt-2 text-[11px] text-slate-400">
+                  Fiş Kontrol: hata {applyCompare.fisKontrol.errors ?? 0} · uyarı{" "}
+                  {applyCompare.fisKontrol.warnings ?? 0} · geçen{" "}
+                  {applyCompare.fisKontrol.passed ?? 0}
+                </p>
+              ) : null}
+            </div>
           ) : null}
 
           {!loading && !error && bulkTargets.length > 0 ? (
