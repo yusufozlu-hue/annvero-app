@@ -5,6 +5,18 @@ const isDev = process.env.NODE_ENV !== "production";
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ["@napi-rs/canvas", "pdfjs-dist"],
+  // Ensure pdf.js legacy build + canvas land in serverless traces (Vercel).
+  outputFileTracingIncludes: {
+    "/api/bank-pdf/parse": [
+      "./node_modules/pdfjs-dist/**/*",
+      "./node_modules/pdfjs-dist/legacy/build/**/*",
+    ],
+    "/api/bank-ocr/run": [
+      "./node_modules/pdfjs-dist/**/*",
+      "./node_modules/pdfjs-dist/legacy/build/**/*",
+      "./node_modules/@napi-rs/canvas/**/*",
+    ],
+  },
   env: {
     NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA:
       process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA || "local",

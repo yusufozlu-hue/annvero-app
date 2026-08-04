@@ -119,6 +119,7 @@ function scoreExtractedStatementText(text = "") {
 function buildExtractDiagnostics({
   extractPath = "none",
   pdfjsOk = false,
+  pdfjsErrorCode = "",
   textLen = 0,
   dateCount = 0,
   letterCount = 0,
@@ -126,6 +127,7 @@ function buildExtractDiagnostics({
   return {
     extractPath,
     pdfjsOk: Boolean(pdfjsOk),
+    pdfjsErrorCode: pdfjsErrorCode ? String(pdfjsErrorCode).slice(0, 64) : undefined,
     textLen: Number(textLen) || 0,
     dateCount: Number(dateCount) || 0,
     letterCount: Number(letterCount) || 0,
@@ -197,15 +199,41 @@ export async function extractPdfTextLayerPdfJs(
   const data = asBytes(bytes);
   if (!data.length) return "";
 
+  // Independent copy — transferable/detached views break getDocument on some runtimes.
+  const copy =
+    typeof Buffer !== "undefined"
+      ? new Uint8Array(Buffer.from(data))
+      : (() => {
+          const out = new Uint8Array(data.byteLength);
+          out.set(data);
+          return out;
+        })();
+
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const task = getDocument({
-    data: data.slice(),
-    disableWorker: true,
-    isEvalSupported: false,
-    useSystemFonts: true,
-    verbosity: 0,
-  });
-  const pdf = await task.promise;
+  let task;
+  try {
+    task = getDocument({
+      data: copy,
+      disableWorker: true,
+      isEvalSupported: false,
+      useSystemFonts: true,
+      disableFontFace: true,
+      verbosity: 0,
+    });
+  } catch (e) {
+    const err = new Error("PDFJS_GETDOCUMENT");
+    err.code = "PDFJS_GETDOCUMENT";
+    err.cause = e;
+    throw err;
+  }
+  let pdf;
+  try {
+    pdf = await task.promise;
+  } catch (e) {
+    const err = new Error("PDFJS_LOAD");
+    err.code = String(e?.name || e?.code || "PDFJS_LOAD").slice(0, 64);
+    throw err;
+  }
   const total = Math.min(Number(pdf.numPages) || 0, maxPages);
   const out = [];
   let chars = 0;
@@ -216,7 +244,10 @@ export async function extractPdfTextLayerPdfJs(
       throw err;
     }
     const page = await pdf.getPage(p);
-    const content = await page.getTextContent();
+    const content = await page.getTextContent({
+      // Geometry items only — no marked content / extra deps
+      includeMarkedContent: false,
+    });
     const lines = rebuildLinesFromPdfJsItems(content?.items || []);
     if (total > 1) {
       const mark = `--- page ${p} ---`;
@@ -628,15 +659,18 @@ export async function parseBankStatementPdf(bytes, options = {}) {
       (async () => {
         let pdfjsText = "";
         let pdfjsOk = false;
+        let pdfjsErrorCode = "";
         try {
           pdfjsText = await extractPdfTextLayerPdfJs(buf, {
             signal,
             maxPages: PDF_MAX_PAGES,
           });
           pdfjsOk = Boolean(pdfjsText && pdfjsText.length > 0);
-        } catch {
+          if (!pdfjsOk) pdfjsErrorCode = "PDFJS_EMPTY";
+        } catch (e) {
           pdfjsText = "";
           pdfjsOk = false;
+          pdfjsErrorCode = String(e?.code || e?.name || "PDFJS_THROW").slice(0, 64);
         }
         const latinText = extractPdfTextLayer(buf, { signal });
         const pdfjsScore = scoreExtractedStatementText(pdfjsText);
@@ -658,6 +692,7 @@ export async function parseBankStatementPdf(bytes, options = {}) {
           diag: buildExtractDiagnostics({
             extractPath,
             pdfjsOk,
+            pdfjsErrorCode,
             textLen: String(chosen || "").length,
             dateCount: countStatementDates(chosen),
             letterCount: (String(chosen || "").match(/[A-Za-zÇĞİÖŞÜçğıöşü]/g) || [])

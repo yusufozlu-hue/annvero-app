@@ -167,6 +167,7 @@ export async function POST(request) {
         ocrRequired: Boolean(result?.ocrRequired),
         extractPath: result?.extractDiagnostics?.extractPath,
         pdfjsOk: Boolean(result?.extractDiagnostics?.pdfjsOk),
+        pdfjsErrorCode: result?.extractDiagnostics?.pdfjsErrorCode || undefined,
         textLen: result?.extractDiagnostics?.textLen,
         dateCount: result?.extractDiagnostics?.dateCount,
       })
