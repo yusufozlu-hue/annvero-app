@@ -575,7 +575,7 @@ assert(emptyQueue.length === 0, "tüm kayıtlar eşleşmişse kuyruk boş");
   assert(secondPass.suppressedMovements === 3, "bastırılan hareket=3");
   assert(secondPass.suppressedLucaRows === 6, "bastırılan Luca=6");
   assert(
-    DUPLICATE_STATEMENT_UI_MESSAGE === "Mükerrer ekstre — yeniden işlenmedi.",
+    DUPLICATE_STATEMENT_UI_MESSAGE === "Mükerrer ekstre — yeniden işlenmedi",
     "UI mesaj metni sabit"
   );
 

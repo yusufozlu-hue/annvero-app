@@ -8,8 +8,10 @@ import {
   buildSourceFileHash,
 } from "@/src/utils/bankCanonicalTransaction";
 
+export const DUPLICATE_CONTENT = "DUPLICATE_CONTENT";
+
 export const DUPLICATE_STATEMENT_UI_MESSAGE =
-  "Mükerrer ekstre — yeniden işlenmedi.";
+  "Mükerrer ekstre — yeniden işlenmedi";
 
 /**
  * @param {object[]} legacyOrCanonicalRows

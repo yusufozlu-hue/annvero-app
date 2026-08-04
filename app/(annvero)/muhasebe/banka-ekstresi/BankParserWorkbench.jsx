@@ -189,11 +189,17 @@ import {
   reconcileStatementBalances,
 } from "@/src/utils/bankBalanceReconcile";
 import {
+  DUPLICATE_CONTENT,
   DUPLICATE_STATEMENT_UI_MESSAGE,
   applySessionMovementDedup,
   keysFromCanonical,
   registerProcessedKeys,
 } from "@/src/utils/bankStatementDedup";
+import {
+  BALANCE_MISMATCH_UI_MESSAGE,
+  buildBalanceMismatchReviewPayload,
+  findPriorJobByContentHash,
+} from "@/src/utils/bankBalanceMismatchReview";
 import {
   REANALYZE_BUTTON_LABEL,
   assertSameTenantReanalyze,
@@ -694,6 +700,7 @@ export default function BankParserWorkbench() {
   const buildManagedFailureMessage = (error, fallbackPhase) => {
     if (
       error?.code === "DUPLICATE_STATEMENT" ||
+      error?.code === DUPLICATE_CONTENT ||
       error?.uiMessage === DUPLICATE_STATEMENT_UI_MESSAGE
     ) {
       return DUPLICATE_STATEMENT_UI_MESSAGE;
@@ -701,7 +708,7 @@ export default function BankParserWorkbench() {
     if (error?.code === BALANCE_MISMATCH) {
       return (
         error.message ||
-        "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
+        BALANCE_MISMATCH_UI_MESSAGE
       );
     }
     const isFormatMismatch =
@@ -2515,18 +2522,7 @@ export default function BankParserWorkbench() {
             });
             setPipelineMode("idle");
             setPipelinePhaseSafe(PIPELINE_PHASES.IDLE);
-            if (ocrOut.reviewRequired || ocrOut.code === BALANCE_MISMATCH) {
-              setPipelineError({
-                phase: PIPELINE_PHASES.PREVIEW,
-                phaseLabel: "OCR",
-                code: ocrOut.code || "OCR_LOW_CONFIDENCE",
-                message:
-                  ocrOut.message ||
-                  "Düşük güvenli veya mutabakatsız OCR satırları inceleme gerektirir.",
-                recoverable: true,
-                tone: "info",
-              });
-            }
+            // BALANCE_MISMATCH OCR'da da satırlar hazır — error kartı yok; tek tuş review_required işler
             return;
           } catch (ocrErr) {
             setPipelineError({
@@ -2814,17 +2810,7 @@ export default function BankParserWorkbench() {
         err.code = meta.code || "PDF_ERROR";
         throw err;
       }
-      if (meta?.balance?.reviewRequired) {
-        const err = new Error(
-          meta.message ||
-            "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
-        );
-        err.code = "BALANCE_MISMATCH";
-        err.reviewRequired = true;
-        // Yine de satırları döndürmek isteyen caller için attach
-        err.normalizedRows = pdfLegacyRowsRef.current;
-        throw err;
-      }
+      // BALANCE_MISMATCH: satırları döndür — review_required sonucu pipeline'da işlenir
       onProgress({
         stage: BANK_PARSE_STAGES.PARSING,
         detail: "PDF hareketleri hazır",
@@ -2912,16 +2898,6 @@ export default function BankParserWorkbench() {
         pdfLegacyRowsRef.current = legacyOcr;
         fileSheetRowsRef.current = ocrOut.sheetRows || [];
         fileSheetSourceRef.current = sourceName || null;
-        if (ocrOut.balance?.reviewRequired) {
-          const err = new Error(
-            ocrOut.message ||
-              "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
-          );
-          err.code = "BALANCE_MISMATCH";
-          err.reviewRequired = true;
-          err.normalizedRows = legacyOcr;
-          throw err;
-        }
         onProgress({
           stage: BANK_PARSE_STAGES.PARSING,
           detail: "OCR hareketleri hazır",
@@ -2951,16 +2927,6 @@ export default function BankParserWorkbench() {
       pdfLegacyRowsRef.current = legacy;
       fileSheetRowsRef.current = pdfResult.sheetRows || [];
       fileSheetSourceRef.current = sourceName || null;
-      if (pdfResult.balance?.reviewRequired) {
-        const err = new Error(
-          pdfResult.message ||
-            "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
-        );
-        err.code = "BALANCE_MISMATCH";
-        err.reviewRequired = true;
-        err.normalizedRows = legacy;
-        throw err;
-      }
       onProgress({
         stage: BANK_PARSE_STAGES.PARSING,
         detail: "PDF hareketleri hazır",
@@ -3155,7 +3121,7 @@ export default function BankParserWorkbench() {
     };
     if (!bypassSessionDedup && dedup.allDuplicate) {
       const err = new Error(DUPLICATE_STATEMENT_UI_MESSAGE);
-      err.code = "DUPLICATE_STATEMENT";
+      err.code = DUPLICATE_CONTENT;
       err.suppressedMovements = dedup.suppressedMovements;
       err.suppressedLucaRows = dedup.suppressedLucaRows;
       err.uiMessage = DUPLICATE_STATEMENT_UI_MESSAGE;
@@ -3175,16 +3141,6 @@ export default function BankParserWorkbench() {
         }),
         {}
       );
-    if (balance?.code === BALANCE_MISMATCH || balance?.reviewRequired) {
-      const err = new Error(
-        balance.message ||
-          "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
-      );
-      err.code = BALANCE_MISMATCH;
-      err.reviewRequired = true;
-      err.balance = balance;
-      throw err;
-    }
 
     setPipelinePhaseSafe(PIPELINE_PHASES.PREVIEW);
     const {
@@ -3214,6 +3170,8 @@ export default function BankParserWorkbench() {
       parseMode: mainResult.parseMode || "main",
       bankName: bank,
     }));
+    const balanceMismatch =
+      balance?.code === BALANCE_MISMATCH || Boolean(balance?.reviewRequired);
     return {
       normalizedCount: (mainResult.normalizedRows || []).length,
       movementCount: movements.length,
@@ -3221,6 +3179,8 @@ export default function BankParserWorkbench() {
       parseMode: mainResult.parseMode || "main",
       bankName: bank,
       durationMs,
+      balance,
+      balanceMismatch,
     };
   };
 
@@ -3978,10 +3938,11 @@ export default function BankParserWorkbench() {
           contentHash: preHash,
         });
         const hist = await listV1JobHistory(selectedCompanyId, 30);
-        const prior = (hist?.runs || []).find(
-          (row) =>
-            String(row?.metadata?.idempotency_key || "") === idempotencyKey
-        );
+        const prior = findPriorJobByContentHash(hist?.runs || [], {
+          companyId: selectedCompanyId,
+          contentHash: preHash,
+          idempotencyKey,
+        });
         const bypassHistory =
           shouldBypassIdempotencyHistoryBlock(reanalyzeOpts?.reanalyze) ||
           shouldBypassIdempotencyForCompanyApproveResume(approveResume);
@@ -3992,6 +3953,7 @@ export default function BankParserWorkbench() {
             movementCount: Number(prior.metadata?.movement_count || 0),
             lucaRowCount: Number(prior.metadata?.luca_row_count || 0),
             duplicate: true,
+            code: DUPLICATE_CONTENT,
             terminalStatus: V1_JOB_STATE.DUPLICATE,
             edefterStatus: prior.metadata?.edefter_status || "",
             edefterCode: prior.metadata?.edefter_code || "",
@@ -4263,12 +4225,120 @@ export default function BankParserWorkbench() {
           stageOutputs[V1_JOB_STATE.PARSING] = {
             movementCount: movementsRef.current.length,
             durationMs: preview.durationMs,
+            balanceMismatch: Boolean(preview.balanceMismatch),
           };
           stageOutputs[V1_JOB_STATE.DEDUPLICATING] = {
             ok: true,
             fromPreview: true,
           };
           setIsParsing(false);
+
+          // Parse-OK + BALANCE_MISMATCH → review_required (teknik hata değil)
+          if (preview.balanceMismatch) {
+            const contentHash =
+              lastDedupMetaRef.current?.sourceFileHash ||
+              sourceCheckpointRef.current?.contentHash ||
+              "";
+            const reviewPayload = buildBalanceMismatchReviewPayload({
+              balance: preview.balance,
+              movements: movementsRef.current,
+              contentHash,
+            });
+            const totalDurationMs = Math.round(performance.now() - tPipeline0);
+            const terminalStatus = V1_JOB_STATE.REVIEW_REQUIRED;
+            const resultSummary = buildV1ResultSummary({
+              movementCount: movementsRef.current.length,
+              lucaRowCount: 0,
+              autoMatchedCount: 0,
+              reviewCount: movementsRef.current.length,
+              fisKontrol: {
+                passed: 0,
+                warnings: 0,
+                errors: 0,
+                canAutoApprove: false,
+                reviewRequired: true,
+                lucaBatchCount: 0,
+                fisKontrolHref: "/muhasebe/fis-kontrol",
+              },
+              edefter: reconcileEdefterStage({}),
+              archive: archiveResult,
+              duplicate: false,
+              totalDurationMs,
+              stageDurations,
+              terminalStatus,
+              contentHash,
+              parseMs: stageDurations.previewMs || null,
+              chainMs: totalDurationMs,
+              reviewRequired: true,
+              canAutoApprove: false,
+              balanceMismatch: true,
+              balanceCode: BALANCE_MISMATCH,
+            });
+            emitV1(V1_JOB_STATE.PERSISTING, 80, "İnceleme özeti kaydediliyor…");
+            const idempotencyKey = buildIdempotencyKey({
+              companyId: selectedCompanyId,
+              contentHash,
+            });
+            await persistV1JobSummary({
+              companyId: selectedCompanyId,
+              jobId,
+              leaseId,
+              idempotencyKey,
+              summary: {
+                ...resultSummary,
+                accountPlanCount: Array.isArray(companyPlans)
+                  ? companyPlans.length
+                  : 0,
+              },
+              checkpointPhase: V1_JOB_STATE.PERSISTING,
+              action: "persist",
+            });
+            stageOutputs[V1_JOB_STATE.PERSISTING] = { ok: true };
+
+            const canon = legacyBankRowsToCanonical(movementsRef.current, {
+              companyId: selectedCompanyId || "",
+              selectedBank: runBank,
+            });
+            processedMovementKeysRef.current = registerProcessedKeys(
+              processedMovementKeysRef.current,
+              keysFromCanonical(canon)
+            );
+
+            setPipelineResult({
+              ...reviewPayload,
+              driveArchived: Boolean(resultSummary.driveArchived),
+              driveSkipped: Boolean(resultSummary.driveSkipped),
+              edefterStatus: resultSummary.edefterStatus,
+              edefterCode: resultSummary.edefterCode,
+              totalDurationMs,
+              stageDurations,
+              engineVersion: ANNVERO_V1_ENGINE_VERSION,
+              lucaRowCount: 0,
+              canAutoApprove: false,
+              message: BALANCE_MISMATCH_UI_MESSAGE,
+            });
+            setPipelineError(null);
+            setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+            setPipelineProgress({
+              percent: 100,
+              label: "İnceleme gerekli",
+              detail: BALANCE_MISMATCH_UI_MESSAGE,
+              processed: movementsRef.current.length,
+              total: movementsRef.current.length,
+            });
+            parserJob.reset();
+            setPipelineMode("idle");
+            try {
+              const histAfter = await listV1JobHistory(selectedCompanyId, 20);
+              if (histAfter?.runs) setV1AuditHistory(histAfter.runs);
+            } catch {
+              /* ignore */
+            }
+            await releaseV1Lease(selectedCompanyId, leaseId);
+            v1LeaseIdRef.current = null;
+            companyApproveResumeRef.current = false;
+            return;
+          }
         }
       }
 
@@ -4483,6 +4553,7 @@ export default function BankParserWorkbench() {
         terminalStatus,
         parseMs: stageDurations.previewMs || null,
         chainMs: totalDurationMs,
+        contentHash: lastDedupMetaRef.current?.sourceFileHash || "",
       });
 
       const accountPlanCount = Array.isArray(companyPlans)
@@ -4741,6 +4812,7 @@ export default function BankParserWorkbench() {
       if (
         error?.code === "BANK_FORMAT_MISMATCH" ||
         error?.code === "DUPLICATE_STATEMENT" ||
+        error?.code === DUPLICATE_CONTENT ||
         error?.code === "OCR_REQUIRED" ||
         error?.code === "BALANCE_MISMATCH" ||
         failedPhase === PIPELINE_PHASES.PARSING ||
@@ -4752,6 +4824,81 @@ export default function BankParserWorkbench() {
       }
       parserJob.reset();
       setPreviewErrorDetail("");
+      // BALANCE_MISMATCH movements varsa sonuç kartına çevir (error ekranı değil)
+      if (
+        error?.code === BALANCE_MISMATCH &&
+        movementsRef.current.length > 0
+      ) {
+        const contentHash =
+          lastDedupMetaRef.current?.sourceFileHash ||
+          sourceCheckpointRef.current?.contentHash ||
+          "";
+        const reviewPayload = buildBalanceMismatchReviewPayload({
+          balance: error?.balance || null,
+          movements: movementsRef.current,
+          contentHash,
+        });
+        try {
+          await persistV1JobSummary({
+            companyId: selectedCompanyId,
+            jobId,
+            leaseId,
+            idempotencyKey: buildIdempotencyKey({
+              companyId: selectedCompanyId,
+              contentHash,
+            }),
+            summary: buildV1ResultSummary({
+              movementCount: movementsRef.current.length,
+              lucaRowCount: 0,
+              reviewCount: movementsRef.current.length,
+              archive: archiveResult,
+              terminalStatus: V1_JOB_STATE.REVIEW_REQUIRED,
+              contentHash,
+              reviewRequired: true,
+              canAutoApprove: false,
+              balanceMismatch: true,
+              balanceCode: BALANCE_MISMATCH,
+            }),
+            checkpointPhase: V1_JOB_STATE.PERSISTING,
+            action: "persist",
+          });
+        } catch {
+          /* persist best-effort */
+        }
+        setPipelineResult({
+          ...reviewPayload,
+          message: BALANCE_MISMATCH_UI_MESSAGE,
+          driveArchived: Boolean(archiveResult?.safeSummary?.archived),
+          engineVersion: ANNVERO_V1_ENGINE_VERSION,
+        });
+        setPipelineError(null);
+        setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+        setPipelineMode("idle");
+        await releaseV1Lease(selectedCompanyId, leaseId);
+        v1LeaseIdRef.current = null;
+        return;
+      }
+      if (
+        error?.code === DUPLICATE_CONTENT ||
+        error?.code === "DUPLICATE_STATEMENT"
+      ) {
+        setPipelineResult({
+          duplicate: true,
+          code: DUPLICATE_CONTENT,
+          terminalStatus: V1_JOB_STATE.DUPLICATE,
+          duplicateMessage: DUPLICATE_STATEMENT_UI_MESSAGE,
+          movementCount: Number(error?.suppressedMovements || 0),
+          reviewRequired: false,
+          canAutoApprove: false,
+          engineVersion: ANNVERO_V1_ENGINE_VERSION,
+        });
+        setPipelineError(null);
+        setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+        setPipelineMode("idle");
+        await releaseV1Lease(selectedCompanyId, leaseId);
+        v1LeaseIdRef.current = null;
+        return;
+      }
       setPipelineResult(null);
       setToast(null);
       setPipelineError({
@@ -4773,6 +4920,7 @@ export default function BankParserWorkbench() {
             : false),
         tone:
           error?.code === "DUPLICATE_STATEMENT" ||
+          error?.code === DUPLICATE_CONTENT ||
           error?.code === "OCR_REQUIRED" ||
           error?.code === "BALANCE_MISMATCH"
             ? "info"
