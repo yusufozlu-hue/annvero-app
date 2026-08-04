@@ -99,6 +99,123 @@ export function looksIncompletePdf(bytes) {
   return !/%%EOF/i.test(text);
 }
 
+function scoreExtractedStatementText(text = "") {
+  const t = String(text || "");
+  const dates = (t.match(/\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}/g) || []).length;
+  const amounts = (
+    t.match(/-?\d{1,3}(?:[.\s']\d{3})*(?:,\d{2})|-?\d+(?:,\d{2})/g) || []
+  ).length;
+  const letters = (t.match(/[A-Za-zÇĞİÖŞÜçğıöşü]/g) || []).length;
+  return dates * 20 + amounts * 5 + Math.min(letters, 400);
+}
+
+function rebuildLinesFromPdfJsItems(items = []) {
+  const mapped = (items || [])
+    .filter((it) => it && typeof it.str === "string" && it.str.trim())
+    .map((it) => {
+      const tr = it.transform || [1, 0, 0, 1, 0, 0];
+      return {
+        str: String(it.str),
+        x: Number(tr[4]) || 0,
+        y: Number(tr[5]) || 0,
+        h: Math.abs(Number(tr[3]) || 10) || 10,
+      };
+    });
+  if (!mapped.length) return [];
+  // PDF user-space: y yukarı; satırları yukarıdan aşağı oku
+  mapped.sort((a, b) => (Math.abs(a.y - b.y) < 1.5 ? a.x - b.x : b.y - a.y));
+  const lines = [];
+  let cur = null;
+  for (const it of mapped) {
+    const band = Math.max(6, (cur?.h || it.h) * 0.65);
+    if (!cur || Math.abs(it.y - cur.y) > band) {
+      if (cur) {
+        cur.parts.sort((a, b) => a.x - b.x);
+        const row = cur.parts
+          .map((p) => p.str)
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (row) lines.push(row);
+      }
+      cur = { y: it.y, h: it.h, parts: [it] };
+    } else {
+      cur.parts.push(it);
+      const n = cur.parts.length;
+      cur.y = (cur.y * (n - 1) + it.y) / n;
+      cur.h = (cur.h * (n - 1) + it.h) / n;
+    }
+  }
+  if (cur) {
+    cur.parts.sort((a, b) => a.x - b.x);
+    const row = cur.parts
+      .map((p) => p.str)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (row) lines.push(row);
+  }
+  return lines;
+}
+
+/**
+ * pdf.js getTextContent + Y geometrisi — VakıfBank tablo satırlarını korur.
+ * Latin1 Tj fallback’tan önce tercih edilir (çöp stream metni hareket kırar).
+ */
+export async function extractPdfTextLayerPdfJs(
+  bytes,
+  { maxChars = 500_000, signal, maxPages = PDF_MAX_PAGES } = {}
+) {
+  if (signal?.aborted) {
+    const err = new Error(SAFE.CANCELLED);
+    err.code = "PDF_CANCELLED";
+    throw err;
+  }
+  const data = asBytes(bytes);
+  if (!data.length) return "";
+
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const task = getDocument({
+    data: data.slice(),
+    disableWorker: true,
+    isEvalSupported: false,
+    useSystemFonts: true,
+    verbosity: 0,
+  });
+  const pdf = await task.promise;
+  const total = Math.min(Number(pdf.numPages) || 0, maxPages);
+  const out = [];
+  let chars = 0;
+  for (let p = 1; p <= total; p += 1) {
+    if (signal?.aborted) {
+      const err = new Error(SAFE.CANCELLED);
+      err.code = "PDF_CANCELLED";
+      throw err;
+    }
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const lines = rebuildLinesFromPdfJsItems(content?.items || []);
+    if (total > 1) {
+      const mark = `--- page ${p} ---`;
+      out.push(mark);
+      chars += mark.length + 1;
+    }
+    for (const line of lines) {
+      if (chars >= maxChars) break;
+      const piece = line.slice(0, maxChars - chars);
+      out.push(piece);
+      chars += piece.length + 1;
+    }
+    if (chars >= maxChars) break;
+  }
+  try {
+    await pdf.destroy?.();
+  } catch {
+    /* ignore */
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /**
  * Minimal text extraction — Tj / TJ operatörleri + literal strings.
  * Gelişmiş layout için OCR yolu ayrıdır.
@@ -234,13 +351,17 @@ function detectBankFromPdfText(text = "") {
 function parseTrAmount(raw = "") {
   const s = String(raw || "").trim();
   if (!s) return NaN;
-  const normalized = s.replace(/\s/g, "").replace(/\./g, "").replace(",", ".");
+  const normalized = s
+    .replace(/\s/g, "")
+    .replace(/'/g, "")
+    .replace(/\./g, "")
+    .replace(",", ".");
   const n = Number(normalized);
   return Number.isFinite(n) ? n : NaN;
 }
 
 const AMOUNT_TOKEN =
-  "-?\\d{1,3}(?:[.\\s]\\d{3})*(?:,\\d{2})|-?\\d+(?:,\\d{2})";
+  "-?\\d{1,3}(?:[.\\s']\\d{3})*(?:,\\d{2})|-?\\d+(?:,\\d{2})";
 
 /**
  * Satır bazlı hareket çıkarımı → ortak kanonik modele.
@@ -480,7 +601,23 @@ export async function parseBankStatementPdf(bytes, options = {}) {
   let text = "";
   try {
     text = await Promise.race([
-      Promise.resolve().then(() => extractPdfTextLayer(buf, { signal })),
+      (async () => {
+        let pdfjsText = "";
+        try {
+          pdfjsText = await extractPdfTextLayerPdfJs(buf, {
+            signal,
+            maxPages: PDF_MAX_PAGES,
+          });
+        } catch {
+          pdfjsText = "";
+        }
+        const latinText = extractPdfTextLayer(buf, { signal });
+        // Tarih/tutar skoru yüksek olanı seç — Latin1 stream çöpü hareket kırar.
+        return scoreExtractedStatementText(pdfjsText) >=
+          scoreExtractedStatementText(latinText)
+          ? pdfjsText || latinText
+          : latinText || pdfjsText;
+      })(),
       new Promise((_, reject) => {
         const err = new Error(SAFE.TIMEOUT);
         err.code = "PDF_TIMEOUT";
@@ -533,27 +670,55 @@ export async function parseBankStatementPdf(bytes, options = {}) {
     };
   }
 
-  const parsed = parsePdfMovementLines(text, {
+  const { normalizeOcrStatementText } = await import(
+    "@/src/utils/bankOcr/normalizeOcrStatementText.js"
+  );
+
+  let workingText = text;
+  let parsed = parsePdfMovementLines(workingText, {
     ...options,
     sourceFileHash,
-    selectedBank: options.selectedBank || detectBankFromPdfText(text),
+    selectedBank: options.selectedBank || detectBankFromPdfText(workingText),
   });
 
-  const hints = extractBalanceHintsFromText(text);
+  // pdf.js satırları çoğu zaman tarih/açıklama/tutarı ayrı satırda bırakır —
+  // OCR normalizer’ı aynı birleştirme kurallarını uygular (sahte hareket yok).
+  if (!(parsed.transactions || []).length) {
+    const normalized = normalizeOcrStatementText(workingText);
+    const retry = parsePdfMovementLines(normalized, {
+      ...options,
+      sourceFileHash,
+      selectedBank: options.selectedBank || detectBankFromPdfText(normalized),
+    });
+    if ((retry.transactions || []).length > 0) {
+      parsed = retry;
+      workingText = normalized;
+    }
+  }
+
+  const hints = extractBalanceHintsFromText(workingText);
   const balance = reconcileStatementBalances(parsed.transactions, hints);
 
   if (!parsed.transactions.length) {
+    // Metin katmanı var ama hareket çıkarılamadı → OCR fallback zorunlu.
+    // PDF_UNSUPPORTED_LAYOUT kullanıcıya OCR denenmeden dönmez.
     return {
       ok: false,
-      status: BANK_PARSE_STATUS.REVIEW_REQUIRED,
-      code: "PDF_UNSUPPORTED_LAYOUT",
-      message: SAFE.UNSUPPORTED,
+      status: BANK_PARSE_STATUS.OCR_REQUIRED,
+      code: "OCR_REQUIRED",
+      message: SAFE.OCR_REQUIRED,
       transactions: [],
       sourceFileHash,
-      sheetRows: pdfTextToSheetRows(text),
-      detectedBank: parsed.bank,
+      pageCount: pages,
+      ocrRequired: true,
+      layoutFallback: true,
+      priorCode: "PDF_UNSUPPORTED_LAYOUT",
+      sheetRows: pdfTextToSheetRows(workingText),
+      detectedBank: parsed.bank || detectBankFromPdfText(workingText) || undefined,
     };
   }
+
+  text = workingText;
 
   const status = balance.reviewRequired
     ? BANK_PARSE_STATUS.REVIEW_REQUIRED
@@ -613,4 +778,13 @@ export function mergeExcelAndPdfTransactions(excelLegacyRows = [], pdfResult = {
     excelCount: fromExcel.length,
     pdfCount: fromPdf.length,
   };
+}
+
+/** Metin parse başarısız / taranmış PDF → OCR fallback tetiklenmeli. */
+export function shouldTriggerPdfOcrFallback(result = {}) {
+  if (!result || typeof result !== "object") return false;
+  if (result.ocrRequired || result.code === "OCR_REQUIRED") return true;
+  if (result.code === "PDF_UNSUPPORTED_LAYOUT") return true;
+  if (result.layoutFallback && !(result.transactions || []).length) return true;
+  return false;
 }

@@ -164,7 +164,7 @@ import {
   canonicalToLegacyBankRow,
   legacyBankRowsToCanonical,
 } from "@/src/utils/bankCanonicalTransaction";
-import { parseBankStatementPdf } from "@/src/utils/bankStatementPdf";
+import { parseBankStatementPdf, shouldTriggerPdfOcrFallback } from "@/src/utils/bankStatementPdf";
 import { cancelBankOcrJob } from "@/src/utils/bankOcr/ocrJobCancel";
 import { runBankOcrViaServer } from "@/src/utils/bankOcr/ocrServerClient";
 import { OCR_STATUS, OCR_SAFE_MESSAGES } from "@/src/utils/bankOcr/ocrPolicy";
@@ -2395,7 +2395,11 @@ export default function BankParserWorkbench() {
           companyId: selectedCompanyId || "",
         });
         pdfMetaRef.current = pdfResult;
-        if (pdfResult.code === "OCR_REQUIRED" || pdfResult.ocrRequired) {
+        if (
+          shouldTriggerPdfOcrFallback(pdfResult) ||
+          pdfResult.code === "OCR_REQUIRED" ||
+          pdfResult.ocrRequired
+        ) {
           pdfLegacyRowsRef.current = [];
           fileSheetRowsRef.current = [];
           fileSheetSourceRef.current = checkpoint.fileName;
@@ -2844,11 +2848,79 @@ export default function BankParserWorkbench() {
         signal,
       });
       pdfMetaRef.current = pdfResult;
-      if (pdfResult.code === "OCR_REQUIRED" || pdfResult.ocrRequired) {
-        pdfLegacyRowsRef.current = [];
-        const err = new Error(pdfResult.message || "OCR_REQUIRED");
-        err.code = "OCR_REQUIRED";
-        throw err;
+      if (shouldTriggerPdfOcrFallback(pdfResult)) {
+        onProgress({
+          stage: BANK_PARSE_STAGES.PARSING,
+          detail: "OCR fallback çalışıyor",
+          percent: 15,
+        });
+        const ocrOut = await runBankOcrViaServer({
+          bytes: arrayBuffer,
+          companyId: selectedCompanyId || "",
+          fileName: sourceName || checkpoint?.fileName || "",
+          pageCount: pdfResult.pageCount || 1,
+          selectedBank: bank,
+          signal,
+        });
+        pdfMetaRef.current = ocrOut;
+        if (
+          ocrOut.code === OCR_STATUS.OCR_PROVIDER_NOT_CONFIGURED ||
+          (ocrOut.ocrRequired && !(ocrOut.transactions || []).length)
+        ) {
+          pdfLegacyRowsRef.current = [];
+          const err = new Error(
+            ocrOut.message || OCR_SAFE_MESSAGES.OCR_PROVIDER_NOT_CONFIGURED
+          );
+          err.code = ocrOut.code || OCR_STATUS.OCR_REQUIRED;
+          throw err;
+        }
+        if (!ocrOut.ok && !(ocrOut.transactions || []).length) {
+          pdfLegacyRowsRef.current = [];
+          const err = new Error(ocrOut.message || OCR_SAFE_MESSAGES.OCR_FAILED);
+          err.code = ocrOut.code || OCR_STATUS.OCR_FAILED;
+          throw err;
+        }
+        const legacyOcr = (ocrOut.transactions || []).map(canonicalToLegacyBankRow);
+        if (!legacyOcr.length) {
+          pdfLegacyRowsRef.current = [];
+          const err = new Error(
+            ocrOut.message ||
+              "OCR hareket çıkaramadı; inceleme gerekli (OCR_NO_MOVEMENTS)."
+          );
+          err.code = ocrOut.code || "OCR_NO_MOVEMENTS";
+          throw err;
+        }
+        pdfLegacyRowsRef.current = legacyOcr;
+        fileSheetRowsRef.current = ocrOut.sheetRows || [];
+        fileSheetSourceRef.current = sourceName || null;
+        if (ocrOut.balance?.reviewRequired) {
+          const err = new Error(
+            ocrOut.message ||
+              "Açılış/kapanış bakiyesi uyuşmuyor. Otomatik fiş üretilmedi; inceleme gerekli."
+          );
+          err.code = "BALANCE_MISMATCH";
+          err.reviewRequired = true;
+          err.normalizedRows = legacyOcr;
+          throw err;
+        }
+        onProgress({
+          stage: BANK_PARSE_STAGES.PARSING,
+          detail: "OCR hareketleri hazır",
+          percent: 100,
+        });
+        return {
+          rawCount: legacyOcr.length,
+          normalizedRows: legacyOcr,
+          parseMode: "pdf-ocr",
+          timings: ocrOut.elapsedMs ? { pdfMs: ocrOut.elapsedMs } : null,
+          bankName: bank,
+          sourceType: "pdf",
+          sourceFileHash:
+            ocrOut.sourceFileHash || checkpoint?.contentHash || "",
+          balance: ocrOut.balance || null,
+          ocrUsed: Boolean(ocrOut.ocrUsed),
+          ocrProvider: ocrOut.ocrProvider || "",
+        };
       }
       if (!pdfResult.ok && !pdfResult.transactions?.length) {
         pdfLegacyRowsRef.current = [];

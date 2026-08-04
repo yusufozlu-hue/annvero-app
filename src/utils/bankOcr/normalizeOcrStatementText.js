@@ -7,7 +7,7 @@
 const DATE_ONLY_RE = /^(\d{1,2})[./\-](\d{1,2})[./\-](\d{2,4})$/;
 const DATE_PREFIX_RE = /^(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4})\b(.*)$/;
 const DATE_TOKEN_RE = /\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}/g;
-const AMOUNT_RE = /-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2})/g;
+const AMOUNT_RE = /-?\d{1,3}(?:[.\s']\d{3})*(?:,\d{2})|-?\d+(?:,\d{2})/g;
 const PAGE_MARK_RE = /^---\s*page\s+\d+\s*---$/i;
 const HEADER_FOOTER_RE =
   /^(sayfa\s*\d+|page\s*\d+|devam\s* ediyor|continued|www\.|telefon|m[uü][sş]teri\s*hizmet|copyright|tarih\s+a[cç][iı]klama|bor[cç]\s+alacak\s+bakiye|i[sş]lem\s*tarihi|hesap\s*no|para\s*birimi)/i;
@@ -45,6 +45,8 @@ export function preprocessOcrNoise(text = "") {
   t = t.replace(/(\d)\.[\r\n]+(\d{3},\d{2})\b/g, "$1.$2");
   // Binlik boşluğu: "1 500,00" → "1.500,00" — ama ",00 250,00" birleştirilmez
   t = t.replace(/(^|[^\d,])(\d{1,3})\s+(\d{3},\d{2})\b/g, "$1$2.$3");
+  // Apostrof binlik: 1'234,56 → 1.234,56
+  t = t.replace(/(\d)'(\d{3},\d{2})\b/g, "$1.$2");
   t = t.replace(/(\d)\s*,\s*(\d{2})\b/g, "$1,$2");
   // Satır ortasında yeni tarih → satır kır
   t = t.replace(
@@ -104,6 +106,75 @@ function flushMovement(buf, out) {
 }
 
 /**
+ * Vision bazen kolonları dikey okur: tarihler, açıklamalar, tutarlar ayrı blok.
+ * Blokları satır hareketlerine geri ör.
+ */
+export function reassembleColumnarOcrLines(lines = []) {
+  const src = (lines || []).map(normalizeSpaces).filter(Boolean);
+  if (src.length < 6) return src;
+
+  const isDate = (l) => DATE_ONLY_RE.test(l);
+  const isAmt = (l) => {
+    const a = extractAmounts(l);
+    if (!a.length) return false;
+    let stripped = l;
+    for (const x of a) stripped = stripped.replace(x, " ");
+    stripped = stripped.replace(/[.\-_/|–—]+/g, " ").replace(/\s+/g, " ").trim();
+    return stripped.length <= 2;
+  };
+
+  // En uzun ardışık tarih-only koşusunu bul
+  let bestStart = -1;
+  let bestLen = 0;
+  let i = 0;
+  while (i < src.length) {
+    if (!isDate(src[i])) {
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j < src.length && isDate(src[j])) j += 1;
+    if (j - i >= 2 && j - i > bestLen) {
+      bestStart = i;
+      bestLen = j - i;
+    }
+    i = j;
+  }
+  if (bestLen < 2) return src;
+
+  const dates = src.slice(bestStart, bestStart + bestLen);
+  let cursor = bestStart + bestLen;
+  // Açıklama bloğu: tarih/tutar olmayan satırlar
+  const descs = [];
+  while (cursor < src.length && descs.length < bestLen && !isDate(src[cursor]) && !isAmt(src[cursor])) {
+    descs.push(src[cursor]);
+    cursor += 1;
+  }
+  // Tutarlar: bestLen * 1..3
+  const amts = [];
+  while (cursor < src.length && isAmt(src[cursor]) && amts.length < bestLen * 3) {
+    amts.push(src[cursor]);
+    cursor += 1;
+  }
+  if (descs.length < bestLen || amts.length < bestLen) return src;
+
+  const perRow = Math.floor(amts.length / bestLen);
+  if (perRow < 1 || perRow > 3) return src;
+
+  const rebuilt = [];
+  // Önce tarih bloğundan önceki satırlar
+  rebuilt.push(...src.slice(0, bestStart));
+  for (let r = 0; r < bestLen; r += 1) {
+    const rowAmts = amts.slice(r * perRow, r * perRow + perRow);
+    rebuilt.push(
+      normalizeSpaces([dates[r], descs[r] || "HAREKET", ...rowAmts].join(" "))
+    );
+  }
+  rebuilt.push(...src.slice(cursor));
+  return rebuilt;
+}
+
+/**
  * OCR metnini parser’ın beklediği tek satırlık hareket biçimine dönüştür.
  * @param {string} text
  * @returns {string}
@@ -114,7 +185,8 @@ export function normalizeOcrStatementText(text = "") {
     "$1.$2.$3"
   );
 
-  const lines = raw.split(/\r?\n/).map(normalizeSpaces);
+  let lines = raw.split(/\r?\n/).map(normalizeSpaces);
+  lines = reassembleColumnarOcrLines(lines);
   const out = [];
   let buf = null;
 

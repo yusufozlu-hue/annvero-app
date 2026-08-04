@@ -289,10 +289,12 @@ function extractPagesFromImagesResponse(visionJson, pageStart = 1) {
     const pageMeta = (full?.pages || [])[0];
     const geometric = rebuildTextLinesFromVisionPage(pageMeta);
     const fallback = String(full?.text || "").trim();
+    // Geometri satırları tercih; fullText yedek (kolon okuma bozulursa finalize seçer)
     const text = (geometric || fallback).trim();
     out.push({
       page: pageStart + i,
       text,
+      altText: geometric && fallback && geometric !== fallback ? fallback : "",
       confidence: pageConfidence(pageMeta),
       width: Number(pageMeta?.width) || 0,
       height: Number(pageMeta?.height) || 0,

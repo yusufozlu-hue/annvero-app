@@ -589,6 +589,46 @@ await test("Vision page word geometry rebuilds rows", async () => {
   assert.match(rows[1], /03\.01\.2026/);
 });
 
+await test("text-layer zero txs → OCR_REQUIRED not UNSUPPORTED", async () => {
+  const { parseBankStatementPdf, shouldTriggerPdfOcrFallback } = await import(
+    "@/src/utils/bankStatementPdf.js"
+  );
+  // Metin katmanı var ama hareket yok → layoutFallback OCR_REQUIRED
+  const { PDFDocument, StandardFonts } = await import("pdf-lib");
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([595, 842]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  page.drawText("VakifBank Hesap Ekstresi - metin var hareket yok XYZ", {
+    x: 40,
+    y: 780,
+    size: 12,
+    font,
+  });
+  const bytes = await doc.save();
+  const r = await parseBankStatementPdf(bytes.buffer, {
+    selectedBank: "VAKIFBANK",
+  });
+  assert.notEqual(r.code, "PDF_UNSUPPORTED_LAYOUT");
+  assert.equal(r.code, "OCR_REQUIRED");
+  assert.equal(r.ocrRequired, true);
+  assert.equal(r.layoutFallback, true);
+  assert.equal(shouldTriggerPdfOcrFallback(r), true);
+});
+
+await test("OCR empty movements → OCR_NO_MOVEMENTS not UNSUPPORTED", async () => {
+  const { finalizeOcrPagesToParseResult } = await import(
+    "@/src/utils/bankOcr/runBankStatementOcr.js"
+  );
+  const r = finalizeOcrPagesToParseResult(
+    [{ page: 1, text: "header footer no movements", confidence: 0.9 }],
+    { ocrProvider: "local-test", selectedBank: "VAKIFBANK" }
+  );
+  assert.equal(r.code, "OCR_NO_MOVEMENTS");
+  assert.equal(r.ocrUsed, true);
+  assert.equal(r.reviewRequired, true);
+  assert.equal((r.transactions || []).length, 0);
+});
+
 await test("source has no NEXT_PUBLIC_ANNVERO_OCR_PROVIDER", async () => {
   const fs = await import("node:fs");
   const path = await import("node:path");

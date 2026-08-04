@@ -84,11 +84,12 @@ export function validateOcrPdfBounds(bytes, { pageCount } = {}) {
   return { ok: true, pageCount: pages };
 }
 
-function joinOcrPages(pages = []) {
+function joinOcrPages(pages = [], { useAlt = false } = {}) {
   return (pages || [])
     .map((p) => {
       const pageNo = Number(p.page) || 1;
-      const body = normalizeOcrStatementText(String(p.text || "").trim());
+      const raw = useAlt && p.altText ? p.altText : p.text;
+      const body = normalizeOcrStatementText(String(raw || "").trim());
       return `--- page ${pageNo} ---\n${body}`;
     })
     .join("\n");
@@ -130,29 +131,58 @@ function applyOcrConfidence(transactions = [], pages = [], options = {}) {
 export function finalizeOcrPagesToParseResult(ocrPages = [], options = {}) {
   const started = Date.now();
   const sourceFileHash = options.sourceFileHash || "";
-  const text = joinOcrPages(ocrPages);
-  const parsed = parsePdfMovementLines(text, {
-    ...options,
-    sourceFileHash,
-    selectedBank: options.selectedBank || options.detectedBank || undefined,
-    ocrUsed: true,
-    sourceType: BANK_STATEMENT_SOURCE.PDF_OCR,
-  });
+
+  const candidates = [joinOcrPages(ocrPages, { useAlt: false })];
+  if ((ocrPages || []).some((p) => p?.altText)) {
+    candidates.push(joinOcrPages(ocrPages, { useAlt: true }));
+  }
+
+  let best = null;
+  let bestText = candidates[0] || "";
+  for (const text of candidates) {
+    const parsed = parsePdfMovementLines(text, {
+      ...options,
+      sourceFileHash,
+      selectedBank: options.selectedBank || options.detectedBank || undefined,
+      ocrUsed: true,
+      sourceType: BANK_STATEMENT_SOURCE.PDF_OCR,
+    });
+    if (
+      !best ||
+      (parsed.transactions || []).length > (best.transactions || []).length
+    ) {
+      best = parsed;
+      bestText = text;
+    }
+  }
+
+  const parsed = best || {
+    transactions: [],
+    warnings: [],
+    bank: options.selectedBank,
+  };
+  const text = bestText;
   const withConf = applyOcrConfidence(parsed.transactions, ocrPages, options);
   const hints = extractBalanceHintsFromText(text);
   const balance = reconcileStatementBalances(withConf.transactions, hints);
 
   if (!withConf.transactions.length) {
+    // OCR çalıştı ama hareket yok — sahte sonuç yok; güvenli inceleme + teknik kod.
+    // PDF_UNSUPPORTED_LAYOUT OCR sonrası kullanıcıya dönmez (text-layer UNSUPPORTED ile karışmasın).
     return {
       ok: false,
       status: BANK_PARSE_STATUS.REVIEW_REQUIRED,
-      code: "PDF_UNSUPPORTED_LAYOUT",
-      message: "OCR metni banka ekstresi olarak tanınamadı.",
+      code: "OCR_NO_MOVEMENTS",
+      message:
+        "OCR hareket çıkaramadı; inceleme gerekli (OCR_NO_MOVEMENTS).",
       transactions: [],
       sourceFileHash,
       sheetRows: pdfTextToSheetRows(text),
       detectedBank: parsed.bank,
       ocrUsed: true,
+      ocrProvider: options.ocrProvider || undefined,
+      reviewRequired: true,
+      canAutoPost: false,
     };
   }
 
