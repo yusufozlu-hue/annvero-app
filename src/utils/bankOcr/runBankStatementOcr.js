@@ -183,6 +183,9 @@ export function finalizeOcrPagesToParseResult(ocrPages = [], options = {}) {
       ocrProvider: options.ocrProvider || undefined,
       reviewRequired: true,
       canAutoPost: false,
+      txCount: 0,
+      ocrTextLen: String(text || "").length,
+      ocrPageCount: (ocrPages || []).length,
     };
   }
 

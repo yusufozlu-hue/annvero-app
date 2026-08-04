@@ -165,9 +165,25 @@ import {
   legacyBankRowsToCanonical,
 } from "@/src/utils/bankCanonicalTransaction";
 import { parseBankStatementPdf, shouldTriggerPdfOcrFallback } from "@/src/utils/bankStatementPdf";
+import { runBankPdfParseViaServer } from "@/src/utils/bankPdfParseClient";
 import { cancelBankOcrJob } from "@/src/utils/bankOcr/ocrJobCancel";
 import { runBankOcrViaServer } from "@/src/utils/bankOcr/ocrServerClient";
 import { OCR_STATUS, OCR_SAFE_MESSAGES } from "@/src/utils/bankOcr/ocrPolicy";
+
+/** Sunucu pdf.js tercih; ağ/5xx → istemci fallback (sahte hareket yok). */
+async function parseBankPdfPreferServer(arrayBuffer, options = {}) {
+  const serverResult = await runBankPdfParseViaServer({
+    bytes: arrayBuffer,
+    companyId: options.companyId || "",
+    fileName: options.fileName || "",
+    selectedBank: options.selectedBank || "",
+    signal: options.signal,
+  });
+  if (serverResult && typeof serverResult === "object") {
+    return serverResult;
+  }
+  return parseBankStatementPdf(arrayBuffer, options);
+}
 import {
   BALANCE_MISMATCH,
   reconcileStatementBalances,
@@ -2391,8 +2407,10 @@ export default function BankParserWorkbench() {
       const isPdf = /\.pdf$/i.test(checkpoint.fileName || "") ||
         String(checkpoint.mimeType || "").includes("pdf");
       if (isPdf) {
-        const pdfResult = await parseBankStatementPdf(arrayBuffer, {
+        const pdfResult = await parseBankPdfPreferServer(arrayBuffer, {
           companyId: selectedCompanyId || "",
+          fileName: checkpoint.fileName || "",
+          selectedBank: activeBankRef.current || selectedBank || "",
         });
         pdfMetaRef.current = pdfResult;
         if (
@@ -2842,8 +2860,9 @@ export default function BankParserWorkbench() {
         err.code = "FILE_READ";
         throw err;
       }
-      const pdfResult = await parseBankStatementPdf(arrayBuffer, {
+      const pdfResult = await parseBankPdfPreferServer(arrayBuffer, {
         companyId: selectedCompanyId || "",
+        fileName: sourceName || checkpoint?.fileName || "",
         selectedBank: bank,
         signal,
       });

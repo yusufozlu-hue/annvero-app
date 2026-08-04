@@ -99,14 +99,37 @@ export function looksIncompletePdf(bytes) {
   return !/%%EOF/i.test(text);
 }
 
+function countStatementDates(text = "") {
+  return (String(text || "").match(/\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}/g) || [])
+    .length;
+}
+
 function scoreExtractedStatementText(text = "") {
   const t = String(text || "");
-  const dates = (t.match(/\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}/g) || []).length;
+  const dates = countStatementDates(t);
   const amounts = (
     t.match(/-?\d{1,3}(?:[.\s']\d{3})*(?:,\d{2})|-?\d+(?:,\d{2})/g) || []
   ).length;
   const letters = (t.match(/[A-Za-zÇĞİÖŞÜçğıöşü]/g) || []).length;
+  // Latin1 stream çöpü yüksek letter skoru üretir ama tarih yoksa banka ekstresi sayılmaz.
+  if (dates === 0) return Math.min(letters, 20);
   return dates * 20 + amounts * 5 + Math.min(letters, 400);
+}
+
+function buildExtractDiagnostics({
+  extractPath = "none",
+  pdfjsOk = false,
+  textLen = 0,
+  dateCount = 0,
+  letterCount = 0,
+} = {}) {
+  return {
+    extractPath,
+    pdfjsOk: Boolean(pdfjsOk),
+    textLen: Number(textLen) || 0,
+    dateCount: Number(dateCount) || 0,
+    letterCount: Number(letterCount) || 0,
+  };
 }
 
 function rebuildLinesFromPdfJsItems(items = []) {
@@ -599,24 +622,48 @@ export async function parseBankStatementPdf(bytes, options = {}) {
 
   const timeoutMs = Number(options.timeoutMs) || PDF_PARSE_TIMEOUT_MS;
   let text = "";
+  let extractDiag = buildExtractDiagnostics();
   try {
-    text = await Promise.race([
+    const raced = await Promise.race([
       (async () => {
         let pdfjsText = "";
+        let pdfjsOk = false;
         try {
           pdfjsText = await extractPdfTextLayerPdfJs(buf, {
             signal,
             maxPages: PDF_MAX_PAGES,
           });
+          pdfjsOk = Boolean(pdfjsText && pdfjsText.length > 0);
         } catch {
           pdfjsText = "";
+          pdfjsOk = false;
         }
         const latinText = extractPdfTextLayer(buf, { signal });
+        const pdfjsScore = scoreExtractedStatementText(pdfjsText);
+        const latinScore = scoreExtractedStatementText(latinText);
         // Tarih/tutar skoru yüksek olanı seç — Latin1 stream çöpü hareket kırar.
-        return scoreExtractedStatementText(pdfjsText) >=
-          scoreExtractedStatementText(latinText)
+        const usePdfjs = pdfjsScore >= latinScore && pdfjsScore > 0;
+        const chosen = usePdfjs
           ? pdfjsText || latinText
           : latinText || pdfjsText;
+        const extractPath = usePdfjs
+          ? "pdfjs"
+          : countStatementDates(latinText) > 0
+            ? "latin1"
+            : pdfjsOk
+              ? "pdfjs-weak"
+              : "none";
+        return {
+          text: chosen,
+          diag: buildExtractDiagnostics({
+            extractPath,
+            pdfjsOk,
+            textLen: String(chosen || "").length,
+            dateCount: countStatementDates(chosen),
+            letterCount: (String(chosen || "").match(/[A-Za-zÇĞİÖŞÜçğıöşü]/g) || [])
+              .length,
+          }),
+        };
       })(),
       new Promise((_, reject) => {
         const err = new Error(SAFE.TIMEOUT);
@@ -624,6 +671,8 @@ export async function parseBankStatementPdf(bytes, options = {}) {
         setTimeout(() => reject(err), timeoutMs);
       }),
     ]);
+    text = raced?.text || "";
+    extractDiag = raced?.diag || extractDiag;
   } catch (error) {
     if (error?.code === "PDF_CANCELLED" || signal?.aborted) {
       return {
@@ -633,6 +682,7 @@ export async function parseBankStatementPdf(bytes, options = {}) {
         message: SAFE.CANCELLED,
         transactions: [],
         sourceFileHash,
+        extractDiagnostics: extractDiag,
       };
     }
     if (error?.code === "PDF_TIMEOUT" || Date.now() - started >= timeoutMs) {
@@ -643,6 +693,7 @@ export async function parseBankStatementPdf(bytes, options = {}) {
         message: SAFE.TIMEOUT,
         transactions: [],
         sourceFileHash,
+        extractDiagnostics: extractDiag,
       };
     }
     return {
@@ -652,11 +703,14 @@ export async function parseBankStatementPdf(bytes, options = {}) {
       message: SAFE.CORRUPT,
       transactions: [],
       sourceFileHash,
+      extractDiagnostics: extractDiag,
     };
   }
 
   const letters = (text.match(/[A-Za-zÇĞİÖŞÜçğıöşü]/g) || []).length;
-  if (!text || letters < 40) {
+  const dateCount = countStatementDates(text);
+  // Tarih yoksa Latin1 çöpü “metin katmanı var” sayılmaz → OCR’a düş.
+  if (!text || letters < 40 || dateCount < 1) {
     // OCR sunucu round-trip / runBankStatementOcr ile yapılır; client bundle’a Vision/canvas çekilmez.
     return {
       ok: false,
@@ -667,6 +721,7 @@ export async function parseBankStatementPdf(bytes, options = {}) {
       sourceFileHash,
       pageCount: pages,
       ocrRequired: true,
+      extractDiagnostics: extractDiag,
     };
   }
 
@@ -715,6 +770,8 @@ export async function parseBankStatementPdf(bytes, options = {}) {
       priorCode: "PDF_UNSUPPORTED_LAYOUT",
       sheetRows: pdfTextToSheetRows(workingText),
       detectedBank: parsed.bank || detectBankFromPdfText(workingText) || undefined,
+      extractDiagnostics: extractDiag,
+      txCount: 0,
     };
   }
 
@@ -751,6 +808,9 @@ export async function parseBankStatementPdf(bytes, options = {}) {
     elapsedMs: Date.now() - started,
     sourceType: BANK_STATEMENT_SOURCE.PDF,
     sheetRows: pdfTextToSheetRows(text),
+    extractDiagnostics: extractDiag,
+    txCount: parsed.transactions.length,
+    ocrUsed: false,
   };
 }
 

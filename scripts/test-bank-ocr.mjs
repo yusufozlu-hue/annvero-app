@@ -598,7 +598,7 @@ await test("text-layer zero txs → OCR_REQUIRED not UNSUPPORTED", async () => {
   const doc = await PDFDocument.create();
   const page = doc.addPage([595, 842]);
   const font = await doc.embedFont(StandardFonts.Helvetica);
-  page.drawText("VakifBank Hesap Ekstresi - metin var hareket yok XYZ", {
+  page.drawText("VakifBank Hesap Ekstresi 02.01.2026 metin var hareket yok XYZ", {
     x: 40,
     y: 780,
     size: 12,
@@ -613,6 +613,71 @@ await test("text-layer zero txs → OCR_REQUIRED not UNSUPPORTED", async () => {
   assert.equal(r.ocrRequired, true);
   assert.equal(r.layoutFallback, true);
   assert.equal(shouldTriggerPdfOcrFallback(r), true);
+});
+
+await test("latin1 garbage without dates → OCR_REQUIRED (not false text layer)", async () => {
+  // Minimal PDF with no extractable statement dates; letter-rich binary must not block OCR.
+  const { PDFDocument, StandardFonts } = await import("pdf-lib");
+  const { parseBankStatementPdf, shouldTriggerPdfOcrFallback } = await import(
+    "@/src/utils/bankStatementPdf.js"
+  );
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([595, 842]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  page.drawText("ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz filler text only", {
+    x: 40,
+    y: 780,
+    size: 12,
+    font,
+  });
+  const bytes = await doc.save();
+  const r = await parseBankStatementPdf(bytes.buffer, {
+    selectedBank: "VAKIFBANK",
+  });
+  assert.equal(r.code, "OCR_REQUIRED");
+  assert.equal(r.ocrRequired, true);
+  assert.equal(shouldTriggerPdfOcrFallback(r), true);
+});
+
+await test("tiny embedded JPEG logo rejected as page raster", async () => {
+  const {
+    isPlausibleEmbeddedPageImage,
+    extractEmbeddedRasterPages,
+    MIN_EMBEDDED_PAGE_BYTES,
+  } = await import("@/src/utils/bankOcr/extractEmbeddedRasterPages.js");
+  // Minimal valid 1x1 JPEG
+  const tinyJpeg = Uint8Array.from([
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00,
+    0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06,
+    0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0a, 0x0c, 0x14, 0x0d,
+    0x0c, 0x0b, 0x0b, 0x0c, 0x19, 0x12, 0x13, 0x0f, 0x14, 0x1d, 0x1a, 0x1f, 0x1e, 0x1d,
+    0x1a, 0x1c, 0x1c, 0x20, 0x24, 0x2e, 0x27, 0x20, 0x22, 0x2c, 0x23, 0x1c, 0x1c, 0x28,
+    0x37, 0x29, 0x2c, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1f, 0x27, 0x39, 0x3d, 0x38, 0x32,
+    0x3c, 0x2e, 0x33, 0x34, 0x32, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01,
+    0x01, 0x01, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x1f, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
+    0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+    0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0xff, 0xda, 0x00, 0x08, 0x01,
+    0x01, 0x00, 0x00, 0x3f, 0x00, 0x7f, 0xff, 0xd9,
+  ]);
+  assert.equal(isPlausibleEmbeddedPageImage(tinyJpeg), false);
+  assert.ok(tinyJpeg.byteLength < MIN_EMBEDDED_PAGE_BYTES);
+  // Real Vakıf text-layer PDF must not treat logo JPEG as a scan page
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const realPath = path.resolve(
+    process.env.USERPROFILE || process.env.HOME || "",
+    "Desktop",
+    "00158018033466201.pdf"
+  );
+  if (fs.existsSync(realPath)) {
+    const buf = fs.readFileSync(realPath);
+    const pages = extractEmbeddedRasterPages(buf, { maxPages: 5 });
+    assert.equal(
+      pages.length,
+      0,
+      "text-layer PDF logo must not become OCR page"
+    );
+  }
 });
 
 await test("OCR empty movements → OCR_NO_MOVEMENTS not UNSUPPORTED", async () => {

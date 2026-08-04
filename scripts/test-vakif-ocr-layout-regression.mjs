@@ -97,8 +97,16 @@ if (fs.existsSync(PDF_PATH)) {
       code: r.code,
       txCount: (r.transactions || []).length,
       ocrRequired: Boolean(r.ocrRequired),
+      extractPath: r.extractDiagnostics?.extractPath,
+      pdfjsOk: Boolean(r.extractDiagnostics?.pdfjsOk),
     })
   );
+  const { extractEmbeddedRasterPages } = await import(
+    "@/src/utils/bankOcr/extractEmbeddedRasterPages.js"
+  );
+  const emb = extractEmbeddedRasterPages(buf, { maxPages: 5 });
+  assert.equal(emb.length, 0, "logo JPEG must not be OCR page");
+  console.log(JSON.stringify({ embeddedPageCount: emb.length }));
 } else {
   console.log("SKIP  real PDF not on Desktop");
 }

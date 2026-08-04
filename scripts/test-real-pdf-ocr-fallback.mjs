@@ -54,8 +54,13 @@ if ((parsed.transactions || []).length > 0) {
       path: "pdfjs-text",
       code: parsed.code,
       tx: (parsed.transactions || []).length,
+      extractPath: parsed.extractDiagnostics?.extractPath,
+      pdfjsOk: Boolean(parsed.extractDiagnostics?.pdfjsOk),
+      ocrUsed: Boolean(parsed.ocrUsed),
     })
   );
+  assert.equal(Boolean(parsed.ocrUsed), false);
+  assert.ok((parsed.transactions || []).length >= 5);
   console.log("PASS  real PDF → movements (no UNSUPPORTED / OCR_NO_MOVEMENTS)");
 } else {
   assert.equal(shouldTriggerPdfOcrFallback(parsed), true);
