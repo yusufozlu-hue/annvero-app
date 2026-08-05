@@ -16,6 +16,8 @@ export const BALANCE_EMPTY = "BALANCE_EMPTY";
 const TOLERANCE = 0.05;
 
 function toNum(value) {
+  // Number(null) === 0 — must not treat missing hints as statement open/close 0,00
+  if (value == null || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }

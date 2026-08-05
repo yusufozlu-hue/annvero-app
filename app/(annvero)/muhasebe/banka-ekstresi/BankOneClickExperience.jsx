@@ -256,6 +256,14 @@ export function BankPipelineProgressPanel({
   );
 }
 
+function formatBalanceAmount(value) {
+  if (value == null || value === "" || !Number.isFinite(Number(value))) return "—";
+  return Number(value).toLocaleString("tr-TR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 export function BankPipelineResultCard({
   result,
   isExporting,
@@ -278,12 +286,46 @@ export function BankPipelineResultCard({
 
   const missing = Number(result.missingCount) || 0;
   const hint = buildMissingAccountsHint(missing);
+  const isBalanceMismatch = Boolean(
+    result.balanceMismatch || result.code === "BALANCE_MISMATCH"
+  );
   const isDuplicate =
-    Boolean(result.duplicate) || result.terminalStatus === "duplicate";
+    Boolean(result.duplicate) ||
+    result.code === "DUPLICATE_CONTENT" ||
+    result.terminalStatus === "duplicate";
   const compareRows = Array.isArray(result.revisionCompare?.rows)
     ? result.revisionCompare.rows
     : null;
-  const stats = [
+  const balanceStats = isBalanceMismatch
+    ? [
+        { label: "Hareket", value: result.movementCount },
+        {
+          label: "Açılış bakiyesi",
+          value: formatBalanceAmount(result.openingBalance),
+        },
+        {
+          label: "Toplam borç / çıkış",
+          value: formatBalanceAmount(result.totalDebit),
+        },
+        {
+          label: "Toplam alacak / giriş",
+          value: formatBalanceAmount(result.totalCredit),
+        },
+        {
+          label: "Hesaplanan kapanış",
+          value: formatBalanceAmount(result.computedClosingBalance),
+        },
+        {
+          label: "Ekstre kapanış",
+          value: formatBalanceAmount(result.statementClosingBalance),
+        },
+        {
+          label: "Mutabakat farkı",
+          value: formatBalanceAmount(result.reconciliationDelta),
+        },
+      ]
+    : null;
+  const stats = balanceStats || [
     { label: "Hareket", value: result.movementCount },
     { label: "Luca satırı", value: result.lucaRowCount },
     {
@@ -308,38 +350,69 @@ export function BankPipelineResultCard({
       value: result.edefterCode || result.edefterStatus || "—",
     },
   ];
-  if (showServiceMeta) {
+  if (showServiceMeta && !isBalanceMismatch) {
     stats.push({
       label: "Toplam süre",
       value: formatDurationMs(result.totalDurationMs),
     });
   }
 
+  const cardBorder = isBalanceMismatch
+    ? "border-amber-700/45 bg-gradient-to-b from-amber-950/35 to-slate-950/50"
+    : "border-emerald-700/40 bg-gradient-to-b from-emerald-950/40 to-slate-950/50";
+  const iconWrap = isBalanceMismatch
+    ? "border-amber-500/40 bg-amber-500/15 text-amber-200"
+    : "border-emerald-500/40 bg-emerald-500/15 text-emerald-300";
+  const subtitleTone = isBalanceMismatch
+    ? "text-amber-100/85"
+    : "text-emerald-100/80";
+
   return (
-    <section className="mt-5 min-w-0 rounded-2xl border border-emerald-700/40 bg-gradient-to-b from-emerald-950/40 to-slate-950/50 px-4 py-5 sm:px-6">
+    <section
+      className={`mt-5 min-w-0 rounded-2xl border px-4 py-5 sm:px-6 ${cardBorder}`}
+      data-testid="bank-pipeline-result-card"
+      data-result-code={
+        isDuplicate
+          ? "DUPLICATE_CONTENT"
+          : isBalanceMismatch
+            ? "BALANCE_MISMATCH"
+            : result.terminalStatus || ""
+      }
+    >
       <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-emerald-500/40 bg-emerald-500/15 text-emerald-300">
-          <CheckCircleIcon className="h-8 w-8" />
+        <div
+          className={`flex h-14 w-14 items-center justify-center rounded-2xl border ${iconWrap}`}
+        >
+          {isBalanceMismatch ? (
+            <AlertIcon className="h-8 w-8" />
+          ) : (
+            <CheckCircleIcon className="h-8 w-8" />
+          )}
         </div>
         <div>
           <h3 className="text-xl font-semibold text-white">
             {isDuplicate
               ? "Mükerrer ekstre"
-              : result.reanalyze
-                ? "Yeniden analiz tamamlandı"
-                : result.reviewRequired
-                  ? "İnceleme Gerekli"
-                  : "İşlem ve Kontrol Tamamlandı"}
+              : isBalanceMismatch
+                ? "Bakiye uyuşmazlığı"
+                : result.reanalyze
+                  ? "Yeniden analiz tamamlandı"
+                  : result.reviewRequired
+                    ? "İnceleme Gerekli"
+                    : "İşlem ve Kontrol Tamamlandı"}
           </h3>
-          <p className="mt-1 text-sm text-emerald-100/80">
+          <p className={`mt-1 text-sm ${subtitleTone}`}>
             {isDuplicate
               ? result.duplicateMessage ||
                 "Mükerrer ekstre — yeniden işlenmedi"
-              : result.reanalyze
-                ? "Mevcut arşiv kaynağı yeni hesap planıyla yeniden analiz edildi."
-                : result.reviewRequired
-                  ? "Kritik veya düşük güven satırlar var — otomatik onay / Luca-Elektra aktarımı kapalı."
-                  : "Tek tuş zinciri tamamlandı. Çıktıları indirebilir veya Fiş Kontrol’e gidebilirsiniz."}
+              : isBalanceMismatch
+                ? result.message ||
+                  "Bakiye uyuşmazlığı — otomatik fiş üretilmedi, inceleme gerekli"
+                : result.reanalyze
+                  ? "Mevcut arşiv kaynağı yeni hesap planıyla yeniden analiz edildi."
+                  : result.reviewRequired
+                    ? "Kritik veya düşük güven satırlar var — otomatik onay / Luca-Elektra aktarımı kapalı."
+                    : "Tek tuş zinciri tamamlandı. Çıktıları indirebilir veya Fiş Kontrol’e gidebilirsiniz."}
           </p>
         </div>
       </div>
@@ -390,14 +463,64 @@ export function BankPipelineResultCard({
         </div>
       ) : null}
 
-      {hint ? (
+      {hint && !isBalanceMismatch ? (
         <p className="mt-4 rounded-xl border border-amber-600/40 bg-amber-950/30 px-3 py-2.5 text-sm text-amber-100/90">
           {hint}
         </p>
       ) : null}
 
+      {isBalanceMismatch &&
+      Array.isArray(result.movementPreview) &&
+      result.movementPreview.length > 0 ? (
+        <div
+          className="mt-4 rounded-xl border border-amber-700/40 bg-slate-950/45 px-3 py-3"
+          data-testid="bank-balance-mismatch-movement-preview"
+        >
+          <p className="text-xs font-semibold uppercase tracking-wide text-amber-200/90">
+            Hareket önizleme ({result.movementPreview.length}
+            {result.hasMoreMovements ? ` / ${result.movementCount}` : ""})
+          </p>
+          <ul className="mt-2 space-y-2">
+            {result.movementPreview.map((row) => (
+              <li
+                key={`mv-${row.index}-${row.date}`}
+                className="rounded-lg border border-slate-800/80 bg-slate-900/40 px-2.5 py-2 text-xs text-slate-200"
+                data-testid="bank-safe-movement-row"
+              >
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="font-semibold text-white">
+                    {row.date} ·{" "}
+                    {row.direction === "debit"
+                      ? "Borç"
+                      : row.direction === "credit"
+                        ? "Alacak"
+                        : "—"}
+                  </span>
+                  <span className="font-mono text-slate-100">
+                    {formatBalanceAmount(row.amount)}
+                  </span>
+                </div>
+                <p className="mt-1 text-slate-400">{row.description}</p>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  Bakiye: {formatBalanceAmount(row.balance)}
+                  {row.sourcePage != null || row.sourceLine != null
+                    ? ` · Kaynak: s${row.sourcePage ?? "—"}/s${row.sourceLine ?? "—"}`
+                    : ""}
+                </p>
+              </li>
+            ))}
+          </ul>
+          {result.hasMoreMovements ? (
+            <p className="mt-2 text-xs text-amber-100/80">
+              Tüm hareketleri incele
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       {Array.isArray(result.findingClasses?.classes) &&
-      result.findingClasses.classes.length > 0 ? (
+      result.findingClasses.classes.length > 0 &&
+      !isBalanceMismatch ? (
         <div className="mt-4 rounded-xl border border-slate-700/60 bg-slate-950/50 px-3 py-3">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
             Hata sınıfları
@@ -455,7 +578,12 @@ export function BankPipelineResultCard({
         <button
           type="button"
           onClick={onDownloadExcel}
-          disabled={isExporting || !lucaReady || (result.reviewRequired && !result.canAutoApprove && result.errors > 0)}
+          disabled={
+            isExporting ||
+            !lucaReady ||
+            isBalanceMismatch ||
+            (result.reviewRequired && !result.canAutoApprove && result.errors > 0)
+          }
           className={`rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 ${primaryBtnClass}`}
         >
           {isExporting ? "Excel hazırlanıyor…" : "Luca İndir"}
@@ -464,7 +592,12 @@ export function BankPipelineResultCard({
           <button
             type="button"
             onClick={onDownloadElektra}
-            disabled={isExporting || !lucaReady || (result.errors > 0 && !result.canAutoApprove)}
+            disabled={
+              isExporting ||
+              !lucaReady ||
+              isBalanceMismatch ||
+              (result.errors > 0 && !result.canAutoApprove)
+            }
             className="rounded-xl border border-emerald-600/50 bg-emerald-950/40 px-4 py-3 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-900/40 disabled:opacity-50"
           >
             ElektraWeb İndir
@@ -669,7 +802,10 @@ export function BankPipelineErrorCard({
                   : "Doğru firmaya geç"}
               </button>
             ) : null}
-            {!isMismatch && !isVerification && !isEmptyPlan ? (
+            {!isMismatch &&
+            !isVerification &&
+            !isEmptyPlan &&
+            !isBalanceMismatch ? (
               <button
                 type="button"
                 onClick={onRetry}

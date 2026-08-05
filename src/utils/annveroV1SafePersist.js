@@ -32,6 +32,8 @@ export const V1_SAFE_METADATA_KEYS = Object.freeze([
   "parse_ms",
   "chain_ms",
   "content_hash_present",
+  "balance_mismatch",
+  "balance_code",
   "lease_id",
   "reanalyze",
   "revision",
@@ -129,6 +131,13 @@ export function buildSafeV1PersistPayload({
     content_hash_present: Boolean(
       summary.contentHashPresent ?? summary.content_hash_present
     ),
+    balance_mismatch: Boolean(
+      summary.balanceMismatch ?? summary.balance_mismatch
+    ),
+    balance_code: sanitizeString(
+      summary.balanceCode || summary.balance_code || "",
+      40
+    ),
     reanalyze: Boolean(summary.reanalyze),
     revision: sanitizeNumber(summary.revision, null),
     revision_of: sanitizeString(
@@ -162,6 +171,8 @@ export function buildSafeV1PersistPayload({
   if (!meta.revision_of) delete meta.revision_of;
   if (!meta.supersedes_job_id) delete meta.supersedes_job_id;
   if (!meta.reanalyze) delete meta.reanalyze;
+  if (!meta.balance_mismatch) delete meta.balance_mismatch;
+  if (!meta.balance_code) delete meta.balance_code;
   if (meta.account_plan_count == null || Number.isNaN(meta.account_plan_count)) {
     delete meta.account_plan_count;
   }

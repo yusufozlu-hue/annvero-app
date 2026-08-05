@@ -89,7 +89,28 @@ export async function rasterizePdfPages(bytes, options = {}) {
       page: 0,
       pageCount: embedded.length,
     });
+    try {
+      console.error(
+        "[bank-ocr]",
+        JSON.stringify({
+          event: "embedded_raster_pages",
+          pageCount: embedded.length,
+          byteLengths: embedded.map((p) => p.bytes?.byteLength || 0),
+        })
+      );
+    } catch {
+      /* ignore */
+    }
     return embedded;
+  }
+
+  try {
+    console.error(
+      "[bank-ocr]",
+      JSON.stringify({ event: "embedded_raster_skip", reason: "no_plausible_page_jpeg" })
+    );
+  } catch {
+    /* ignore */
   }
 
   let pdf;

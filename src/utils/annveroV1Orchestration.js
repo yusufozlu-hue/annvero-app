@@ -887,7 +887,21 @@ export function buildV1ResultSummary({
   contentHash = "",
   parseMs = null,
   chainMs = null,
+  reviewRequired = null,
+  canAutoApprove = null,
+  balanceMismatch = false,
+  balanceCode = "",
 } = {}) {
+  const resolvedReviewRequired =
+    reviewRequired != null
+      ? Boolean(reviewRequired)
+      : Boolean(fisKontrol?.reviewRequired) || Boolean(balanceMismatch);
+  const resolvedCanAutoApprove =
+    canAutoApprove != null
+      ? Boolean(canAutoApprove)
+      : balanceMismatch
+        ? false
+        : Boolean(fisKontrol?.canAutoApprove);
   return {
     engineVersion: ANNVERO_V1_ENGINE_VERSION,
     terminalStatus,
@@ -904,8 +918,8 @@ export function buildV1ResultSummary({
     edefterCode: edefter?.code || V1_EDEFTER_STATUS.EDEFTER_NOT_AVAILABLE,
     driveArchived: Boolean(archive?.safeSummary?.archived),
     driveSkipped: Boolean(archive?.skipped || archive?.safeSummary?.skipped),
-    canAutoApprove: Boolean(fisKontrol?.canAutoApprove),
-    reviewRequired: Boolean(fisKontrol?.reviewRequired),
+    canAutoApprove: resolvedCanAutoApprove,
+    reviewRequired: resolvedReviewRequired,
     lucaBatchCount: fisKontrol?.lucaBatchCount ?? 0,
     fisKontrolHref: fisKontrol?.fisKontrolHref || "/muhasebe/fis-kontrol",
     totalDurationMs,
@@ -913,6 +927,10 @@ export function buildV1ResultSummary({
     parseMs,
     chainMs,
     contentHashPresent: Boolean(contentHash),
+    balanceMismatch: Boolean(balanceMismatch),
+    balanceCode: balanceMismatch
+      ? String(balanceCode || "BALANCE_MISMATCH").slice(0, 40)
+      : "",
     // hassas alanlar bilinçli olarak yok
   };
 }

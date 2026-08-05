@@ -54,6 +54,9 @@ function publicOcrResult(result) {
     reviewRequired,
     ocrRequired,
     ocrConfigured,
+    txCount,
+    ocrTextLen,
+    ocrPageCount,
   } = result;
   return {
     ok: Boolean(ok),
@@ -77,6 +80,14 @@ function publicOcrResult(result) {
     reviewRequired: Boolean(reviewRequired),
     ocrRequired: Boolean(ocrRequired),
     ocrConfigured: ocrConfigured ?? isOcrProviderConfigured(),
+    txCount:
+      typeof txCount === "number"
+        ? txCount
+        : Array.isArray(transactions)
+          ? transactions.length
+          : 0,
+    ocrTextLen: typeof ocrTextLen === "number" ? ocrTextLen : undefined,
+    ocrPageCount: typeof ocrPageCount === "number" ? ocrPageCount : undefined,
   };
 }
 
