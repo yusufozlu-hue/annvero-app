@@ -237,6 +237,75 @@ export function evaluateBankOutputGate(result = {}, { lucaReady = true } = {}) {
   };
 }
 
+/** Dosya seçiminin kilitli olduğu gerçek çalışma aşamaları. */
+export const BANK_FILE_SELECT_BUSY_STATES = Object.freeze([
+  "reading",
+  "uploading",
+  "parsing",
+  "analyzing",
+  "syncing",
+  "persisting",
+  "validating",
+  "archiving",
+  "deduplicating",
+  "applying_core",
+  "applying_memory",
+  "creating_vouchers",
+  "controlling_vouchers",
+  "reconciling_edefter",
+  "generating_exports",
+]);
+
+/** Dosya seçiminin tekrar açıldığı terminal durumlar. */
+export const BANK_FILE_SELECT_TERMINAL_STATES = Object.freeze([
+  "idle",
+  "completed",
+  "review_required",
+  "duplicate",
+  "balance_mismatch",
+  "error",
+  "failed",
+  "cancelled",
+  "ocr_required",
+]);
+
+const BANK_FILE_SELECT_BUSY_SET = new Set(BANK_FILE_SELECT_BUSY_STATES);
+const BANK_FILE_SELECT_TERMINAL_SET = new Set(BANK_FILE_SELECT_TERMINAL_STATES);
+
+function normalizeBankJobStatus(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Dosya seçimi yalnız gerçek busy aşamalarında kilitlenir; tüm terminal
+ * durumlarda (mükerrer dahil) yeniden dosya seçilebilir.
+ */
+export function evaluateBankFileSelection({
+  status = "",
+  running = false,
+  hasFile = false,
+} = {}) {
+  const normalized = normalizeBankJobStatus(status);
+  const terminal = BANK_FILE_SELECT_TERMINAL_SET.has(normalized);
+  const busy = !terminal && (BANK_FILE_SELECT_BUSY_SET.has(normalized) || Boolean(running));
+
+  return {
+    status: normalized || "idle",
+    busy,
+    terminal: !busy,
+    locked: busy,
+    canSelectFile: !busy,
+    canPickNewFile: !busy,
+    canReprocess: !busy && Boolean(hasFile),
+  };
+}
+
+export function isBankFileSelectionLocked(state = {}) {
+  return evaluateBankFileSelection(state).locked;
+}
+
 export function shouldRunPipelineStage(resumeFrom, stage) {
   if (!resumeFrom) return true;
   const startIdx = PIPELINE_STAGE_ORDER.indexOf(resumeFrom);

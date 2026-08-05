@@ -5,9 +5,12 @@
 import assert from "node:assert/strict";
 import {
   assertPipelineSignal,
+  BANK_FILE_SELECT_BUSY_STATES,
   canStartFullPipeline,
   createAbortError,
+  evaluateBankFileSelection,
   evaluateBankOutputGate,
+  isBankFileSelectionLocked,
   formatDurationMs,
   getPipelinePhaseLabel,
   isBankParserServiceModeVisible,
@@ -384,6 +387,61 @@ test("missing accounts do not equal hard failure contract", () => {
   assert.equal(phase, "READY_FOR_EXPORT");
   assert.ok(validationOk.missingCount > 0);
   assert.notEqual(phase, PIPELINE_PHASES.ERROR);
+});
+
+test("file selection stays locked only during real busy stages", () => {
+  for (const status of BANK_FILE_SELECT_BUSY_STATES) {
+    const state = evaluateBankFileSelection({ status, running: true, hasFile: true });
+    assert.equal(state.locked, true, `${status} kilitli olmalı`);
+    assert.equal(state.canSelectFile, false, `${status} dosya seçimi kapalı olmalı`);
+    assert.equal(state.canReprocess, false, `${status} yeniden işleme kapalı olmalı`);
+  }
+  for (const status of ["reading", "uploading", "parsing", "analyzing", "syncing", "persisting"]) {
+    assert.equal(isBankFileSelectionLocked({ status }), true, `${status} kilitli olmalı`);
+  }
+});
+
+test("file selection reopens in every terminal state", () => {
+  const terminals = [
+    "completed",
+    "review_required",
+    "duplicate",
+    "balance_mismatch",
+    "error",
+    "cancelled",
+  ];
+  for (const status of terminals) {
+    const state = evaluateBankFileSelection({ status, hasFile: true });
+    assert.equal(state.locked, false, `${status} sonrası dosya seçimi açık olmalı`);
+    assert.equal(state.canSelectFile, true, `${status} sonrası Dosya Seç aktif olmalı`);
+    assert.equal(state.canPickNewFile, true, `${status} sonrası Yeni Dosya Seç aktif olmalı`);
+    assert.equal(state.canReprocess, true, `${status} sonrası Yeniden İşle aktif olmalı`);
+  }
+});
+
+test("stale running flag never locks a terminal status", () => {
+  // Mükerrer sonuçta bayrak takılı kalsa bile dosya seçimi açılır.
+  const duplicate = evaluateBankFileSelection({
+    status: "duplicate",
+    running: true,
+    hasFile: true,
+  });
+  assert.equal(duplicate.locked, false);
+  assert.equal(duplicate.canSelectFile, true);
+  const cancelled = evaluateBankFileSelection({ status: "cancelled", running: true });
+  assert.equal(cancelled.locked, false);
+});
+
+test("unknown status falls back to running flag", () => {
+  assert.equal(evaluateBankFileSelection({ status: "", running: true }).locked, true);
+  assert.equal(evaluateBankFileSelection({ status: "", running: false }).locked, false);
+  assert.equal(evaluateBankFileSelection({}).status, "idle");
+});
+
+test("reprocess needs a file while new-file pick does not", () => {
+  const noFile = evaluateBankFileSelection({ status: "duplicate", hasFile: false });
+  assert.equal(noFile.canReprocess, false);
+  assert.equal(noFile.canPickNewFile, true);
 });
 
 console.log("\nAll bank one-click pipeline unit tests passed.");
