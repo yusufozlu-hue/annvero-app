@@ -11,6 +11,8 @@
 export const BALANCE_MATCHED = "BALANCE_MATCHED";
 export const BALANCE_MISMATCH = "BALANCE_MISMATCH";
 export const BALANCE_EVIDENCE_MISSING = "BALANCE_EVIDENCE_MISSING";
+export const MISSING_OPENING_BALANCE = "MISSING_OPENING_BALANCE";
+export const MISSING_CLOSING_BALANCE = "MISSING_CLOSING_BALANCE";
 export const BALANCE_EMPTY = "BALANCE_EMPTY";
 
 const TOLERANCE = 0.05;
@@ -26,8 +28,10 @@ function signedAmount(tx = {}) {
   if (tx.amount != null && tx.amount !== "" && Number.isFinite(Number(tx.amount))) {
     return Number(tx.amount);
   }
-  const debit = Math.abs(Number(tx.debit_amount ?? tx.borc) || 0);
-  const credit = Math.abs(Number(tx.credit_amount ?? tx.alacak) || 0);
+  const debitRaw = toNum(tx.debit_amount ?? tx.borc);
+  const creditRaw = toNum(tx.credit_amount ?? tx.alacak);
+  const debit = Math.abs(debitRaw ?? 0);
+  const credit = Math.abs(creditRaw ?? 0);
   const dir = String(tx.direction || tx.yon || "").toUpperCase();
   if (dir === "CIKIS" || dir === "OUT" || dir === "DEBIT") return -Math.abs(debit || credit);
   if (dir === "GIRIS" || dir === "IN" || dir === "CREDIT") return Math.abs(debit || credit);
@@ -41,14 +45,28 @@ function signedAmount(tx = {}) {
  */
 export function deriveBalanceHintsFromTransactions(transactions = []) {
   const txs = (transactions || []).filter(Boolean);
-  if (!txs.length) return { openingBalance: null, closingBalance: null, source: null };
+  if (!txs.length) {
+    return {
+      openingBalance: null,
+      closingBalance: null,
+      source: null,
+      openingEvidence: null,
+      closingEvidence: null,
+    };
+  }
 
   const withBal = txs.filter((tx) => {
     const b = tx.balance ?? tx.bakiye;
     return b !== "" && b != null && Number.isFinite(Number(b));
   });
   if (withBal.length < 1) {
-    return { openingBalance: null, closingBalance: null, source: null };
+    return {
+      openingBalance: null,
+      closingBalance: null,
+      source: null,
+      openingEvidence: null,
+      closingEvidence: null,
+    };
   }
 
   const first = withBal[0];
@@ -58,12 +76,27 @@ export function deriveBalanceHintsFromTransactions(transactions = []) {
   const opening = Number((firstBal - signedAmount(first)).toFixed(2));
   const closing = Number(lastBal.toFixed(2));
   if (!Number.isFinite(opening) || !Number.isFinite(closing)) {
-    return { openingBalance: null, closingBalance: null, source: null };
+    return {
+      openingBalance: null,
+      closingBalance: null,
+      source: null,
+      openingEvidence: null,
+      closingEvidence: null,
+    };
   }
+  const sourceOf = (tx, confidence) => ({
+    source: "running_balance",
+    sourcePage: toNum(tx.sourcePage ?? tx.page),
+    sourceLine: toNum(tx.sourceRow ?? tx.sourceLine ?? tx.line),
+    confidence,
+  });
   return {
     openingBalance: opening,
     closingBalance: closing,
     source: "running_balance",
+    openingEvidence: sourceOf(first, 0.9),
+    // Son geçerli hareket bakiyesi ekstre kapanışına en güçlü satır kanıtıdır.
+    closingEvidence: sourceOf(last, 0.95),
   };
 }
 
@@ -91,28 +124,20 @@ export function reconcileStatementBalances(transactions = [], hints = {}) {
   let opening = toNum(hints.openingBalance);
   let closing = toNum(hints.closingBalance);
   let evidenceSource = hints.source || (opening != null && closing != null ? "hints" : null);
+  let openingEvidence = hints.openingEvidence || null;
+  let closingEvidence = hints.closingEvidence || null;
 
   if (opening == null || closing == null) {
     const derived = deriveBalanceHintsFromTransactions(txs);
-    if (opening == null) opening = derived.openingBalance;
-    if (closing == null) closing = derived.closingBalance;
+    if (opening == null) {
+      opening = derived.openingBalance;
+      openingEvidence = derived.openingEvidence;
+    }
+    if (closing == null) {
+      closing = derived.closingBalance;
+      closingEvidence = derived.closingEvidence;
+    }
     if (derived.source) evidenceSource = derived.source;
-  }
-
-  if (opening == null || closing == null) {
-    return {
-      ok: true,
-      code: BALANCE_EVIDENCE_MISSING,
-      delta: null,
-      reviewRequired: false,
-      matched: false,
-      message:
-        "Açılış/kapanış bakiyesi kanıtı bulunamadı. Mutabakat doğrulanmadı; sahte eşleşme üretilmedi.",
-      signModel: "opening + credits - debits = closing",
-      openingBalance: opening,
-      closingBalance: closing,
-      evidenceSource: null,
-    };
   }
 
   let credits = 0;
@@ -124,7 +149,39 @@ export function reconcileStatementBalances(transactions = [], hints = {}) {
   }
   credits = Number(credits.toFixed(2));
   debits = Number(debits.toFixed(2));
-  const expected = Number((opening + credits - debits).toFixed(2));
+  const expected =
+    opening == null ? null : Number((opening + credits - debits).toFixed(2));
+
+  if (opening == null || closing == null) {
+    const code =
+      opening == null && closing == null
+        ? BALANCE_EVIDENCE_MISSING
+        : closing == null
+          ? MISSING_CLOSING_BALANCE
+          : MISSING_OPENING_BALANCE;
+    return {
+      ok: false,
+      code,
+      delta: null,
+      reviewRequired: true,
+      matched: false,
+      message:
+        code === MISSING_CLOSING_BALANCE
+          ? "Ekstre kapanış bakiyesi bulunamadı (MISSING_CLOSING_BALANCE). Mutabakat doğrulanmadı; 0,00 değeri uydurulmadı."
+          : code === MISSING_OPENING_BALANCE
+            ? "Ekstre açılış bakiyesi bulunamadı (MISSING_OPENING_BALANCE). Mutabakat doğrulanmadı; 0,00 değeri uydurulmadı."
+            : "Açılış/kapanış bakiyesi kanıtı bulunamadı. Mutabakat doğrulanmadı; sahte eşleşme üretilmedi.",
+      signModel: "opening + credits - debits = closing",
+      openingBalance: opening,
+      closingBalance: closing,
+      credits,
+      debits,
+      expectedClosing: expected,
+      evidenceSource,
+      openingEvidence,
+      closingEvidence,
+    };
+  }
   const delta = Number((expected - closing).toFixed(2));
 
   if (Math.abs(delta) > TOLERANCE) {
@@ -143,6 +200,8 @@ export function reconcileStatementBalances(transactions = [], hints = {}) {
       debits,
       expectedClosing: expected,
       evidenceSource,
+      openingEvidence,
+      closingEvidence,
     };
   }
 
@@ -159,5 +218,7 @@ export function reconcileStatementBalances(transactions = [], hints = {}) {
     debits,
     expectedClosing: expected,
     evidenceSource,
+    openingEvidence,
+    closingEvidence,
   };
 }

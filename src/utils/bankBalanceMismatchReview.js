@@ -3,7 +3,12 @@
  * Güvenli UI özeti: IBAN / VKN / ham açıklama / PDF metni yok.
  */
 
-import { BALANCE_MISMATCH } from "@/src/utils/bankBalanceReconcile";
+import {
+  BALANCE_EVIDENCE_MISSING,
+  BALANCE_MISMATCH,
+  MISSING_CLOSING_BALANCE,
+  MISSING_OPENING_BALANCE,
+} from "@/src/utils/bankBalanceReconcile";
 import { V1_JOB_STATE } from "@/src/utils/annveroV1Orchestration";
 
 export const BALANCE_MISMATCH_UI_MESSAGE =
@@ -13,8 +18,32 @@ export const DUPLICATE_CONTENT = "DUPLICATE_CONTENT";
 
 /** @param {unknown} value */
 function toFiniteNumber(value) {
+  if (value == null || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function safeBalanceEvidence(evidence = null) {
+  if (!evidence || typeof evidence !== "object") return null;
+  return {
+    source: String(evidence.source || "").slice(0, 40),
+    sourcePage: toFiniteNumber(evidence.sourcePage),
+    sourceLine: toFiniteNumber(evidence.sourceLine),
+    confidence: toFiniteNumber(evidence.confidence),
+  };
+}
+
+export function getBalanceReviewMessage(code = "") {
+  if (code === MISSING_CLOSING_BALANCE) {
+    return "Ekstre kapanış bakiyesi bulunamadı; 0,00 değeri uydurulmadı.";
+  }
+  if (code === MISSING_OPENING_BALANCE) {
+    return "Ekstre açılış bakiyesi bulunamadı; 0,00 değeri uydurulmadı.";
+  }
+  if (code === BALANCE_EVIDENCE_MISSING) {
+    return "Açılış/kapanış bakiyesi kanıtı bulunamadı; sahte eşleşme üretilmedi.";
+  }
+  return BALANCE_MISMATCH_UI_MESSAGE;
 }
 
 /**
@@ -105,13 +134,19 @@ export function buildBalanceMismatchReviewPayload({
 } = {}) {
   const list = Array.isArray(movements) ? movements : [];
   const preview = buildSafeMovementPreviewRows(list, 5);
+  const code = String(balance?.code || BALANCE_MISMATCH);
   return {
-    code: BALANCE_MISMATCH,
-    balanceMismatch: true,
+    code,
+    balanceCode: code,
+    balanceMismatch: code === BALANCE_MISMATCH,
+    balanceMissing:
+      code === MISSING_CLOSING_BALANCE ||
+      code === MISSING_OPENING_BALANCE ||
+      code === BALANCE_EVIDENCE_MISSING,
     reviewRequired: true,
     canAutoApprove: false,
     terminalStatus: V1_JOB_STATE.REVIEW_REQUIRED,
-    message: BALANCE_MISMATCH_UI_MESSAGE,
+    message: getBalanceReviewMessage(code),
     movementCount: list.length,
     openingBalance: toFiniteNumber(balance?.openingBalance),
     totalDebit: toFiniteNumber(balance?.debits),
@@ -119,7 +154,23 @@ export function buildBalanceMismatchReviewPayload({
     computedClosingBalance: toFiniteNumber(balance?.expectedClosing),
     statementClosingBalance: toFiniteNumber(balance?.closingBalance),
     reconciliationDelta: toFiniteNumber(balance?.delta),
+    openingEvidence: safeBalanceEvidence(balance?.openingEvidence),
+    closingEvidence: safeBalanceEvidence(balance?.closingEvidence),
+    evidenceSource: String(balance?.evidenceSource || "").slice(0, 40),
     movementPreview: preview,
+    balanceResolutionRows: buildSafeMovementPreviewRows(list, list.length).map(
+      (row, index) => ({
+        ...row,
+        key: `p${row.sourcePage ?? 0}:l${row.sourceLine ?? index + 1}:i${index + 1}`,
+        included: true,
+        confidence: toFiniteNumber(
+          list[index]?.ocrConfidence ?? list[index]?.confidence
+        ) ?? (list[index]?.lowOcrConfidence ? 0.5 : 0.95),
+        learningEligible: Boolean(
+          list[index]?.safeGeneralizableBalanceRule === true
+        ),
+      })
+    ),
     hasMoreMovements: list.length > preview.length,
     contentHashPresent: Boolean(String(contentHash || "").trim()),
   };

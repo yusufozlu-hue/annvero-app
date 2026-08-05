@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import BalanceMismatchResolutionCenter from "./BalanceMismatchResolutionCenter";
 import {
   buildMissingAccountsHint,
   formatDurationMs,
@@ -276,19 +278,29 @@ export function BankPipelineResultCard({
   onGoToLucaProducer,
   onGoToFisKontrol,
   onReanalyzeWithNewPlan,
+  onApplyBalanceResolution,
   isReanalyzing = false,
+  isBalanceResolving = false,
   auditHistory = [],
   primaryBtnClass = "",
   secondaryBtnClass = "",
   isReviewMissingLoading = false,
   showServiceMeta = false,
 }) {
+  const [balanceCenterOpen, setBalanceCenterOpen] = useState(false);
   if (!result) return null;
 
   const missing = Number(result.missingCount) || 0;
   const hint = buildMissingAccountsHint(missing);
   const isBalanceMismatch = Boolean(
     result.balanceMismatch || result.code === "BALANCE_MISMATCH"
+  );
+  const isBalanceReview = Boolean(
+    isBalanceMismatch ||
+      result.balanceMissing ||
+      result.code === "MISSING_CLOSING_BALANCE" ||
+      result.code === "MISSING_OPENING_BALANCE" ||
+      result.code === "BALANCE_EVIDENCE_MISSING"
   );
   const isDuplicate =
     Boolean(result.duplicate) ||
@@ -298,7 +310,14 @@ export function BankPipelineResultCard({
   const compareRows = Array.isArray(result.revisionCompare?.rows)
     ? result.revisionCompare.rows
     : null;
-  const balanceStats = isBalanceMismatch
+  const hasBalanceSummary = Boolean(
+    isBalanceReview ||
+      result.balanceMatched ||
+      result.balanceCode === "BALANCE_MATCHED" ||
+      result.openingBalance != null ||
+      result.statementClosingBalance != null
+  );
+  const balanceStats = hasBalanceSummary
     ? [
         { label: "Hareket", value: result.movementCount },
         {
@@ -352,20 +371,20 @@ export function BankPipelineResultCard({
       value: result.edefterCode || result.edefterStatus || "—",
     },
   ];
-  if (showServiceMeta && !isBalanceMismatch) {
+  if (showServiceMeta && !isBalanceReview) {
     stats.push({
       label: "Toplam süre",
       value: formatDurationMs(result.totalDurationMs),
     });
   }
 
-  const cardBorder = isBalanceMismatch
+  const cardBorder = isBalanceReview
     ? "border-amber-700/45 bg-gradient-to-b from-amber-950/35 to-slate-950/50"
     : "border-emerald-700/40 bg-gradient-to-b from-emerald-950/40 to-slate-950/50";
-  const iconWrap = isBalanceMismatch
+  const iconWrap = isBalanceReview
     ? "border-amber-500/40 bg-amber-500/15 text-amber-200"
     : "border-emerald-500/40 bg-emerald-500/15 text-emerald-300";
-  const subtitleTone = isBalanceMismatch
+  const subtitleTone = isBalanceReview
     ? "text-amber-100/85"
     : "text-emerald-100/80";
 
@@ -376,8 +395,8 @@ export function BankPipelineResultCard({
       data-result-code={
         isDuplicate
           ? "DUPLICATE_CONTENT"
-          : isBalanceMismatch
-            ? "BALANCE_MISMATCH"
+          : isBalanceReview
+            ? result.code || "BALANCE_MISMATCH"
             : result.terminalStatus || ""
       }
     >
@@ -385,7 +404,7 @@ export function BankPipelineResultCard({
         <div
           className={`flex h-14 w-14 items-center justify-center rounded-2xl border ${iconWrap}`}
         >
-          {isBalanceMismatch ? (
+          {isBalanceReview ? (
             <AlertIcon className="h-8 w-8" />
           ) : (
             <CheckCircleIcon className="h-8 w-8" />
@@ -395,8 +414,10 @@ export function BankPipelineResultCard({
           <h3 className="text-xl font-semibold text-white">
             {isDuplicate
               ? "Mükerrer ekstre"
-              : isBalanceMismatch
-                ? "Bakiye uyuşmazlığı"
+              : isBalanceReview
+                ? result.balanceMissing
+                  ? "Bakiye kanıtı eksik"
+                  : "Bakiye uyuşmazlığı"
                 : result.reanalyze
                   ? "Yeniden analiz tamamlandı"
                   : result.reviewRequired
@@ -407,7 +428,7 @@ export function BankPipelineResultCard({
             {isDuplicate
               ? result.duplicateMessage ||
                 "Mükerrer ekstre — yeniden işlenmedi"
-              : isBalanceMismatch
+              : isBalanceReview
                 ? result.message ||
                   "Bakiye uyuşmazlığı — otomatik fiş üretilmedi, inceleme gerekli"
                 : result.reanalyze
@@ -465,13 +486,13 @@ export function BankPipelineResultCard({
         </div>
       ) : null}
 
-      {hint && !isBalanceMismatch ? (
+      {hint && !isBalanceReview ? (
         <p className="mt-4 rounded-xl border border-amber-600/40 bg-amber-950/30 px-3 py-2.5 text-sm text-amber-100/90">
           {hint}
         </p>
       ) : null}
 
-      {isBalanceMismatch &&
+      {isBalanceReview &&
       Array.isArray(result.movementPreview) &&
       result.movementPreview.length > 0 ? (
         <div
@@ -522,7 +543,7 @@ export function BankPipelineResultCard({
 
       {Array.isArray(result.findingClasses?.classes) &&
       result.findingClasses.classes.length > 0 &&
-      !isBalanceMismatch ? (
+      !isBalanceReview ? (
         <div className="mt-4 rounded-xl border border-slate-700/60 bg-slate-950/50 px-3 py-3">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
             Hata sınıfları
@@ -564,6 +585,17 @@ export function BankPipelineResultCard({
       ) : null}
 
       <div className="mt-5 flex flex-wrap gap-2">
+        {isBalanceReview && typeof onApplyBalanceResolution === "function" ? (
+          <button
+            type="button"
+            onClick={() => setBalanceCenterOpen((open) => !open)}
+            disabled={isBalanceResolving || isExporting}
+            className="rounded-xl bg-amber-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+            data-testid="bank-open-balance-resolution-center"
+          >
+            Bakiye Uyuşmazlığını İncele
+          </button>
+        ) : null}
         {isDuplicate && typeof onReanalyzeWithNewPlan === "function" ? (
           <button
             type="button"
@@ -599,7 +631,8 @@ export function BankPipelineResultCard({
           <button
             type="button"
             onClick={onGoToFisKontrol}
-            className="rounded-xl border border-sky-600/50 bg-sky-950/40 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-900/40"
+            disabled={!outputGate.allowed}
+            className="rounded-xl border border-sky-600/50 bg-sky-950/40 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-900/40 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Fiş Kontrol’e Git
           </button>
@@ -617,7 +650,7 @@ export function BankPipelineResultCard({
             <button
               type="button"
               onClick={onPartialExport}
-              disabled={isExporting}
+              disabled={isExporting || !outputGate.allowed}
               className="rounded-xl border border-amber-600/50 bg-amber-950/40 px-4 py-3 text-sm font-semibold text-amber-100 transition hover:bg-amber-900/40 disabled:opacity-50"
             >
               Eksik Satırlar Hariç Excel
@@ -636,6 +669,14 @@ export function BankPipelineResultCard({
           Luca Fiş Üreticiye Gönder
         </button>
       </div>
+      {balanceCenterOpen && isBalanceReview ? (
+        <BalanceMismatchResolutionCenter
+          result={result}
+          onClose={() => setBalanceCenterOpen(false)}
+          onApply={onApplyBalanceResolution}
+          isApplying={isBalanceResolving}
+        />
+      ) : null}
       {!outputGate.allowed && !isDuplicate ? (
         <p
           className="mt-2 text-xs text-amber-200/85"
