@@ -560,10 +560,32 @@ export function extractBalanceHintsFromText(text = "") {
     t.match(/opening\s*balance\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i);
   const close =
     t.match(/kapan[iı][sş]\s*bakiyesi\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i) ||
-    t.match(/closing\s*balance\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i);
+    t.match(/closing\s*balance\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i) ||
+    t.match(/son\s*bakiye\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i);
+
+  let openingBalance = open ? parseTrAmount(open[1]) : NaN;
+  let closingBalance = close ? parseTrAmount(close[1]) : NaN;
+  if (!Number.isFinite(openingBalance)) openingBalance = null;
+  if (!Number.isFinite(closingBalance)) closingBalance = null;
+
+  // VakıfBank etc.: column "Bakiye" without "kapanış bakiyesi" label —
+  // trailing amount token is the statement running close (may be 0,00).
+  if (closingBalance == null && /bakiye/i.test(t)) {
+    const amountRe = new RegExp(AMOUNT_TOKEN, "g");
+    const nums = [];
+    let m;
+    while ((m = amountRe.exec(t))) {
+      const n = parseTrAmount(m[0]);
+      if (Number.isFinite(n)) nums.push(n);
+    }
+    if (nums.length >= 2) {
+      closingBalance = nums[nums.length - 1];
+    }
+  }
+
   return {
-    openingBalance: open ? parseTrAmount(open[1]) : null,
-    closingBalance: close ? parseTrAmount(close[1]) : null,
+    openingBalance,
+    closingBalance,
   };
 }
 

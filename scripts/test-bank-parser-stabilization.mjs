@@ -536,6 +536,47 @@ assert(emptyQueue.length === 0, "tüm kayıtlar eşleşmişse kuyruk boş");
   );
   assert(noEvidence.matched !== true, "kanıt yokken matched≠true");
 
+  // null hint fields must NOT coerce to 0,00 via Number(null)
+  const nullHints = reconcileStatementBalances(
+    [
+      {
+        amount: 100,
+        direction: "GIRIS",
+        transactionDate: "01.01.2026",
+        description: "X",
+      },
+    ],
+    { openingBalance: null, closingBalance: null }
+  );
+  assert(
+    nullHints.code === BALANCE_EVIDENCE_MISSING,
+    "null hint alanları → EVIDENCE_MISSING (sahte 0,00 yok)"
+  );
+  assert(nullHints.openingBalance == null, "null açılış → null kalır");
+  assert(nullHints.closingBalance == null, "null kapanış → null kalır");
+  assert(nullHints.evidenceSource !== "hints", "null hint evidenceSource≠hints");
+
+  // Bakiye kolonu + trailing 0,00 (etiketsiz kapanış) → statement close 0
+  const { extractBalanceHintsFromText } = await import(
+    "@/src/utils/bankStatementPdf.js"
+  );
+  const trailingClose = extractBalanceHintsFromText(
+    [
+      "VakıfBank Hesap Hareketleri",
+      "Tarih Açıklama Tutar Bakiye",
+      "02.01.2026 EFT GELEN 1.000,00 1.000,00",
+      "03.01.2026 EFT GIDEN -1.000,00 0,00",
+    ].join("\n")
+  );
+  assert(
+    trailingClose.closingBalance === 0,
+    "Bakiye kolonu trailing 0,00 → kapanış 0"
+  );
+  assert(
+    trailingClose.openingBalance == null,
+    "etiketsiz açılış → null (Number(null) yok)"
+  );
+
   const matchedHints = reconcileStatementBalances(
     [
       { amount: 100, direction: "GIRIS" },
