@@ -175,6 +175,137 @@ export function canStartFullPipeline({
   return true;
 }
 
+/**
+ * Luca / ElektraWeb yalnız mutabık, eksiksiz ve Fiş Kontrol'den geçen
+ * sonuçlarda açılır. UI ve orkestrasyon aynı kapıyı kullanır.
+ */
+export function evaluateBankOutputGate(result = {}, { lucaReady = true } = {}) {
+  const duplicate =
+    Boolean(result.duplicate) ||
+    result.code === "DUPLICATE_CONTENT" ||
+    result.terminalStatus === "duplicate";
+  const balanceMatched =
+    result.balanceMatched === true || result.balanceCode === "BALANCE_MATCHED";
+  const errors = Math.max(0, Number(result.errors) || 0);
+  const critical = Math.max(0, Number(result.critical) || 0);
+  const lowConfidence = Math.max(0, Number(result.lowConfidence) || 0);
+  const unresolved = Math.max(
+    0,
+    Number(
+      result.uniqueUnresolvedMovements ??
+        result.unresolvedMovementCount ??
+        result.missingCount ??
+        result.reviewCount ??
+        0
+    ) || 0
+  );
+  const reviewRequired = Boolean(result.reviewRequired);
+  const fisKontrolPassed =
+    result.fisKontrolPassed === true || result.canAutoApprove === true;
+
+  let code = "OUTPUT_READY";
+  let message = "Luca / ElektraWeb çıktıları hazır.";
+  if (duplicate) {
+    code = "DUPLICATE_CONTENT";
+    message = "Mükerrer ekstre için yeni çıktı üretilmez.";
+  } else if (!balanceMatched) {
+    code = "BALANCE_NOT_MATCHED";
+    message = "Bakiye mutabakatı geçmeden Luca / ElektraWeb çıktısı üretilemez.";
+  } else if (errors > 0 || critical > 0) {
+    code = "CRITICAL_FINDINGS";
+    message = "Kritik bulgular çözülmeden çıktı üretilemez.";
+  } else if (unresolved > 0) {
+    code = "UNRESOLVED_ACCOUNTS";
+    message = "Gerekli hesaplar çözülmeden çıktı üretilemez.";
+  } else if (lowConfidence > 0 || reviewRequired || !fisKontrolPassed) {
+    code = "REVIEW_REQUIRED";
+    message = "Düşük güvenli satırlar onaylanıp Fiş Kontrol geçmeden çıktı üretilemez.";
+  } else if (!lucaReady) {
+    code = "LUCA_NOT_READY";
+    message = "Luca satırları henüz hazırlanmadı.";
+  }
+
+  return {
+    allowed: code === "OUTPUT_READY",
+    code,
+    message,
+    balanceMatched,
+    errors,
+    critical,
+    lowConfidence,
+    unresolved,
+  };
+}
+
+/** Dosya seçiminin kilitli olduğu gerçek çalışma aşamaları. */
+export const BANK_FILE_SELECT_BUSY_STATES = Object.freeze([
+  "reading",
+  "uploading",
+  "parsing",
+  "analyzing",
+  "syncing",
+  "persisting",
+  "validating",
+  "archiving",
+  "deduplicating",
+  "applying_core",
+  "applying_memory",
+  "creating_vouchers",
+  "controlling_vouchers",
+  "reconciling_edefter",
+  "generating_exports",
+]);
+
+/** Dosya seçiminin tekrar açıldığı terminal durumlar. */
+export const BANK_FILE_SELECT_TERMINAL_STATES = Object.freeze([
+  "idle",
+  "completed",
+  "review_required",
+  "duplicate",
+  "balance_mismatch",
+  "error",
+  "failed",
+  "cancelled",
+  "ocr_required",
+]);
+
+const BANK_FILE_SELECT_BUSY_SET = new Set(BANK_FILE_SELECT_BUSY_STATES);
+const BANK_FILE_SELECT_TERMINAL_SET = new Set(BANK_FILE_SELECT_TERMINAL_STATES);
+
+function normalizeBankJobStatus(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Dosya seçimi yalnız gerçek busy aşamalarında kilitlenir; tüm terminal
+ * durumlarda (mükerrer dahil) yeniden dosya seçilebilir.
+ */
+export function evaluateBankFileSelection({
+  status = "",
+  running = false,
+  hasFile = false,
+} = {}) {
+  const normalized = normalizeBankJobStatus(status);
+  const terminal = BANK_FILE_SELECT_TERMINAL_SET.has(normalized);
+  const busy = !terminal && (BANK_FILE_SELECT_BUSY_SET.has(normalized) || Boolean(running));
+
+  return {
+    status: normalized || "idle",
+    busy,
+    terminal: !busy,
+    locked: busy,
+    canSelectFile: !busy,
+    canPickNewFile: !busy,
+    canReprocess: !busy && Boolean(hasFile),
+  };
+}
+
+export function isBankFileSelectionLocked(state = {}) {
+  return evaluateBankFileSelection(state).locked;
+}
+
 export function shouldRunPipelineStage(resumeFrom, stage) {
   if (!resumeFrom) return true;
   const startIdx = PIPELINE_STAGE_ORDER.indexOf(resumeFrom);

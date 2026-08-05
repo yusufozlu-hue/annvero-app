@@ -44,6 +44,10 @@ test("mükerrer: sonuç kartı kanonik — error+toast yok", () => {
       );
     }
   }
+  assert.match(
+    src,
+    /Mükerrer yükleme salt okunur terminaldir: ikinci job\/audit kaydı yok/
+  );
 });
 
 test("başarı terminalinde toast bastırılır", () => {
@@ -73,6 +77,76 @@ test("OCR/BALANCE hata kartı başlıkları", () => {
   assert.match(src, /isOcr/);
   assert.match(src, /OCR gerekli/);
   assert.match(src, /Bakiye uyuşmazlığı/);
+});
+
+test("Luca/Elektra butonları tek output gate ile kilitlenir", () => {
+  const src = read(
+    "app/(annvero)/muhasebe/banka-ekstresi/BankOneClickExperience.jsx"
+  );
+  assert.match(src, /evaluateBankOutputGate/);
+  assert.match(src, /disabled=\{isExporting \|\| !outputGate\.allowed\}/);
+  assert.match(src, /disabled=\{!outputGate\.allowed\}/);
+  assert.match(src, /data-output-gate-code=\{outputGate\.code\}/);
+});
+
+test("dosya seçimi yalnız busy aşamada kilitli, terminalde açık", () => {
+  const src = read(
+    "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"
+  );
+  assert.match(src, /evaluateBankFileSelection/);
+  assert.match(src, /const fileSelectionLocked = fileSelection\.locked/);
+  // Dosya Seç butonu ve gizli input isJobBusy'ye değil kanonik kapıya bağlı
+  assert.match(src, /data-testid="bank-file-select"[\s\S]{0,400}Dosya Seç/);
+  assert.match(
+    src,
+    /onChange=\{handleFileSelect\}[\s\S]{0,80}disabled=\{fileSelectionLocked\}/
+  );
+  assert.doesNotMatch(
+    src,
+    /onChange=\{handleFileSelect\}[\s\S]{0,80}disabled=\{isJobBusy\}/
+  );
+});
+
+test("aynı dosya tekrar seçilebilir + Yeni Dosya Seç ayrı akış", () => {
+  const src = read(
+    "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"
+  );
+  assert.match(src, /const openFilePicker = \(\) => \{[\s\S]{0,220}input\.value = "";[\s\S]{0,80}input\.click\(\)/);
+  assert.match(src, /const handlePickNewFile = \(\) => \{/);
+  assert.match(src, /data-testid="bank-pick-new-file"[\s\S]{0,400}Yeni Dosya Seç/);
+  // Yeni Dosya Seç önceki işlemi değiştirmez; revision yalnız Yeniden İşle/reanalyze yolunda
+  assert.doesNotMatch(
+    src,
+    /const handlePickNewFile = \(\) => \{[\s\S]{0,1200}runFullBankPipeline/
+  );
+});
+
+test("terminal çıkışlarda iş kilidi bırakılır", () => {
+  const src = read(
+    "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"
+  );
+  assert.match(
+    src,
+    /Mükerrer terminaldir: iş kilidi bırakılır, dosya seçimi tekrar açılır\.[\s\S]{0,200}bankJobStateRef\.current = createInitialBankJobState\(\)/
+  );
+  assert.match(
+    src,
+    /Terminal çıkış: iş kilidi bırakılmalı[\s\S]{0,200}bankJobStateRef\.current = createInitialBankJobState\(\)/
+  );
+});
+
+test("firma değişiminde dosya input ve iş durumu sıfırlanır", () => {
+  const src = read(
+    "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"
+  );
+  assert.match(
+    src,
+    /unrecognizedCountRef\.current = 0;[\s\S]{0,400}fileInputRef\.current\.value = "";/
+  );
+  assert.match(
+    src,
+    /unrecognizedCountRef\.current = 0;[\s\S]{0,300}bankJobStateRef\.current = createInitialBankJobState\(\)/
+  );
 });
 
 test("shell persist: (annvero)/loading yok; muhasebe skeleton var", () => {

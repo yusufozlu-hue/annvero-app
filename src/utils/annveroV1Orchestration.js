@@ -928,9 +928,9 @@ export function buildV1ResultSummary({
     chainMs,
     contentHashPresent: Boolean(contentHash),
     balanceMismatch: Boolean(balanceMismatch),
-    balanceCode: balanceMismatch
-      ? String(balanceCode || "BALANCE_MISMATCH").slice(0, 40)
-      : "",
+    balanceCode: String(
+      balanceCode || (balanceMismatch ? "BALANCE_MISMATCH" : "")
+    ).slice(0, 40),
     // hassas alanlar bilinçli olarak yok
   };
 }
