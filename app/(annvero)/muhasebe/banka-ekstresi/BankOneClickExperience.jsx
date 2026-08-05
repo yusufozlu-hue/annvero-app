@@ -6,6 +6,7 @@ import {
   formatElapsedClock,
   getPipelinePhaseTitle,
   getPipelineUiStepStatuses,
+  evaluateBankOutputGate,
   PIPELINE_PHASES,
 } from "@/src/utils/bankOneClickPipeline";
 
@@ -293,6 +294,7 @@ export function BankPipelineResultCard({
     Boolean(result.duplicate) ||
     result.code === "DUPLICATE_CONTENT" ||
     result.terminalStatus === "duplicate";
+  const outputGate = evaluateBankOutputGate(result, { lucaReady });
   const compareRows = Array.isArray(result.revisionCompare?.rows)
     ? result.revisionCompare.rows
     : null;
@@ -578,12 +580,7 @@ export function BankPipelineResultCard({
         <button
           type="button"
           onClick={onDownloadExcel}
-          disabled={
-            isExporting ||
-            !lucaReady ||
-            isBalanceMismatch ||
-            (result.reviewRequired && !result.canAutoApprove && result.errors > 0)
-          }
+          disabled={isExporting || !outputGate.allowed}
           className={`rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 ${primaryBtnClass}`}
         >
           {isExporting ? "Excel hazırlanıyor…" : "Luca İndir"}
@@ -592,12 +589,7 @@ export function BankPipelineResultCard({
           <button
             type="button"
             onClick={onDownloadElektra}
-            disabled={
-              isExporting ||
-              !lucaReady ||
-              isBalanceMismatch ||
-              (result.errors > 0 && !result.canAutoApprove)
-            }
+            disabled={isExporting || !outputGate.allowed}
             className="rounded-xl border border-emerald-600/50 bg-emerald-950/40 px-4 py-3 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-900/40 disabled:opacity-50"
           >
             ElektraWeb İndir
@@ -635,14 +627,24 @@ export function BankPipelineResultCard({
         <button
           type="button"
           onClick={onGoToLucaProducer}
+          disabled={!outputGate.allowed}
           className={
             secondaryBtnClass ||
-            "rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-sm font-semibold text-slate-100 transition hover:bg-slate-800"
+            "rounded-xl border border-slate-600 bg-slate-900 px-4 py-3 text-sm font-semibold text-slate-100 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
           }
         >
           Luca Fiş Üreticiye Gönder
         </button>
       </div>
+      {!outputGate.allowed && !isDuplicate ? (
+        <p
+          className="mt-2 text-xs text-amber-200/85"
+          data-testid="bank-output-gate-message"
+          data-output-gate-code={outputGate.code}
+        >
+          {outputGate.message}
+        </p>
+      ) : null}
 
       {Array.isArray(auditHistory) && auditHistory.length > 0 ? (
         <div className="mt-5 border-t border-emerald-900/40 pt-4">

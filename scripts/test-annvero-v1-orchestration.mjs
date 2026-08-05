@@ -333,6 +333,25 @@ test("safe persist strips secrets and forbids raw leak", () => {
   assert.equal(view.metadata.movement_count, 10);
 });
 
+test("matched balance code survives safe summary persistence", () => {
+  const summary = buildV1ResultSummary({
+    movementCount: 2,
+    lucaRowCount: 4,
+    terminalStatus: V1_JOB_STATE.COMPLETED,
+    balanceCode: "BALANCE_MATCHED",
+    canAutoApprove: true,
+    reviewRequired: false,
+  });
+  assert.equal(summary.balanceCode, "BALANCE_MATCHED");
+  const payload = buildSafeV1PersistPayload({
+    companyId: "c1",
+    jobId: "j-balance",
+    idempotencyKey: "balance-key",
+    summary,
+  });
+  assert.equal(payload.metadata.balance_code, "BALANCE_MATCHED");
+});
+
 test("idempotency key stable", () => {
   const a = buildIdempotencyKey({ companyId: "c1", contentHash: "h1" });
   const b = buildIdempotencyKey({ companyId: "c1", contentHash: "h1" });

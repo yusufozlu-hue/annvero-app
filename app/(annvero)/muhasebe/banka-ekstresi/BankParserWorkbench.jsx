@@ -111,6 +111,7 @@ import {
   canStartFullPipeline,
   deriveAutoMatchedMovements,
   deriveUnresolvedMovements,
+  evaluateBankOutputGate,
   getPipelinePhaseLabel,
   getPipelinePhaseTitle,
   isBankParserServiceModeVisible,
@@ -185,6 +186,7 @@ async function parseBankPdfPreferServer(arrayBuffer, options = {}) {
   return parseBankStatementPdf(arrayBuffer, options);
 }
 import {
+  BALANCE_MATCHED,
   BALANCE_MISMATCH,
   reconcileStatementBalances,
 } from "@/src/utils/bankBalanceReconcile";
@@ -4042,6 +4044,7 @@ export default function BankParserWorkbench() {
     let edefterResult = null;
     let archiveResult = null;
     let elektraRowCount = 0;
+    let balanceResult = null;
 
     try {
       // 1) validating — firma kimliği (Drive/parse/persist öncesi)
@@ -4219,6 +4222,7 @@ export default function BankParserWorkbench() {
             runId,
             bankName: runBank,
           });
+          balanceResult = preview.balance || null;
           stageDurations.previewMs = preview.durationMs;
           stageDurations.parseMode = preview.parseMode;
           stageDurations.bankName = preview.bankName || runBank;
@@ -4226,6 +4230,8 @@ export default function BankParserWorkbench() {
             movementCount: movementsRef.current.length,
             durationMs: preview.durationMs,
             balanceMismatch: Boolean(preview.balanceMismatch),
+            balanceCode: preview.balance?.code || "",
+            balanceMatched: preview.balance?.code === BALANCE_MATCHED,
           };
           stageOutputs[V1_JOB_STATE.DEDUPLICATING] = {
             ok: true,
@@ -4497,26 +4503,62 @@ export default function BankParserWorkbench() {
         !resumeFrom
       ) {
         if (!stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS]) {
-          emitV1(
-            V1_JOB_STATE.GENERATING_EXPORTS,
-            50,
-            "Luca / ElektraWeb çıktıları hazırlanıyor…"
+          const controlMeta =
+            stageOutputs[V1_JOB_STATE.CONTROLLING_VOUCHERS] || {};
+          const outputGate = evaluateBankOutputGate(
+            {
+              balanceCode:
+                balanceResult?.code ||
+                stageOutputs[V1_JOB_STATE.PARSING]?.balanceCode ||
+                "",
+              canAutoApprove: Boolean(fisKontrolResult?.canAutoApprove),
+              reviewRequired: Boolean(fisKontrolResult?.reviewRequired),
+              errors: fisKontrolResult?.errors || 0,
+              critical: fisKontrolResult?.critical || 0,
+              lowConfidence: fisKontrolResult?.lowConfidence || 0,
+              missingCount: controlMeta.missingCount || 0,
+              uniqueUnresolvedMovements:
+                controlMeta.uniqueUnresolvedMovements || 0,
+            },
+            { lucaReady: lucaRef.current.length > 0 }
           );
-          assertPipelineSignal(signal, isRunActive, runId);
-          const lucaExpect = assertLucaRowExpectation(
-            movementsRef.current.length,
-            lucaRef.current.length
-          );
-          const elektraRows = buildElektrawebPreviewRows(lucaRef.current || [], {
-            companyId: selectedCompanyId,
-          });
-          elektraRowCount = Array.isArray(elektraRows) ? elektraRows.length : 0;
-          stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS] = {
-            lucaRowCount: lucaRef.current.length,
-            elektraRowCount,
-            lucaExpect,
-            lucaBatchCount: fisKontrolResult?.lucaBatchCount || 0,
-          };
+          if (outputGate.allowed) {
+            emitV1(
+              V1_JOB_STATE.GENERATING_EXPORTS,
+              50,
+              "Luca / ElektraWeb çıktıları hazırlanıyor…"
+            );
+            assertPipelineSignal(signal, isRunActive, runId);
+            const lucaExpect = assertLucaRowExpectation(
+              movementsRef.current.length,
+              lucaRef.current.length
+            );
+            const elektraRows = buildElektrawebPreviewRows(
+              lucaRef.current || [],
+              {
+                companyId: selectedCompanyId,
+              }
+            );
+            elektraRowCount = Array.isArray(elektraRows)
+              ? elektraRows.length
+              : 0;
+            stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS] = {
+              lucaRowCount: lucaRef.current.length,
+              elektraRowCount,
+              lucaExpect,
+              lucaBatchCount: fisKontrolResult?.lucaBatchCount || 0,
+              outputGate,
+            };
+          } else {
+            elektraRowCount = 0;
+            stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS] = {
+              skipped: true,
+              lucaRowCount: 0,
+              elektraRowCount: 0,
+              lucaBatchCount: 0,
+              outputGate,
+            };
+          }
         } else {
           elektraRowCount =
             stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS]?.elektraRowCount || 0;
@@ -4525,10 +4567,34 @@ export default function BankParserWorkbench() {
 
       // 11) persisting — güvenli özet
       const validationMeta = stageOutputs[V1_JOB_STATE.CONTROLLING_VOUCHERS] || {};
+      const outputGate =
+        stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS]?.outputGate ||
+        evaluateBankOutputGate(
+          {
+            balanceCode:
+              balanceResult?.code ||
+              stageOutputs[V1_JOB_STATE.PARSING]?.balanceCode ||
+              "",
+            canAutoApprove: Boolean(fisKontrolResult?.canAutoApprove),
+            reviewRequired: Boolean(fisKontrolResult?.reviewRequired),
+            errors: fisKontrolResult?.errors || 0,
+            critical: fisKontrolResult?.critical || 0,
+            lowConfidence: fisKontrolResult?.lowConfidence || 0,
+            missingCount: validationMeta.missingCount || 0,
+            uniqueUnresolvedMovements:
+              validationMeta.uniqueUnresolvedMovements || 0,
+          },
+          { lucaReady: lucaRef.current.length > 0 }
+        );
+      const balanceCode =
+        balanceResult?.code ||
+        stageOutputs[V1_JOB_STATE.PARSING]?.balanceCode ||
+        "";
       const totalDurationMs = Math.round(performance.now() - tPipeline0);
       const terminalStatus = decideTerminalStatus({
         duplicate: terminalDuplicate,
-        reviewRequired: Boolean(fisKontrolResult?.reviewRequired),
+        reviewRequired:
+          Boolean(fisKontrolResult?.reviewRequired) || !outputGate.allowed,
       });
 
       const resultSummary = buildV1ResultSummary({
@@ -4554,6 +4620,11 @@ export default function BankParserWorkbench() {
         parseMs: stageDurations.previewMs || null,
         chainMs: totalDurationMs,
         contentHash: lastDedupMetaRef.current?.sourceFileHash || "",
+        reviewRequired:
+          Boolean(fisKontrolResult?.reviewRequired) || !outputGate.allowed,
+        canAutoApprove: outputGate.allowed,
+        balanceMismatch: balanceCode === BALANCE_MISMATCH,
+        balanceCode,
       });
 
       const accountPlanCount = Array.isArray(companyPlans)
@@ -4639,6 +4710,12 @@ export default function BankParserWorkbench() {
         driveSkipped: resultSummary.driveSkipped,
         reviewRequired: resultSummary.reviewRequired,
         canAutoApprove: resultSummary.canAutoApprove,
+        balanceCode,
+        balanceMatched: balanceCode === BALANCE_MATCHED,
+        outputGateCode: outputGate.code,
+        outputGateMessage: outputGate.message,
+        lowConfidence: fisKontrolResult?.lowConfidence || 0,
+        critical: fisKontrolResult?.critical || 0,
         fisKontrolHref: resultSummary.fisKontrolHref,
         findingClasses:
           fisKontrolResult?.findingClasses ||
@@ -4679,8 +4756,8 @@ export default function BankParserWorkbench() {
           terminalStatus === V1_JOB_STATE.REVIEW_REQUIRED
             ? "İnceleme gerekli"
             : "İşlem ve kontrol tamamlandı.",
-        detail: result.errors
-          ? `${result.errors} hata · ${result.warnings} uyarı — otomatik onay yok.`
+        detail: !outputGate.allowed
+          ? outputGate.message
           : edefterResult?.code === "EDEFTER_NOT_AVAILABLE"
             ? "E-Defter yok (EDEFTER_NOT_AVAILABLE); banka akışı tamamlandı."
             : "Luca / ElektraWeb çıktıları hazır.",
@@ -4723,7 +4800,10 @@ export default function BankParserWorkbench() {
         v1LeaseIdRef.current = null;
         return;
       }
-      if (error?.code === "DUPLICATE_STATEMENT") {
+      if (
+        error?.code === "DUPLICATE_STATEMENT" ||
+        error?.code === DUPLICATE_CONTENT
+      ) {
         terminalDuplicate = true;
         const priorFromHistory =
           duplicatePriorJobRef.current ||
@@ -4763,21 +4843,7 @@ export default function BankParserWorkbench() {
         setPipelineError(null);
         setPipelineMode("idle");
         parserJob.reset();
-        await persistV1JobSummary({
-          companyId: selectedCompanyId,
-          jobId,
-          leaseId,
-          idempotencyKey: buildIdempotencyKey({
-            companyId: selectedCompanyId,
-            contentHash: "",
-          }),
-          summary: buildV1ResultSummary({
-            duplicate: true,
-            terminalStatus: V1_JOB_STATE.DUPLICATE,
-            edefter: reconcileEdefterStage({}),
-          }),
-          action: "persist",
-        });
+        // Mükerrer yükleme salt okunur terminaldir: ikinci job/audit kaydı yok.
         await releaseV1Lease(selectedCompanyId, leaseId);
         v1LeaseIdRef.current = null;
         return;

@@ -7,6 +7,7 @@ import {
   assertPipelineSignal,
   canStartFullPipeline,
   createAbortError,
+  evaluateBankOutputGate,
   formatDurationMs,
   getPipelinePhaseLabel,
   isBankParserServiceModeVisible,
@@ -236,6 +237,70 @@ test("pipeline requires explicit bank — empty selectedBank blocks start", () =
       pipelinePhase: PIPELINE_PHASES.IDLE,
     }),
     true
+  );
+});
+
+test("Luca/Elektra output gate requires matched balance and clean review", () => {
+  const ready = evaluateBankOutputGate(
+    {
+      balanceCode: "BALANCE_MATCHED",
+      canAutoApprove: true,
+      reviewRequired: false,
+      errors: 0,
+      critical: 0,
+      lowConfidence: 0,
+      missingCount: 0,
+      uniqueUnresolvedMovements: 0,
+    },
+    { lucaReady: true }
+  );
+  assert.equal(ready.allowed, true);
+  assert.equal(ready.code, "OUTPUT_READY");
+
+  assert.equal(
+    evaluateBankOutputGate(
+      {
+        balanceCode: "BALANCE_MISMATCH",
+        canAutoApprove: true,
+      },
+      { lucaReady: true }
+    ).code,
+    "BALANCE_NOT_MATCHED"
+  );
+  assert.equal(
+    evaluateBankOutputGate(
+      {
+        balanceCode: "BALANCE_MATCHED",
+        canAutoApprove: false,
+        reviewRequired: true,
+        lowConfidence: 1,
+        errors: 0,
+      },
+      { lucaReady: true }
+    ).code,
+    "REVIEW_REQUIRED"
+  );
+  assert.equal(
+    evaluateBankOutputGate(
+      {
+        balanceCode: "BALANCE_MATCHED",
+        canAutoApprove: true,
+        uniqueUnresolvedMovements: 1,
+      },
+      { lucaReady: true }
+    ).code,
+    "UNRESOLVED_ACCOUNTS"
+  );
+  assert.equal(
+    evaluateBankOutputGate(
+      {
+        duplicate: true,
+        balanceCode: "BALANCE_MATCHED",
+        canAutoApprove: true,
+      },
+      { lucaReady: true }
+    ).code,
+    "DUPLICATE_CONTENT"
   );
 });
 

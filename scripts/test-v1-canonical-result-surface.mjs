@@ -44,6 +44,10 @@ test("mükerrer: sonuç kartı kanonik — error+toast yok", () => {
       );
     }
   }
+  assert.match(
+    src,
+    /Mükerrer yükleme salt okunur terminaldir: ikinci job\/audit kaydı yok/
+  );
 });
 
 test("başarı terminalinde toast bastırılır", () => {
@@ -73,6 +77,16 @@ test("OCR/BALANCE hata kartı başlıkları", () => {
   assert.match(src, /isOcr/);
   assert.match(src, /OCR gerekli/);
   assert.match(src, /Bakiye uyuşmazlığı/);
+});
+
+test("Luca/Elektra butonları tek output gate ile kilitlenir", () => {
+  const src = read(
+    "app/(annvero)/muhasebe/banka-ekstresi/BankOneClickExperience.jsx"
+  );
+  assert.match(src, /evaluateBankOutputGate/);
+  assert.match(src, /disabled=\{isExporting \|\| !outputGate\.allowed\}/);
+  assert.match(src, /disabled=\{!outputGate\.allowed\}/);
+  assert.match(src, /data-output-gate-code=\{outputGate\.code\}/);
 });
 
 test("shell persist: (annvero)/loading yok; muhasebe skeleton var", () => {
