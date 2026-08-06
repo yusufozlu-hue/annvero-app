@@ -106,6 +106,36 @@ function row(partial) {
     "mükerrer kaynak mesajı"
   );
 
+  // Aynı fişte borç+alacak bacakları aynı sourceMovementId — mükerrer değil
+  const doubleEntry = analyzeStandardLucaRows([
+    row({
+      fisNo: "20",
+      borc: 100,
+      alacak: "",
+      hesapKodu: "102.01",
+      sourceMovementId: "mv-de",
+      lineRole: "borc",
+      detayAciklama: "HAVALE",
+    }),
+    row({
+      fisNo: "20",
+      borc: "",
+      alacak: 100,
+      hesapKodu: "320.01",
+      sourceMovementId: "mv-de",
+      lineRole: "alacak",
+      detayAciklama: "HAVALE",
+    }),
+  ]);
+  assert(
+    !doubleEntry.issues.some((i) => i.type === "Mükerrer kaynak hareket"),
+    "çift kayıt bacakları mükerrer kaynak sayılmaz"
+  );
+  assert(
+    !doubleEntry.issues.some((i) => i.message === DUPLICATE_VOUCHER_UI_MESSAGE),
+    "çift kayıt DUPLICATE_VOUCHER üretmez"
+  );
+
   const dedup = applySessionVoucherDedup([a, a], new Set(), "c1");
   assert(dedup.suppressedCount === 1, "session dedup bastırma");
   assert(dedup.unique.length === 1, "session unique");
