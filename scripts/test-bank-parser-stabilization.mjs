@@ -556,25 +556,36 @@ assert(emptyQueue.length === 0, "tüm kayıtlar eşleşmişse kuyruk boş");
   assert(nullHints.closingBalance == null, "null kapanış → null kalır");
   assert(nullHints.evidenceSource !== "hints", "null hint evidenceSource≠hints");
 
-  // Bakiye kolonu + trailing 0,00 (etiketsiz kapanış) → statement close 0
-  const { extractBalanceHintsFromText } = await import(
+  // Genel "Bakiye" başlığı kapanış uyduramaz; son geçerli hareket bakiyesi kanıttır.
+  const { extractBalanceHintsFromText, parsePdfMovementLines } = await import(
     "@/src/utils/bankStatementPdf.js"
   );
-  const trailingClose = extractBalanceHintsFromText(
-    [
+  const runningBalanceText = [
       "VakıfBank Hesap Hareketleri",
       "Tarih Açıklama Tutar Bakiye",
       "02.01.2026 EFT GELEN 1.000,00 1.000,00",
       "03.01.2026 EFT GIDEN -1.000,00 0,00",
-    ].join("\n")
+    ].join("\n");
+  const trailingClose = extractBalanceHintsFromText(runningBalanceText);
+  assert(
+    trailingClose.closingBalance == null,
+    "genel Bakiye başlığı → kapanış uydurulmaz"
+  );
+  const runningRows = parsePdfMovementLines(runningBalanceText, {
+    selectedBank: "VAKIFBANK",
+    companyId: "test-company",
+  });
+  const runningMatched = reconcileStatementBalances(
+    runningRows.transactions,
+    trailingClose
   );
   assert(
-    trailingClose.closingBalance === 0,
-    "Bakiye kolonu trailing 0,00 → kapanış 0"
+    runningMatched.closingBalance === 0,
+    "son geçerli hareket Bakiye 0,00 → kapanış 0"
   );
   assert(
-    trailingClose.openingBalance == null,
-    "etiketsiz açılış → null (Number(null) yok)"
+    runningMatched.closingEvidence?.sourceLine === 4,
+    "kapanış kaynak satırı korunur"
   );
 
   const matchedHints = reconcileStatementBalances(

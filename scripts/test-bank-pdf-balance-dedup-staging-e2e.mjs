@@ -29,11 +29,9 @@ const { parseBankStatementPdf } = await import(
 const { createBankStatementSourceCheckpoint } = await import(
   "@/src/utils/bankStatementSourceCheckpoint.js"
 );
-const {
-  BALANCE_MISMATCH_UI_MESSAGE,
-  buildBalanceMismatchReviewPayload,
-  findPriorJobByContentHash,
-} = await import("@/src/utils/bankBalanceMismatchReview.js");
+const { findPriorJobByContentHash } = await import(
+  "@/src/utils/bankBalanceMismatchReview.js"
+);
 const {
   DUPLICATE_CONTENT,
   DUPLICATE_STATEMENT_UI_MESSAGE,
@@ -46,45 +44,33 @@ const {
 const { buildSafeV1PersistPayload } = await import(
   "@/src/utils/annveroV1SafePersist.js"
 );
-const { BALANCE_MISMATCH } = await import(
+const { BALANCE_MATCHED } = await import(
   "@/src/utils/bankBalanceReconcile.js"
 );
 
 const buf = fs.readFileSync(PDF_PATH);
 const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 
-console.log("=== Staging E2E: balance mismatch UI + contentHash dedup ===");
+console.log("=== Staging E2E: true balance evidence + contentHash dedup ===");
 
-// 1) First process — parse OK + BALANCE_MISMATCH review_required
+// 1) First process — true source rows; normalized fake movements are rejected.
 const parsed = await parseBankStatementPdf(ab, {
   selectedBank: "VAKIFBANK",
   companyId: MARE,
 });
-assert.equal(parsed.code, BALANCE_MISMATCH);
-assert.equal((parsed.transactions || []).length, 5);
-assert.equal(parsed.balance?.reviewRequired, true);
+assert.equal(parsed.balance?.code, BALANCE_MATCHED);
+assert.equal((parsed.transactions || []).length, 4);
+assert.equal(parsed.balance?.reviewRequired, false);
+assert.equal(parsed.balance?.openingBalance, 0);
+assert.equal(parsed.balance?.closingBalance, 0);
+assert.equal(parsed.balance?.openingEvidence?.sourceLine, 10);
+assert.equal(parsed.balance?.closingEvidence?.sourceLine, 17);
 assert.equal(Boolean(parsed.ocrUsed), false);
 
 const cp = await createBankStatementSourceCheckpoint(
   new File([buf], "00158018033466201.pdf", { type: "application/pdf" })
 );
 assert.ok(cp.contentHash);
-
-const review = buildBalanceMismatchReviewPayload({
-  balance: parsed.balance,
-  movements: parsed.transactions,
-  contentHash: cp.contentHash,
-});
-assert.equal(review.movementCount, 5);
-assert.equal(review.movementPreview.length, 5);
-assert.equal(review.hasMoreMovements, false);
-assert.ok(review.reconciliationDelta != null);
-assert.equal(review.message, BALANCE_MISMATCH_UI_MESSAGE);
-assert.ok(
-  review.movementPreview.every(
-    (row) => !/TR\d{2}/i.test(row.description) || row.description.includes("TR**")
-  )
-);
 
 // DOM proof markers (result card contract)
 const uiSrc = fs.readFileSync(
@@ -97,35 +83,23 @@ assert.match(uiSrc, /data-result-code=\{/);
 assert.match(uiSrc, /BALANCE_MISMATCH/);
 assert.match(uiSrc, /DUPLICATE_CONTENT/);
 
-const domProof = {
-  resultCode: "BALANCE_MISMATCH",
-  movementCountVisible: review.movementCount,
-  deltaVisible: review.reconciliationDelta != null,
-  previewRows: review.movementPreview.length,
-  message: review.message,
-  testIds: [
-    "bank-pipeline-result-card",
-    "bank-balance-mismatch-movement-preview",
-    "bank-safe-movement-row",
-  ],
-};
-assert.equal(domProof.movementCountVisible, 5);
-assert.equal(domProof.deltaVisible, true);
-console.log("PASS  1st process → 5 movements + balance delta UI payload");
+assert.match(uiSrc, /bank-open-balance-resolution-center/);
+assert.match(uiSrc, /disabled=\{!outputGate\.allowed\}/);
+console.log("PASS  1st process → 4 true movements + BALANCE_MATCHED evidence");
 
-// 2) Persist review_required into durable audit shape (dedup scope)
+// 2) Persist completed result into durable audit shape (dedup scope)
 const idemKey = buildIdempotencyKey({
   companyId: MARE,
   contentHash: cp.contentHash,
 });
 const summary = buildV1ResultSummary({
-  movementCount: 5,
-  terminalStatus: V1_JOB_STATE.REVIEW_REQUIRED,
+  movementCount: 4,
+  terminalStatus: V1_JOB_STATE.COMPLETED,
   contentHash: cp.contentHash,
-  reviewRequired: true,
-  canAutoApprove: false,
-  balanceMismatch: true,
-  balanceCode: BALANCE_MISMATCH,
+  reviewRequired: false,
+  canAutoApprove: true,
+  balanceMismatch: false,
+  balanceCode: BALANCE_MATCHED,
 });
 const persisted = buildSafeV1PersistPayload({
   companyId: MARE,
@@ -133,9 +107,10 @@ const persisted = buildSafeV1PersistPayload({
   idempotencyKey: idemKey,
   summary,
 });
-assert.equal(persisted.metadata.terminal_status, "review_required");
-assert.equal(persisted.metadata.balance_mismatch, true);
-assert.equal(persisted.metadata.movement_count, 5);
+assert.equal(persisted.metadata.terminal_status, "completed");
+assert.equal(persisted.metadata.balance_mismatch, undefined);
+assert.equal(persisted.metadata.balance_code, BALANCE_MATCHED);
+assert.equal(persisted.metadata.movement_count, 4);
 
 const history = [
   {
@@ -195,9 +170,9 @@ assert.ok(!wb.includes("err.code = \"BALANCE_MISMATCH\";\n        err.reviewRequ
 
 console.log(
   JSON.stringify({
-    txCount: 5,
-    code: BALANCE_MISMATCH,
-    terminalStatus: "review_required",
+    txCount: 4,
+    code: BALANCE_MATCHED,
+    terminalStatus: "completed",
     extractPath: parsed.extractDiagnostics?.extractPath || null,
     ocrUsed: false,
     dedup: "DUPLICATE_CONTENT",
@@ -205,8 +180,8 @@ console.log(
     jobSecondRevision: false,
     tenantIsolated: true,
     ui: {
-      movementCount: 5,
-      deltaVisible: true,
+      movementCount: 4,
+      delta: 0,
       duplicateMessage: DUPLICATE_STATEMENT_UI_MESSAGE,
     },
   })

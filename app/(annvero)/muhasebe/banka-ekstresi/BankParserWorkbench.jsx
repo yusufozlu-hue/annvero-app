@@ -192,6 +192,9 @@ import {
   reconcileStatementBalances,
 } from "@/src/utils/bankBalanceReconcile";
 import {
+  applyBalanceResolution,
+} from "@/src/utils/bankBalanceResolution";
+import {
   DUPLICATE_CONTENT,
   DUPLICATE_STATEMENT_UI_MESSAGE,
   applySessionMovementDedup,
@@ -531,8 +534,10 @@ export default function BankParserWorkbench() {
   const duplicatePriorJobRef = useRef(null);
   const reanalyzeOptionsRef = useRef(null);
   const previousAnalysisCountersRef = useRef(null);
+  const balanceResolutionRef = useRef(null);
   const ocrAbortRef = useRef(null);
   const [isReanalyzing, setIsReanalyzing] = useState(false);
+  const [isBalanceResolving, setIsBalanceResolving] = useState(false);
   const bankJobStateRef = useRef(createInitialBankJobState());
   /** Pipeline/parse bankası — React state'ten bağımsız (stale closure yok) */
   const activeBankRef = useRef("");
@@ -738,7 +743,9 @@ export default function BankParserWorkbench() {
     duplicatePriorJobRef.current = null;
     reanalyzeOptionsRef.current = null;
     previousAnalysisCountersRef.current = null;
+    balanceResolutionRef.current = null;
     setIsReanalyzing(false);
+    setIsBalanceResolving(false);
     setV1AuditHistory([]);
   }, [selectedCompanyId]);
 
@@ -883,7 +890,9 @@ export default function BankParserWorkbench() {
       duplicatePriorJobRef.current = null;
       reanalyzeOptionsRef.current = null;
       previousAnalysisCountersRef.current = null;
+      balanceResolutionRef.current = null;
       setIsReanalyzing(false);
+      setIsBalanceResolving(false);
       setResolvedCariGroupIds(new Set());
       setResolvedCariGroups([]);
       setCariApplyUndoStack([]);
@@ -4339,8 +4348,9 @@ export default function BankParserWorkbench() {
           };
           setIsParsing(false);
 
-          // Parse-OK + BALANCE_MISMATCH → review_required (teknik hata değil)
+          // Parse-OK + bakiye uyuşmazlığı/eksik kanıt → review_required.
           if (preview.balanceMismatch) {
+            const balanceCode = preview.balance?.code || BALANCE_MISMATCH;
             const contentHash =
               lastDedupMetaRef.current?.sourceFileHash ||
               sourceCheckpointRef.current?.contentHash ||
@@ -4377,8 +4387,8 @@ export default function BankParserWorkbench() {
               chainMs: totalDurationMs,
               reviewRequired: true,
               canAutoApprove: false,
-              balanceMismatch: true,
-              balanceCode: BALANCE_MISMATCH,
+              balanceMismatch: balanceCode === BALANCE_MISMATCH,
+              balanceCode,
             });
             emitV1(V1_JOB_STATE.PERSISTING, 80, "İnceleme özeti kaydediliyor…");
             const idempotencyKey = buildIdempotencyKey({
@@ -4421,14 +4431,14 @@ export default function BankParserWorkbench() {
               engineVersion: ANNVERO_V1_ENGINE_VERSION,
               lucaRowCount: 0,
               canAutoApprove: false,
-              message: BALANCE_MISMATCH_UI_MESSAGE,
+              message: reviewPayload.message,
             });
             setPipelineError(null);
             setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
             setPipelineProgress({
               percent: 100,
               label: "İnceleme gerekli",
-              detail: BALANCE_MISMATCH_UI_MESSAGE,
+              detail: reviewPayload.message,
               processed: movementsRef.current.length,
               total: movementsRef.current.length,
             });
@@ -4780,6 +4790,14 @@ export default function BankParserWorkbench() {
           accountPlanCount,
           resolvedMissingCount: revisionCompare?.resolvedMissing ?? 0,
           trulyNotFoundCount: revisionCompare?.trulyNotFound ?? 0,
+          balanceResolutionApplied: Boolean(
+            balanceResolutionRef.current?.applied
+          ),
+          balanceResolutionChangeCount:
+            balanceResolutionRef.current?.changeCount || 0,
+          balanceResolutionLearned: Boolean(
+            balanceResolutionRef.current?.learnForCompany
+          ),
         },
         checkpointPhase: V1_JOB_STATE.PERSISTING,
         action: "persist",
@@ -4833,6 +4851,43 @@ export default function BankParserWorkbench() {
         revisionCompare,
         trulyNotFound: revisionCompare?.trulyNotFound ?? 0,
         resolvedMissing: revisionCompare?.resolvedMissing ?? 0,
+        balanceResolutionApplied: Boolean(
+          balanceResolutionRef.current?.applied
+        ),
+        balanceResolutionChangeCount:
+          balanceResolutionRef.current?.changeCount || 0,
+        openingBalance:
+          balanceResolutionRef.current?.balance?.openingBalance ??
+          balanceResult?.openingBalance ??
+          null,
+        totalDebit:
+          balanceResolutionRef.current?.balance?.debits ??
+          balanceResult?.debits ??
+          null,
+        totalCredit:
+          balanceResolutionRef.current?.balance?.credits ??
+          balanceResult?.credits ??
+          null,
+        computedClosingBalance:
+          balanceResolutionRef.current?.balance?.expectedClosing ??
+          balanceResult?.expectedClosing ??
+          null,
+        statementClosingBalance:
+          balanceResolutionRef.current?.balance?.closingBalance ??
+          balanceResult?.closingBalance ??
+          null,
+        reconciliationDelta:
+          balanceResolutionRef.current?.balance?.delta ??
+          balanceResult?.delta ??
+          null,
+        openingEvidence:
+          balanceResolutionRef.current?.balance?.openingEvidence ??
+          balanceResult?.openingEvidence ??
+          null,
+        closingEvidence:
+          balanceResolutionRef.current?.balance?.closingEvidence ??
+          balanceResult?.closingEvidence ??
+          null,
       };
       setPipelineResult(result);
       setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
@@ -5212,6 +5267,173 @@ export default function BankParserWorkbench() {
       );
       setIsReanalyzing(false);
       reanalyzeOptionsRef.current = null;
+    }
+  };
+
+  const handleApplyBalanceResolution = async (draft) => {
+    if (isJobBusy || isReanalyzing || isBalanceResolving) return;
+    if (!selectedCompanyId || !movementsRef.current.length) {
+      showToast("Bakiye düzeltmesi için aktif firma ve hareketler gerekli.", "error");
+      return;
+    }
+    const prior =
+      (v1AuditHistory || []).find(
+        (row) =>
+          row?.metadata?.balance_code === pipelineResult?.code ||
+          row?.metadata?.terminal_status === V1_JOB_STATE.REVIEW_REQUIRED
+      ) ||
+      (v1AuditHistory || [])[0] ||
+      null;
+    if (!prior?.id) {
+      showToast("Önceki inceleme kaydı bulunamadı; revision oluşturulamadı.", "error");
+      return;
+    }
+    const tenantCheck = assertSameTenantReanalyze({
+      requestCompanyId: selectedCompanyId,
+      priorCompanyId: prior.companyId || prior.company_id || selectedCompanyId,
+    });
+    if (!tenantCheck.ok) {
+      showToast(tenantCheck.message, "error");
+      return;
+    }
+
+    setIsBalanceResolving(true);
+    setIsReanalyzing(true);
+    try {
+      const resolution = applyBalanceResolution({
+        movements: movementsRef.current,
+        draft,
+        originalBalance: {
+          openingBalance: pipelineResult?.openingBalance,
+          closingBalance: pipelineResult?.statementClosingBalance,
+          openingEvidence: pipelineResult?.openingEvidence,
+          closingEvidence: pipelineResult?.closingEvidence,
+        },
+      });
+      movementsRef.current = resolution.correctedMovements;
+      applyMovementPreview(resolution.correctedMovements, null, rawCount);
+      balanceResolutionRef.current = {
+        applied: true,
+        changeCount: resolution.changeCount,
+        learnForCompany: resolution.learnForCompany,
+        previousCode: pipelineResult?.code || BALANCE_MISMATCH,
+        balance: resolution.balance,
+      };
+      previousAnalysisCountersRef.current = extractAnalysisCounters(prior);
+
+      const previousStages = v1StageOutputsRef.current || {};
+      v1StageOutputsRef.current = {
+        [V1_JOB_STATE.VALIDATING]: previousStages[V1_JOB_STATE.VALIDATING],
+        [V1_JOB_STATE.ARCHIVING]: previousStages[V1_JOB_STATE.ARCHIVING],
+        [V1_JOB_STATE.PARSING]: {
+          movementCount: resolution.correctedMovements.length,
+          balanceMismatch: !resolution.matched,
+          balanceCode: resolution.balance.code,
+          balanceMatched: resolution.matched,
+          balanceResolutionApplied: true,
+        },
+        [V1_JOB_STATE.DEDUPLICATING]: {
+          ok: true,
+          fromBalanceResolution: true,
+        },
+      };
+      processedMovementKeysRef.current = new Set();
+      v1JobIdRef.current = `v1_${Date.now().toString(36)}_${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
+
+      const priorRevision = Number(prior.metadata?.revision || 1) || 1;
+      if (!resolution.matched) {
+        const contentHash =
+          lastDedupMetaRef.current?.sourceFileHash ||
+          sourceCheckpointRef.current?.contentHash ||
+          "";
+        const revision = nextRevisionNumber(priorRevision);
+        const reviewPayload = buildBalanceMismatchReviewPayload({
+          balance: resolution.balance,
+          movements: resolution.correctedMovements,
+          contentHash,
+        });
+        await persistV1JobSummary({
+          companyId: selectedCompanyId,
+          jobId: v1JobIdRef.current,
+          idempotencyKey: buildRevisionIdempotencyKey({
+            companyId: selectedCompanyId,
+            contentHash,
+            revision,
+          }),
+          summary: {
+            ...buildV1ResultSummary({
+              movementCount: resolution.correctedMovements.length,
+              lucaRowCount: 0,
+              reviewCount: resolution.correctedMovements.length,
+              archive: previousStages[V1_JOB_STATE.ARCHIVING],
+              terminalStatus: V1_JOB_STATE.REVIEW_REQUIRED,
+              contentHash,
+              reviewRequired: true,
+              canAutoApprove: false,
+              balanceMismatch: resolution.balance.code === BALANCE_MISMATCH,
+              balanceCode: resolution.balance.code,
+            }),
+            reanalyze: true,
+            revision,
+            revisionOf: prior.id,
+            supersedesJobId: prior.id,
+            balanceResolutionApplied: true,
+            balanceResolutionChangeCount: resolution.changeCount,
+            balanceResolutionLearned: resolution.learnForCompany,
+          },
+          checkpointPhase: V1_JOB_STATE.PERSISTING,
+          action: "persist",
+          reanalyze: true,
+          revisionOf: prior.id,
+          revision,
+          supersedesJobId: prior.id,
+        });
+        setPipelineResult({
+          ...reviewPayload,
+          reanalyze: true,
+          revision,
+          supersedesJobId: prior.id,
+          driveArchived: Boolean(
+            previousStages[V1_JOB_STATE.ARCHIVING]?.safeSummary?.archived
+          ),
+          balanceResolutionApplied: true,
+          balanceResolutionChangeCount: resolution.changeCount,
+        });
+        setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+        setPipelineError(null);
+        setPipelineProgress({
+          percent: 100,
+          label: "İnceleme sürüyor",
+          detail: reviewPayload.message,
+          processed: resolution.correctedMovements.length,
+          total: resolution.correctedMovements.length,
+        });
+        const history = await listV1JobHistory(selectedCompanyId, 20);
+        if (history?.runs) setV1AuditHistory(history.runs);
+        showToast(
+          "Revision kaydedildi; mutabakat sağlanmadığı için çıktılar kapalı.",
+          "info"
+        );
+        return;
+      }
+
+      await runFullBankPipeline({
+        resumeFrom: V1_JOB_STATE.APPLYING_CORE,
+        reanalyze: true,
+        revisionOf: prior.id,
+        priorRevision,
+        priorJob: prior,
+      });
+    } catch (error) {
+      showToast(
+        error?.message || "Bakiye düzeltmesi uygulanamadı.",
+        "error"
+      );
+    } finally {
+      setIsBalanceResolving(false);
+      setIsReanalyzing(false);
     }
   };
 
@@ -5807,7 +6029,9 @@ export default function BankParserWorkbench() {
                 }
               }}
               onReanalyzeWithNewPlan={handleReanalyzeWithNewPlan}
+              onApplyBalanceResolution={handleApplyBalanceResolution}
               isReanalyzing={isReanalyzing}
+              isBalanceResolving={isBalanceResolving}
               auditHistory={v1AuditHistory}
               secondaryBtnClass={annveroBtnSecondary}
               isReviewMissingLoading={cariResolutionLoading}

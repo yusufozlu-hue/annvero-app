@@ -11,7 +11,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const {
   BALANCE_MISMATCH,
-  reconcileStatementBalances,
 } = await import("@/src/utils/bankBalanceReconcile.js");
 const {
   BALANCE_MISMATCH_UI_MESSAGE,
@@ -201,17 +200,13 @@ if (fs.existsSync(PDF_PATH)) {
     selectedBank: "VAKIFBANK",
     companyId: "84384297-270c-47cd-ac5a-d693ba80b84a",
   });
-  assert.ok((parsed.transactions || []).length >= 5, "txCount>=5");
-  assert.equal(parsed.code, BALANCE_MISMATCH);
-  assert.equal(parsed.balance?.reviewRequired, true);
-  const payload = buildBalanceMismatchReviewPayload({
-    balance: parsed.balance,
-    movements: parsed.transactions,
-    contentHash: "redacted",
-  });
-  assert.equal(payload.movementCount, (parsed.transactions || []).length);
-  assert.ok(payload.movementPreview.length <= 5);
-  assert.ok(payload.reconciliationDelta != null);
+  assert.equal((parsed.transactions || []).length, 4, "gerçek hareket=4");
+  assert.equal(parsed.balance?.code, "BALANCE_MATCHED");
+  assert.equal(parsed.balance?.reviewRequired, false);
+  assert.equal(parsed.balance?.openingBalance, 0);
+  assert.equal(parsed.balance?.closingBalance, 0);
+  assert.equal(parsed.balance?.openingEvidence?.sourceLine, 10);
+  assert.equal(parsed.balance?.closingEvidence?.sourceLine, 17);
   const cp = await createBankStatementSourceCheckpoint(
     new File([buf], "00158018033466201.pdf", { type: "application/pdf" })
   );
@@ -228,16 +223,18 @@ if (fs.existsSync(PDF_PATH)) {
   console.log(
     JSON.stringify({
       path: "real-pdf",
-      txCount: payload.movementCount,
-      code: parsed.code,
-      reviewRequired: true,
+      txCount: parsed.transactions.length,
+      code: parsed.balance.code,
+      reviewRequired: false,
       extractPath: parsed.extractDiagnostics?.extractPath || null,
       ocrUsed: Boolean(parsed.ocrUsed),
       contentHashPresent: true,
-      deltaPresent: payload.reconciliationDelta != null,
+      delta: parsed.balance.delta,
+      openingSourceLine: parsed.balance.openingEvidence?.sourceLine ?? null,
+      closingSourceLine: parsed.balance.closingEvidence?.sourceLine ?? null,
     })
   );
-  console.log("PASS  real PDF → txCount + BALANCE_MISMATCH review payload");
+  console.log("PASS  real PDF → true txCount + BALANCE_MATCHED evidence");
 } else {
   console.log("SKIP  real PDF (missing on disk)");
 }

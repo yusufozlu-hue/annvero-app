@@ -15,6 +15,8 @@ import {
 import {
   BALANCE_EVIDENCE_MISSING,
   BALANCE_MISMATCH,
+  MISSING_CLOSING_BALANCE,
+  MISSING_OPENING_BALANCE,
   reconcileStatementBalances,
 } from "@/src/utils/bankBalanceReconcile.js";
 
@@ -446,16 +448,37 @@ export function parsePdfMovementLines(text = "", context = {}) {
     const ocrLine = line
       .replace(/\s+[-–—]\s+/g, " 0,00 ")
       .replace(/\s+[-–—]$/g, " 0,00");
-    const m = ocrLine.match(
+    const strictMatch = ocrLine.match(
       new RegExp(
         `^(\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4})\\s+(.+?)\\s+(${AMOUNT_TOKEN})(?:\\s+(${AMOUNT_TOKEN}))?(?:\\s+(${AMOUNT_TOKEN}))?$`
       )
     );
-    if (!m) continue;
-
-    const amountTokens = [m[3], m[4], m[5]].filter(
-      (x) => x != null && String(x).trim() !== ""
-    );
+    let transactionDate = "";
+    let descriptionText = "";
+    let amountTokens = [];
+    if (strictMatch) {
+      transactionDate = strictMatch[1];
+      descriptionText = strictMatch[2];
+      amountTokens = [strictMatch[3], strictMatch[4], strictMatch[5]].filter(
+        (x) => x != null && String(x).trim() !== ""
+      );
+    } else {
+      // VakıfBank metin katmanında tutar kolonları açıklamanın ortasında kalabilir.
+      // Satır tarih ile başlamalı; yalnız satır içindeki gerçek para tokenları alınır.
+      const flexible = ocrLine.match(
+        /^(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s+(.+)$/
+      );
+      if (!flexible) continue;
+      transactionDate = flexible[1];
+      const rest = flexible[2];
+      const matches = [...rest.matchAll(new RegExp(AMOUNT_TOKEN, "g"))];
+      if (!matches.length) continue;
+      amountTokens = matches.map((match) => match[0]);
+      descriptionText = rest;
+      for (const token of amountTokens) {
+        descriptionText = descriptionText.replace(token, " ");
+      }
+    }
     const amounts = amountTokens
       .map(parseTrAmount)
       .filter((n) => Number.isFinite(n));
@@ -519,7 +542,7 @@ export function parsePdfMovementLines(text = "", context = {}) {
     }
 
     const direction = signed < 0 ? "CIKIS" : "GIRIS";
-    const description = String(m[2] || "")
+    const description = String(descriptionText || "")
       .replace(/\s+/g, " ")
       .trim();
     if (!description || description.length < 2) {
@@ -532,7 +555,7 @@ export function parsePdfMovementLines(text = "", context = {}) {
         companyId: context.companyId,
         bank,
         accountIdentity: context.accountIdentity || "",
-        transactionDate: m[1].replace(/-/g, ".").replace(/\//g, "."),
+        transactionDate: transactionDate.replace(/-/g, ".").replace(/\//g, "."),
         description,
         amount: signed,
         debit_amount: debit,
@@ -554,38 +577,74 @@ export function parsePdfMovementLines(text = "", context = {}) {
 }
 
 export function extractBalanceHintsFromText(text = "") {
-  const t = String(text || "");
-  const open =
-    t.match(/a[cç]ili[sş]\s*bakiyesi\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i) ||
-    t.match(/opening\s*balance\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i);
-  const close =
-    t.match(/kapan[iı][sş]\s*bakiyesi\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i) ||
-    t.match(/closing\s*balance\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i) ||
-    t.match(/son\s*bakiye\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i);
+  const lines = String(text || "").split(/\r?\n/);
+  let currentPage = 1;
+  let pageLine = 0;
+  let openingBalance = null;
+  let closingBalance = null;
+  let openingEvidence = null;
+  let closingEvidence = null;
 
-  let openingBalance = open ? parseTrAmount(open[1]) : NaN;
-  let closingBalance = close ? parseTrAmount(close[1]) : NaN;
-  if (!Number.isFinite(openingBalance)) openingBalance = null;
-  if (!Number.isFinite(closingBalance)) closingBalance = null;
-
-  // VakıfBank etc.: column "Bakiye" without "kapanış bakiyesi" label —
-  // trailing amount token is the statement running close (may be 0,00).
-  if (closingBalance == null && /bakiye/i.test(t)) {
-    const amountRe = new RegExp(AMOUNT_TOKEN, "g");
-    const nums = [];
-    let m;
-    while ((m = amountRe.exec(t))) {
-      const n = parseTrAmount(m[0]);
-      if (Number.isFinite(n)) nums.push(n);
+  for (const raw of lines) {
+    const pageMark = String(raw || "").match(/^---\s*page\s+(\d+)\s*---$/i);
+    if (pageMark) {
+      currentPage = Number(pageMark[1]) || currentPage;
+      pageLine = 0;
+      continue;
     }
-    if (nums.length >= 2) {
-      closingBalance = nums[nums.length - 1];
+    pageLine += 1;
+    const line = normalizeLine(raw);
+    if (!line) continue;
+    const open =
+      line.match(
+        /a[cç][iı]l[iı][sş]\s*bakiyesi\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i
+      ) ||
+      line.match(
+        /opening\s*balance\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i
+      );
+    const close =
+      line.match(
+        /kapan[iı][sş]\s*bakiyesi\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i
+      ) ||
+      line.match(
+        /closing\s*balance\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i
+      ) ||
+      line.match(
+        /son\s*bakiye\s*[:=]?\s*(-?\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|-?\d+(?:,\d{2}))/i
+      );
+    if (open) {
+      const value = parseTrAmount(open[1]);
+      if (Number.isFinite(value)) {
+        openingBalance = value;
+        openingEvidence = {
+          source: "explicit_label",
+          sourcePage: currentPage,
+          sourceLine: pageLine,
+          confidence: 0.98,
+        };
+      }
+    }
+    if (close) {
+      const value = parseTrAmount(close[1]);
+      if (Number.isFinite(value)) {
+        closingBalance = value;
+        closingEvidence = {
+          source: "explicit_label",
+          sourcePage: currentPage,
+          sourceLine: pageLine,
+          confidence: 0.98,
+        };
+      }
     }
   }
 
   return {
     openingBalance,
     closingBalance,
+    openingEvidence,
+    closingEvidence,
+    source:
+      openingBalance != null || closingBalance != null ? "explicit_label" : null,
   };
 }
 
@@ -841,10 +900,15 @@ export async function parseBankStatementPdf(bytes, options = {}) {
       : BANK_PARSE_STATUS.OK;
 
   let code = "OK";
-  if (balance.reviewRequired || balance.code === BALANCE_MISMATCH) {
-    code = BALANCE_MISMATCH;
+  if (
+    balance.reviewRequired ||
+    balance.code === BALANCE_MISMATCH ||
+    balance.code === MISSING_CLOSING_BALANCE ||
+    balance.code === MISSING_OPENING_BALANCE
+  ) {
+    code = balance.code;
   } else if (balance.code === BALANCE_EVIDENCE_MISSING) {
-    code = BALANCE_EVIDENCE_MISSING;
+    code = balance.code;
   }
 
   return {
