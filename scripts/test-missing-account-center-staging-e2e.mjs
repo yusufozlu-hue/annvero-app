@@ -1,6 +1,6 @@
 /**
  * Staging closeout proof: VakıfBank PDF → missing-account center list not empty.
- * Uses local real PDF (not committed). Asserts Tümü shows every missing row group.
+ * Uses local real PDF (not committed). Asserts live MARE shape: 3 missing → Tümü 3.
  *
  * Run: node --import ./scripts/_alias-loader.mjs ./scripts/test-missing-account-center-staging-e2e.mjs
  */
@@ -49,6 +49,7 @@ const parsed = await parseBankStatementPdf(ab, {
 });
 
 assert.equal((parsed.transactions || []).length, 4, "expected 4 movements");
+assert.equal(parsed.balance?.code, "BALANCE_MATCHED");
 
 const movements = (parsed.transactions || []).map((tx, idx) =>
   buildParserOnlyMovement(tx, {
@@ -65,35 +66,66 @@ const lucaRows = movements.flatMap((m) =>
   })
 );
 
-// Simulate unresolved counterparties (no plan match) while keeping tax/POS types.
-const unresolved = lucaRows.map((row) => {
+// Live MARE revision #2 shape: 1 auto-matched + 3 missing (1 Vergi/SGK).
+const counterpartRows = lucaRows.filter(
+  (row) => !String(row.hesapKodu || "").startsWith("102")
+);
+assert.ok(counterpartRows.length >= 4, "expected counterparty luca legs");
+
+const unresolved = lucaRows.map((row, idx) => {
   const isBankGl = String(row.hesapKodu || "").startsWith("102");
   if (isBankGl) return row;
+
+  const counterpartIndex = counterpartRows.indexOf(row);
+  // First counterparty leg stays matched (auto-matched 1).
+  if (counterpartIndex === 0) {
+    return {
+      ...row,
+      hesapKodu: row.hesapKodu || "320.01.0001",
+      riskDurumu: "OK",
+      missingHesapCategory: "",
+    };
+  }
+
+  const desc = String(row.detayAciklama || row.fisAciklama || "");
+  const makeTax = counterpartIndex === 1;
   return {
     ...row,
+    id: row.id || `missing-${idx}`,
     hesapKodu: "",
     riskDurumu: "HESAP_EKSIK",
-    missingHesapCategory:
-      row.missingHesapCategory ||
-      (String(row.transactionType || "").includes("MTV") ||
-      /VERGI|SGK|MTV|KDV/i.test(String(row.detayAciklama || ""))
-        ? "Vergi/SGK türü çözülemedi"
-        : "Cari bulunamadı"),
+    transactionType: makeTax ? "MTV" : row.transactionType || "GIDEN_HAVALE",
+    cariRequired: makeTax ? false : true,
+    missingHesapCategory: makeTax
+      ? ""
+      : "Cari bulunamadı",
+    direction: row.direction || "CIKIS",
+    detayAciklama: makeTax ? `${desc} MTV ODEME`.trim() : desc,
   };
 });
 
 const report = analyzeMissingHesapRows(unresolved);
-assert.ok(report.missingCount >= 1, "expected missing hesap rows");
+assert.equal(report.missingCount, 3, "live shape: 3 missing accounts");
 
 const snapshot = buildCariResolutionGroups(
   unresolved,
   {
     selectedCompany: MARE,
     selectedBank: "VAKIFBANK",
-    companyPlans: [],
+    companyPlans: [
+      {
+        accountCode: "320.01.0001",
+        accountName: "AUTO MATCHED CARI",
+        isActive: true,
+      },
+    ],
   },
   { initialCandidateGroups: 0 }
 );
+
+assert.equal(snapshot.totalMissing, 3);
+assert.equal(snapshot.taxObligationMissingCount, 1);
+assert.equal(snapshot.taxObligationGroupCount, 1);
 
 const allVisible = selectVisibleResolutionGroups({
   filter: CARI_RESOLUTION_FILTERS.ALL,
@@ -103,46 +135,52 @@ const remainingVisible = selectVisibleResolutionGroups({
   filter: CARI_RESOLUTION_FILTERS.REMAINING,
   ...snapshot,
 });
+const taxVisible = selectVisibleResolutionGroups({
+  filter: CARI_RESOLUTION_FILTERS.TAX_OBLIGATIONS,
+  ...snapshot,
+});
 const defaultFilter = pickDefaultCariResolutionFilter(snapshot);
 const defaultVisible = selectVisibleResolutionGroups({
   filter: defaultFilter,
   ...snapshot,
 });
 
-assert.equal(
-  allVisible.length,
-  snapshot.resolvableGroupCount,
-  "Tümü must list every resolvable group"
-);
-assert.ok(allVisible.length >= 1, "Tümü must not be empty when missing>0");
-assert.equal(remainingVisible.length, countOpenResolutionGroups(snapshot));
+assert.equal(allVisible.length, 3, "totalMissing 3 → Tümü 3");
+assert.equal(remainingVisible.length, 3, "totalMissing 3 → Kalanlar 3");
+assert.equal(taxVisible.length, 1, "Vergi/SGK chip shows tax row");
+assert.ok(allVisible.some((g) => g.taxObligationGroup), "tax stays in Tümü");
 assert.ok(defaultVisible.length > 0, "default filter must not be empty");
-assert.ok(
-  snapshot.totalMissing === 0 || allVisible.length > 0,
-  "counter/list mismatch forbidden"
-);
+assert.equal(countOpenResolutionGroups(snapshot), 3);
+assert.equal(allVisible.length, snapshot.resolvableGroupCount);
 
-// MARE live shape target: when 3 missing exist, Tümü shows 3.
-if (snapshot.totalMissing === 3) {
-  assert.equal(allVisible.length, 3, "totalMissing 3 → Tümü 3");
-  assert.equal(remainingVisible.length, 3, "totalMissing 3 → Kalanlar 3");
+for (const g of allVisible) {
+  assert.ok(g.partyName || (g.samples || []).length, "row has label");
+  assert.ok(
+    (g.transactions && g.transactions.length) || (g.samples || []).length,
+    "row has description samples/transactions"
+  );
 }
 
 console.log(
   JSON.stringify({
     movementCount: parsed.transactions.length,
-    lucaRows: lucaRows.length,
+    balance: parsed.balance?.code,
     totalMissing: snapshot.totalMissing,
     taxMissing: snapshot.taxObligationMissingCount,
     taxGroups: snapshot.taxObligationGroupCount,
-    cariGroups: snapshot.groupCount,
     resolvableGroupCount: snapshot.resolvableGroupCount,
     allVisible: allVisible.length,
     remainingVisible: remainingVisible.length,
+    taxVisible: taxVisible.length,
     defaultFilter,
     defaultVisible: defaultVisible.length,
-    partyNames: allVisible.map((g) => g.partyName),
+    hasTaxInAll: allVisible.some((g) => g.taxObligationGroup),
   })
 );
 
-console.log("PASS  missing-account center staging e2e (PDF → visible groups)");
+console.log(
+  "PASS  missing-account center staging e2e (PDF MARE shape → 3 visible rows)"
+);
+console.log(
+  "STAGING_E2E_STATUS: LOCAL_PDF_PASS — live preview login password unavailable; list contract verified on same PDF"
+);
