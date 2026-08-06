@@ -630,10 +630,11 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
       }
     }
 
-    // Mükerrer kaynak hareket
+    // Mükerrer kaynak hareket — aynı fişte borç+alacak bacakları
+    // aynı sourceMovementId taşır (bankMovementToStandardLucaRows); bu mükerrer değil.
     if (canon.sourceMovementId) {
       const sk = `${firmaId}|${canon.sourceMovementId}`;
-      if (processedSourceKeys.has(sk) || duplicateSourceKeys.has(sk)) {
+      if (processedSourceKeys.has(sk)) {
         rowIssues[index].push(
           createIssue(
             KONTROL_TIP.MUKERRER_KAYNAK,
@@ -641,6 +642,24 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
             DUPLICATE_VOUCHER_UI_MESSAGE
           )
         );
+      } else if (duplicateSourceKeys.has(sk)) {
+        const prev = sourceRows[duplicateSourceKeys.get(sk)];
+        const sameFis =
+          String(prev?.fisNo ?? "").trim() !== "" &&
+          String(prev?.fisNo ?? "").trim() === String(row.fisNo ?? "").trim();
+        const prevRole = String(prev?.lineRole || "").trim();
+        const thisRole = String(row.lineRole || "").trim();
+        const sameLegRole = Boolean(prevRole && thisRole && prevRole === thisRole);
+        // Farklı fiş veya aynı fişte aynı bacak → gerçek mükerrer
+        if (!sameFis || sameLegRole) {
+          rowIssues[index].push(
+            createIssue(
+              KONTROL_TIP.MUKERRER_KAYNAK,
+              KONTROL_SEVIYE.HATA,
+              DUPLICATE_VOUCHER_UI_MESSAGE
+            )
+          );
+        }
       } else {
         duplicateSourceKeys.set(sk, index);
       }

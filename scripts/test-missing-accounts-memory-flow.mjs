@@ -220,6 +220,16 @@ test("apply + undo + reanalyze without reload", () => {
   assert.ok(re.findingClasses);
   assert.ok(re.durationMs >= 0);
   assert.ok(re.pipelinePatch.reanalyzedWithoutReload);
+  assert.equal(
+    re.pipelinePatch.critical,
+    re.fisKontrol.critical,
+    "reanalyze patch critical must mirror fisKontrol"
+  );
+  assert.equal(
+    re.pipelinePatch.errors,
+    re.fisKontrol.errors,
+    "reanalyze patch errors must mirror fisKontrol"
+  );
 
   const restored = restoreLucaRowsFromUndoSnapshot(re.lucaRows, undo);
   const undoneMissing = restored.filter(

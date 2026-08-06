@@ -95,6 +95,7 @@ export function buildPipelinePatchFromReanalyze({
     passed: fisKontrol?.passed ?? 0,
     warnings: fisKontrol?.warnings ?? 0,
     errors: fisKontrol?.errors ?? 0,
+    critical: fisKontrol?.critical ?? 0,
     lowConfidence: fisKontrol?.lowConfidence ?? 0,
     canAutoApprove: Boolean(fisKontrol?.canAutoApprove),
     reviewRequired: Boolean(fisKontrol?.reviewRequired),

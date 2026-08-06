@@ -38,7 +38,8 @@
     "test:bank-parser-reanalyze": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-parser-reanalyze.mjs",
     "test:v1-canonical-surface": "node ./scripts/test-v1-canonical-result-surface.mjs",
     "test:bank-ocr": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-ocr.mjs",
-    "test:bank-balance-resolution": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-balance-resolution-center.mjs"
+    "test:bank-balance-resolution": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-balance-resolution-center.mjs",
+    "test:pdf-excel-missing-parity": "node --import ./scripts/_alias-loader.mjs ./scripts/test-pdf-excel-missing-account-parity.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.65",
