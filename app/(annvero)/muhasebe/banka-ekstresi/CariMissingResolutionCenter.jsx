@@ -5,7 +5,9 @@ import {
   CARI_RESOLUTION_FILTERS,
   CARI_RESOLUTION_MODAL_WIDTH_CSS,
   createCariResolutionPlanCache,
-  filterCariResolutionGroups,
+  selectVisibleResolutionGroups,
+  countOpenResolutionGroups,
+  pickDefaultCariResolutionFilter,
   hydrateCariResolutionGroupCandidates,
   searchCariResolutionCandidates,
   searchCreditCardResolutionCandidates,
@@ -799,6 +801,7 @@ export default function CariMissingResolutionCenter({
   const [bulkCode, setBulkCode] = useState("");
   const [bulkName, setBulkName] = useState("");
   const [bulkLearn, setBulkLearn] = useState(true);
+  const [filterBootstrappedFor, setFilterBootstrappedFor] = useState("");
 
   const resolutionCompanyKey = String(
     selectedCompanyProp?.id ||
@@ -816,6 +819,7 @@ export default function CariMissingResolutionCenter({
     setBulkLearn(true);
     setFilter(CARI_RESOLUTION_FILTERS.REMAINING);
     setQuery("");
+    setFilterBootstrappedFor("");
   }
 
   const groups = useMemo(() => snapshot?.groups || [], [snapshot?.groups]);
@@ -852,13 +856,54 @@ export default function CariMissingResolutionCenter({
   );
 
   const remainingGroups = useMemo(
-    () => groups.filter((g) => !resolvedSet.has(g.id)).length,
-    [groups, resolvedSet]
+    () =>
+      countOpenResolutionGroups(
+        {
+          groups,
+          taxObligationGroups,
+          creditCardGroups,
+          virmanCandidateGroups,
+        },
+        resolvedSet
+      ),
+    [
+      groups,
+      taxObligationGroups,
+      creditCardGroups,
+      virmanCandidateGroups,
+      resolvedSet,
+    ]
   );
   const resolvedCount = useMemo(() => {
     if (resolvedGroups.length) return resolvedGroups.length;
     return resolvedSet.size;
   }, [resolvedGroups, resolvedSet]);
+
+  const snapshotBootstrapKey = useMemo(() => {
+    if (!snapshot || loading) return "";
+    return [
+      resolutionCompanyKey,
+      snapshot.totalMissing ?? "",
+      snapshot.groupCount ?? "",
+      snapshot.taxObligationGroupCount ?? "",
+      snapshot.creditCardGroupCount ?? "",
+      snapshot.virmanCandidateGroupCount ?? "",
+      (snapshot.groups || []).map((g) => g.id).join(","),
+      (snapshot.taxObligationGroups || []).map((g) => g.id).join(","),
+      (snapshot.creditCardGroups || []).map((g) => g.id).join(","),
+      (snapshot.virmanCandidateGroups || []).map((g) => g.id).join(","),
+    ].join("|");
+  }, [snapshot, resolutionCompanyKey, loading]);
+
+  // Snapshot gelince boş varsayılan filtreye düşme (effect setState yasak — render-time).
+  if (
+    open &&
+    snapshotBootstrapKey &&
+    filterBootstrappedFor !== snapshotBootstrapKey
+  ) {
+    setFilterBootstrappedFor(snapshotBootstrapKey);
+    setFilter(pickDefaultCariResolutionFilter(snapshot, resolvedSet));
+  }
 
   const bulkTargets = useMemo(() => {
     return (groups || []).filter(
@@ -893,53 +938,29 @@ export default function CariMissingResolutionCenter({
     });
   };
 
-  const visible = useMemo(() => {
-    if (filter === CARI_RESOLUTION_FILTERS.RESOLVED) {
-      return filterCariResolutionGroups(resolvedGroups, {
-        filter: CARI_RESOLUTION_FILTERS.ALL,
-        query,
-        resolvedIds: new Set(resolvedGroups.map((g) => g.id)),
-      });
-    }
-    if (filter === CARI_RESOLUTION_FILTERS.VIRMAN_CANDIDATES) {
-      return filterCariResolutionGroups(virmanCandidateGroups, {
-        filter: CARI_RESOLUTION_FILTERS.ALL,
+  const visible = useMemo(
+    () =>
+      selectVisibleResolutionGroups({
+        filter,
         query,
         resolvedIds: resolvedSet,
-      });
-    }
-    if (filter === CARI_RESOLUTION_FILTERS.CREDIT_CARDS) {
-      return filterCariResolutionGroups(creditCardGroups, {
-        filter: CARI_RESOLUTION_FILTERS.ALL,
-        query,
-        resolvedIds: resolvedSet,
-      });
-    }
-    if (filter === CARI_RESOLUTION_FILTERS.TAX_OBLIGATIONS) {
-      return filterCariResolutionGroups(taxObligationGroups, {
-        filter: CARI_RESOLUTION_FILTERS.ALL,
-        query,
-        resolvedIds: resolvedSet,
-      });
-    }
-    return filterCariResolutionGroups(groups, {
+        groups,
+        resolvedGroups,
+        virmanCandidateGroups,
+        creditCardGroups,
+        taxObligationGroups,
+      }),
+    [
+      groups,
+      resolvedGroups,
+      virmanCandidateGroups,
+      creditCardGroups,
+      taxObligationGroups,
       filter,
       query,
-      resolvedIds: resolvedSet,
-    }).filter(
-      (g) =>
-        !g.virmanCandidate && !g.creditCardGroup && !g.taxObligationGroup
-    );
-  }, [
-    groups,
-    resolvedGroups,
-    virmanCandidateGroups,
-    creditCardGroups,
-    taxObligationGroups,
-    filter,
-    query,
-    resolvedSet,
-  ]);
+      resolvedSet,
+    ]
+  );
 
   useEffect(() => {
     if (!open) return undefined;
@@ -1067,9 +1088,7 @@ export default function CariMissingResolutionCenter({
                 Kalan grup
               </p>
               <p className="text-lg font-semibold text-amber-100">
-                {metric(
-                  snapshot?.groupCount != null ? remainingGroups : null
-                )}
+                {loading ? "—" : remainingGroups}
               </p>
             </div>
           </div>
@@ -1258,9 +1277,24 @@ export default function CariMissingResolutionCenter({
               </button>
             </div>
           ) : visible.length === 0 ? (
-            <p className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-8 text-center text-sm text-slate-400">
-              Bu filtrede gösterilecek cari grubu yok.
-            </p>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-8 text-center">
+              <p className="text-sm font-semibold text-slate-200">
+                Bu filtrede gösterilecek çözülebilir grup yok.
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Toplam eksik {metric(snapshot?.totalMissing)} · birleşik kalan{" "}
+                {loading ? "—" : remainingGroups}.
+              </p>
+              {typeof onRetry === "function" ? (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="mt-4 rounded-xl border border-slate-600 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-900"
+                >
+                  Tekrar dene
+                </button>
+              ) : null}
+            </div>
           ) : (
             visible.map((group) => (
               <GroupCard

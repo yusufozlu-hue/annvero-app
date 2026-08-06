@@ -942,9 +942,9 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       continue;
     }
 
-    // 4) Normal cari grubu
-    if (!isCariMissingRow(row, fullContext)) continue;
-    unresolvedCount += 1;
+    // 4) Normal cari grubu — cari olmayan diğer eksikler de sessizce düşmesin
+    const isCariRow = isCariMissingRow(row, fullContext);
+    if (isCariRow) unresolvedCount += 1;
     const direction = resolveLucaRowBankDirection(row, fullContext) || "";
     const desc = rowDescription(row);
     const ownIdentity = buildOwnCompanyIdentity(selectedCompany);
@@ -955,6 +955,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
         ownIdentity,
       }) || "";
     const partyMissingOrOwn =
+      !isCariRow ||
       !extractedParty ||
       isOwnCompanyPartyName(extractedParty, ownIdentity) ||
       isOwnOnlyOrMissingCounterparty(desc, direction, selectedCompany);
@@ -967,9 +968,10 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
           stripOwnCompanyIdentityFromText(desc, ownIdentity) || desc,
           direction
         ) ||
-        `party-unresolved|${direction || "NA"}|${unresolvedCount}`;
+        `party-unresolved|${direction || "NA"}|${groups.size + 1}`;
+      const bucket = isCariRow ? "party-unresolved" : "other-missing";
       pushRowIntoCariGroupMap(groups, row, fullContext, {
-        forceKey: `party-unresolved|${direction || "NA"}|${movementKey}`,
+        forceKey: `${bucket}|${direction || "NA"}|${movementKey}`,
         partyUnresolved: true,
       });
       continue;
@@ -1381,6 +1383,11 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     taxObligationMissingCount: taxObligationRows.length,
     taxObligationGroupCount: taxObligationGroups.length,
     taxObligationGroups,
+    resolvableGroupCount:
+      ranked.length +
+      taxObligationGroups.length +
+      creditCardGroups.length +
+      virmanCandidateGroups.length,
   };
 
   if (collectStats) {
@@ -1423,10 +1430,142 @@ export function filterCariResolutionGroups(
     }
     if (!q) return true;
     const hay = normalizeParserText(
-      `${g.partyName} ${g.samples.join(" ")} ${g.suggestedAccount} ${g.totalAmount}`
+      `${g.partyName} ${(g.samples || []).join(" ")} ${g.suggestedAccount || ""} ${g.totalAmount}`
     );
     return hay.includes(q);
   });
+}
+
+/**
+ * Sayaç + liste için tek ortak kaynak: cari + vergi/SGK + KK + virman adayı.
+ */
+export function listResolvableResolutionGroups(snapshot = {}) {
+  const seen = new Set();
+  const out = [];
+  const pushAll = (list) => {
+    for (const g of list || []) {
+      if (!g) continue;
+      const id = String(g.id || "");
+      if (id && seen.has(id)) continue;
+      if (id) seen.add(id);
+      out.push(g);
+    }
+  };
+  pushAll(snapshot.groups);
+  pushAll(snapshot.taxObligationGroups);
+  pushAll(snapshot.creditCardGroups);
+  pushAll(snapshot.virmanCandidateGroups);
+  return out;
+}
+
+export function countOpenResolutionGroups(snapshot = {}, resolvedIds = null) {
+  const resolved =
+    resolvedIds instanceof Set ? resolvedIds : new Set(resolvedIds || []);
+  return listResolvableResolutionGroups(snapshot).filter(
+    (g) => !(resolved.has(g.id) || g.status === "resolved")
+  ).length;
+}
+
+/**
+ * Varsayılan açılış: kayıt varsa boş filtreye düşme.
+ * Önce Kalanlar (birleşik), sonra Tümü, sonra dolu kategori chip'i.
+ */
+export function pickDefaultCariResolutionFilter(
+  snapshot = {},
+  resolvedIds = null
+) {
+  const resolved =
+    resolvedIds instanceof Set ? resolvedIds : new Set(resolvedIds || []);
+  const isOpen = (g) => !(resolved.has(g.id) || g.status === "resolved");
+  const union = listResolvableResolutionGroups(snapshot);
+  if (union.some(isOpen)) return CARI_RESOLUTION_FILTERS.REMAINING;
+  if (union.length) return CARI_RESOLUTION_FILTERS.ALL;
+  if ((snapshot.taxObligationGroups || []).length) {
+    return CARI_RESOLUTION_FILTERS.TAX_OBLIGATIONS;
+  }
+  if ((snapshot.creditCardGroups || []).length) {
+    return CARI_RESOLUTION_FILTERS.CREDIT_CARDS;
+  }
+  if ((snapshot.virmanCandidateGroups || []).length) {
+    return CARI_RESOLUTION_FILTERS.VIRMAN_CANDIDATES;
+  }
+  if ((snapshot.resolvedGroups || []).length || resolved.size) {
+    return CARI_RESOLUTION_FILTERS.RESOLVED;
+  }
+  return CARI_RESOLUTION_FILTERS.ALL;
+}
+
+/**
+ * UI görünür liste — ALL/REMAINING birleşik kaynak kullanır.
+ * Vergi/SGK ve diğer cari-dışı eksikler Tümü/Kalanlar'dan kaybolmaz.
+ */
+export function selectVisibleResolutionGroups({
+  filter = CARI_RESOLUTION_FILTERS.ALL,
+  query = "",
+  resolvedIds = null,
+  groups = [],
+  resolvedGroups = [],
+  virmanCandidateGroups = [],
+  creditCardGroups = [],
+  taxObligationGroups = [],
+} = {}) {
+  const snapshot = {
+    groups,
+    resolvedGroups,
+    virmanCandidateGroups,
+    creditCardGroups,
+    taxObligationGroups,
+  };
+
+  if (filter === CARI_RESOLUTION_FILTERS.RESOLVED) {
+    return filterCariResolutionGroups(resolvedGroups, {
+      filter: CARI_RESOLUTION_FILTERS.ALL,
+      query,
+      resolvedIds: new Set((resolvedGroups || []).map((g) => g.id)),
+    });
+  }
+  if (filter === CARI_RESOLUTION_FILTERS.VIRMAN_CANDIDATES) {
+    return filterCariResolutionGroups(virmanCandidateGroups, {
+      filter: CARI_RESOLUTION_FILTERS.ALL,
+      query,
+      resolvedIds,
+    });
+  }
+  if (filter === CARI_RESOLUTION_FILTERS.CREDIT_CARDS) {
+    return filterCariResolutionGroups(creditCardGroups, {
+      filter: CARI_RESOLUTION_FILTERS.ALL,
+      query,
+      resolvedIds,
+    });
+  }
+  if (filter === CARI_RESOLUTION_FILTERS.TAX_OBLIGATIONS) {
+    return filterCariResolutionGroups(taxObligationGroups, {
+      filter: CARI_RESOLUTION_FILTERS.ALL,
+      query,
+      resolvedIds,
+    });
+  }
+
+  if (
+    filter === CARI_RESOLUTION_FILTERS.ALL ||
+    filter === CARI_RESOLUTION_FILTERS.REMAINING
+  ) {
+    return filterCariResolutionGroups(listResolvableResolutionGroups(snapshot), {
+      filter,
+      query,
+      resolvedIds,
+    });
+  }
+
+  // Gelen / Giden / Yabancı — cari odaklı; kategori kartlarını ayıkla
+  return filterCariResolutionGroups(groups, {
+    filter,
+    query,
+    resolvedIds,
+  }).filter(
+    (g) =>
+      !g.virmanCandidate && !g.creditCardGroup && !g.taxObligationGroup
+  );
 }
 
 /**
