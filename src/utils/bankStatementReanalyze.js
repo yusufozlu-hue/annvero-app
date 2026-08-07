@@ -12,7 +12,16 @@ export const REANALYZE_BUTTON_LABEL =
   "Yeni hesap planıyla yeniden analiz et";
 
 export const REANALYZE_UI_HINT =
-  "Arşivdeki kaynak ve saklı parse girdisi ile yeni aktif hesap planı uygulanır; dosya yeniden yüklenmez, ikinci Drive kopyası oluşturulmaz.";
+  "Kalıcı canonical hareket snapshot'ı ve arşiv kaynağı ile yeni aktif hesap planı uygulanır; dosya yeniden yüklenmez, ikinci Drive/source oluşturulmaz.";
+
+/** Dosyasız reanalyze — checkpoint veya File şart değil; snapshot yeterli. */
+export function canFilelessReanalyze({
+  hasFile = false,
+  hasCheckpoint = false,
+  hasCanonicalSnapshot = false,
+} = {}) {
+  return Boolean(hasFile || hasCheckpoint || hasCanonicalSnapshot);
+}
 
 /**
  * @param {{ companyId?: string, contentHash?: string, revision?: number, engineVersion?: string }} opts

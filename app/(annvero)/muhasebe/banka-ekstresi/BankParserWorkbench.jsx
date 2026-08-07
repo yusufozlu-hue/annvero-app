@@ -212,6 +212,7 @@ import {
   buildRevisionCompareView,
   buildRevisionIdempotencyKey,
   buildSkippedArchiveSummaryFromPrior,
+  canFilelessReanalyze,
   countTrulyNotFoundFromGroups,
   deriveRevisionCounters,
   extractAnalysisCounters,
@@ -220,6 +221,16 @@ import {
   shouldBypassSessionDedupBlock,
   shouldSkipDriveArchiveOnReanalyze,
 } from "@/src/utils/bankStatementReanalyze";
+import {
+  BANK_CANONICAL_SCHEMA_VERSION,
+  snapshotMovementsToLegacyRows,
+} from "@/src/utils/bankCanonicalSnapshot";
+import {
+  fetchLatestBankCanonicalSnapshot,
+  persistBankCanonicalSnapshot,
+  updateBankCanonicalSnapshotPlanMeta,
+} from "@/src/utils/bankCanonicalSnapshotClient";
+import { fingerprintAccountPlanAccounts } from "@/src/utils/accountPlanUpload";
 import {
   buildArchiveReuseFromCheckpoint,
   clearBankStatementSourceCheckpoint,
@@ -523,6 +534,9 @@ export default function BankParserWorkbench() {
   const pdfMetaRef = useRef(null);
   /** Immutable kaynak — input File / stale ref'e bağlı kalmaz */
   const sourceCheckpointRef = useRef(null);
+  /** Sunucuda saklı canonical snapshot (dosyasız reanalyze) */
+  const canonicalSourceIdRef = useRef(null);
+  const canonicalContentHashRef = useRef("");
   const companyApproveResumeRef = useRef(false);
   /** Firma oturumu: işlenmiş hareket kimlikleri (Excel↔PDF çapraz dedup) */
   const processedMovementKeysRef = useRef(new Set());
@@ -820,6 +834,77 @@ export default function BankParserWorkbench() {
     };
   }, [selectedCompanyId]);
 
+  // Kalıcı canonical snapshot geri yükleme (sayfa yenileme / modül dönüşü)
+  useEffect(() => {
+    let cancelled = false;
+    async function hydrateCanonicalSnapshot() {
+      if (!selectedCompanyId) return;
+      if (selectedFile || hasUsableSourceCheckpoint(sourceCheckpointRef.current)) {
+        return;
+      }
+      if (movementsRef.current.length > 0) return;
+      try {
+        const snap = await fetchLatestBankCanonicalSnapshot(selectedCompanyId);
+        if (cancelled) return;
+        if (snap.status === 403) {
+          canonicalSourceIdRef.current = null;
+          canonicalContentHashRef.current = "";
+          return;
+        }
+        if (!snap.ok || !snap.source || !snap.movements?.length) return;
+        const legacy = snapshotMovementsToLegacyRows(snap.movements);
+        applyMovementPreview(legacy, null, legacy.length);
+        canonicalSourceIdRef.current = snap.source.id;
+        canonicalContentHashRef.current = snap.source.contentHash || "";
+        lastDedupMetaRef.current = {
+          ...(lastDedupMetaRef.current || {}),
+          sourceFileHash: snap.source.contentHash || "",
+        };
+        if (snap.source.fileName) setFileName(snap.source.fileName);
+        if (snap.source.detectedBank) {
+          activeBankRef.current = snap.source.detectedBank;
+          setSelectedBank(snap.source.detectedBank);
+        }
+        const hist = await listV1JobHistory(selectedCompanyId, 20);
+        if (cancelled) return;
+        if (hist?.runs?.length) {
+          setV1AuditHistory(hist.runs);
+          const latest = hist.runs[0];
+          const meta = latest?.metadata || {};
+          setPipelineResult({
+            movementCount: Number(meta.movement_count || legacy.length),
+            lucaRowCount: Number(meta.luca_row_count || 0),
+            reviewCount: Number(meta.review_count || 0),
+            uniqueUnresolvedMovements: Number(meta.review_count || 0),
+            autoMatchedCount: Number(meta.auto_matched_count || 0),
+            terminalStatus: meta.terminal_status || "",
+            reviewRequired: Boolean(meta.review_required),
+            canAutoApprove: Boolean(meta.can_auto_approve),
+            driveArchived: Boolean(meta.drive_archived),
+            driveSkipped: Boolean(meta.drive_skipped),
+            revision: meta.revision || null,
+            priorJobId: latest.id,
+            fromCanonicalSnapshot: true,
+            accountPlanCount: Number(meta.account_plan_count || 0),
+          });
+          setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+          setCompletedSteps((prev) => ({
+            ...prev,
+            preview: true,
+            analysis: true,
+          }));
+        }
+      } catch {
+        /* snapshot yoksa sessiz */
+      }
+    }
+    void hydrateCanonicalSnapshot();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCompanyId]);
+
   useEffect(() => {
     const handleCompanyChange = () => {
       pipelineRunIdRef.current += 1;
@@ -855,6 +940,8 @@ export default function BankParserWorkbench() {
       sourceCheckpointRef.current = clearBankStatementSourceCheckpoint(
         sourceCheckpointRef.current
       );
+      canonicalSourceIdRef.current = null;
+      canonicalContentHashRef.current = "";
       companyApproveResumeRef.current = false;
       activeBankRef.current = "";
       setSelectedBank("");
@@ -2406,6 +2493,8 @@ export default function BankParserWorkbench() {
     sourceCheckpointRef.current = clearBankStatementSourceCheckpoint(
       sourceCheckpointRef.current
     );
+    canonicalSourceIdRef.current = null;
+    canonicalContentHashRef.current = "";
     companyApproveResumeRef.current = false;
     duplicatePriorJobRef.current = null;
     reanalyzeOptionsRef.current = null;
@@ -2445,6 +2534,8 @@ export default function BankParserWorkbench() {
       sourceCheckpointRef.current = clearBankStatementSourceCheckpoint(
         sourceCheckpointRef.current
       );
+      canonicalSourceIdRef.current = null;
+      canonicalContentHashRef.current = "";
       companyApproveResumeRef.current = false;
       clearActiveBank();
       resetFileInput();
@@ -3860,6 +3951,7 @@ export default function BankParserWorkbench() {
     priorRevision = 1,
     priorJob = null,
     companyApproveResume = false,
+    fromCanonicalSnapshot = false,
   } = {}) => {
     if (isJobBusy) {
       showToast("Başka bir işlem sürüyor.", "error");
@@ -3873,10 +3965,21 @@ export default function BankParserWorkbench() {
     const checkpoint = sourceCheckpointRef.current;
     const pipelineFile =
       getCheckpointFile(checkpoint) || selectedFile || null;
-    if (!pipelineFile && !hasUsableSourceCheckpoint(checkpoint)) {
+    const hasSnapshot =
+      Boolean(fromCanonicalSnapshot) ||
+      Boolean(canonicalSourceIdRef.current) ||
+      (Array.isArray(movementsRef.current) &&
+        movementsRef.current.length > 0 &&
+        Boolean(canonicalContentHashRef.current));
+    const filelessOk = canFilelessReanalyze({
+      hasFile: Boolean(pipelineFile),
+      hasCheckpoint: hasUsableSourceCheckpoint(checkpoint),
+      hasCanonicalSnapshot: hasSnapshot,
+    });
+    if (!pipelineFile && !hasUsableSourceCheckpoint(checkpoint) && !filelessOk) {
       showToast(
         reanalyze
-          ? "Yeniden analiz için arşivdeki kaynak dosya oturumda gerekli."
+          ? "Yeniden analiz için kalıcı hareket snapshot'ı veya oturum kaynağı gerekli."
           : companyApproveResume || resumeFrom
             ? "Onay/yeniden deneme için oturum kaynağı gerekli (dosya yeniden seçilmez)."
             : "Önce dosya seçmelisin.",
@@ -3922,7 +4025,7 @@ export default function BankParserWorkbench() {
         return;
       }
     }
-    const runBank = getRunBank();
+    const runBank = getRunBank() || activeBankRef.current || selectedBank;
     if (!runBank) {
       setPipelineError({
         phase: PIPELINE_PHASES.PARSING,
@@ -3939,6 +4042,7 @@ export default function BankParserWorkbench() {
       companyId: selectedCompanyId,
       file: fileForValidate,
       bankId: runBank,
+      fromCanonicalSnapshot: hasSnapshot && !fileForValidate,
     });
     if (!inputCheck.ok) {
       setPipelineError({
@@ -3959,6 +4063,7 @@ export default function BankParserWorkbench() {
         selectedFile: fileForValidate,
         isJobBusy: false,
         pipelinePhase,
+        fromCanonicalSnapshot: hasSnapshot && !fileForValidate,
       })
     ) {
       return;
@@ -4029,6 +4134,7 @@ export default function BankParserWorkbench() {
         (pipelineFile ? await pipelineFile.arrayBuffer() : null);
       const preHash =
         sourceCheckpointRef.current?.contentHash ||
+        canonicalContentHashRef.current ||
         (preBytes
           ? buildSourceFileHash(new Uint8Array(preBytes))
           : "");
@@ -4049,7 +4155,8 @@ export default function BankParserWorkbench() {
         });
         const bypassHistory =
           shouldBypassIdempotencyHistoryBlock(reanalyzeOpts?.reanalyze) ||
-          shouldBypassIdempotencyForCompanyApproveResume(approveResume);
+          shouldBypassIdempotencyForCompanyApproveResume(approveResume) ||
+          (hasSnapshot && Boolean(reanalyzeOpts?.reanalyze));
         if (prior && !bypassHistory) {
           duplicatePriorJobRef.current = prior;
           previousAnalysisCountersRef.current = extractAnalysisCounters(prior);
@@ -4258,10 +4365,13 @@ export default function BankParserWorkbench() {
 
       // 2) archiving (Drive) — bağlantı yoksa banka akışını engelleme
       // COMPANY_MISMATCH / verification fail yukarıda throw → buraya gelinmez.
-      // Reanalyze / checkpoint: mevcut arşivi yeniden kullan; ikinci Drive/source kaydı yok.
+      // Reanalyze / checkpoint / canonical snapshot: mevcut arşivi yeniden kullan; ikinci Drive/source kaydı yok.
       if (shouldRunV1Stage(resumeFrom, V1_JOB_STATE.ARCHIVING) || shouldRunV1Stage(null, V1_JOB_STATE.ARCHIVING)) {
         if (!stageOutputs[V1_JOB_STATE.ARCHIVING]) {
-          if (shouldSkipDriveArchiveOnReanalyze(reanalyzeOpts?.reanalyze)) {
+          if (
+            shouldSkipDriveArchiveOnReanalyze(reanalyzeOpts?.reanalyze) ||
+            (hasSnapshot && !pipelineFile)
+          ) {
             emitV1(V1_JOB_STATE.ARCHIVING, 80, "Mevcut Drive arşivi yeniden kullanılıyor…");
             archiveResult = buildSkippedArchiveSummaryFromPrior(
               reanalyzeOpts?.priorJob?.metadata ||
@@ -4322,6 +4432,43 @@ export default function BankParserWorkbench() {
             shouldRunV1Stage(resumeFrom, V1_JOB_STATE.DEDUPLICATING) ||
             !resumeFrom);
         if (shouldParse) {
+          // Dosyasız yol: kalıcı canonical hareketlerle parse atlanır
+          if (
+            hasSnapshot &&
+            !pipelineFile &&
+            Array.isArray(movementsRef.current) &&
+            movementsRef.current.length > 0
+          ) {
+            setIsParsing(true);
+            setActiveStep("preview");
+            emitV1(
+              V1_JOB_STATE.PARSING,
+              90,
+              "Kalıcı hareket snapshot'ından yükleniyor…"
+            );
+            assertPipelineSignal(signal, isRunActive, runId);
+            applyMovementPreview(
+              movementsRef.current,
+              null,
+              movementsRef.current.length
+            );
+            stageDurations.previewMs = 0;
+            stageDurations.parseMode = "canonical_snapshot";
+            stageDurations.bankName = runBank;
+            stageOutputs[V1_JOB_STATE.PARSING] = {
+              movementCount: movementsRef.current.length,
+              durationMs: 0,
+              balanceMismatch: false,
+              balanceCode: "",
+              balanceMatched: true,
+              fromCanonicalSnapshot: true,
+            };
+            stageOutputs[V1_JOB_STATE.DEDUPLICATING] = {
+              ok: true,
+              fromCanonicalSnapshot: true,
+            };
+            setIsParsing(false);
+          } else {
           setIsParsing(true);
           setActiveStep("preview");
           emitV1(V1_JOB_STATE.PARSING, 10, "Dosya okunuyor…");
@@ -4347,6 +4494,67 @@ export default function BankParserWorkbench() {
             fromPreview: true,
           };
           setIsParsing(false);
+
+          // İlk başarılı parse → canonical snapshot (bakiye incelemesi olsa da)
+          try {
+            const contentHash =
+              lastDedupMetaRef.current?.sourceFileHash ||
+              sourceCheckpointRef.current?.contentHash ||
+              "";
+            if (contentHash && movementsRef.current.length > 0) {
+              let planFp = "";
+              try {
+                planFp = await fingerprintAccountPlanAccounts(
+                  companyPlans || []
+                );
+              } catch {
+                planFp = "";
+              }
+              const snap = await persistBankCanonicalSnapshot({
+                companyId: selectedCompanyId,
+                contentHash,
+                fileName:
+                  sourceCheckpointRef.current?.fileName ||
+                  pipelineFile?.name ||
+                  fileName ||
+                  "",
+                mimeType: pipelineFile?.type || "",
+                byteLength: Number(
+                  sourceCheckpointRef.current?.byteLength ||
+                    pipelineFile?.size ||
+                    0
+                ),
+                detectedBank: runBank || "",
+                sourceType: /\.pdf$/i.test(
+                  sourceCheckpointRef.current?.fileName ||
+                    pipelineFile?.name ||
+                    ""
+                )
+                  ? "pdf"
+                  : "excel",
+                planContentFingerprint: planFp,
+                planAccountCount: Array.isArray(companyPlans)
+                  ? companyPlans.length
+                  : 0,
+                v1AuditEntityId: jobId,
+                schemaVersion: BANK_CANONICAL_SCHEMA_VERSION,
+                movements: movementsRef.current,
+                safeSummary: {
+                  movementCount: movementsRef.current.length,
+                  parseMode: stageDurations.parseMode || "",
+                },
+              });
+              if (snap?.ok && snap.source?.id) {
+                canonicalSourceIdRef.current = snap.source.id;
+                canonicalContentHashRef.current = contentHash;
+              }
+            }
+          } catch (persistSnapErr) {
+            console.error(
+              "[banka-ekstresi] canonical snapshot persist failed",
+              persistSnapErr?.message || persistSnapErr
+            );
+          }
 
           // Parse-OK + bakiye uyuşmazlığı/eksik kanıt → review_required.
           if (preview.balanceMismatch) {
@@ -4454,6 +4662,7 @@ export default function BankParserWorkbench() {
             v1LeaseIdRef.current = null;
             companyApproveResumeRef.current = false;
             return;
+          }
           }
         }
       }
@@ -5180,12 +5389,54 @@ export default function BankParserWorkbench() {
       showToast("Önce firma seçmelisin.", "error");
       return;
     }
+    let hasSnapshot =
+      Boolean(canonicalSourceIdRef.current) ||
+      (Array.isArray(movementsRef.current) &&
+        movementsRef.current.length > 0 &&
+        Boolean(canonicalContentHashRef.current));
     if (
-      !selectedFile &&
-      !hasUsableSourceCheckpoint(sourceCheckpointRef.current)
+      !canFilelessReanalyze({
+        hasFile: Boolean(selectedFile),
+        hasCheckpoint: hasUsableSourceCheckpoint(sourceCheckpointRef.current),
+        hasCanonicalSnapshot: hasSnapshot,
+      })
+    ) {
+      // Sunucudan snapshot dene (sayfa yenileme sonrası)
+      try {
+        const snap = await fetchLatestBankCanonicalSnapshot(selectedCompanyId);
+        if (snap.status === 403) {
+          showToast("Bu firmanın snapshot'ına erişim yok.", "error");
+          return;
+        }
+        if (snap.ok && snap.source && snap.movements?.length) {
+          const legacy = snapshotMovementsToLegacyRows(snap.movements);
+          applyMovementPreview(legacy, null, legacy.length);
+          canonicalSourceIdRef.current = snap.source.id;
+          canonicalContentHashRef.current = snap.source.contentHash || "";
+          lastDedupMetaRef.current = {
+            ...(lastDedupMetaRef.current || {}),
+            sourceFileHash: snap.source.contentHash || "",
+          };
+          if (snap.source.detectedBank) {
+            activeBankRef.current = snap.source.detectedBank;
+            setSelectedBank(snap.source.detectedBank);
+          }
+          if (snap.source.fileName) setFileName(snap.source.fileName);
+          hasSnapshot = true;
+        }
+      } catch {
+        /* fallback toast below */
+      }
+    }
+    if (
+      !canFilelessReanalyze({
+        hasFile: Boolean(selectedFile),
+        hasCheckpoint: hasUsableSourceCheckpoint(sourceCheckpointRef.current),
+        hasCanonicalSnapshot: hasSnapshot,
+      })
     ) {
       showToast(
-        "Yeniden analiz için oturumdaki arşiv kaynağı gerekli (dosya yeniden yüklenmez).",
+        "Yeniden analiz için kalıcı hareket snapshot'ı gerekli (dosya yeniden yüklenmez). Bu işte snapshot yoksa bir kez dosya seçin.",
         "error"
       );
       return;
@@ -5258,7 +5509,23 @@ export default function BankParserWorkbench() {
         revisionOf: prior.id,
         priorRevision: Number(prior.metadata?.revision || 1) || 1,
         priorJob: prior,
+        fromCanonicalSnapshot: hasSnapshot && !sourceFile,
       });
+      if (canonicalSourceIdRef.current) {
+        try {
+          const planFp = await fingerprintAccountPlanAccounts(accounts);
+          await updateBankCanonicalSnapshotPlanMeta({
+            companyId: selectedCompanyId,
+            sourceId: canonicalSourceIdRef.current,
+            planContentFingerprint: planFp,
+            planAccountCount: accounts.length,
+            v1AuditEntityId: v1JobIdRef.current || "",
+            safeSummary: { reanalyze: true, planAccountCount: accounts.length },
+          });
+        } catch {
+          /* meta best-effort */
+        }
+      }
     } catch (error) {
       console.error("[banka-ekstresi] reanalyze failed", error);
       showToast(

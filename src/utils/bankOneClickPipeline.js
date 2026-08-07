@@ -159,8 +159,10 @@ export function canStartFullPipeline({
   selectedFile,
   isJobBusy,
   pipelinePhase,
+  fromCanonicalSnapshot = false,
 } = {}) {
-  if (!selectedCompanyId || !selectedBank || !selectedFile) return false;
+  if (!selectedCompanyId || !selectedBank) return false;
+  if (!selectedFile && !fromCanonicalSnapshot) return false;
   if (isJobBusy) return false;
   const idlePhases = new Set([
     PIPELINE_PHASES.IDLE,
