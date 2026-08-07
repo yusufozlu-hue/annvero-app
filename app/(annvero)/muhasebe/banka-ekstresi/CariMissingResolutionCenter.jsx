@@ -24,18 +24,8 @@ import {
 import { isSelectableCariLeafAccount } from "@/src/utils/cariCounterpartyExtract";
 import { isCreditCardAccountCode } from "@/src/utils/creditCardAccountResolver";
 import { fetchActiveAccountPlan } from "@/src/utils/accountPlanApi";
+import { mergeAccountPlanRows } from "@/src/utils/accountPlanMerge";
 import dynamic from "next/dynamic";
-
-/** İstemci planı + sunucu araması birleşimi (1000+ satır / PostgREST). */
-function mergeAccountPlanRows(primary = [], secondary = []) {
-  const byCode = new Map();
-  for (const row of [...(primary || []), ...(secondary || [])]) {
-    const code = String(row?.account_code || row?.code || "").trim();
-    if (!code) continue;
-    if (!byCode.has(code)) byCode.set(code, row);
-  }
-  return [...byCode.values()];
-}
 
 const CariGroupTransactionPanel = dynamic(
   () => import("./CariGroupTransactionPanel"),
