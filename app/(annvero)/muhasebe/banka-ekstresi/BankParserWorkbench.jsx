@@ -226,10 +226,16 @@ import {
   snapshotMovementsToLegacyRows,
 } from "@/src/utils/bankCanonicalSnapshot";
 import {
+  fetchBankCanonicalSnapshotByHash,
   fetchLatestBankCanonicalSnapshot,
   persistBankCanonicalSnapshot,
   updateBankCanonicalSnapshotPlanMeta,
 } from "@/src/utils/bankCanonicalSnapshotClient";
+import {
+  DUPLICATE_SNAPSHOT_ACTION,
+  buildDuplicateSnapshotPipelineResult,
+  resolveDuplicateSnapshotAction,
+} from "@/src/utils/bankDuplicateSnapshotUpgrade";
 import { fingerprintAccountPlanAccounts } from "@/src/utils/accountPlanUpload";
 import {
   buildArchiveReuseFromCheckpoint,
@@ -4160,6 +4166,204 @@ export default function BankParserWorkbench() {
         if (prior && !bypassHistory) {
           duplicatePriorJobRef.current = prior;
           previousAnalysisCountersRef.current = extractAnalysisCounters(prior);
+
+          const finishDuplicateTerminal = async ({
+            resultPayload,
+            progressLabel = "Mükerrer ekstre",
+          } = {}) => {
+            setPipelineResult(resultPayload);
+            setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+            setPipelineError(null);
+            setPipelineProgress({
+              percent: 100,
+              label: progressLabel,
+              detail: DUPLICATE_STATEMENT_UI_MESSAGE,
+              processed: 0,
+              total: 0,
+            });
+            setCompletedSteps((prev) => ({
+              ...prev,
+              preview: true,
+              analysis: Boolean(resultPayload?.fromCanonicalSnapshot),
+            }));
+            parserJob.reset();
+            setPipelineMode("idle");
+            if (hist?.runs) setV1AuditHistory(hist.runs);
+            try {
+              await releaseV1Lease(selectedCompanyId, leaseId);
+            } catch {
+              /* ignore */
+            }
+            v1LeaseIdRef.current = null;
+            companyApproveResumeRef.current = false;
+            bankJobStateRef.current = createInitialBankJobState();
+            setPipelineRunning(false);
+            setIsParsing(false);
+            setIsAnalyzing(false);
+            setIsPreparingLuca(false);
+            setIsReanalyzing(false);
+          };
+
+          let snapForHash = null;
+          try {
+            snapForHash = await fetchBankCanonicalSnapshotByHash(
+              selectedCompanyId,
+              preHash
+            );
+          } catch {
+            snapForHash = null;
+          }
+          const hasSnapMovements = Boolean(
+            snapForHash?.ok &&
+              snapForHash?.source &&
+              Array.isArray(snapForHash.movements) &&
+              snapForHash.movements.length > 0
+          );
+          const hasFileBytes = Boolean(preBytes || pipelineFile);
+          const snapAction = resolveDuplicateSnapshotAction({
+            hasSnapshotMovements: hasSnapMovements,
+            hasFileBytes,
+          });
+
+          if (snapAction === DUPLICATE_SNAPSHOT_ACTION.RESTORE) {
+            const legacy = snapshotMovementsToLegacyRows(snapForHash.movements);
+            applyMovementPreview(legacy, null, legacy.length);
+            canonicalSourceIdRef.current = snapForHash.source.id;
+            canonicalContentHashRef.current =
+              snapForHash.source.contentHash || preHash;
+            lastDedupMetaRef.current = {
+              ...(lastDedupMetaRef.current || {}),
+              sourceFileHash:
+                snapForHash.source.contentHash || preHash,
+            };
+            if (snapForHash.source.fileName) {
+              setFileName(snapForHash.source.fileName);
+            }
+            if (snapForHash.source.detectedBank) {
+              activeBankRef.current = snapForHash.source.detectedBank;
+              setSelectedBank(snapForHash.source.detectedBank);
+            }
+            await finishDuplicateTerminal({
+              resultPayload: buildDuplicateSnapshotPipelineResult({
+                prior,
+                movementCount: legacy.length,
+                action: DUPLICATE_SNAPSHOT_ACTION.RESTORE,
+                sourceId: snapForHash.source.id,
+                contentHash: preHash,
+              }),
+              progressLabel: "Mükerrer ekstre · snapshot",
+            });
+            return;
+          }
+
+          if (snapAction === DUPLICATE_SNAPSHOT_ACTION.UPGRADE) {
+            try {
+              setPipelineRunning(true);
+              setPipelineProgress({
+                percent: 15,
+                label: "Canonical snapshot yükseltme",
+                detail: "Hareketler çıkarılıyor (Drive/job yok)…",
+                processed: 0,
+                total: 0,
+              });
+              const prevReanalyze = reanalyzeOptionsRef.current;
+              // Oturum mükerrer engelini aş; V1 job/Drive zincirine girilmez.
+              reanalyzeOptionsRef.current = {
+                ...(prevReanalyze || {}),
+                reanalyze: true,
+                snapshotUpgrade: true,
+              };
+              try {
+                await runPreviewStage({
+                  signal,
+                  runId,
+                  bankName: runBank,
+                });
+              } finally {
+                reanalyzeOptionsRef.current = prevReanalyze;
+              }
+              const upgradeMovements = Array.isArray(movementsRef.current)
+                ? movementsRef.current
+                : [];
+              if (!upgradeMovements.length) {
+                throw new Error("Snapshot upgrade: hareket üretilemedi.");
+              }
+              let planFp = "";
+              try {
+                planFp = await fingerprintAccountPlanAccounts(
+                  companyPlans || []
+                );
+              } catch {
+                planFp = "";
+              }
+              const snap = await persistBankCanonicalSnapshot({
+                companyId: selectedCompanyId,
+                contentHash: preHash,
+                fileName:
+                  sourceCheckpointRef.current?.fileName ||
+                  pipelineFile?.name ||
+                  fileName ||
+                  "",
+                mimeType: pipelineFile?.type || "",
+                byteLength: Number(
+                  sourceCheckpointRef.current?.byteLength ||
+                    pipelineFile?.size ||
+                    0
+                ),
+                detectedBank: runBank || "",
+                sourceType: /\.pdf$/i.test(
+                  sourceCheckpointRef.current?.fileName ||
+                    pipelineFile?.name ||
+                    ""
+                )
+                  ? "pdf"
+                  : "excel",
+                planContentFingerprint: planFp,
+                planAccountCount: Array.isArray(companyPlans)
+                  ? companyPlans.length
+                  : 0,
+                v1AuditEntityId: prior?.id || "",
+                schemaVersion: BANK_CANONICAL_SCHEMA_VERSION,
+                movements: upgradeMovements,
+                safeSummary: {
+                  movementCount: upgradeMovements.length,
+                  snapshotUpgrade: true,
+                  priorJobId: prior?.id || "",
+                },
+              });
+              if (!snap?.ok || !snap.source?.id) {
+                throw new Error(
+                  snap?.message ||
+                    snap?.code ||
+                    "Snapshot upgrade yazılamadı."
+                );
+              }
+              canonicalSourceIdRef.current = snap.source.id;
+              canonicalContentHashRef.current = preHash;
+              lastDedupMetaRef.current = {
+                ...(lastDedupMetaRef.current || {}),
+                sourceFileHash: preHash,
+              };
+              await finishDuplicateTerminal({
+                resultPayload: buildDuplicateSnapshotPipelineResult({
+                  prior,
+                  movementCount: upgradeMovements.length,
+                  action: DUPLICATE_SNAPSHOT_ACTION.UPGRADE,
+                  sourceId: snap.source.id,
+                  contentHash: preHash,
+                }),
+                progressLabel: "Mükerrer ekstre · snapshot hazır",
+              });
+              return;
+            } catch (upgradeErr) {
+              console.error(
+                "[banka-ekstresi] duplicate snapshot upgrade failed",
+                upgradeErr?.message || upgradeErr
+              );
+              /* legacy duplicate kartına düş */
+            }
+          }
+
           setPipelineResult({
             movementCount: Number(prior.metadata?.movement_count || 0),
             lucaRowCount: Number(prior.metadata?.luca_row_count || 0),
@@ -4184,7 +4388,6 @@ export default function BankParserWorkbench() {
             priorJobId: prior.id,
           });
           setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
-          // Tek kanonik yüzey: mükerrer sonuç kartı (error kartı + toast yok)
           setPipelineError(null);
           setPipelineProgress({
             percent: 100,
@@ -4203,7 +4406,6 @@ export default function BankParserWorkbench() {
           }
           v1LeaseIdRef.current = null;
           companyApproveResumeRef.current = false;
-          // Mükerrer terminaldir: iş kilidi bırakılır, dosya seçimi tekrar açılır.
           bankJobStateRef.current = createInitialBankJobState();
           setPipelineRunning(false);
           setIsParsing(false);

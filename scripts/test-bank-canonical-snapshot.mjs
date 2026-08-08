@@ -50,6 +50,14 @@ const { canFilelessReanalyze } = await import(
   "@/src/utils/bankStatementReanalyze.js"
 );
 
+const {
+  DUPLICATE_SNAPSHOT_ACTION,
+  buildDuplicateSnapshotPipelineResult,
+  isDuplicateSnapshotUpgradeIdempotent,
+  preferSnapshotMovementCount,
+  resolveDuplicateSnapshotAction,
+} = await import("@/src/utils/bankDuplicateSnapshotUpgrade.js");
+
 const { validateV1Inputs } = await import(
   "@/src/utils/annveroV1Orchestration.js"
 );
@@ -311,9 +319,146 @@ await testAsync("workbench wires snapshot client", async () => {
   );
   assert.match(wb, /persistBankCanonicalSnapshot/);
   assert.match(wb, /fetchLatestBankCanonicalSnapshot/);
+  assert.match(wb, /fetchBankCanonicalSnapshotByHash/);
   assert.match(wb, /fromCanonicalSnapshot/);
   assert.match(wb, /canFilelessReanalyze/);
   assert.match(wb, /canonicalSourceIdRef/);
+  assert.match(wb, /bankDuplicateSnapshotUpgrade/);
+  assert.match(wb, /resolveDuplicateSnapshotAction/);
+  assert.match(wb, /DUPLICATE_SNAPSHOT_ACTION\.UPGRADE/);
+  assert.match(wb, /DUPLICATE_SNAPSHOT_ACTION\.RESTORE/);
+  assert.match(wb, /snapshotUpgrade:\s*true/);
+});
+
+await test("duplicate+no snapshot resolves to upgrade", () => {
+  assert.equal(
+    resolveDuplicateSnapshotAction({
+      hasSnapshotMovements: false,
+      hasFileBytes: true,
+    }),
+    DUPLICATE_SNAPSHOT_ACTION.UPGRADE
+  );
+});
+
+await test("duplicate+snapshot resolves to restore", () => {
+  assert.equal(
+    resolveDuplicateSnapshotAction({
+      hasSnapshotMovements: true,
+      hasFileBytes: true,
+    }),
+    DUPLICATE_SNAPSHOT_ACTION.RESTORE
+  );
+  assert.equal(
+    resolveDuplicateSnapshotAction({
+      hasSnapshotMovements: true,
+      hasFileBytes: false,
+    }),
+    DUPLICATE_SNAPSHOT_ACTION.RESTORE
+  );
+});
+
+await test("duplicate without file bytes and no snapshot is legacy", () => {
+  assert.equal(
+    resolveDuplicateSnapshotAction({
+      hasSnapshotMovements: false,
+      hasFileBytes: false,
+    }),
+    DUPLICATE_SNAPSHOT_ACTION.LEGACY
+  );
+});
+
+await test("preferSnapshotMovementCount never uses stale audit count", () => {
+  assert.equal(preferSnapshotMovementCount(5, 4), 4);
+  assert.equal(preferSnapshotMovementCount(5, 0), 5);
+  assert.equal(preferSnapshotMovementCount(0, 4), 4);
+});
+
+await test("buildDuplicateSnapshotPipelineResult restore uses snapshot count", () => {
+  const result = buildDuplicateSnapshotPipelineResult({
+    action: DUPLICATE_SNAPSHOT_ACTION.RESTORE,
+    prior: {
+      id: "job-prior",
+      metadata: {
+        movement_count: 5,
+        content_hash: "hash-1",
+      },
+    },
+    movementCount: 4,
+    sourceId: "src-1",
+    contentHash: "hash-1",
+  });
+  assert.equal(result.fromCanonicalSnapshot, true);
+  assert.equal(result.snapshotRestored, true);
+  assert.equal(result.snapshotUpgraded, false);
+  assert.equal(result.movementCount, 4);
+  assert.equal(result.driveSkipped, true);
+  assert.equal(result.canonicalSourceId, "src-1");
+  assert.equal(result.priorJobId, "job-prior");
+});
+
+await test("buildDuplicateSnapshotPipelineResult upgrade is idempotent-ready", () => {
+  const result = buildDuplicateSnapshotPipelineResult({
+    action: DUPLICATE_SNAPSHOT_ACTION.UPGRADE,
+    prior: {
+      id: "job-prior",
+      metadata: { movement_count: 5 },
+    },
+    movementCount: 4,
+    sourceId: "src-1",
+    contentHash: "hash-1",
+  });
+  assert.equal(result.fromCanonicalSnapshot, true);
+  assert.equal(result.snapshotUpgraded, true);
+  assert.equal(result.snapshotRestored, false);
+  assert.equal(result.movementCount, 4);
+  assert.equal(result.driveSkipped, true);
+  assert.equal(
+    isDuplicateSnapshotUpgradeIdempotent({
+      firstAction: DUPLICATE_SNAPSHOT_ACTION.UPGRADE,
+      secondHasSnapshotMovements: true,
+    }),
+    true
+  );
+  assert.equal(
+    resolveDuplicateSnapshotAction({
+      hasSnapshotMovements: true,
+      hasFileBytes: true,
+    }),
+    DUPLICATE_SNAPSHOT_ACTION.RESTORE
+  );
+});
+
+await test("workbench duplicate upgrade/restore skips Drive and V1 job create", () => {
+  const wb = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"
+    ),
+    "utf8"
+  );
+  const upgradeBlockStart = wb.indexOf(
+    "if (snapAction === DUPLICATE_SNAPSHOT_ACTION.UPGRADE)"
+  );
+  const legacyBlockStart = wb.indexOf(
+    "setPipelineResult({",
+    upgradeBlockStart
+  );
+  assert.ok(upgradeBlockStart > 0);
+  assert.ok(legacyBlockStart > upgradeBlockStart);
+  const upgradeBlock = wb.slice(upgradeBlockStart, legacyBlockStart);
+  assert.match(upgradeBlock, /persistBankCanonicalSnapshot/);
+  assert.match(upgradeBlock, /finishDuplicateTerminal/);
+  assert.doesNotMatch(upgradeBlock, /createBankStatementDriveFolder/);
+  assert.doesNotMatch(upgradeBlock, /createV1Job\b/);
+  assert.doesNotMatch(upgradeBlock, /persistV1Job\b/);
+
+  const restoreBlockStart = wb.indexOf(
+    "if (snapAction === DUPLICATE_SNAPSHOT_ACTION.RESTORE)"
+  );
+  const restoreBlock = wb.slice(restoreBlockStart, upgradeBlockStart);
+  assert.match(restoreBlock, /finishDuplicateTerminal/);
+  assert.doesNotMatch(restoreBlock, /createBankStatementDriveFolder/);
+  assert.doesNotMatch(restoreBlock, /createV1Job\b/);
 });
 
 if (failed) {

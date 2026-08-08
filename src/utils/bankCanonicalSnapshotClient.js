@@ -10,7 +10,7 @@ import {
 
 export async function fetchLatestBankCanonicalSnapshot(
   companyId,
-  { includeMovements = true } = {}
+  { includeMovements = true, contentHash = "" } = {}
 ) {
   const id = String(companyId || "").trim();
   if (!id) {
@@ -27,6 +27,8 @@ export async function fetchLatestBankCanonicalSnapshot(
     latest: "1",
     includeMovements: includeMovements ? "1" : "0",
   });
+  const hash = String(contentHash || "").trim();
+  if (hash) params.set("contentHash", hash);
   try {
     const response = await fetch(
       `/api/bank-statement-snapshots?${params.toString()}`,
@@ -72,6 +74,18 @@ export async function fetchLatestBankCanonicalSnapshot(
       code: "NETWORK",
     };
   }
+}
+
+/** Aynı content_hash için aktif snapshot (legacy mükerrer upgrade/restore). */
+export async function fetchBankCanonicalSnapshotByHash(
+  companyId,
+  contentHash,
+  { includeMovements = true } = {}
+) {
+  return fetchLatestBankCanonicalSnapshot(companyId, {
+    includeMovements,
+    contentHash,
+  });
 }
 
 export async function fetchBankCanonicalSnapshotById(companyId, sourceId) {
