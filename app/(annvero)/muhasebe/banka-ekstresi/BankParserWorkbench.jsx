@@ -1255,6 +1255,12 @@ export default function BankParserWorkbench() {
       return;
     }
     pendingCanonicalHydrateReanalyzeRef.current = false;
+    // Aynı firmanın kalıcı snapshot'ı — yenilemede firma onayını yeniden sorma
+    companyManualConfirmedRef.current = {
+      companyId: selectedCompanyId,
+      confirmedAt: Date.now(),
+    };
+    companyApproveResumeRef.current = true;
     const fn = handleReanalyzeWithNewPlanRef.current;
     if (typeof fn === "function") {
       void fn();
