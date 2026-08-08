@@ -445,6 +445,20 @@ await test("workbench company confirm resumes from canonical snapshot", () => {
     wb,
     /oturumdaki kaynak dosya veya canonical snapshot gerekli/
   );
+  // Fileless confirm must accept snapshot even when session file is gone.
+  const confirmStart = wb.indexOf("const handleConfirmCompanyAndContinue");
+  assert.ok(confirmStart > 0, "handleConfirmCompanyAndContinue missing");
+  const confirmEnd = wb.indexOf("\n  const handle", confirmStart + 10);
+  const confirmBlock = wb.slice(
+    confirmStart,
+    confirmEnd > confirmStart ? confirmEnd : confirmStart + 2500
+  );
+  assert.match(confirmBlock, /hasCanonicalSnapshot/);
+  assert.match(confirmBlock, /fromCanonicalSnapshot/);
+  assert.doesNotMatch(
+    confirmBlock,
+    /if\s*\(\s*!sourceFile\s*\)\s*\{[\s\S]{0,120}return/
+  );
 });
 
 await test("result card shows reanalyze for snapshot restore", () => {

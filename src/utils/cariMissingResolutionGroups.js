@@ -1620,6 +1620,22 @@ export function shouldIgnoreCariResolutionOpen({
 }
 
 /**
+ * Escape: açık hesap araması varsa önce aramayı kapat; aksi halde modalı kapat.
+ * Arama sırasında Escape'in diyaloğu istemeden kapatmasını engeller.
+ */
+export const CARI_RESOLUTION_ESCAPE_DISMISS_SEARCH = "dismiss-search";
+export const CARI_RESOLUTION_ESCAPE_CLOSE_MODAL = "close-modal";
+export const CARI_RESOLUTION_DISMISS_SEARCH_EVENT =
+  "cari-resolution-dismiss-search";
+
+export function resolveCariResolutionEscapeAction({
+  hasOpenAccountSearch = false,
+} = {}) {
+  if (hasOpenAccountSearch) return CARI_RESOLUTION_ESCAPE_DISMISS_SEARCH;
+  return CARI_RESOLUTION_ESCAPE_CLOSE_MODAL;
+}
+
+/**
  * Kapatma sonrası async sonuç state’e yazılmamalı.
  */
 export function shouldApplyCariResolutionAsyncResult({

@@ -28,12 +28,21 @@ import {
   sliceCariRowsForDisplay,
   buildCariApplyGroupPayload,
   formatCariApplyButtonLabel,
+  resolveCariResolutionEscapeAction,
+  CARI_RESOLUTION_ESCAPE_DISMISS_SEARCH,
+  CARI_RESOLUTION_ESCAPE_CLOSE_MODAL,
+  CARI_RESOLUTION_DISMISS_SEARCH_EVENT,
   CARI_RESOLUTION_FILTERS,
   CARI_RESOLUTION_INITIAL_CANDIDATE_GROUPS,
   CARI_RESOLUTION_MODAL_MAX_WIDTH_PX,
   CARI_RESOLUTION_MODAL_WIDTH_CSS,
   CARI_RESOLUTION_ROW_PAGE_SIZE,
 } from "@/src/utils/cariMissingResolutionGroups.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function test(name, fn) {
   try {
@@ -1124,6 +1133,51 @@ test("row view ve tam seçimde partial bayrağı yok", () => {
   assert.equal(full.id, "t|GIRIS");
   assert.equal(formatCariApplyButtonLabel(0).includes("İşleme"), true);
   assert.deepEqual([...setAllCariRowSelection(["a", "b"], false)], []);
+});
+
+test("Escape open account search dismisses search before closing modal", () => {
+  assert.equal(
+    resolveCariResolutionEscapeAction({ hasOpenAccountSearch: true }),
+    CARI_RESOLUTION_ESCAPE_DISMISS_SEARCH
+  );
+  assert.equal(
+    resolveCariResolutionEscapeAction({ hasOpenAccountSearch: false }),
+    CARI_RESOLUTION_ESCAPE_CLOSE_MODAL
+  );
+  assert.equal(
+    resolveCariResolutionEscapeAction({}),
+    CARI_RESOLUTION_ESCAPE_CLOSE_MODAL
+  );
+});
+
+test("resolution center wires Escape dismiss-search before close", () => {
+  const src = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/banka-ekstresi/CariMissingResolutionCenter.jsx"
+    ),
+    "utf8"
+  );
+  assert.match(src, /resolveCariResolutionEscapeAction/);
+  assert.match(src, /data-cari-search-open/);
+  assert.match(src, /CARI_RESOLUTION_DISMISS_SEARCH_EVENT/);
+  assert.match(src, /CARI_RESOLUTION_ESCAPE_DISMISS_SEARCH/);
+  assert.match(src, /e\.stopPropagation\(\)/);
+  // Must not unconditionally close on every Escape.
+  assert.doesNotMatch(
+    src,
+    /if\s*\(\s*e\.key\s*===\s*[\"']Escape[\"']\s*\)\s*onClose/
+  );
+  const utilSrc = fs.readFileSync(
+    path.join(root, "src/utils/cariMissingResolutionGroups.js"),
+    "utf8"
+  );
+  assert.match(
+    utilSrc,
+    new RegExp(
+      `CARI_RESOLUTION_DISMISS_SEARCH_EVENT\\s*=\\s*[\"']${CARI_RESOLUTION_DISMISS_SEARCH_EVENT}[\"']`
+    )
+  );
 });
 
 console.log("\nAll cari missing resolution tests passed.");
