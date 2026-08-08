@@ -560,9 +560,20 @@ export function validateV1Inputs({
   file,
   bankId = null,
   maxBytes = 25 * 1024 * 1024,
+  fromCanonicalSnapshot = false,
 } = {}) {
   if (!companyId) {
     return { ok: false, code: "MISSING_COMPANY", message: "Önce firma seçmelisin." };
+  }
+  if (!file && fromCanonicalSnapshot) {
+    if (bankId === "") {
+      return {
+        ok: false,
+        code: "MISSING_BANK",
+        message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+      };
+    }
+    return { ok: true, code: "CANONICAL_SNAPSHOT", message: "" };
   }
   if (!file) {
     return { ok: false, code: "MISSING_FILE", message: "Önce dosya seçmelisin." };

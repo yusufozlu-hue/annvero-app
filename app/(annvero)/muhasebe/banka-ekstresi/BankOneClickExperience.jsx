@@ -596,7 +596,8 @@ export function BankPipelineResultCard({
             Bakiye Uyuşmazlığını İncele
           </button>
         ) : null}
-        {isDuplicate && typeof onReanalyzeWithNewPlan === "function" ? (
+        {(isDuplicate || Boolean(result?.fromCanonicalSnapshot)) &&
+        typeof onReanalyzeWithNewPlan === "function" ? (
           <button
             type="button"
             onClick={onReanalyzeWithNewPlan}
