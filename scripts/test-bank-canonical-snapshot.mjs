@@ -428,6 +428,40 @@ await test("buildDuplicateSnapshotPipelineResult upgrade is idempotent-ready", (
   );
 });
 
+await test("workbench company confirm resumes from canonical snapshot", () => {
+  const wb = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"
+    ),
+    "utf8"
+  );
+  assert.match(wb, /hasCanonicalSnapshot/);
+  assert.match(
+    wb,
+    /fromCanonicalSnapshot:\s*hasCanonicalSnapshot && !sourceFile/
+  );
+  assert.match(
+    wb,
+    /oturumdaki kaynak dosya veya canonical snapshot gerekli/
+  );
+});
+
+await test("result card shows reanalyze for snapshot restore", () => {
+  const src = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/banka-ekstresi/BankOneClickExperience.jsx"
+    ),
+    "utf8"
+  );
+  assert.match(
+    src,
+    /isDuplicate \|\| Boolean\(result\?\.fromCanonicalSnapshot\)/
+  );
+  assert.match(src, /data-testid=\"bank-reanalyze-with-new-plan\"/);
+});
+
 await test("workbench duplicate upgrade/restore skips Drive and V1 job create", () => {
   const wb = fs.readFileSync(
     path.join(

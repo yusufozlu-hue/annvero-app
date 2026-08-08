@@ -5919,9 +5919,19 @@ export default function BankParserWorkbench() {
     }
     const checkpoint = sourceCheckpointRef.current;
     const sourceFile = getCheckpointFile(checkpoint) || selectedFile;
-    if (!sourceFile && !hasUsableSourceCheckpoint(checkpoint)) {
+    const hasCanonicalSnapshot = Boolean(
+      canonicalSourceIdRef.current ||
+        (Array.isArray(movementsRef.current) &&
+          movementsRef.current.length > 0 &&
+          canonicalContentHashRef.current)
+    );
+    if (
+      !sourceFile &&
+      !hasUsableSourceCheckpoint(checkpoint) &&
+      !hasCanonicalSnapshot
+    ) {
       showToast(
-        "Onay sonrası devam için oturumdaki kaynak dosya gerekli (yeniden yükleme yok).",
+        "Onay sonrası devam için oturumdaki kaynak dosya veya canonical snapshot gerekli (yeniden yükleme yok).",
         "error"
       );
       return;
@@ -5938,7 +5948,11 @@ export default function BankParserWorkbench() {
     setPipelineError(null);
     setCompanyVerifyChecked(false);
     showToast("Firma onaylandı; mevcut kaynakla devam ediliyor…", "success");
-    void runFullBankPipeline({ companyApproveResume: true });
+    void runFullBankPipeline({
+      companyApproveResume: true,
+      fromCanonicalSnapshot: hasCanonicalSnapshot && !sourceFile,
+      reanalyze: hasCanonicalSnapshot && !sourceFile,
+    });
   };
 
   const handleRetryPipeline = () => {
