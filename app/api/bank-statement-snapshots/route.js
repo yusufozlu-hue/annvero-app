@@ -19,12 +19,14 @@ import {
   publicBankSnapshotSourceView,
   sanitizeIncomingSnapshotBody,
 } from "@/src/utils/bankCanonicalSnapshot";
+import { publicBankResolutionView } from "@/src/utils/bankStatementMovementResolutions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const SOURCES = "bank_statement_sources";
 const MOVEMENTS = "bank_statement_movements";
+const RESOLUTIONS = "bank_statement_movement_resolutions";
 
 function isMissingRelation(error) {
   const msg = String(error?.message || error?.code || "");
@@ -35,13 +37,13 @@ function isMissingRelation(error) {
   );
 }
 
-function schemaMissingResponse() {
+function schemaMissingResponse(migration = "031_bank_statement_canonical_snapshots.sql") {
   return NextResponse.json(
     {
       ok: false,
       error: "Canonical snapshot tabloları henüz uygulanmadı.",
       code: "SCHEMA_MISSING",
-      migration: "031_bank_statement_canonical_snapshots.sql",
+      migration,
     },
     { status: 503 }
   );
@@ -62,6 +64,28 @@ async function loadMovements(supabase, companyId, sourceId) {
     .limit(5000);
   if (error) throw error;
   return (data || []).map(publicBankSnapshotMovementView);
+}
+
+async function loadActiveResolutions(supabase, companyId, sourceId) {
+  try {
+    const { data, error } = await supabase
+      .from(RESOLUTIONS)
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("source_id", sourceId)
+      .eq("status", "active")
+      .is("deleted_at", null)
+      .order("revision", { ascending: false })
+      .limit(5000);
+    if (error) {
+      if (isMissingRelation(error)) return [];
+      throw error;
+    }
+    return (data || []).map(publicBankResolutionView).filter(Boolean);
+  } catch (error) {
+    if (isMissingRelation(error)) return [];
+    throw error;
+  }
 }
 
 export async function GET(request) {
@@ -115,6 +139,9 @@ export async function GET(request) {
       const movements = includeMovements
         ? await loadMovements(ctx.supabase, companyId, data.id)
         : [];
+      const resolutions = includeMovements
+        ? await loadActiveResolutions(ctx.supabase, companyId, data.id)
+        : [];
       const gate = canReanalyzeFromCanonicalSnapshot({
         source: publicBankSnapshotSourceView(data),
         movements,
@@ -123,6 +150,7 @@ export async function GET(request) {
         ok: true,
         source: publicBankSnapshotSourceView(data),
         movements,
+        resolutions,
         canReanalyze: gate.ok,
         canReanalyzeCode: gate.ok ? "OK" : gate.code,
       });
@@ -161,6 +189,7 @@ export async function GET(request) {
         ok: true,
         source: null,
         movements: [],
+        resolutions: [],
         canReanalyze: false,
         canReanalyzeCode: "NO_CANONICAL_MOVEMENTS",
       });
@@ -168,11 +197,15 @@ export async function GET(request) {
     const movements = includeMovements
       ? await loadMovements(ctx.supabase, companyId, source.id)
       : [];
+    const resolutions = includeMovements
+      ? await loadActiveResolutions(ctx.supabase, companyId, source.id)
+      : [];
     const gate = canReanalyzeFromCanonicalSnapshot({ source, movements });
     return NextResponse.json({
       ok: true,
       source,
       movements,
+      resolutions,
       canReanalyze: gate.ok,
       canReanalyzeCode: gate.ok ? "OK" : gate.code,
     });
@@ -189,6 +222,301 @@ export async function POST(request) {
     body = await request.json();
   } catch {
     return jsonError("INVALID_BODY", "Geçersiz istek gövdesi.", 400);
+  }
+
+  const earlyAction = String(body?.action || "").trim();
+
+  // Belgeye özel kararlar — ham dosya yok; sanitize snapshot body kullanılmaz
+  if (
+    earlyAction === "persist_resolutions" ||
+    earlyAction === "undo_resolutions"
+  ) {
+    const companyId = resolveCompanyId({
+      companyId: body.companyId || body.company_id,
+    });
+    if (!companyId) {
+      return jsonError("MISSING_COMPANY_ID", "Firma seçilmedi.", 400);
+    }
+    const sourceId = String(body.sourceId || body.source_id || "").trim();
+    if (!sourceId) {
+      return jsonError("MISSING_SOURCE_ID", "sourceId gerekli.", 400);
+    }
+
+    const ctx = await requireAuthenticatedApi(
+      `bank-statement-snapshots:${earlyAction}`,
+      SOURCES,
+      { companyId }
+    );
+    if (ctx.error) return ctx.error;
+
+    const limited = enforceRateLimit(request, ctx, "bank-statement-snapshots", {
+      limit: 60,
+      windowMs: 60_000,
+    });
+    if (limited) return limited;
+
+    const actor = String(ctx.user?.id || ctx.user?.email || "");
+
+    try {
+      const { data: source, error: srcErr } = await ctx.supabase
+        .from(SOURCES)
+        .select("*")
+        .eq("id", sourceId)
+        .eq("company_id", companyId)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (srcErr) {
+        if (isMissingRelation(srcErr)) {
+          return schemaMissingResponse(
+            "032_bank_statement_movement_resolutions.sql"
+          );
+        }
+        return jsonError("QUERY_FAILED", "Kaynak bulunamadı.", 500);
+      }
+      if (!source || source.status === "deleted") {
+        return jsonError(
+          "SOURCE_DELETED",
+          "Silinmiş kaynak yeniden kullanılamaz.",
+          410
+        );
+      }
+
+      if (earlyAction === "undo_resolutions") {
+        const movementIds = (body.sourceMovementIds || body.movementIds || [])
+          .map((id) => String(id || "").trim())
+          .filter(Boolean);
+        if (!movementIds.length) {
+          return jsonError(
+            "MISSING_MOVEMENT_IDS",
+            "sourceMovementIds gerekli.",
+            400
+          );
+        }
+        const now = new Date().toISOString();
+        const { data: updated, error: undoErr } = await ctx.supabase
+          .from(RESOLUTIONS)
+          .update({
+            status: "undone",
+            undone_at: now,
+            undone_by: actor,
+            audit_note: "cari-resolution-center:undo",
+          })
+          .eq("company_id", companyId)
+          .eq("source_id", sourceId)
+          .eq("status", "active")
+          .is("deleted_at", null)
+          .in("source_movement_id", movementIds)
+          .select("id, source_movement_id, account_code, revision");
+        if (undoErr) {
+          if (isMissingRelation(undoErr)) {
+            return schemaMissingResponse(
+              "032_bank_statement_movement_resolutions.sql"
+            );
+          }
+          return jsonError("UNDO_FAILED", "Karar geri alınamadı.", 500);
+        }
+
+        const nextRevision = Number(source.revision || 1) + 1;
+        const { data: bumped, error: bumpErr } = await ctx.supabase
+          .from(SOURCES)
+          .update({
+            revision: nextRevision,
+            safe_summary: {
+              ...(source.safe_summary || {}),
+              lastDecisionRevision: nextRevision,
+              lastDecisionAction: "undo",
+              lastDecisionAt: now,
+              lastDecisionBy: actor,
+              lastUndoneMovementIds: movementIds,
+            },
+          })
+          .eq("id", sourceId)
+          .eq("company_id", companyId)
+          .select("*")
+          .maybeSingle();
+        if (bumpErr) {
+          return jsonError("REVISION_BUMP_FAILED", "Revision güncellenemedi.", 500);
+        }
+
+        const resolutions = await loadActiveResolutions(
+          ctx.supabase,
+          companyId,
+          sourceId
+        );
+        return NextResponse.json({
+          ok: true,
+          undone: (updated || []).length,
+          source: publicBankSnapshotSourceView(bumped || source),
+          resolutions,
+          revision: nextRevision,
+        });
+      }
+
+      // persist_resolutions
+      const incoming = Array.isArray(body.resolutions) ? body.resolutions : [];
+      if (!incoming.length) {
+        return jsonError("NO_RESOLUTIONS", "resolutions boş.", 400);
+      }
+
+      const normalized = [];
+      for (const item of incoming) {
+        const mid = String(
+          item.sourceMovementId || item.source_movement_id || ""
+        ).trim();
+        const code = String(item.accountCode || item.account_code || "").trim();
+        if (!mid || !code) continue;
+        if (item.companyId && String(item.companyId) !== companyId) {
+          return jsonError("CROSS_TENANT", "Firma kapsamı ihlali.", 403);
+        }
+        if (item.sourceId && String(item.sourceId) !== sourceId) {
+          return jsonError("SOURCE_MISMATCH", "sourceId uyuşmazlığı.", 400);
+        }
+        normalized.push({
+          company_id: companyId,
+          source_id: sourceId,
+          source_movement_id: mid,
+          luca_leg: String(item.lucaLeg || item.luca_leg || "").trim(),
+          account_code: code,
+          account_name: String(item.accountName || item.account_name || "").trim(),
+          direction: String(item.direction || "").trim().toUpperCase(),
+          analysis_key: String(item.analysisKey || item.analysis_key || "").trim(),
+          transaction_type: String(
+            item.transactionType || item.transaction_type || ""
+          ).trim(),
+          decision_type: String(
+            item.decisionType || item.decision_type || "DIRECT_ACCOUNT"
+          ).trim(),
+          learn_for_company: Boolean(
+            item.learnForCompany ?? item.learn_for_company
+          ),
+          user_approved: true,
+          status: "active",
+          source_revision: Number(source.revision || 1) + 1,
+          audit_note: String(
+            item.auditNote || item.audit_note || "cari-resolution-center:apply"
+          ).trim(),
+          created_by: actor,
+        });
+      }
+      if (!normalized.length) {
+        return jsonError("NO_RESOLUTIONS", "Geçerli karar yok.", 400);
+      }
+
+      const movementIds = [
+        ...new Set(normalized.map((r) => r.source_movement_id)),
+      ];
+      const now = new Date().toISOString();
+
+      // Önceki aktif kararları supersede et (snapshot hareketleri dokunulmaz)
+      const { data: priorActive, error: priorErr } = await ctx.supabase
+        .from(RESOLUTIONS)
+        .select("id, source_movement_id, luca_leg, revision")
+        .eq("company_id", companyId)
+        .eq("source_id", sourceId)
+        .eq("status", "active")
+        .is("deleted_at", null)
+        .in("source_movement_id", movementIds);
+      if (priorErr) {
+        if (isMissingRelation(priorErr)) {
+          return schemaMissingResponse(
+            "032_bank_statement_movement_resolutions.sql"
+          );
+        }
+        return jsonError("QUERY_FAILED", "Önceki kararlar okunamadı.", 500);
+      }
+
+      const priorByKey = new Map();
+      for (const p of priorActive || []) {
+        const key = `${p.source_movement_id}|${p.luca_leg || ""}`;
+        priorByKey.set(key, p);
+      }
+
+      if ((priorActive || []).length) {
+        const { error: superErr } = await ctx.supabase
+          .from(RESOLUTIONS)
+          .update({ status: "superseded" })
+          .in(
+            "id",
+            (priorActive || []).map((p) => p.id)
+          );
+        if (superErr) {
+          return jsonError("SUPERSEDE_FAILED", "Önceki karar kapatılamadı.", 500);
+        }
+      }
+
+      const insertRows = normalized.map((row) => {
+        const key = `${row.source_movement_id}|${row.luca_leg || ""}`;
+        const prior = priorByKey.get(key);
+        return {
+          ...row,
+          revision: Number(prior?.revision || 0) + 1,
+          supersedes_resolution_id: prior?.id || null,
+        };
+      });
+
+      const { data: inserted, error: insErr } = await ctx.supabase
+        .from(RESOLUTIONS)
+        .insert(insertRows)
+        .select("*");
+      if (insErr) {
+        if (isMissingRelation(insErr)) {
+          return schemaMissingResponse(
+            "032_bank_statement_movement_resolutions.sql"
+          );
+        }
+        return jsonError("RESOLVE_WRITE_FAILED", "Kararlar yazılamadı.", 500);
+      }
+
+      const nextRevision = Number(source.revision || 1) + 1;
+      const { data: bumped, error: bumpErr } = await ctx.supabase
+        .from(SOURCES)
+        .update({
+          revision: nextRevision,
+          safe_summary: {
+            ...(source.safe_summary || {}),
+            lastDecisionRevision: nextRevision,
+            lastDecisionAction: "apply",
+            lastDecisionAt: now,
+            lastDecisionBy: actor,
+            lastResolvedAccountCodes: [
+              ...new Set(normalized.map((r) => r.account_code)),
+            ],
+            lastResolvedMovementCount: movementIds.length,
+          },
+        })
+        .eq("id", sourceId)
+        .eq("company_id", companyId)
+        .select("*")
+        .maybeSingle();
+      if (bumpErr) {
+        return jsonError("REVISION_BUMP_FAILED", "Revision güncellenemedi.", 500);
+      }
+
+      const resolutions = await loadActiveResolutions(
+        ctx.supabase,
+        companyId,
+        sourceId
+      );
+      return NextResponse.json({
+        ok: true,
+        created: (inserted || []).length,
+        superseded: (priorActive || []).length,
+        source: publicBankSnapshotSourceView(bumped || source),
+        resolutions,
+        revision: nextRevision,
+      });
+    } catch (error) {
+      if (isMissingRelation(error)) {
+        return schemaMissingResponse(
+          "032_bank_statement_movement_resolutions.sql"
+        );
+      }
+      console.error(
+        `[bank-statement-snapshots:${earlyAction}]`,
+        error?.message || error
+      );
+      return jsonError("WRITE_FAILED", "Karar yazılamadı.", 500);
+    }
   }
 
   try {

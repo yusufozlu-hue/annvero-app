@@ -41,6 +41,7 @@ export async function fetchLatestBankCanonicalSnapshot(
         status: 403,
         source: null,
         movements: [],
+        resolutions: [],
         canReanalyze: false,
         code: "CROSS_TENANT_FORBIDDEN",
       };
@@ -51,6 +52,7 @@ export async function fetchLatestBankCanonicalSnapshot(
         status: response.status,
         source: null,
         movements: [],
+        resolutions: [],
         canReanalyze: false,
         code: body.code || "FETCH_FAILED",
         message: body.message || body.error || "",
@@ -61,6 +63,7 @@ export async function fetchLatestBankCanonicalSnapshot(
       status: response.status,
       source: body.source || null,
       movements: body.movements || [],
+      resolutions: body.resolutions || [],
       canReanalyze: Boolean(body.canReanalyze),
       canReanalyzeCode: body.canReanalyzeCode || "",
     };
@@ -70,6 +73,7 @@ export async function fetchLatestBankCanonicalSnapshot(
       status: 0,
       source: null,
       movements: [],
+      resolutions: [],
       canReanalyze: false,
       code: "NETWORK",
     };
@@ -216,6 +220,56 @@ export async function updateBankCanonicalSnapshotPlanMeta({
         planAccountCount,
         v1AuditEntityId,
         safeSummary,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    return { ok: response.ok, status: response.status, ...body };
+  } catch {
+    return { ok: false, code: "NETWORK" };
+  }
+}
+
+/** Belgeye özel onaylı hesap kararlarını server'a yaz (yeni revision). */
+export async function persistBankStatementResolutions({
+  companyId,
+  sourceId,
+  resolutions = [],
+} = {}) {
+  try {
+    const response = await fetch("/api/bank-statement-snapshots", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "persist_resolutions",
+        companyId,
+        sourceId,
+        resolutions,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    return { ok: response.ok, status: response.status, ...body };
+  } catch {
+    return { ok: false, code: "NETWORK" };
+  }
+}
+
+/** Belge kararlarını geri al (audit + revision). */
+export async function undoBankStatementResolutions({
+  companyId,
+  sourceId,
+  sourceMovementIds = [],
+} = {}) {
+  try {
+    const response = await fetch("/api/bank-statement-snapshots", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "undo_resolutions",
+        companyId,
+        sourceId,
+        sourceMovementIds,
       }),
     });
     const body = await response.json().catch(() => ({}));

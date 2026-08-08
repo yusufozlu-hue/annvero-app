@@ -229,8 +229,14 @@ import {
   fetchBankCanonicalSnapshotByHash,
   fetchLatestBankCanonicalSnapshot,
   persistBankCanonicalSnapshot,
+  persistBankStatementResolutions,
+  undoBankStatementResolutions,
   updateBankCanonicalSnapshotPlanMeta,
 } from "@/src/utils/bankCanonicalSnapshotClient";
+import {
+  buildResolutionPayloadsFromApply,
+  collectSourceMovementIdsFromUndoSnapshot,
+} from "@/src/utils/bankStatementMovementResolutions";
 import {
   DUPLICATE_SNAPSHOT_ACTION,
   buildDuplicateSnapshotPipelineResult,
@@ -543,6 +549,11 @@ export default function BankParserWorkbench() {
   /** Sunucuda saklı canonical snapshot (dosyasız reanalyze) */
   const canonicalSourceIdRef = useRef(null);
   const canonicalContentHashRef = useRef("");
+  /** Belgeye özel onaylı hesap kararları (server revision overlay) */
+  const documentResolutionsRef = useRef([]);
+  /** Snapshot hydrate sonrası dosyasız yeniden analiz (Eksik sayacı için) */
+  const pendingCanonicalHydrateReanalyzeRef = useRef(false);
+  const handleReanalyzeWithNewPlanRef = useRef(null);
   const companyApproveResumeRef = useRef(false);
   /** Firma oturumu: işlenmiş hareket kimlikleri (Excel↔PDF çapraz dedup) */
   const processedMovementKeysRef = useRef(new Set());
@@ -862,6 +873,9 @@ export default function BankParserWorkbench() {
         applyMovementPreview(legacy, null, legacy.length);
         canonicalSourceIdRef.current = snap.source.id;
         canonicalContentHashRef.current = snap.source.contentHash || "";
+        documentResolutionsRef.current = Array.isArray(snap.resolutions)
+          ? snap.resolutions
+          : [];
         lastDedupMetaRef.current = {
           ...(lastDedupMetaRef.current || {}),
           sourceFileHash: snap.source.contentHash || "",
@@ -892,6 +906,7 @@ export default function BankParserWorkbench() {
             priorJobId: latest.id,
             fromCanonicalSnapshot: true,
             accountPlanCount: Number(meta.account_plan_count || 0),
+            documentResolutionCount: documentResolutionsRef.current.length,
           });
           setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
           setCompletedSteps((prev) => ({
@@ -899,6 +914,10 @@ export default function BankParserWorkbench() {
             preview: true,
             analysis: true,
           }));
+          // Stale V1 meta (Eksik 4) yerine belge kararları + hafıza ile gerçek Eksik üret
+          pendingCanonicalHydrateReanalyzeRef.current = true;
+        } else if (documentResolutionsRef.current.length) {
+          pendingCanonicalHydrateReanalyzeRef.current = true;
         }
       } catch {
         /* snapshot yoksa sessiz */
@@ -948,6 +967,8 @@ export default function BankParserWorkbench() {
       );
       canonicalSourceIdRef.current = null;
       canonicalContentHashRef.current = "";
+      documentResolutionsRef.current = [];
+      pendingCanonicalHydrateReanalyzeRef.current = false;
       companyApproveResumeRef.current = false;
       activeBankRef.current = "";
       setSelectedBank("");
@@ -1222,6 +1243,29 @@ export default function BankParserWorkbench() {
     isEnginePreparing ||
     pipelineRunning ||
     shouldBlockNewBankJob(bankJobStateRef.current);
+
+  // Snapshot hydrate: belge kararları + firma hafızası ile gerçek Eksik üret (stale V1 meta yetmez)
+  useEffect(() => {
+    if (!pendingCanonicalHydrateReanalyzeRef.current) return;
+    if (!selectedCompanyId || !accountMemoryReady) return;
+    if (!canonicalSourceIdRef.current) return;
+    if (!movementsRef.current?.length) return;
+    if (isJobBusy || isReanalyzing) return;
+    if (!v1AuditHistory?.length && !documentResolutionsRef.current?.length) {
+      return;
+    }
+    pendingCanonicalHydrateReanalyzeRef.current = false;
+    const fn = handleReanalyzeWithNewPlanRef.current;
+    if (typeof fn === "function") {
+      void fn();
+    }
+  }, [
+    selectedCompanyId,
+    accountMemoryReady,
+    v1AuditHistory,
+    isJobBusy,
+    isReanalyzing,
+  ]);
 
   const bankBusyStatus = isEnginePreparing
     ? "reading"
@@ -1770,7 +1814,7 @@ export default function BankParserWorkbench() {
     loadCariResolutionGroupsAsync();
   };
 
-  const handleApplyCariResolutionGroup = ({
+  const handleApplyCariResolutionGroup = async ({
     group,
     accountCode,
     accountName = "",
@@ -1834,9 +1878,58 @@ export default function BankParserWorkbench() {
         lucaRows: lucaRef.current || [],
         companyId: selectedCompanyId,
         bankName: selectedBank,
+        documentResolutions: documentResolutionsRef.current,
         skipMemoryPass: !learn,
       });
       lucaRef.current = reanalyze.lucaRows;
+
+      // Belgeye özel karar — server revision (canonical hareketler dokunulmaz)
+      let persistNote = "";
+      const sourceId = canonicalSourceIdRef.current;
+      if (sourceId && selectedCompanyId) {
+        const payloads = buildResolutionPayloadsFromApply({
+          companyId: selectedCompanyId,
+          sourceId,
+          accountCode: code,
+          accountName,
+          learn: Boolean(learn),
+          group,
+          lucaRows: lucaRef.current || [],
+          sourceRevision: Number(pipelineResult?.revision || 1) || 1,
+        });
+        if (payloads.length) {
+          const persisted = await persistBankStatementResolutions({
+            companyId: selectedCompanyId,
+            sourceId,
+            resolutions: payloads,
+          });
+          if (persisted?.ok) {
+            documentResolutionsRef.current = Array.isArray(persisted.resolutions)
+              ? persisted.resolutions
+              : [
+                  ...documentResolutionsRef.current.filter(
+                    (r) =>
+                      !payloads.some(
+                        (p) =>
+                          String(p.source_movement_id) ===
+                          String(r.sourceMovementId || r.source_movement_id)
+                      )
+                  ),
+                  ...(persisted.resolutions || payloads),
+                ];
+            persistNote = " · belge kararı kaydedildi";
+          } else if (
+            persisted?.code === "SCHEMA_MISSING" ||
+            String(persisted?.message || "").includes("032_")
+          ) {
+            persistNote = " · belge kararı şeması yok (032)";
+          } else {
+            persistNote = " · belge kararı kaydı başarısız";
+          }
+        }
+      } else {
+        persistNote = " · belge kararı: snapshot yok (oturum)";
+      }
 
       if (typeof window !== "undefined" && learn && applyResult.learnSaveTrace) {
         window.__ANNVERO_CARI_LEARN_SAVE_TRACE__ = applyResult.learnSaveTrace;
@@ -1860,6 +1953,7 @@ export default function BankParserWorkbench() {
           groupIds: [group.id],
           rowSnapshot: undoSnap,
           learned: Boolean(applyResult.learned),
+          sourceMovementIds: collectSourceMovementIdsFromUndoSnapshot(undoSnap),
         },
       ]);
       setResolvedCariGroupIds((prev) => {
@@ -1902,7 +1996,7 @@ export default function BankParserWorkbench() {
         },
       });
       setLastCariApplyMessage(
-        `${applyResult.updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${memNote}. Yeniden analiz ${reanalyze.durationMs} ms.`
+        `${applyResult.updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${memNote}${persistNote}. Yeniden analiz ${reanalyze.durationMs} ms.`
       );
       setCariResolutionSnapshot(snapshot);
       if (learn && applyResult.learnPersistFailed) {
@@ -1915,12 +2009,12 @@ export default function BankParserWorkbench() {
         );
       } else if (learn && applyResult.learned) {
         showToast(
-          `${applyResult.updated} satıra uygulandı (öğrenildi; yeniden analiz edildi)`,
+          `Eksik ${applyResult.beforeMissing} → ${report.missingCount}${memNote}${persistNote}`,
           "success"
         );
       } else {
         showToast(
-          `${applyResult.updated} satıra uygulandı (yeniden analiz ${reanalyze.durationMs} ms)`,
+          `Eksik ${applyResult.beforeMissing} → ${report.missingCount}${persistNote}`,
           "success"
         );
       }
@@ -1929,7 +2023,7 @@ export default function BankParserWorkbench() {
     }
   };
 
-  const handleBulkApplyCariResolutionGroups = ({
+  const handleBulkApplyCariResolutionGroups = async ({
     groups = [],
     accountCode,
     accountName = "",
@@ -1971,6 +2065,7 @@ export default function BankParserWorkbench() {
       let totalUpdated = 0;
       let anyLearned = false;
       let learnFailed = false;
+      const allPayloads = [];
       for (const group of groups) {
         if (!isAccountAllowedForDirection(code, group.direction)) continue;
         if (group.foreignVendor && isExpenseAccountCode(code)) continue;
@@ -1987,15 +2082,46 @@ export default function BankParserWorkbench() {
         totalUpdated += applyResult.updated || 0;
         if (applyResult.learned) anyLearned = true;
         if (applyResult.learnPersistFailed) learnFailed = true;
+        if (canonicalSourceIdRef.current && selectedCompanyId) {
+          allPayloads.push(
+            ...buildResolutionPayloadsFromApply({
+              companyId: selectedCompanyId,
+              sourceId: canonicalSourceIdRef.current,
+              accountCode: code,
+              accountName,
+              learn: Boolean(learn),
+              group,
+              lucaRows: nextRows,
+              sourceRevision: Number(pipelineResult?.revision || 1) || 1,
+            })
+          );
+        }
       }
       lucaRef.current = nextRows;
       const reanalyze = reanalyzeAfterMissingAccountApply({
         lucaRows: lucaRef.current || [],
         companyId: selectedCompanyId,
         bankName: selectedBank,
+        documentResolutions: documentResolutionsRef.current,
         skipMemoryPass: !learn,
       });
       lucaRef.current = reanalyze.lucaRows;
+
+      if (
+        allPayloads.length &&
+        canonicalSourceIdRef.current &&
+        selectedCompanyId
+      ) {
+        const persisted = await persistBankStatementResolutions({
+          companyId: selectedCompanyId,
+          sourceId: canonicalSourceIdRef.current,
+          resolutions: allPayloads,
+        });
+        if (persisted?.ok && Array.isArray(persisted.resolutions)) {
+          documentResolutionsRef.current = persisted.resolutions;
+        }
+      }
+
       syncLucaPage(lucaPage);
       const { report, snapshot } = rebuildCariResolutionSnapshot();
       setPipelineResult((prev) =>
@@ -2014,6 +2140,7 @@ export default function BankParserWorkbench() {
           groupIds: groups.map((g) => g.id),
           rowSnapshot: undoSnap,
           learned: anyLearned,
+          sourceMovementIds: collectSourceMovementIdsFromUndoSnapshot(undoSnap),
         },
       ]);
       setResolvedCariGroupIds((prev) => {
@@ -2071,6 +2198,10 @@ export default function BankParserWorkbench() {
     setCariApplyUndoStack((prev) => {
       if (!prev.length) return prev;
       const last = prev[prev.length - 1];
+      const movementIds =
+        last.sourceMovementIds ||
+        collectSourceMovementIdsFromUndoSnapshot(last.rowSnapshot || []);
+      const undone = new Set(movementIds);
       lucaRef.current = restoreLucaRowsFromUndoSnapshot(
         lucaRef.current || [],
         last.rowSnapshot || []
@@ -2079,6 +2210,12 @@ export default function BankParserWorkbench() {
         lucaRows: lucaRef.current || [],
         companyId: selectedCompanyId,
         bankName: selectedBank,
+        documentResolutions: (documentResolutionsRef.current || []).filter(
+          (r) =>
+            !undone.has(
+              String(r.sourceMovementId || r.source_movement_id || "")
+            )
+        ),
         skipMemoryPass: true,
       });
       lucaRef.current = reanalyze.lucaRows;
@@ -2107,6 +2244,32 @@ export default function BankParserWorkbench() {
         `Son uygulama geri alındı. Eksik hesap: ${report.missingCount}.`
       );
       showToast("Son eşleştirme geri alındı.", "success");
+
+      if (
+        movementIds.length &&
+        canonicalSourceIdRef.current &&
+        selectedCompanyId
+      ) {
+        void undoBankStatementResolutions({
+          companyId: selectedCompanyId,
+          sourceId: canonicalSourceIdRef.current,
+          sourceMovementIds: movementIds,
+        }).then((res) => {
+          if (res?.ok && Array.isArray(res.resolutions)) {
+            documentResolutionsRef.current = res.resolutions;
+          } else if (res?.ok) {
+            documentResolutionsRef.current = (
+              documentResolutionsRef.current || []
+            ).filter(
+              (r) =>
+                !undone.has(
+                  String(r.sourceMovementId || r.source_movement_id || "")
+                )
+            );
+          }
+        });
+      }
+
       return prev.slice(0, -1);
     });
   };
@@ -2915,6 +3078,7 @@ export default function BankParserWorkbench() {
       ),
       sourceType: "bank",
       coreRowLimit,
+      documentResolutions: documentResolutionsRef.current || [],
     };
   };
 
@@ -5615,6 +5779,9 @@ export default function BankParserWorkbench() {
           applyMovementPreview(legacy, null, legacy.length);
           canonicalSourceIdRef.current = snap.source.id;
           canonicalContentHashRef.current = snap.source.contentHash || "";
+          documentResolutionsRef.current = Array.isArray(snap.resolutions)
+            ? snap.resolutions
+            : [];
           lastDedupMetaRef.current = {
             ...(lastDedupMetaRef.current || {}),
             sourceFileHash: snap.source.contentHash || "",
@@ -5738,6 +5905,7 @@ export default function BankParserWorkbench() {
       reanalyzeOptionsRef.current = null;
     }
   };
+  handleReanalyzeWithNewPlanRef.current = handleReanalyzeWithNewPlan;
 
   const handleApplyBalanceResolution = async (draft) => {
     if (isJobBusy || isReanalyzing || isBalanceResolving) return;

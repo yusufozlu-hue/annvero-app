@@ -355,6 +355,8 @@ export function buildMovementMappingContext(options = {}) {
     accountMemoryRecords,
     accountMemoryV2Index,
     companyAccountingPolicies,
+    // Belgeye özel onaylı kararlar (firma hafızasından önce uygulanır)
+    documentResolutions: options.documentResolutions || null,
   };
 }
 
@@ -613,9 +615,26 @@ function detectMergeRiskLabels(descriptions = []) {
 
 function cloneAnalyzedMovement(template, sourceMovement, index) {
   const raw = sourceMovement?.rawRow || template.rawRow || {};
+  const stableId =
+    String(
+      sourceMovement?.sourceMovementId ||
+        sourceMovement?.sourceRowId ||
+        sourceMovement?.id ||
+        template.sourceMovementId ||
+        template.id ||
+        ""
+    ).trim() || `analyzed-${index + 1}`;
   const cloned = {
     ...template,
-    id: sourceMovement?.id || template.id || `analyzed-${index + 1}`,
+    id: stableId,
+    sourceRowId:
+      String(
+        sourceMovement?.sourceRowId ||
+          sourceMovement?.sourceMovementId ||
+          template.sourceRowId ||
+          stableId
+      ).trim() || stableId,
+    sourceMovementId: stableId,
     date: formatParserDate(raw?.tarih || raw?.date || sourceMovement?.date || template.date),
     amount: Math.abs(
       Number(raw?.tutar ?? raw?.amount ?? sourceMovement?.amount ?? template.amount ?? 0)
@@ -628,7 +647,7 @@ function cloneAnalyzedMovement(template, sourceMovement, index) {
       sourceMovement?.direction === "CIKIS"
         ? "CIKIS"
         : template.direction || "GIRIS",
-    rawRow: raw,
+    rawRow: raw?.aciklama || raw?.description ? raw : sourceMovement || template.rawRow || raw,
     sourceRowIndex: index,
     _accountingAnalyzed: true,
     _parserOnly: false,
@@ -637,6 +656,72 @@ function cloneAnalyzedMovement(template, sourceMovement, index) {
   // Teşhis token: unique-memo clone sourceRowId/id kaybında bile aynı BİLET izi
   preserveCariStageTraceOnClone(template, cloned);
   return cloned;
+}
+
+/**
+ * Canonical snapshot / dosyasız yeniden analiz: rawRow yoksa hareketi mapping girdisine çevir.
+ * sourceMovementId korunmazsa belge kararları ve firma hafızası kaybolur.
+ */
+function movementAsMappingRaw(source = {}) {
+  const mid = String(
+    source.sourceMovementId ||
+      source.source_movement_id ||
+      source.sourceRowId ||
+      source.id ||
+      ""
+  ).trim();
+  return {
+    ...source,
+    aciklama: source.aciklama || source.description || "",
+    description: source.description || source.aciklama || "",
+    tutar: source.tutar ?? source.amount,
+    amount: source.amount ?? source.tutar,
+    yon: source.yon || source.direction,
+    direction: source.direction || source.yon,
+    tarih: source.tarih || source.date,
+    date: source.date || source.tarih,
+    sourceRowId: mid,
+    sourceMovementId: mid,
+    id: mid || source.id,
+  };
+}
+
+function resolveAccountingRawInput(source, normalizedRows, index) {
+  if (source?.rawRow && (source.rawRow.aciklama || source.rawRow.description || source.rawRow.tutar != null)) {
+    const mid = String(
+      source.sourceMovementId ||
+        source.sourceRowId ||
+        source.id ||
+        source.rawRow.sourceMovementId ||
+        source.rawRow.sourceRowId ||
+        ""
+    ).trim();
+    if (!mid) return source.rawRow;
+    return {
+      ...source.rawRow,
+      sourceRowId: source.rawRow.sourceRowId || mid,
+      sourceMovementId: source.rawRow.sourceMovementId || mid,
+    };
+  }
+  if (normalizedRows?.[index]) {
+    return movementAsMappingRaw({
+      ...normalizedRows[index],
+      sourceMovementId:
+        source?.sourceMovementId ||
+        source?.id ||
+        normalizedRows[index].sourceMovementId,
+    });
+  }
+  if (
+    source &&
+    (source.description ||
+      source.aciklama ||
+      source.amount != null ||
+      source.fromCanonicalSnapshot)
+  ) {
+    return movementAsMappingRaw(source);
+  }
+  return null;
 }
 
 /**
@@ -755,7 +840,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   const memoKeyByMovementIndex = new Array(sourceMovements.length);
   for (let index = 0; index < sourceMovements.length; index += 1) {
     const source = sourceMovements[index] || {};
-    const raw = source.rawRow || normalizedRows[index] || null;
+    const raw = resolveAccountingRawInput(source, normalizedRows, index);
     const key = buildAnalysisMemoKey(raw || source, source.direction);
     memoKeyByMovementIndex[index] = key;
     legacyUniqueKeys.add(buildLegacyMemoKeyFromRaw(raw || source, source.direction));

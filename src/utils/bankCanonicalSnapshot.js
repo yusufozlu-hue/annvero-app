@@ -195,7 +195,7 @@ export function snapshotMovementToLegacyRow(row = {}) {
         ? row.safe_extra
         : {};
 
-  return {
+  const legacy = {
     id: sourceMovementId,
     sourceRowId: sourceMovementId,
     sourceMovementId,
@@ -222,6 +222,15 @@ export function snapshotMovementToLegacyRow(row = {}) {
     accountingScenario: empty(extra.accountingScenario),
     fromCanonicalSnapshot: true,
   };
+  // Dosyasız muhasebe analizi için rawRow — sourceMovementId korunur
+  legacy.rawRow = {
+    ...legacy,
+    aciklama: legacy.description,
+    tutar: amountAbs,
+    yon: legacy.direction,
+    tarih: legacy.date,
+  };
+  return legacy;
 }
 
 export function snapshotMovementsToLegacyRows(rows = []) {
