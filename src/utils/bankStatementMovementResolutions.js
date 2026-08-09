@@ -80,16 +80,38 @@ export function lookupDocumentResolution(
  * Extract stable sourceMovementId from luca / movement row.
  */
 export function resolveSourceMovementId(row = {}) {
-  return String(
+  const stable = String(
     row.sourceMovementId ||
       row.source_movement_id ||
       row.sourceRowId ||
       row.source_row_id ||
       row._movementId ||
       row.movementId ||
-      row.id ||
       ""
   ).trim();
+  if (stable) return stable;
+  // Luca satır id'si (sl-*, luca-*) hareket kimliği değildir — persist anahtarı olmaz
+  const fallback = String(row.id || "").trim();
+  if (!fallback) return "";
+  if (/^(sl-|luca-|manual-|preview-)/i.test(fallback)) return "";
+  return fallback;
+}
+
+function sanitizeResolutionDirection(value = "") {
+  const d = String(value || "").trim().toUpperCase();
+  const allowed = new Set([
+    "",
+    "GIRIS",
+    "CIKIS",
+    "BORC",
+    "ALACAK",
+    "GELEN",
+    "GIDEN",
+  ]);
+  if (allowed.has(d)) return d;
+  if (d === "IN" || d === "CREDIT" || d === "ALACAKLI") return "GIRIS";
+  if (d === "OUT" || d === "DEBIT" || d === "BORCLU") return "CIKIS";
+  return "";
 }
 
 /**
@@ -183,72 +205,66 @@ export function buildResolutionPayloadsFromApply({
   const sid = String(sourceId || "").trim();
   if (!code || !cid || !sid || !group) return [];
 
-  const targetIds = new Set((group.rowIds || []).filter(Boolean));
+  const targetIds = new Set(
+    (group.rowIds || []).map((id) => String(id || "").trim()).filter(Boolean)
+  );
   if (targetIds.size === 0 && group.seedRow?.id) {
-    targetIds.add(group.seedRow.id);
+    targetIds.add(String(group.seedRow.id));
   }
 
   const byMovement = new Map();
+  const pushPayload = (mid, row = {}) => {
+    if (!mid || byMovement.has(mid)) return;
+    byMovement.set(mid, {
+      company_id: cid,
+      source_id: sid,
+      source_movement_id: mid,
+      luca_leg: "",
+      account_code: code,
+      account_name: String(accountName || "").trim(),
+      direction: sanitizeResolutionDirection(
+        group.direction || row.direction || ""
+      ),
+      analysis_key: String(
+        row.analysisKey ||
+          group.seedRow?.analysisKey ||
+          row.detayAciklama ||
+          ""
+      ).trim(),
+      transaction_type: String(
+        row.transactionType || group.seedRow?.transactionType || ""
+      ).trim(),
+      decision_type: "DIRECT_ACCOUNT",
+      learn_for_company: Boolean(learn),
+      user_approved: true,
+      status: "active",
+      source_revision: Number(sourceRevision) || 1,
+      audit_note: "cari-resolution-center:apply",
+      created_by: String(createdBy || ""),
+    });
+  };
+
   for (const row of lucaRows || []) {
-    if (!targetIds.has(row.id)) continue;
-    const mid = resolveSourceMovementId(row);
-    if (!mid) continue;
-    if (!byMovement.has(mid)) {
-      byMovement.set(mid, {
-        company_id: cid,
-        source_id: sid,
-        source_movement_id: mid,
-        luca_leg: "",
-        account_code: code,
-        account_name: String(accountName || "").trim(),
-        direction: String(
-          group.direction || row.direction || ""
-        )
-          .trim()
-          .toUpperCase(),
-        analysis_key: String(
-          row.analysisKey ||
-            group.seedRow?.analysisKey ||
-            row.detayAciklama ||
-            ""
-        ).trim(),
-        transaction_type: String(
-          row.transactionType || group.seedRow?.transactionType || ""
-        ).trim(),
-        decision_type: "DIRECT_ACCOUNT",
-        learn_for_company: Boolean(learn),
-        user_approved: true,
-        status: "active",
-        source_revision: Number(sourceRevision) || 1,
-        audit_note: "cari-resolution-center:apply",
-        created_by: String(createdBy || ""),
-      });
-    }
+    if (!targetIds.has(String(row?.id || "").trim())) continue;
+    pushPayload(resolveSourceMovementId(row), row);
   }
 
-  // Fallback: seed row only
-  if (!byMovement.size && group.seedRow) {
-    const mid = resolveSourceMovementId(group.seedRow);
-    if (mid) {
-      byMovement.set(mid, {
-        company_id: cid,
-        source_id: sid,
-        source_movement_id: mid,
-        luca_leg: "",
-        account_code: code,
-        account_name: String(accountName || "").trim(),
-        direction: String(group.direction || "").trim().toUpperCase(),
-        analysis_key: String(group.seedRow.analysisKey || "").trim(),
-        transaction_type: String(group.seedRow.transactionType || "").trim(),
-        decision_type: "DIRECT_ACCOUNT",
-        learn_for_company: Boolean(learn),
-        user_approved: true,
-        status: "active",
-        source_revision: Number(sourceRevision) || 1,
-        audit_note: "cari-resolution-center:apply",
-        created_by: String(createdBy || ""),
-      });
+  // Transactions / learnSeed — luca id eşleşmesi kaçsa bile stabil hareket kimliği
+  if (Array.isArray(group.transactions)) {
+    for (const tx of group.transactions) {
+      pushPayload(
+        resolveSourceMovementId(tx) ||
+          resolveSourceMovementId(tx?.learnSeed || {}),
+        tx?.learnSeed || tx
+      );
     }
+  }
+  if (group.seedRow) {
+    pushPayload(
+      resolveSourceMovementId(group.seedRow) ||
+        resolveSourceMovementId(group.seedRow?.learnSeed || {}),
+      group.seedRow
+    );
   }
 
   return [...byMovement.values()];

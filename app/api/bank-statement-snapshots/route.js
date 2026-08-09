@@ -375,10 +375,27 @@ export async function POST(request) {
           company_id: companyId,
           source_id: sourceId,
           source_movement_id: mid,
-          luca_leg: String(item.lucaLeg || item.luca_leg || "").trim(),
+          luca_leg: (() => {
+            const leg = String(item.lucaLeg || item.luca_leg || "").trim();
+            return ["", "counter", "bank", "fee", "tax"].includes(leg)
+              ? leg
+              : "";
+          })(),
           account_code: code,
           account_name: String(item.accountName || item.account_name || "").trim(),
-          direction: String(item.direction || "").trim().toUpperCase(),
+          direction: (() => {
+            const d = String(item.direction || "").trim().toUpperCase();
+            const allowed = new Set([
+              "",
+              "GIRIS",
+              "CIKIS",
+              "BORC",
+              "ALACAK",
+              "GELEN",
+              "GIDEN",
+            ]);
+            return allowed.has(d) ? d : "";
+          })(),
           analysis_key: String(item.analysisKey || item.analysis_key || "").trim(),
           transaction_type: String(
             item.transactionType || item.transaction_type || ""

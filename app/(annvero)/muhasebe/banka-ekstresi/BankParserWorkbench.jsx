@@ -234,8 +234,10 @@ import {
   updateBankCanonicalSnapshotPlanMeta,
 } from "@/src/utils/bankCanonicalSnapshotClient";
 import {
+  applyDocumentResolutionsToMovements,
   buildResolutionPayloadsFromApply,
   collectSourceMovementIdsFromUndoSnapshot,
+  publicBankResolutionView,
 } from "@/src/utils/bankStatementMovementResolutions";
 import {
   DUPLICATE_SNAPSHOT_ACTION,
@@ -869,13 +871,18 @@ export default function BankParserWorkbench() {
           return;
         }
         if (!snap.ok || !snap.source || !snap.movements?.length) return;
-        const legacy = snapshotMovementsToLegacyRows(snap.movements);
-        applyMovementPreview(legacy, null, legacy.length);
-        canonicalSourceIdRef.current = snap.source.id;
-        canonicalContentHashRef.current = snap.source.contentHash || "";
         documentResolutionsRef.current = Array.isArray(snap.resolutions)
           ? snap.resolutions
           : [];
+        const legacy = snapshotMovementsToLegacyRows(snap.movements);
+        // Belge kararlarını hareketlere damgala — reanalyze öncesi de sourceMovementId bağını koru
+        const stamped = applyDocumentResolutionsToMovements(
+          legacy,
+          documentResolutionsRef.current
+        );
+        applyMovementPreview(stamped, null, stamped.length);
+        canonicalSourceIdRef.current = snap.source.id;
+        canonicalContentHashRef.current = snap.source.contentHash || "";
         lastDedupMetaRef.current = {
           ...(lastDedupMetaRef.current || {}),
           sourceFileHash: snap.source.contentHash || "",
@@ -1880,30 +1887,42 @@ export default function BankParserWorkbench() {
       });
       lucaRef.current = applyResult.lucaRows;
 
-      const reanalyze = reanalyzeAfterMissingAccountApply({
-        lucaRows: lucaRef.current || [],
-        companyId: selectedCompanyId,
-        bankName: selectedBank,
-        documentResolutions: documentResolutionsRef.current,
-        skipMemoryPass: !learn,
-      });
-      lucaRef.current = reanalyze.lucaRows;
-
       // Belgeye özel karar — server revision (canonical hareketler dokunulmaz)
       let persistNote = "";
       const sourceId = canonicalSourceIdRef.current;
+      let payloads = [];
       if (sourceId && selectedCompanyId) {
-        const payloads = buildResolutionPayloadsFromApply({
+        payloads = buildResolutionPayloadsFromApply({
           companyId: selectedCompanyId,
           sourceId,
           accountCode: code,
           accountName,
           learn: Boolean(learn),
           group,
-          lucaRows: lucaRef.current || [],
+          // Uygulama sonrası satırlar (sourceMovementId/learnSeed buradan)
+          lucaRows: applyResult.lucaRows || lucaRef.current || [],
           sourceRevision: Number(pipelineResult?.revision || 1) || 1,
         });
         if (payloads.length) {
+          // Optimistic: aynı oturumda reanalyze / hydrate belge kararını görsün
+          const optimistic = payloads
+            .map((p) => publicBankResolutionView(p))
+            .filter(Boolean);
+          documentResolutionsRef.current = [
+            ...documentResolutionsRef.current.filter(
+              (r) =>
+                !payloads.some(
+                  (p) =>
+                    String(p.source_movement_id) ===
+                    String(r.sourceMovementId || r.source_movement_id)
+                )
+            ),
+            ...optimistic,
+          ];
+          movementsRef.current = applyDocumentResolutionsToMovements(
+            movementsRef.current || [],
+            documentResolutionsRef.current
+          );
           const persisted = await persistBankStatementResolutions({
             companyId: selectedCompanyId,
             sourceId,
@@ -1912,17 +1931,7 @@ export default function BankParserWorkbench() {
           if (persisted?.ok) {
             documentResolutionsRef.current = Array.isArray(persisted.resolutions)
               ? persisted.resolutions
-              : [
-                  ...documentResolutionsRef.current.filter(
-                    (r) =>
-                      !payloads.some(
-                        (p) =>
-                          String(p.source_movement_id) ===
-                          String(r.sourceMovementId || r.source_movement_id)
-                      )
-                  ),
-                  ...(persisted.resolutions || payloads),
-                ];
+              : documentResolutionsRef.current;
             persistNote = " · belge kararı kaydedildi";
           } else if (
             persisted?.code === "SCHEMA_MISSING" ||
@@ -1930,12 +1939,25 @@ export default function BankParserWorkbench() {
           ) {
             persistNote = " · belge kararı şeması yok (032)";
           } else {
-            persistNote = " · belge kararı kaydı başarısız";
+            persistNote = ` · belge kararı kaydı başarısız${
+              persisted?.code ? ` (${persisted.code})` : ""
+            }`;
           }
+        } else {
+          persistNote = " · belge kararı: hareket kimliği yok";
         }
       } else {
         persistNote = " · belge kararı: snapshot yok (oturum)";
       }
+
+      const reanalyze = reanalyzeAfterMissingAccountApply({
+        lucaRows: lucaRef.current || [],
+        companyId: selectedCompanyId,
+        bankName: selectedBank,
+        documentResolutions: documentResolutionsRef.current,
+        skipMemoryPass: !learn,
+      });
+      lucaRef.current = reanalyze.lucaRows;
 
       if (typeof window !== "undefined" && learn && applyResult.learnSaveTrace) {
         window.__ANNVERO_CARI_LEARN_SAVE_TRACE__ = applyResult.learnSaveTrace;
@@ -2104,6 +2126,26 @@ export default function BankParserWorkbench() {
         }
       }
       lucaRef.current = nextRows;
+      if (allPayloads.length) {
+        const optimistic = allPayloads
+          .map((p) => publicBankResolutionView(p))
+          .filter(Boolean);
+        documentResolutionsRef.current = [
+          ...documentResolutionsRef.current.filter(
+            (r) =>
+              !allPayloads.some(
+                (p) =>
+                  String(p.source_movement_id) ===
+                  String(r.sourceMovementId || r.source_movement_id)
+              )
+          ),
+          ...optimistic,
+        ];
+        movementsRef.current = applyDocumentResolutionsToMovements(
+          movementsRef.current || [],
+          documentResolutionsRef.current
+        );
+      }
       const reanalyze = reanalyzeAfterMissingAccountApply({
         lucaRows: lucaRef.current || [],
         companyId: selectedCompanyId,
@@ -5766,28 +5808,32 @@ export default function BankParserWorkbench() {
       (Array.isArray(movementsRef.current) &&
         movementsRef.current.length > 0 &&
         Boolean(canonicalContentHashRef.current));
-    if (
-      !canFilelessReanalyze({
-        hasFile: Boolean(selectedFile),
-        hasCheckpoint: hasUsableSourceCheckpoint(sourceCheckpointRef.current),
-        hasCanonicalSnapshot: hasSnapshot,
-      })
-    ) {
-      // Sunucudan snapshot dene (sayfa yenileme sonrası)
-      try {
-        const snap = await fetchLatestBankCanonicalSnapshot(selectedCompanyId);
-        if (snap.status === 403) {
-          showToast("Bu firmanın snapshot'ına erişim yok.", "error");
-          return;
-        }
-        if (snap.ok && snap.source && snap.movements?.length) {
+    // Taze belge kararları — hydrate race / başka sekme apply sonrası
+    try {
+      const snap = await fetchLatestBankCanonicalSnapshot(selectedCompanyId);
+      if (snap.status === 403) {
+        showToast("Bu firmanın snapshot'ına erişim yok.", "error");
+        return;
+      }
+      if (snap.ok && snap.source && snap.movements?.length) {
+        if (
+          !canFilelessReanalyze({
+            hasFile: Boolean(selectedFile),
+            hasCheckpoint: hasUsableSourceCheckpoint(sourceCheckpointRef.current),
+            hasCanonicalSnapshot: hasSnapshot,
+          })
+        ) {
           const legacy = snapshotMovementsToLegacyRows(snap.movements);
-          applyMovementPreview(legacy, null, legacy.length);
-          canonicalSourceIdRef.current = snap.source.id;
-          canonicalContentHashRef.current = snap.source.contentHash || "";
           documentResolutionsRef.current = Array.isArray(snap.resolutions)
             ? snap.resolutions
             : [];
+          const stamped = applyDocumentResolutionsToMovements(
+            legacy,
+            documentResolutionsRef.current
+          );
+          applyMovementPreview(stamped, null, stamped.length);
+          canonicalSourceIdRef.current = snap.source.id;
+          canonicalContentHashRef.current = snap.source.contentHash || "";
           lastDedupMetaRef.current = {
             ...(lastDedupMetaRef.current || {}),
             sourceFileHash: snap.source.contentHash || "",
@@ -5798,10 +5844,21 @@ export default function BankParserWorkbench() {
           }
           if (snap.source.fileName) setFileName(snap.source.fileName);
           hasSnapshot = true;
+        } else if (Array.isArray(snap.resolutions)) {
+          documentResolutionsRef.current = snap.resolutions;
+          if (movementsRef.current?.length) {
+            movementsRef.current = applyDocumentResolutionsToMovements(
+              movementsRef.current,
+              documentResolutionsRef.current
+            );
+          }
+          if (snap.source?.id) {
+            canonicalSourceIdRef.current = snap.source.id;
+          }
         }
-      } catch {
-        /* fallback toast below */
       }
+    } catch {
+      /* mevcut oturum snapshot'ı ile devam */
     }
     if (
       !canFilelessReanalyze({

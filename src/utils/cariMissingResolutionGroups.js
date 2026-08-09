@@ -1703,6 +1703,13 @@ export function buildCariResolutionRowView(row = {}, context = {}) {
       : statusLabel,
     learnSeed: {
       id: row.id,
+      sourceMovementId:
+        row.sourceMovementId ||
+        row.source_movement_id ||
+        row._movementId ||
+        row.sourceRowId ||
+        "",
+      _movementId: row._movementId || "",
       analysisKey: row.analysisKey || "",
       direction,
       detayAciklama: desc,

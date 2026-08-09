@@ -626,6 +626,36 @@ test("buildResolutionPayloadsFromApply uses sourceMovementId not luca row id alo
   assert.equal(payloads[0].learn_for_company, true);
 });
 
+test("buildResolutionPayloadsFromApply recovers id from learnSeed and sanitizes direction", () => {
+  const payloads = buildResolutionPayloadsFromApply({
+    companyId: "c1",
+    sourceId: "s1",
+    accountCode: "193.01.001",
+    accountName: "Stopaj",
+    learn: true,
+    group: {
+      id: "g2",
+      rowIds: ["sl-9"],
+      direction: "NOT_A_VALID_DIRECTION",
+      seedRow: { id: "sl-9" },
+      transactions: [
+        {
+          id: "sl-9",
+          learnSeed: {
+            id: "sl-9",
+            sourceMovementId: "stable-stopaj-1",
+            direction: "CIKIS",
+          },
+        },
+      ],
+    },
+    lucaRows: [{ id: "sl-9" }],
+  });
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].source_movement_id, "stable-stopaj-1");
+  assert.equal(payloads[0].direction, "");
+});
+
 test("snapshot legacy rows expose rawRow + stable sourceMovementId for fileless map", () => {
   const legacy = snapshotMovementToLegacyRow({
     id: "uuid-mov-1",
