@@ -74,10 +74,18 @@ for each row execute function public.bank_statement_movement_resolutions_set_upd
 
 alter table public.bank_statement_movement_resolutions enable row level security;
 
-revoke all on public.bank_statement_movement_resolutions from anon;
-revoke insert, update, delete on public.bank_statement_movement_resolutions from authenticated;
-grant select on public.bank_statement_movement_resolutions to authenticated;
-grant all on public.bank_statement_movement_resolutions to service_role;
+-- Least-privilege: PUBLIC/anon temiz; authenticated yalnız SELECT;
+-- service_role dar DML (TRUNCATE/REFERENCES/TRIGGER yok). TRUNCATE RLS bypass eder.
+revoke all on table public.bank_statement_movement_resolutions from public;
+revoke all on table public.bank_statement_movement_resolutions from anon;
+revoke all on table public.bank_statement_movement_resolutions from authenticated;
+grant select on table public.bank_statement_movement_resolutions to authenticated;
+grant select, insert, update, delete on table public.bank_statement_movement_resolutions to service_role;
+
+revoke all on function public.bank_statement_movement_resolutions_set_updated_at() from public;
+revoke all on function public.bank_statement_movement_resolutions_set_updated_at() from anon;
+revoke all on function public.bank_statement_movement_resolutions_set_updated_at() from authenticated;
+grant execute on function public.bank_statement_movement_resolutions_set_updated_at() to service_role;
 
 drop policy if exists "bank_statement_movement_resolutions_select_member"
   on public.bank_statement_movement_resolutions;
