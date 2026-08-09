@@ -1728,7 +1728,8 @@ export default function BankParserWorkbench() {
         // Modal zaten açık: legacy rapor (her grup için match) peşinen koşturulmaz.
         const { report, snapshot } = rebuildCariResolutionSnapshot({
           includeLegacyCariGroupReport: false,
-          initialCandidateGroups: CARI_RESOLUTION_INITIAL_CANDIDATE_GROUPS,
+          // İlk boyama: aday hydrate yok → 4k plan index kurulmaz; modal açılır
+          initialCandidateGroups: 0,
         });
         if (!stillCurrent()) return;
         setCariResolutionLoading(false);
