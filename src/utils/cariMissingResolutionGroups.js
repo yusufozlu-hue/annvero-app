@@ -982,8 +982,13 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
   const groupingMs = collectStats ? performance.now() - groupStart : 0;
 
   const companyPlans = context.companyPlans || [];
-  const planCache =
-    context.planCache || createCariResolutionPlanCache(companyPlans);
+  // Ağır cari index — yalnız aday hydrate / KK araması gerektiğinde kur
+  let planCache = context.planCache || null;
+  const ensurePlanCache = () => {
+    if (planCache?.planRows && "cariIndex" in planCache) return planCache;
+    planCache = createCariResolutionPlanCache(companyPlans);
+    return planCache;
+  };
 
   const hydrateCount =
     initialCandidateGroups === "all" || initialCandidateGroups === true
@@ -1066,7 +1071,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       }
       const t0 = collectStats ? performance.now() : 0;
       const enriched = hydrateCariResolutionGroupCandidates(base, companyPlans, {
-        planCache,
+        planCache: ensurePlanCache(),
         limit: 5,
         selectedCompany,
       });
@@ -1363,7 +1368,14 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     cariMissingCount: unresolvedCount,
     groupCount: ranked.length,
     groups: ranked,
-    planCache,
+    planCache:
+      planCache || {
+        companyPlans: [],
+        planRows: [],
+        cariIndex: null,
+        indexBuildCount: 0,
+        planNormalizeCount: 0,
+      },
     selectedCompany,
     virmanDivertedCount: divertedVirman.length,
     virmanDivertedGroupCount: divertedGroupKeys.size,
@@ -1397,8 +1409,8 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       totalMs: Math.round((groupingMs + candidateMs) * 100) / 100,
       groupCount: ranked.length,
       candidateHydrations,
-      indexBuilds: planCache.indexBuildCount || 0,
-      planNormalizeCount: planCache.planNormalizeCount || 0,
+      indexBuilds: planCache?.indexBuildCount || 0,
+      planNormalizeCount: planCache?.planNormalizeCount || 0,
       planScansDuringCandidates,
       ownCompanyFiltered: ownCompanyFilteredTotal,
       legacyWouldHaveRebuiltIndex: ranked.length,
