@@ -1717,7 +1717,8 @@ export default function BankParserWorkbench() {
       cariResolutionCancelRef.current();
     }
     const generation = ++cariResolutionGenerationRef.current;
-    cariResolutionCancelRef.current = scheduleAfterPaint(() => {
+    // rAF çift boyama UI’ı kilitleyen uzun işlerde hiç çalışmayabiliyor — setTimeout öncelikli
+    const timer = setTimeout(() => {
       const stillCurrent = () =>
         shouldApplyCariResolutionAsyncResult({
           generation,
@@ -1725,10 +1726,8 @@ export default function BankParserWorkbench() {
           isOpen: showCariResolutionCenterRef.current,
         });
       try {
-        // Modal zaten açık: legacy rapor (her grup için match) peşinen koşturulmaz.
         const { report, snapshot } = rebuildCariResolutionSnapshot({
           includeLegacyCariGroupReport: false,
-          // İlk boyama: aday hydrate yok → 4k plan index kurulmaz; modal açılır
           initialCandidateGroups: 0,
         });
         if (!stillCurrent()) return;
@@ -1740,7 +1739,6 @@ export default function BankParserWorkbench() {
             : "Eksik hesap satırı yok.",
           report.missingCount ? "error" : "success"
         );
-        // Legacy accordion raporu: modal boyanıp liste geldikten sonra (iptal edilebilir)
         cariResolutionCancelRef.current = scheduleAfterPaint(() => {
           if (!stillCurrent()) return;
           setCariGroupReport(
@@ -1757,7 +1755,8 @@ export default function BankParserWorkbench() {
           error?.message || "Cari grupları hazırlanamadı. Tekrar deneyin."
         );
       }
-    });
+    }, 0);
+    cariResolutionCancelRef.current = () => clearTimeout(timer);
   };
 
   const handleCloseCariResolutionCenter = () => {
