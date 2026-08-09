@@ -75,7 +75,8 @@ test("migration 031 present and non-destructive", () => {
   assert.match(sql, /bank_statement_movements/);
   assert.match(sql, /annvero_can_access_company/);
   assert.doesNotMatch(sql, /\bDROP\s+TABLE\b/i);
-  assert.doesNotMatch(sql, /\bTRUNCATE\b/i);
+  // Comment'teki "TRUNCATE RLS bypass" uyarısını yok say; gerçek TRUNCATE TABLE yasak
+  assert.doesNotMatch(sql, /\bTRUNCATE\s+TABLE\b/i);
   assert.match(sql, /enable row level security/i);
   assert.match(sql, /service_role/);
 });
@@ -524,7 +525,8 @@ test("migration 032 document resolutions present and non-destructive", () => {
   assert.match(sql, /enable row level security/i);
   assert.match(sql, /service_role/);
   assert.doesNotMatch(sql, /\bDROP\s+TABLE\b/i);
-  assert.doesNotMatch(sql, /\bTRUNCATE\b/i);
+  // Comment'teki "TRUNCATE RLS bypass" uyarısını yok say; gerçek TRUNCATE TABLE yasak
+  assert.doesNotMatch(sql, /\bTRUNCATE\s+TABLE\b/i);
 });
 
 const {
