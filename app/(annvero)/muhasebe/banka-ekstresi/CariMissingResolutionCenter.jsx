@@ -862,10 +862,22 @@ export default function CariMissingResolutionCenter({
     [snapshot?.taxObligationGroups]
   );
   const selectedCompany = selectedCompanyProp || snapshot?.selectedCompany || null;
-  const planCache = useMemo(
-    () => snapshot?.planCache || createCariResolutionPlanCache(companyPlans),
-    [snapshot?.planCache, companyPlans]
-  );
+  // loading + snapshot yokken plan cache kurma — 4k hesap index’i her render’da
+  // main thread’i kilitleyip “Cari grupları hazırlanıyor”da sonsuz beklemeye yol açıyordu.
+  const planCount = Array.isArray(companyPlans) ? companyPlans.length : 0;
+  const planCache = useMemo(() => {
+    if (snapshot?.planCache) return snapshot.planCache;
+    if (loading || planCount === 0) {
+      return {
+        companyPlans: [],
+        planRows: [],
+        cariIndex: null,
+        indexBuildCount: 0,
+        planNormalizeCount: 0,
+      };
+    }
+    return createCariResolutionPlanCache(companyPlans);
+  }, [snapshot?.planCache, loading, planCount, companyPlans]);
   const resolvedSet = useMemo(
     () =>
       resolvedGroupIds instanceof Set

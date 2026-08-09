@@ -1718,21 +1718,19 @@ export default function BankParserWorkbench() {
     }
     const generation = ++cariResolutionGenerationRef.current;
     cariResolutionCancelRef.current = scheduleAfterPaint(() => {
+      const stillCurrent = () =>
+        shouldApplyCariResolutionAsyncResult({
+          generation,
+          activeGeneration: cariResolutionGenerationRef.current,
+          isOpen: showCariResolutionCenterRef.current,
+        });
       try {
         // Modal zaten açık: legacy rapor (her grup için match) peşinen koşturulmaz.
         const { report, snapshot } = rebuildCariResolutionSnapshot({
           includeLegacyCariGroupReport: false,
           initialCandidateGroups: CARI_RESOLUTION_INITIAL_CANDIDATE_GROUPS,
         });
-        if (
-          !shouldApplyCariResolutionAsyncResult({
-            generation,
-            activeGeneration: cariResolutionGenerationRef.current,
-            isOpen: showCariResolutionCenterRef.current,
-          })
-        ) {
-          return;
-        }
+        if (!stillCurrent()) return;
         setCariResolutionLoading(false);
         setCariResolutionError("");
         showToast(
@@ -1743,15 +1741,7 @@ export default function BankParserWorkbench() {
         );
         // Legacy accordion raporu: modal boyanıp liste geldikten sonra (iptal edilebilir)
         cariResolutionCancelRef.current = scheduleAfterPaint(() => {
-          if (
-            !shouldApplyCariResolutionAsyncResult({
-              generation,
-              activeGeneration: cariResolutionGenerationRef.current,
-              isOpen: showCariResolutionCenterRef.current,
-            })
-          ) {
-            return;
-          }
+          if (!stillCurrent()) return;
           setCariGroupReport(
             groupUnresolvedCariRows(lucaRef.current, {
               companyPlans,
@@ -1760,15 +1750,7 @@ export default function BankParserWorkbench() {
           );
         });
       } catch (error) {
-        if (
-          !shouldApplyCariResolutionAsyncResult({
-            generation,
-            activeGeneration: cariResolutionGenerationRef.current,
-            isOpen: showCariResolutionCenterRef.current,
-          })
-        ) {
-          return;
-        }
+        if (!stillCurrent()) return;
         setCariResolutionLoading(false);
         setCariResolutionError(
           error?.message || "Cari grupları hazırlanamadı. Tekrar deneyin."
