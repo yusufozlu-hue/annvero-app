@@ -1,12 +1,13 @@
 /**
  * Eksik hesap uygulaması sonrası yeniden analiz — dosya yeniden yüklemeden.
- * Hafıza auto-apply + Fiş Kontrol + bulgu sınıfları.
+ * Öncelik: belgeye özel karar → firma hafızası → Fiş Kontrol.
  */
 
 import {
   applyAccountMemoryV2RecordsToRows,
   loadAccountMemoryV2Records,
 } from "@/src/utils/accountMemoryV2";
+import { applyDocumentResolutionsToLucaRows } from "@/src/utils/bankStatementMovementResolutions";
 import { runVoucherControlStage } from "@/src/utils/annveroV1Orchestration";
 import { classifyFisKontrolFindings } from "@/src/utils/fisKontrolFindingClasses";
 import { analyzeMissingHesapRows } from "@/src/utils/previewExportValidation";
@@ -22,6 +23,7 @@ import {
  *   fisKontrol: object,
  *   findingClasses: object,
  *   memoryApplied: number,
+ *   documentResolutionApplied: number,
  *   durationMs: number
  * }}
  */
@@ -30,11 +32,28 @@ export function reanalyzeAfterMissingAccountApply({
   companyId = "",
   bankName = "",
   memoryRecords = null,
+  documentResolutions = null,
   skipMemoryPass = false,
 } = {}) {
   const started = performance.now();
   let next = Array.isArray(lucaRows) ? lucaRows : [];
   let memoryApplied = 0;
+  let documentResolutionApplied = 0;
+
+  // 1) Belgeye özel onaylı kararlar (firma hafızasından önce)
+  if (
+    documentResolutions &&
+    (Array.isArray(documentResolutions)
+      ? documentResolutions.length
+      : documentResolutions.size)
+  ) {
+    const docPass = applyDocumentResolutionsToLucaRows(
+      next,
+      documentResolutions
+    );
+    next = docPass.lucaRows;
+    documentResolutionApplied = docPass.applied || 0;
+  }
 
   if (!skipMemoryPass && companyId) {
     const records = memoryRecords || loadAccountMemoryV2Records();
@@ -61,12 +80,14 @@ export function reanalyzeAfterMissingAccountApply({
     fisKontrol,
     findingClasses,
     memoryApplied,
+    documentResolutionApplied,
     durationMs: Math.round(performance.now() - started),
     pipelinePatch: buildPipelinePatchFromReanalyze({
       missingReport,
       fisKontrol,
       findingClasses,
       memoryApplied,
+      documentResolutionApplied,
     }),
   };
 }
@@ -76,6 +97,7 @@ export function buildPipelinePatchFromReanalyze({
   fisKontrol,
   findingClasses,
   memoryApplied = 0,
+  documentResolutionApplied = 0,
 } = {}) {
   const report = missingReport || { missingCount: 0 };
   return {
@@ -103,6 +125,7 @@ export function buildPipelinePatchFromReanalyze({
     fisKontrolHref: fisKontrol?.fisKontrolHref,
     findingClasses,
     memoryReappliedCount: memoryApplied,
+    documentResolutionApplied,
     reanalyzedWithoutReload: true,
   };
 }
@@ -117,6 +140,13 @@ export function snapshotLucaRowsForUndo(rows = [], rowIds = []) {
     if (!idSet.has(String(row.id))) continue;
     snap.push({
       id: row.id,
+      sourceMovementId: String(
+        row.sourceMovementId ||
+          row.source_movement_id ||
+          row.sourceRowId ||
+          row._movementId ||
+          ""
+      ).trim(),
       hesapKodu: row.hesapKodu || "",
       riskDurumu: row.riskDurumu || "",
       missingHesapCategory: row.missingHesapCategory || "",

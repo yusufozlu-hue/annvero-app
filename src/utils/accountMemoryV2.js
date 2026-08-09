@@ -317,11 +317,23 @@ export function inferMemoryDecisionType({
 function migrateV1Record(record = {}) {
   const accountCode = String(record.accountCode || "").trim();
   const transactionType = String(record.transactionType || "").trim();
+  // Eski kayıtlar 642/193 için cariId=hesap kodu yazmış olabilir → CARI tipi + quarantine.
+  // Cari olmayan GL'de cariId temizlenir; tip yeniden çıkarılır.
+  const rawCariId = String(record.cariId || "").trim();
+  const cariId = isLikelyCariGlAccount(accountCode)
+    ? rawCariId || (isLikelyCariGlAccount(rawCariId) ? rawCariId : "")
+    : "";
   const decisionType = inferMemoryDecisionType({
     transactionType,
     accountCode,
-    cariId: record.cariId,
+    cariId,
     personelId: record.personelId,
+    // Eski yanlış CARI tipini GL hesabına göre düzeltmeye izin ver
+    decisionType:
+      record.decisionType === MEMORY_DECISION_TYPE.CARI &&
+      !isLikelyCariGlAccount(accountCode)
+        ? ""
+        : record.decisionType,
   });
   const createdAt = record.createdAt || record.lastUsedAt || nowIso();
   const analysisKey = String(record.analysisKey || "").trim();
@@ -352,7 +364,7 @@ function migrateV1Record(record = {}) {
     decisionType,
     accountCode,
     accountName: String(record.accountName || record.cariName || "").trim(),
-    cariId: String(record.cariId || "").trim(),
+    cariId,
     personelId: String(record.personelId || "").trim(),
     documentType: String(
       record.documentType || record.belgeTuru || ""
@@ -1046,8 +1058,10 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
       });
     }
     // CARI hafıza kaydı, cari gerektirmeyen tipte otomatik uygulanmaz
+    // (yalnız gerçek 120/320 cari GL için — 642/193 yanlışlıkla CARI yazılmışsa engelleme)
     if (
       record?.decisionType === MEMORY_DECISION_TYPE.CARI &&
+      isLikelyCariGlAccount(record?.accountCode) &&
       transactionType &&
       isCariForbiddenForType(transactionType)
     ) {
@@ -1327,12 +1341,19 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
     context.kaynakAdi || context.bankName || input.bankName || ""
   ).trim();
   const bankId = String(input.bankId || context.bankId || bankName).trim();
+  const cariIdForDecision = isLikelyCariGlAccount(accountCode)
+    ? String(input.cariId || "").trim()
+    : "";
   const decisionType = inferMemoryDecisionType({
     transactionType,
     accountCode,
-    cariId: input.cariId,
+    cariId: cariIdForDecision,
     personelId: input.personelId,
-    decisionType: input.decisionType,
+    decisionType:
+      input.decisionType === MEMORY_DECISION_TYPE.CARI &&
+      !isLikelyCariGlAccount(accountCode)
+        ? ""
+        : input.decisionType,
   });
 
   const records = loadAccountMemoryV2Records();
@@ -1415,7 +1436,11 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
     decisionType,
     accountCode,
     accountName: String(input.accountName || input.hesapAdi || "").trim(),
-    cariId: String(input.cariId || (decisionType === MEMORY_DECISION_TYPE.CARI ? accountCode : "")).trim(),
+    cariId: cariIdForDecision || String(
+      decisionType === MEMORY_DECISION_TYPE.CARI && isLikelyCariGlAccount(accountCode)
+        ? accountCode
+        : ""
+    ).trim(),
     personelId: String(input.personelId || "").trim(),
     documentType: String(input.documentType || input.belgeTuru || "")
       .trim()
@@ -1567,7 +1592,9 @@ export function persistCariResolutionLearnWithReadback({
         learnContext.transactionType || seedRow.transactionType || "",
       belgeTuru: seedRow.belgeTuru || "",
       documentType: seedRow.belgeTuru || "",
-      cariId: code,
+      // 642/193 gibi cari olmayan GL için cariId zorlanmaz — aksi halde
+      // FINANCE/VERGI tiplerinde cari_forbidden_for_transaction_type oluşur.
+      cariId: isLikelyCariGlAccount(code) ? code : "",
       normalizedDescription: description,
       finalDescriptionTemplate:
         description ||

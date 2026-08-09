@@ -5,6 +5,9 @@
 import { normalizeParserText } from "@/src/utils/textNormalize";
 import { matchSafeSystemBankRule } from "@/src/utils/bankSmartSuggestions";
 
+// Not: faizStopajiClassify buraya import edilmez (döngüsel bağımlılık).
+// Tek satır metin sinyali burada; belge içi faiz ilişkisi mapper post-pass'te.
+
 export const BANK_TRANSACTION_TYPE = {
   // POS ailesi
   POS_TAHSILAT: "POS_TAHSILAT",
@@ -91,6 +94,8 @@ export const BANK_TRANSACTION_TYPE = {
   KUR_FARKI: "KUR_FARKI",
   FAIZ_GELIRI: "FAIZ_GELIRI",
   FAIZ_GIDERI: "FAIZ_GIDERI",
+  /** Mevduat faizinden kesilen stopaj → 193 Peşin Ödenen Vergiler (Vergi/SGK tahakkuk kapısı değil) */
+  FAIZ_STOPAJI: "FAIZ_STOPAJI",
   NAKIT_CEKME: "NAKIT_CEKME",
   /** @deprecated alias → NAKIT_CEKME */
   NAKIT_CEKIM: "NAKIT_CEKIM",
@@ -173,6 +178,7 @@ export const FINANCE_TYPES = new Set([
   BANK_TRANSACTION_TYPE.KUR_FARKI,
   BANK_TRANSACTION_TYPE.FAIZ_GELIRI,
   BANK_TRANSACTION_TYPE.FAIZ_GIDERI,
+  BANK_TRANSACTION_TYPE.FAIZ_STOPAJI,
   BANK_TRANSACTION_TYPE.NAKIT_CEKME,
   BANK_TRANSACTION_TYPE.NAKIT_CEKIM,
   BANK_TRANSACTION_TYPE.NAKIT_YATIRMA,
@@ -233,6 +239,7 @@ export const DIRECT_EXPENSE_ALLOWED_TYPES = new Set([
   BANK_TRANSACTION_TYPE.POS_KOMISYON,
   BANK_TRANSACTION_TYPE.FAIZ_GELIRI,
   BANK_TRANSACTION_TYPE.FAIZ_GIDERI,
+  BANK_TRANSACTION_TYPE.FAIZ_STOPAJI,
   BANK_TRANSACTION_TYPE.KREDI_FAIZ,
   BANK_TRANSACTION_TYPE.KMH_FAIZ,
   BANK_TRANSACTION_TYPE.GECIKME_ZAMMI,
@@ -318,6 +325,7 @@ const FAMILY_ID_TO_TYPE = {
   trafik: BANK_TRANSACTION_TYPE.CEZA,
   "faiz-gelir": BANK_TRANSACTION_TYPE.FAIZ_GELIRI,
   "faiz-gider": BANK_TRANSACTION_TYPE.FAIZ_GIDERI,
+  "faiz-stopaj": BANK_TRANSACTION_TYPE.FAIZ_STOPAJI,
   doviz: null,
   "kur-farki": BANK_TRANSACTION_TYPE.KUR_FARKI,
   "nakit-cekim": BANK_TRANSACTION_TYPE.NAKIT_CEKME,
@@ -367,6 +375,9 @@ export function canonicalizeTransactionType(type = "", direction = "") {
   }
   if (t === BANK_TRANSACTION_TYPE.CEZA) {
     return BANK_TRANSACTION_TYPE.TRAFIK_CEZASI;
+  }
+  if (t === "FAIZ_STOPAJ" || t === "FAIZ STOPAJI") {
+    return BANK_TRANSACTION_TYPE.FAIZ_STOPAJI;
   }
   return t || BANK_TRANSACTION_TYPE.BILINMEYEN;
 }
@@ -456,6 +467,18 @@ function detectVergiSgkType(text) {
     return BANK_TRANSACTION_TYPE.EMLAK_VERGISI;
   }
   if (text.includes("MTV")) return BANK_TRANSACTION_TYPE.MTV;
+  // Mevduat faiz stopajı VERGI değildir — FAIZ_STOPAJI (193)
+  if (
+    text.includes("FAIZ STOPAJ") ||
+    text.includes("STOPAJ FAIZ") ||
+    text.includes("MEVDUAT STOPAJ") ||
+    text.includes("VADELI STOPAJ") ||
+    text.includes("VADELİ STOPAJ") ||
+    (text.includes("STOPAJ") &&
+      (text.includes("FAIZ") || text.includes("MEVDUAT") || text.includes("VADEL")))
+  ) {
+    return null; // detectFromText → detectFaizStopajiText
+  }
   if (
     text.includes("VERGI") ||
     text.includes("MUHTASAR") ||
@@ -464,6 +487,23 @@ function detectVergiSgkType(text) {
     text.includes("STOPAJ")
   ) {
     return BANK_TRANSACTION_TYPE.VERGI;
+  }
+  return null;
+}
+
+/** Tek satır: faiz stopajı metin sinyali (ilişki post-pass'te tamamlanır) */
+function detectFaizStopajiText(text, direction) {
+  const dir = String(direction || "").toUpperCase();
+  if (dir && dir !== "CIKIS" && dir !== "GIDEN") return null;
+  if (
+    text.includes("FAIZ STOPAJ") ||
+    text.includes("STOPAJ FAIZ") ||
+    text.includes("MEVDUAT STOPAJ") ||
+    text.includes("VADELI STOPAJ") ||
+    (text.includes("STOPAJ") &&
+      (text.includes("FAIZ") || text.includes("MEVDUAT") || text.includes("VADEL")))
+  ) {
+    return BANK_TRANSACTION_TYPE.FAIZ_STOPAJI;
   }
   return null;
 }
@@ -649,6 +689,9 @@ function detectFromText(description = "", direction = "") {
   const kasa = detectKasaType(text, direction);
   if (kasa) return kasa;
 
+  const faizStopaj = detectFaizStopajiText(text, direction);
+  if (faizStopaj) return faizStopaj;
+
   const vergi = detectVergiSgkType(text);
   if (vergi) return vergi;
 
@@ -747,7 +790,13 @@ function mapSystemFamilyToType(system, description, direction) {
       : BANK_TRANSACTION_TYPE.SGK;
   }
   if (system.id === "vergi") {
-    return detectVergiSgkType(normalizeParserText(description)) || BANK_TRANSACTION_TYPE.VERGI;
+    const text = normalizeParserText(description);
+    const faizStopaj = detectFaizStopajiText(text, direction);
+    if (faizStopaj) return faizStopaj;
+    return detectVergiSgkType(text) || BANK_TRANSACTION_TYPE.VERGI;
+  }
+  if (system.id === "faiz-stopaj") {
+    return BANK_TRANSACTION_TYPE.FAIZ_STOPAJI;
   }
   if (system.id === "mtv-emlak-aidat") {
     const text = normalizeParserText(description);

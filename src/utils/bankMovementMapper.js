@@ -31,6 +31,7 @@ import {
   isLikelyCariGlAccount,
   isDirectExpenseAllowedType,
 } from "@/src/utils/bankTransactionType";
+import { applyFaizStopajiClassification } from "@/src/utils/faizStopajiClassify";
 import {
   resolveAccountingScenario,
   resolveCompanyAccountingPolicies,
@@ -51,6 +52,11 @@ import {
   resolveAccountMemoryV2Decision,
   MEMORY_MATCH_TIER,
 } from "@/src/utils/accountMemoryV2";
+import {
+  buildResolutionLookup,
+  lookupDocumentResolution,
+  resolveSourceMovementId,
+} from "@/src/utils/bankStatementMovementResolutions";
 import {
   buildCreditCardPaymentDescription,
   resolveCreditCardPayment,
@@ -532,6 +538,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     accountMemoryRecords = null,
     accountMemoryV2Index = null,
     companyAccountingPolicies = null,
+    documentResolutions = null,
   } = context;
 
   const addTiming = (key, started) => {
@@ -734,6 +741,28 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       scenarioMissingCategory = CREDIT_CARD_MISSING_LABEL;
     }
   } else {
+    // 1) Belgeye özel onaylı karar (server revision overlay) — firma hafızasından önce
+    const docLookup =
+      documentResolutions && typeof documentResolutions.get === "function"
+        ? documentResolutions
+        : buildResolutionLookup(documentResolutions || []);
+    const docHit = lookupDocumentResolution(docLookup, {
+      sourceMovementId: resolveSourceMovementId(rawRow),
+    });
+    if (docHit?.accountCode) {
+      counterAccountCode = docHit.accountCode;
+      matchedRule = {
+        source: "documentResolution",
+        islem: docHit.decisionType || "BELGE_KARARI",
+        anahtar: docHit.sourceMovementId,
+      };
+      appendWarning(warnings, "Belge kararı (onaylı)");
+      if (analysisStats) {
+        analysisStats.documentResolutionApplied =
+          (analysisStats.documentResolutionApplied || 0) + 1;
+      }
+    }
+
     const firmAnalysisKey = normalizeBankAnalysisKey(description, direction);
     const memoryList = Array.isArray(accountMemoryRecords)
       ? accountMemoryRecords
@@ -747,7 +776,9 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     }
     const firmMemoryStarted = Date.now();
     firmAnalysisKeyForTrace = firmAnalysisKey;
-    const firmDecision = resolveAccountMemoryV2Decision(
+    const firmDecision = counterAccountCode
+      ? { mode: "skip", autoApply: false, record: null }
+      : resolveAccountMemoryV2Decision(
       {
         companyId: selectedCompanyId || selectedCompany?.id || "",
         analysisKey: firmAnalysisKey,
@@ -1400,7 +1431,11 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   lucaDescription = hgsOgsEnhancement.lucaDescription;
 
   const sourceRowId = String(
-    rawRow.sourceRowId || rawRow._sourceRowId || ""
+    rawRow.sourceRowId ||
+      rawRow._sourceRowId ||
+      rawRow.sourceMovementId ||
+      rawRow.source_movement_id ||
+      ""
   ).trim();
   const movementId = sourceRowId || crypto.randomUUID();
 
@@ -1420,6 +1455,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   return {
     id: movementId,
     sourceRowId: sourceRowId || movementId,
+    sourceMovementId: sourceRowId || movementId,
     excelRowNumber: rawRow.excelRowNumber || null,
     date,
     description,
@@ -1562,9 +1598,12 @@ export function mapSingleParsedRowToMovement(row, context, index = 0) {
 }
 
 export function mapParsedRowsToStandardMovements(parsedRows, context) {
-  return filterActiveBankParsedRows(parsedRows).map((row, index) =>
+  const mapped = filterActiveBankParsedRows(parsedRows).map((row, index) =>
     mapSingleParsedRowToMovement(row, context, index)
   );
+  // Belge içi faiz↔stopaj ilişkisi — PDF/Excel aynı canonical tip
+  const { movements } = applyFaizStopajiClassification(mapped, context);
+  return movements;
 }
 
 export function standardMovementToLucaPendingRow(movement) {

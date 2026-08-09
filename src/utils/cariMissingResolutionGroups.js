@@ -215,6 +215,8 @@ export function isActiveCompanyOwnCariAccount(candidate = {}, selectedCompany = 
 export function isTaxObligationMissingRow(row = {}, context = {}) {
   if (isCreditCardMissingRow(row, context)) return false;
   const type = String(row.transactionType || "");
+  // Mevduat faiz stopajı → 193 finans yolu; Mali Yükümlülük tahakkuk kapısı değil
+  if (type === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI) return false;
   if (isVergiSgkType(type)) return true;
   const cat = classifyMissingHesapCategory(row);
   if (cat === MISSING_HESAP_CATEGORY.VERGI_SGK) return true;
@@ -982,8 +984,13 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
   const groupingMs = collectStats ? performance.now() - groupStart : 0;
 
   const companyPlans = context.companyPlans || [];
-  const planCache =
-    context.planCache || createCariResolutionPlanCache(companyPlans);
+  // Ağır cari index — yalnız aday hydrate / KK araması gerektiğinde kur
+  let planCache = context.planCache || null;
+  const ensurePlanCache = () => {
+    if (planCache?.planRows && "cariIndex" in planCache) return planCache;
+    planCache = createCariResolutionPlanCache(companyPlans);
+    return planCache;
+  };
 
   const hydrateCount =
     initialCandidateGroups === "all" || initialCandidateGroups === true
@@ -1052,6 +1059,68 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     })
     .sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount)
     .map((base, index) => {
+      const isFaizStopaj =
+        base.transactionType === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI ||
+        (base.seedRow &&
+          String(base.seedRow.transactionType || "") ===
+            BANK_TRANSACTION_TYPE.FAIZ_STOPAJI) ||
+        (base.transactions || []).some(
+          (t) =>
+            String(t.transactionType || "") ===
+            BANK_TRANSACTION_TYPE.FAIZ_STOPAJI
+        );
+
+      if (isFaizStopaj) {
+        const cache = ensurePlanCache();
+        const search193 = searchCariResolutionCandidates(companyPlans, {
+          query: "193.01",
+          direction: base.direction || "CIKIS",
+          description: "PESIN ODENEN VERGI VE FONLAR",
+          limit: 8,
+          searchAll: true,
+          planCache: cache,
+          selectedCompany,
+        });
+        const enriched = applySearchToGroupBase(
+          {
+            ...base,
+            partyUnresolved: false,
+            foreignVendor: false,
+          },
+          search193
+        );
+        // 193.01.001 varsa öneri olarak öne al (otomatik seçme yok — belge kararı)
+        const preferred193 =
+          (enriched.candidates || []).find((c) =>
+            String(c.code || "").startsWith("193.01.001")
+          ) ||
+          (enriched.candidates || []).find((c) =>
+            String(c.code || "").startsWith("193.")
+          );
+        return {
+          ...enriched,
+          partyName: "Faiz stopajı (193)",
+          partyUnresolved: false,
+          faizStopajiGroup: true,
+          preferredPrefixes: ["193"],
+          suggestedAccount: "",
+          suggestedName: "",
+          confidenceLabel: preferred193
+            ? "193 Peşin Ödenen Vergiler — seçip uygulayın"
+            : "193 hesabı arayın / seçin",
+          learnAllowedDefault: true,
+          candidatesReady: true,
+          candidates: preferred193
+            ? [
+                preferred193,
+                ...(enriched.candidates || []).filter(
+                  (c) => c.code !== preferred193.code
+                ),
+              ]
+            : enriched.candidates || [],
+        };
+      }
+
       if (index >= hydrateCount) return base;
       if (base.partyUnresolved) {
         return {
@@ -1066,7 +1135,7 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       }
       const t0 = collectStats ? performance.now() : 0;
       const enriched = hydrateCariResolutionGroupCandidates(base, companyPlans, {
-        planCache,
+        planCache: ensurePlanCache(),
         limit: 5,
         selectedCompany,
       });
@@ -1363,7 +1432,14 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     cariMissingCount: unresolvedCount,
     groupCount: ranked.length,
     groups: ranked,
-    planCache,
+    planCache:
+      planCache || {
+        companyPlans: [],
+        planRows: [],
+        cariIndex: null,
+        indexBuildCount: 0,
+        planNormalizeCount: 0,
+      },
     selectedCompany,
     virmanDivertedCount: divertedVirman.length,
     virmanDivertedGroupCount: divertedGroupKeys.size,
@@ -1397,8 +1473,8 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       totalMs: Math.round((groupingMs + candidateMs) * 100) / 100,
       groupCount: ranked.length,
       candidateHydrations,
-      indexBuilds: planCache.indexBuildCount || 0,
-      planNormalizeCount: planCache.planNormalizeCount || 0,
+      indexBuilds: planCache?.indexBuildCount || 0,
+      planNormalizeCount: planCache?.planNormalizeCount || 0,
       planScansDuringCandidates,
       ownCompanyFiltered: ownCompanyFilteredTotal,
       legacyWouldHaveRebuiltIndex: ranked.length,
@@ -1620,6 +1696,22 @@ export function shouldIgnoreCariResolutionOpen({
 }
 
 /**
+ * Escape: açık hesap araması varsa önce aramayı kapat; aksi halde modalı kapat.
+ * Arama sırasında Escape'in diyaloğu istemeden kapatmasını engeller.
+ */
+export const CARI_RESOLUTION_ESCAPE_DISMISS_SEARCH = "dismiss-search";
+export const CARI_RESOLUTION_ESCAPE_CLOSE_MODAL = "close-modal";
+export const CARI_RESOLUTION_DISMISS_SEARCH_EVENT =
+  "cari-resolution-dismiss-search";
+
+export function resolveCariResolutionEscapeAction({
+  hasOpenAccountSearch = false,
+} = {}) {
+  if (hasOpenAccountSearch) return CARI_RESOLUTION_ESCAPE_DISMISS_SEARCH;
+  return CARI_RESOLUTION_ESCAPE_CLOSE_MODAL;
+}
+
+/**
  * Kapatma sonrası async sonuç state’e yazılmamalı.
  */
 export function shouldApplyCariResolutionAsyncResult({
@@ -1687,6 +1779,13 @@ export function buildCariResolutionRowView(row = {}, context = {}) {
       : statusLabel,
     learnSeed: {
       id: row.id,
+      sourceMovementId:
+        row.sourceMovementId ||
+        row.source_movement_id ||
+        row._movementId ||
+        row.sourceRowId ||
+        "",
+      _movementId: row._movementId || "",
       analysisKey: row.analysisKey || "",
       direction,
       detayAciklama: desc,

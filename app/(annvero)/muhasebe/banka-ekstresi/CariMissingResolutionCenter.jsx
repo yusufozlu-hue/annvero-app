@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CARI_RESOLUTION_FILTERS,
   CARI_RESOLUTION_MODAL_WIDTH_CSS,
+  CARI_RESOLUTION_ESCAPE_DISMISS_SEARCH,
+  CARI_RESOLUTION_DISMISS_SEARCH_EVENT,
   createCariResolutionPlanCache,
   selectVisibleResolutionGroups,
   countOpenResolutionGroups,
@@ -20,6 +22,7 @@ import {
   formatCariApplyButtonLabel,
   canEnableCariAutoLearn,
   shouldDefaultCariAutoLearn,
+  resolveCariResolutionEscapeAction,
 } from "@/src/utils/cariMissingResolutionGroups";
 import { isSelectableCariLeafAccount } from "@/src/utils/cariCounterpartyExtract";
 import { isCreditCardAccountCode } from "@/src/utils/creditCardAccountResolver";
@@ -238,6 +241,23 @@ function GroupCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/visibility hydrate once per group id
   }, [group.id, group.candidatesReady, group.virmanCandidate, isResolved]);
 
+  useEffect(() => {
+    const node = cardRef.current;
+    if (!node) return undefined;
+    const onDismissSearch = () => {
+      setQuery("");
+      setExpandedSearch(false);
+    };
+    node.addEventListener(CARI_RESOLUTION_DISMISS_SEARCH_EVENT, onDismissSearch);
+    return () =>
+      node.removeEventListener(
+        CARI_RESOLUTION_DISMISS_SEARCH_EVENT,
+        onDismissSearch
+      );
+  }, []);
+
+  const accountSearchOpen = Boolean(query || expandedSearch);
+
   // Sunucu tarafı hesap planı araması — ilk 1000 dışı kodlar dahil (q=).
   useEffect(() => {
     const q = String(query || "").trim();
@@ -388,6 +408,7 @@ function GroupCard({
   return (
     <article
       ref={cardRef}
+      data-cari-search-open={accountSearchOpen ? "true" : undefined}
       className={`min-w-0 overflow-hidden rounded-2xl border px-4 py-4 sm:px-5 ${
         isResolved
           ? "border-emerald-800/50 bg-emerald-950/20"
@@ -633,6 +654,14 @@ function GroupCard({
                   ensureCandidates();
                 }}
                 onFocus={() => ensureCandidates()}
+                onKeyDown={(e) => {
+                  if (e.key !== "Escape") return;
+                  if (!query && !expandedSearch) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setQuery("");
+                  setExpandedSearch(false);
+                }}
                 placeholder="Hesap kodu, ad, unvan, IBAN ara…"
                 className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-slate-500"
               />
@@ -833,10 +862,22 @@ export default function CariMissingResolutionCenter({
     [snapshot?.taxObligationGroups]
   );
   const selectedCompany = selectedCompanyProp || snapshot?.selectedCompany || null;
-  const planCache = useMemo(
-    () => snapshot?.planCache || createCariResolutionPlanCache(companyPlans),
-    [snapshot?.planCache, companyPlans]
-  );
+  // loading + snapshot yokken plan cache kurma — 4k hesap index’i her render’da
+  // main thread’i kilitleyip “Cari grupları hazırlanıyor”da sonsuz beklemeye yol açıyordu.
+  const planCount = Array.isArray(companyPlans) ? companyPlans.length : 0;
+  const planCache = useMemo(() => {
+    if (snapshot?.planCache) return snapshot.planCache;
+    if (loading || planCount === 0) {
+      return {
+        companyPlans: [],
+        planRows: [],
+        cariIndex: null,
+        indexBuildCount: 0,
+        planNormalizeCount: 0,
+      };
+    }
+    return createCariResolutionPlanCache(companyPlans);
+  }, [snapshot?.planCache, loading, planCount, companyPlans]);
   const resolvedSet = useMemo(
     () =>
       resolvedGroupIds instanceof Set
@@ -955,7 +996,24 @@ export default function CariMissingResolutionCenter({
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => {
-      if (e.key === "Escape") onClose?.();
+      if (e.key !== "Escape") return;
+      if (e.defaultPrevented) return;
+      const openSearches = document.querySelectorAll(
+        '[role="dialog"][aria-labelledby="cari-resolution-title"] [data-cari-search-open="true"]'
+      );
+      const action = resolveCariResolutionEscapeAction({
+        hasOpenAccountSearch: openSearches.length > 0,
+      });
+      if (action === CARI_RESOLUTION_ESCAPE_DISMISS_SEARCH) {
+        e.preventDefault();
+        openSearches.forEach((el) => {
+          el.dispatchEvent(
+            new CustomEvent(CARI_RESOLUTION_DISMISS_SEARCH_EVENT)
+          );
+        });
+        return;
+      }
+      onClose?.();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

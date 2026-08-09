@@ -13,6 +13,7 @@ import {
   mapParsedRowsToStandardMovements,
   mapSingleParsedRowToMovement,
 } from "@/src/utils/bankMovementMapper";
+import { applyFaizStopajiClassification } from "@/src/utils/faizStopajiClassify";
 import { extractCorePreviewFields } from "@/src/utils/bankCorePreview";
 import { resolve102BankAccount } from "@/src/utils/companyCenter";
 import { bankRowToStandardTransaction } from "@/src/utils/bankStandardTransaction";
@@ -422,8 +423,11 @@ export async function mapParsedRowsWithCoreFallback(parsedRows = [], context = {
     fallbackCount += 1;
   }
 
+  // PDF/Excel ortak: faiz stopajı ilişki sınıflandırması CORE sonrası da uygulanır
+  const { movements: classified } = applyFaizStopajiClassification(movements, context);
+
   return {
-    movements,
+    movements: classified,
     coreSummary: {
       enabled: true,
       core: coreCount,
