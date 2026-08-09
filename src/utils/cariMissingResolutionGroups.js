@@ -215,6 +215,8 @@ export function isActiveCompanyOwnCariAccount(candidate = {}, selectedCompany = 
 export function isTaxObligationMissingRow(row = {}, context = {}) {
   if (isCreditCardMissingRow(row, context)) return false;
   const type = String(row.transactionType || "");
+  // Mevduat faiz stopajı → 193 finans yolu; Mali Yükümlülük tahakkuk kapısı değil
+  if (type === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI) return false;
   if (isVergiSgkType(type)) return true;
   const cat = classifyMissingHesapCategory(row);
   if (cat === MISSING_HESAP_CATEGORY.VERGI_SGK) return true;
@@ -1057,6 +1059,68 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     })
     .sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount)
     .map((base, index) => {
+      const isFaizStopaj =
+        base.transactionType === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI ||
+        (base.seedRow &&
+          String(base.seedRow.transactionType || "") ===
+            BANK_TRANSACTION_TYPE.FAIZ_STOPAJI) ||
+        (base.transactions || []).some(
+          (t) =>
+            String(t.transactionType || "") ===
+            BANK_TRANSACTION_TYPE.FAIZ_STOPAJI
+        );
+
+      if (isFaizStopaj) {
+        const cache = ensurePlanCache();
+        const search193 = searchCariResolutionCandidates(companyPlans, {
+          query: "193.01",
+          direction: base.direction || "CIKIS",
+          description: "PESIN ODENEN VERGI VE FONLAR",
+          limit: 8,
+          searchAll: true,
+          planCache: cache,
+          selectedCompany,
+        });
+        const enriched = applySearchToGroupBase(
+          {
+            ...base,
+            partyUnresolved: false,
+            foreignVendor: false,
+          },
+          search193
+        );
+        // 193.01.001 varsa öneri olarak öne al (otomatik seçme yok — belge kararı)
+        const preferred193 =
+          (enriched.candidates || []).find((c) =>
+            String(c.code || "").startsWith("193.01.001")
+          ) ||
+          (enriched.candidates || []).find((c) =>
+            String(c.code || "").startsWith("193.")
+          );
+        return {
+          ...enriched,
+          partyName: "Faiz stopajı (193)",
+          partyUnresolved: false,
+          faizStopajiGroup: true,
+          preferredPrefixes: ["193"],
+          suggestedAccount: "",
+          suggestedName: "",
+          confidenceLabel: preferred193
+            ? "193 Peşin Ödenen Vergiler — seçip uygulayın"
+            : "193 hesabı arayın / seçin",
+          learnAllowedDefault: true,
+          candidatesReady: true,
+          candidates: preferred193
+            ? [
+                preferred193,
+                ...(enriched.candidates || []).filter(
+                  (c) => c.code !== preferred193.code
+                ),
+              ]
+            : enriched.candidates || [],
+        };
+      }
+
       if (index >= hydrateCount) return base;
       if (base.partyUnresolved) {
         return {

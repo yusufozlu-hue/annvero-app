@@ -1986,10 +1986,14 @@ export default function BankParserWorkbench() {
       });
       const memNote =
         learn && applyResult.learned
-          ? " · firma hafızasına kaydedildi"
-          : reanalyze.memoryApplied
-            ? ` · hafızadan +${reanalyze.memoryApplied} satır`
-            : "";
+          ? " · firma hafızası kaydedildi"
+          : learn && applyResult.learnPersistFailed
+            ? " · firma hafızası kaydı başarısız"
+            : reanalyze.memoryApplied
+              ? ` · hafızadan +${reanalyze.memoryApplied} satır`
+              : learn
+                ? " · firma hafızası yazılmadı"
+                : "";
       const compare = buildRevisionCompareView(
         deriveRevisionCounters({
           previous: previousCounters,
@@ -2006,7 +2010,7 @@ export default function BankParserWorkbench() {
         },
       });
       setLastCariApplyMessage(
-        `${applyResult.updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${memNote}${persistNote}. Yeniden analiz ${reanalyze.durationMs} ms.`
+        `${applyResult.updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${persistNote}${memNote}. Yeniden analiz ${reanalyze.durationMs} ms.`
       );
       setCariResolutionSnapshot(snapshot);
       if (learn && applyResult.learnPersistFailed) {
@@ -2014,17 +2018,27 @@ export default function BankParserWorkbench() {
           applyResult.learnSaveTrace?.immediateReadBack?.rejectReason ||
           "save_or_readback_failed";
         showToast(
-          `Otomatik tanı kaydedilemedi (${reason}). Satırlar bu oturumda güncellendi.`,
+          `Belge kararı uygulandı; firma hafızası kaydedilemedi (${reason}).`,
           "error"
+        );
+      } else if (persistNote.includes("kaydedildi") && learn && applyResult.learned) {
+        showToast(
+          `Belge kararı kaydedildi. Firma hafızası kaydedildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}.`,
+          "success"
+        );
+      } else if (persistNote.includes("kaydedildi")) {
+        showToast(
+          `Belge kararı kaydedildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${memNote}.`,
+          "success"
         );
       } else if (learn && applyResult.learned) {
         showToast(
-          `Eksik ${applyResult.beforeMissing} → ${report.missingCount}${memNote}${persistNote}`,
+          `Firma hafızası kaydedildi${persistNote}. Eksik ${applyResult.beforeMissing} → ${report.missingCount}.`,
           "success"
         );
       } else {
         showToast(
-          `Eksik ${applyResult.beforeMissing} → ${report.missingCount}${persistNote}`,
+          `Eksik ${applyResult.beforeMissing} → ${report.missingCount}${persistNote}${memNote}`,
           "success"
         );
       }

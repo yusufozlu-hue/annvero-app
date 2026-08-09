@@ -31,6 +31,7 @@ import {
   isLikelyCariGlAccount,
   isDirectExpenseAllowedType,
 } from "@/src/utils/bankTransactionType";
+import { applyFaizStopajiClassification } from "@/src/utils/faizStopajiClassify";
 import {
   resolveAccountingScenario,
   resolveCompanyAccountingPolicies,
@@ -1597,9 +1598,12 @@ export function mapSingleParsedRowToMovement(row, context, index = 0) {
 }
 
 export function mapParsedRowsToStandardMovements(parsedRows, context) {
-  return filterActiveBankParsedRows(parsedRows).map((row, index) =>
+  const mapped = filterActiveBankParsedRows(parsedRows).map((row, index) =>
     mapSingleParsedRowToMovement(row, context, index)
   );
+  // Belge içi faiz↔stopaj ilişkisi — PDF/Excel aynı canonical tip
+  const { movements } = applyFaizStopajiClassification(mapped, context);
+  return movements;
 }
 
 export function standardMovementToLucaPendingRow(movement) {
