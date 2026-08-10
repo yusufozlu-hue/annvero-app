@@ -33,6 +33,11 @@ import {
 } from "@/src/utils/bankTransactionType";
 import { applyFaizStopajiClassification } from "@/src/utils/faizStopajiClassify";
 import {
+  applyVadeliMevduatLifecycle,
+  resolveStatementBankAccount,
+  isForbiddenVadeliMemorySuggestion,
+} from "@/src/utils/vadeliMevduatLifecycle";
+import {
   resolveAccountingScenario,
   resolveCompanyAccountingPolicies,
 } from "@/src/utils/bankAccountingScenarioEngine";
@@ -46,12 +51,13 @@ import {
   findAccountMemoryByIban,
   findAccountMemoryMatchInRecords,
 } from "@/src/utils/accountMemoryV1";
-import { recordCariStageMovementMapExit } from "@/src/utils/cariStageTrace";
 import {
   createEmptyMemoryTelemetry,
   resolveAccountMemoryV2Decision,
   MEMORY_MATCH_TIER,
+  saveAccountMemoryV2Decision,
 } from "@/src/utils/accountMemoryV2";
+import { recordCariStageMovementMapExit } from "@/src/utils/cariStageTrace";
 import {
   buildResolutionLookup,
   lookupDocumentResolution,
@@ -584,12 +590,37 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   cariRequired = typeResolution.cariRequired;
   personelRequired = typeResolution.personelRequired;
 
-  const bankLucaBase = resolve102BankAccount(
-    selectedCompany?.bankAccounts || [],
-    "102",
-    getDefaultBankLucaCode(selectedCompany?.bankAccounts, selectedBank),
-    selectedBank
-  );
+  const bankAccounts =
+    selectedCompany?.bankAccounts || selectedCompany?.banks || [];
+  const statementHint =
+    context.statementAccountHint ||
+    context.accountNumber ||
+    rawRow.hesapNo ||
+    rawRow.accountNumber ||
+    rawRow.hesapNumarasi ||
+    "";
+  const statementIban =
+    context.statementIban ||
+    rawRow.iban ||
+    rawRow.accountIban ||
+    "";
+  const statementResolve = resolveStatementBankAccount({
+    company: selectedCompany,
+    accountNumber: statementHint,
+    iban: statementIban,
+    bankName: selectedBank,
+    currency: rawRow.currency || rawRow.paraBirimi || context.currency || "TL",
+    accountType: context.statementAccountType || "",
+    lucaHint: context.statementLucaHint || "",
+  });
+  const bankLucaBase = statementResolve.ok
+    ? statementResolve.code
+    : resolve102BankAccount(
+        bankAccounts,
+        "102",
+        getDefaultBankLucaCode(bankAccounts, selectedBank),
+        selectedBank
+      );
 
   accountCode = bankLucaBase;
 
@@ -1602,7 +1633,62 @@ export function mapParsedRowsToStandardMovements(parsedRows, context) {
     mapSingleParsedRowToMovement(row, context, index)
   );
   // Belge içi faiz↔stopaj ilişkisi — PDF/Excel aynı canonical tip
-  const { movements } = applyFaizStopajiClassification(mapped, context);
+  const { movements: afterStopaj } = applyFaizStopajiClassification(mapped, context);
+  const lifecycle = applyVadeliMevduatLifecycle(afterStopaj, context);
+  const movements = lifecycle.movements;
+
+  if (lifecycle.applied && lifecycle.memoryRecords?.length) {
+    const company = context.selectedCompany || context.company || null;
+    const companyId = String(
+      context.companyId || company?.id || ""
+    ).trim();
+    for (const m of movements) {
+      if (!m.vadeliLifecycleRole) continue;
+      m.vadeliMemoryKeys = lifecycle.memoryRecords
+        .filter((r) => r.lifecycleRole === m.vadeliLifecycleRole)
+        .map((r) => r.analysisKey);
+    }
+    movements._vadeliLifecycleMemory = lifecycle.memoryRecords;
+
+    if (context?.persistVadeliMemory === true && companyId) {
+      for (const rec of lifecycle.memoryRecords) {
+        if (
+          isForbiddenVadeliMemorySuggestion({
+            statementAccountType: "VADELI",
+            suggestedAccountCode: rec.accountCode,
+            company,
+          })
+        ) {
+          continue;
+        }
+        try {
+          saveAccountMemoryV2Decision(
+            {
+              companyId: rec.companyId,
+              analysisKey: rec.analysisKey,
+              canonicalAnalysisKey: rec.analysisKey,
+              accountCode: rec.accountCode,
+              direction: rec.direction,
+              transactionType: rec.transactionType,
+              bankName: rec.bankName,
+              normalizedDescription: rec.lifecycleRole,
+              confidence: rec.confidence,
+              decisionType: "GL",
+            },
+            {
+              companyId: rec.companyId,
+              bankName: rec.bankName,
+              direction: rec.direction,
+              transactionType: rec.transactionType,
+            }
+          );
+        } catch {
+          /* localStorage yoksa sessiz */
+        }
+      }
+    }
+  }
+
   return movements;
 }
 

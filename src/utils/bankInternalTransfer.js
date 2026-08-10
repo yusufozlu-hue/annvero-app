@@ -18,6 +18,10 @@ import {
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import { resolve102BankAccount } from "@/src/utils/companyCenter";
 import { normalizeParserText } from "@/src/utils/textNormalize";
+import {
+  findBankByLucaCode,
+  isVadeliToVadeliTransfer,
+} from "@/src/utils/vadeliMevduatLifecycle";
 
 export const BANK_INTERNAL_TRANSFER = "BANK_INTERNAL_TRANSFER";
 export const BANKA_ICI_VIRMAN_TYPE = "BANKA_ICI_VIRMAN";
@@ -66,6 +70,10 @@ export const VIRMAN_RECLASS_PROTECTED_TYPES = new Set([
   "BELEDIYE_VERGISI",
   "TRAFIK_CEZASI",
   "VERGI_CEZASI",
+  "FAIZ_GELIRI",
+  "FAIZ_STOPAJI",
+  "VADELI_ACILIS",
+  "VADELI_KAPANIS",
 ]);
 
 function isVirmanTypeLocal(transactionType = "") {
@@ -544,6 +552,79 @@ export function resolveVirman102Pair({
     target102 = "";
   }
 
+  // Vadeli → vadeli hard-block (genel havale/EFT'yi etkilemez; yalnız 102↔102 virman)
+  const sourceBankRow =
+    findBankByLucaCode(company, source102) ||
+    (source102
+      ? ownCtx.banks.find((b) => bankLuca(b) === source102) || null
+      : null);
+  let targetBankRow =
+    verdict.matchedBank ||
+    findBankByLucaCode(company, target102) ||
+    null;
+
+  // Ignore set aynı bankadaki diğer hesapları gizleyebilir; evidence'te geçen
+  // başka VADELI hesabı yine de engellenmeli.
+  if (
+    sourceBankRow &&
+    String(sourceBankRow.accountType || "").toUpperCase() === "VADELI"
+  ) {
+    const evidence = collectTransferEvidenceText(evalRow, description);
+    const evidenceDigits = digitsOnly(evidence);
+    for (const bank of ownCtx.banks || []) {
+      if (bank === sourceBankRow) continue;
+      if (String(bank.accountType || "").toUpperCase() !== "VADELI") continue;
+      const code = bankLuca(bank);
+      if (!code || code === source102) continue;
+      const bankIban = normalizeIban(bank.iban || "");
+      const bankDig = digitsOnly(bank.accountNumber || bank.hesapNo || "");
+      const ibanHit =
+        bankIban && extractIbansFromText(evidence).includes(bankIban);
+      const digHit =
+        bankDig.length >= 8 && evidenceDigits.includes(bankDig);
+      if (ibanHit || digHit) {
+        targetBankRow = bank;
+        target102 = code;
+        break;
+      }
+    }
+  }
+
+  if (
+    sourceBankRow &&
+    targetBankRow &&
+    isVadeliToVadeliTransfer(sourceBankRow, targetBankRow)
+  ) {
+    return {
+      ...emptyVerdict({
+        status: VIRMAN_STATUS.NONE,
+        reasons: ["vadeli_to_vadeli_blocked"],
+        label: "Vadeli hesaplar arasında virman yapılamaz",
+      }),
+      source102,
+      target102: "",
+      counterAccountCode: "",
+      complete: false,
+      legs: null,
+      missingReason: "Vadeli hesaplar arasında virman yapılamaz",
+    };
+  }
+  if (source102 && target102 && source102 === target102) {
+    return {
+      ...emptyVerdict({
+        status: VIRMAN_STATUS.NONE,
+        reasons: ["same_account_counter_blocked"],
+        label: "Hesap kendi karşı hesabı olamaz",
+      }),
+      source102,
+      target102: "",
+      counterAccountCode: "",
+      complete: false,
+      legs: null,
+      missingReason: "Hesap kendi karşı hesabı olamaz",
+    };
+  }
+
   // İkinci kendi IBAN (kaynak dışı) ile hedefi doğrula
   if (!target102 && verdict.definiteEvidence) {
     const evidence = collectTransferEvidenceText(evalRow, description);
@@ -551,8 +632,14 @@ export function resolveVirman102Pair({
     for (const iban of extractIbansFromText(evidence)) {
       if (!ownCtx.ibans.has(iban)) continue;
       if (ignore.ignoreIbans.has(iban)) continue;
-      const code = bankLuca(ownCtx.banksByIban.get(iban));
-      if (code && code.startsWith("102") && code !== source102) {
+      const bank = ownCtx.banksByIban.get(iban);
+      const code = bankLuca(bank);
+      if (
+        code &&
+        code.startsWith("102") &&
+        code !== source102 &&
+        !isVadeliToVadeliTransfer(sourceBankRow, bank)
+      ) {
         target102 = code;
         break;
       }
