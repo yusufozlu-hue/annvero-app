@@ -324,6 +324,12 @@ function mapTypeToScenarioId(transactionType = "") {
   ) {
     return ACCOUNTING_SCENARIO.BANKALAR_ARASI_VIRMAN;
   }
+  if (
+    t === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+    t === BANK_TRANSACTION_TYPE.VADELI_KAPANIS
+  ) {
+    return ACCOUNTING_SCENARIO.BANKA_ICI_VIRMAN;
+  }
   if (VIRMAN_TYPES.has(t)) {
     return ACCOUNTING_SCENARIO.BANKA_ICI_VIRMAN;
   }

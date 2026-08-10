@@ -20,6 +20,7 @@ import {
   VERGI_SGK_TYPES,
   VIRMAN_TYPES,
 } from "@/src/utils/bankTransactionType";
+import { isForbiddenVadeliMemorySuggestion } from "@/src/utils/vadeliMevduatLifecycle";
 import {
   MEMORY_AUTO_APPLY_MIN_CONFIDENCE,
   MEMORY_AUTO_DISABLE_CORRECTION_RATIO,
@@ -1314,6 +1315,23 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
 
   if (!companyId || !accountCode || (!analysisKey && !normalizedDescription)) {
     return null;
+  }
+
+  // Vadeli lifecycle: vadeli→vadeli karşı hesap hafızaya yazılamaz
+  if (
+    String(analysisKey || "").startsWith("vd|") ||
+    String(input.lifecycleRole || "").startsWith("VADELI_") ||
+    String(input.statementAccountType || "").toUpperCase() === "VADELI"
+  ) {
+    if (
+      isForbiddenVadeliMemorySuggestion({
+        statementAccountType: "VADELI",
+        suggestedAccountCode: accountCode,
+        company: context.company || context.selectedCompany || null,
+      })
+    ) {
+      return null;
+    }
   }
 
   const direction = String(
