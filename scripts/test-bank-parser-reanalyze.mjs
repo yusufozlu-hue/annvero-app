@@ -236,7 +236,12 @@ test("UI button label + duplicate card wiring present", () => {
     ),
     "utf8"
   );
-  assert.match(oneClick, /Yeni hesap planıyla yeniden analiz et/);
+  const reanalyzeBtn = fs.readFileSync(
+    path.join(root, "src/components/BankReanalyzeWithNewPlanButton.js"),
+    "utf8"
+  );
+  assert.match(reanalyzeBtn, /Yeni hesap planıyla yeniden analiz et/);
+  assert.match(oneClick, /BankReanalyzeWithNewPlanButton/);
   assert.match(oneClick, /onReanalyzeWithNewPlan/);
   assert.match(oneClick, /revisionCompare/);
   assert.match(oneClick, /Önceki vs yeni analiz/);

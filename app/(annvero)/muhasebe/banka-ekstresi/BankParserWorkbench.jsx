@@ -122,6 +122,11 @@ import {
   userFacingPipelineError,
 } from "@/src/utils/bankOneClickPipeline";
 import {
+  claimReanalyzeClick,
+  releaseReanalyzeClick,
+  REANALYZE_CLICK_BUSY_TOAST,
+} from "@/src/utils/bankReanalyzeClick";
+import {
   BankPipelineErrorCard,
   BankPipelineProgressPanel,
   BankPipelineResultCard,
@@ -4303,6 +4308,12 @@ export default function BankParserWorkbench() {
         fromCanonicalSnapshot: hasSnapshot && !fileForValidate,
       })
     ) {
+      showToast(
+        reanalyze
+          ? "Yeniden analiz şu anda başlatılamadı (pipeline meşgul veya önkoşul eksik)."
+          : "İşlem şu anda başlatılamadı. Kısa süre sonra tekrar deneyin.",
+        "error"
+      );
       return;
     }
 
@@ -4427,6 +4438,7 @@ export default function BankParserWorkbench() {
             }
             v1LeaseIdRef.current = null;
             companyApproveResumeRef.current = false;
+            // Mükerrer terminaldir: iş kilidi bırakılır, dosya seçimi tekrar açılır.
             bankJobStateRef.current = createInitialBankJobState();
             setPipelineRunning(false);
             setIsParsing(false);
@@ -5539,7 +5551,8 @@ export default function BankParserWorkbench() {
       setPipelineResult(result);
       setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
       reanalyzeOptionsRef.current = null;
-      setIsReanalyzing(false);
+      // isReanalyzing: finally / handleReanalyze finally temizler —
+      // erken false → idle buton + kilitli ref (ölü tıklama)
 
       {
         const canon = legacyBankRowsToCanonical(movementsRef.current, {
@@ -5825,134 +5838,155 @@ export default function BankParserWorkbench() {
   };
 
   const handleReanalyzeWithNewPlan = async () => {
-    if (isJobBusy || isReanalyzing || reanalyzeClickLockRef.current) return;
-    if (!selectedCompanyId) {
-      showToast("Önce firma seçmelisin.", "error");
+    const claim = claimReanalyzeClick({
+      lockRef: reanalyzeClickLockRef,
+      isReanalyzing,
+      isJobBusy,
+      pipelineRunning,
+      setIsReanalyzing,
+    });
+    if (!claim.ok) {
+      // in_flight: ikinci tıklama — toast yok (buton zaten disabled/busy)
+      if (claim.reason === "job_busy") {
+        releaseReanalyzeClick({
+          lockRef: reanalyzeClickLockRef,
+          setIsReanalyzing,
+          clearOverrides: () => {
+            pipelinePlanOverrideRef.current = null;
+            pipelineFileNameOverrideRef.current = null;
+          },
+        });
+        showToast(REANALYZE_CLICK_BUSY_TOAST, "error");
+      } else if (claim.reason === "in_flight") {
+        showToast(REANALYZE_CLICK_BUSY_TOAST, "info");
+      }
       return;
     }
-    // İlk tıklamada anında loading — snapshot/plan await öncesi çift tıklamayı kes
-    reanalyzeClickLockRef.current = true;
-    setIsReanalyzing(true);
 
     const clearReanalyzeUi = (message, tone = "error") => {
+      // Kilit/loading yalnız finally'de kalkar — ara release çift tıklama yarışı yaratır
       if (message) showToast(message, tone);
-      setIsReanalyzing(false);
-      reanalyzeClickLockRef.current = false;
-      pipelinePlanOverrideRef.current = null;
-      pipelineFileNameOverrideRef.current = null;
     };
 
-    let hasSnapshot =
-      Boolean(canonicalSourceIdRef.current) ||
-      (Array.isArray(movementsRef.current) &&
-        movementsRef.current.length > 0 &&
-        Boolean(canonicalContentHashRef.current));
-    let snapFileName = canonicalFileNameRef.current || fileName || "";
-    // Taze belge kararları — hydrate race / başka sekme apply sonrası
     try {
-      const snap = await fetchLatestBankCanonicalSnapshot(selectedCompanyId);
-      if (snap.status === 403) {
-        clearReanalyzeUi("Bu firmanın snapshot'ına erişim yok.");
+      if (!selectedCompanyId) {
+        clearReanalyzeUi("Önce firma seçmelisin.");
         return;
       }
-      if (snap.ok && snap.source && snap.movements?.length) {
-        if (snap.source.fileName) {
-          snapFileName = snap.source.fileName;
-          canonicalFileNameRef.current = snap.source.fileName;
-          setFileName(snap.source.fileName);
+
+      let hasSnapshot =
+        Boolean(canonicalSourceIdRef.current) ||
+        (Array.isArray(movementsRef.current) &&
+          movementsRef.current.length > 0 &&
+          Boolean(canonicalContentHashRef.current));
+      let snapFileName = canonicalFileNameRef.current || fileName || "";
+      // Taze belge kararları — hydrate race / başka sekme apply sonrası
+      try {
+        const snap = await fetchLatestBankCanonicalSnapshot(selectedCompanyId);
+        if (snap.status === 403) {
+          clearReanalyzeUi("Bu firmanın snapshot'ına erişim yok.");
+          return;
         }
-        if (
-          !canFilelessReanalyze({
-            hasFile: Boolean(selectedFile),
-            hasCheckpoint: hasUsableSourceCheckpoint(sourceCheckpointRef.current),
-            hasCanonicalSnapshot: hasSnapshot,
-          })
-        ) {
-          const legacy = snapshotMovementsToLegacyRows(snap.movements);
-          documentResolutionsRef.current = Array.isArray(snap.resolutions)
-            ? snap.resolutions
-            : [];
-          const stamped = applyDocumentResolutionsToMovements(
-            legacy,
-            documentResolutionsRef.current
-          );
-          applyMovementPreview(stamped, null, stamped.length);
-          canonicalSourceIdRef.current = snap.source.id;
-          canonicalContentHashRef.current = snap.source.contentHash || "";
-          lastDedupMetaRef.current = {
-            ...(lastDedupMetaRef.current || {}),
-            sourceFileHash: snap.source.contentHash || "",
-          };
-          if (snap.source.detectedBank) {
-            activeBankRef.current = snap.source.detectedBank;
-            setSelectedBank(snap.source.detectedBank);
+        if (snap.ok && snap.source && snap.movements?.length) {
+          if (snap.source.fileName) {
+            snapFileName = snap.source.fileName;
+            canonicalFileNameRef.current = snap.source.fileName;
+            setFileName(snap.source.fileName);
           }
-          hasSnapshot = true;
-        } else if (Array.isArray(snap.resolutions)) {
-          documentResolutionsRef.current = snap.resolutions;
-          if (movementsRef.current?.length) {
-            movementsRef.current = applyDocumentResolutionsToMovements(
-              movementsRef.current,
+          if (
+            !canFilelessReanalyze({
+              hasFile: Boolean(selectedFile),
+              hasCheckpoint: hasUsableSourceCheckpoint(
+                sourceCheckpointRef.current
+              ),
+              hasCanonicalSnapshot: hasSnapshot,
+            })
+          ) {
+            const legacy = snapshotMovementsToLegacyRows(snap.movements);
+            documentResolutionsRef.current = Array.isArray(snap.resolutions)
+              ? snap.resolutions
+              : [];
+            const stamped = applyDocumentResolutionsToMovements(
+              legacy,
               documentResolutionsRef.current
             );
-          }
-          if (snap.source?.id) {
+            applyMovementPreview(stamped, null, stamped.length);
             canonicalSourceIdRef.current = snap.source.id;
+            canonicalContentHashRef.current = snap.source.contentHash || "";
+            lastDedupMetaRef.current = {
+              ...(lastDedupMetaRef.current || {}),
+              sourceFileHash: snap.source.contentHash || "",
+            };
+            if (snap.source.detectedBank) {
+              activeBankRef.current = snap.source.detectedBank;
+              setSelectedBank(snap.source.detectedBank);
+            }
+            hasSnapshot = true;
+          } else if (Array.isArray(snap.resolutions)) {
+            documentResolutionsRef.current = snap.resolutions;
+            if (movementsRef.current?.length) {
+              movementsRef.current = applyDocumentResolutionsToMovements(
+                movementsRef.current,
+                documentResolutionsRef.current
+              );
+            }
+            if (snap.source?.id) {
+              canonicalSourceIdRef.current = snap.source.id;
+            }
           }
         }
+      } catch {
+        /* mevcut oturum snapshot'ı ile devam */
       }
-    } catch {
-      /* mevcut oturum snapshot'ı ile devam */
-    }
-    if (
-      !canFilelessReanalyze({
-        hasFile: Boolean(selectedFile),
-        hasCheckpoint: hasUsableSourceCheckpoint(sourceCheckpointRef.current),
-        hasCanonicalSnapshot: hasSnapshot,
-      })
-    ) {
-      clearReanalyzeUi(
-        "Yeniden analiz için kalıcı hareket snapshot'ı gerekli (dosya yeniden yüklenmez). Bu işte snapshot yoksa bir kez dosya seçin."
-      );
-      return;
-    }
-    const sourceFile =
-      getCheckpointFile(sourceCheckpointRef.current) || selectedFile;
-    if (sourceFile && !selectedFile) {
-      setSelectedFile(sourceFile);
-    }
-    const prior =
-      duplicatePriorJobRef.current ||
-      (pipelineResult?.priorJobId
-        ? { id: pipelineResult.priorJobId, companyId: selectedCompanyId }
-        : null) ||
-      (v1AuditHistory || []).find(
-        (row) =>
-          row?.metadata?.terminal_status === V1_JOB_STATE.DUPLICATE ||
-          row?.metadata?.duplicate ||
-          row?.id === pipelineResult?.priorJobId
-      ) ||
-      (v1AuditHistory || [])[0] ||
-      null;
-    if (!prior?.id) {
-      clearReanalyzeUi(
-        "Önceki analiz kaydı bulunamadı; yeniden analiz yapılamadı."
-      );
-      return;
-    }
-    const tenantCheck = assertSameTenantReanalyze({
-      requestCompanyId: selectedCompanyId,
-      priorCompanyId: prior.companyId || prior.company_id || selectedCompanyId,
-    });
-    if (!tenantCheck.ok) {
-      clearReanalyzeUi(tenantCheck.message);
-      return;
-    }
+      if (
+        !canFilelessReanalyze({
+          hasFile: Boolean(selectedFile),
+          hasCheckpoint: hasUsableSourceCheckpoint(sourceCheckpointRef.current),
+          hasCanonicalSnapshot: hasSnapshot,
+        })
+      ) {
+        clearReanalyzeUi(
+          "Yeniden analiz için kalıcı hareket snapshot'ı gerekli (dosya yeniden yüklenmez). Bu işte snapshot yoksa bir kez dosya seçin."
+        );
+        return;
+      }
+      const sourceFile =
+        getCheckpointFile(sourceCheckpointRef.current) || selectedFile;
+      if (sourceFile && !selectedFile) {
+        setSelectedFile(sourceFile);
+      }
+      const prior =
+        duplicatePriorJobRef.current ||
+        (pipelineResult?.priorJobId
+          ? { id: pipelineResult.priorJobId, companyId: selectedCompanyId }
+          : null) ||
+        (v1AuditHistory || []).find(
+          (row) =>
+            row?.metadata?.terminal_status === V1_JOB_STATE.DUPLICATE ||
+            row?.metadata?.duplicate ||
+            row?.id === pipelineResult?.priorJobId
+        ) ||
+        (v1AuditHistory || [])[0] ||
+        null;
+      if (!prior?.id) {
+        clearReanalyzeUi(
+          "Önceki analiz kaydı bulunamadı; yeniden analiz yapılamadı."
+        );
+        return;
+      }
+      const tenantCheck = assertSameTenantReanalyze({
+        requestCompanyId: selectedCompanyId,
+        priorCompanyId: prior.companyId || prior.company_id || selectedCompanyId,
+      });
+      if (!tenantCheck.ok) {
+        clearReanalyzeUi(tenantCheck.message);
+        return;
+      }
 
-    previousAnalysisCountersRef.current = extractAnalysisCounters(
-      prior.metadata ? prior : pipelineResult || {}
-    );
-    try {
+      previousAnalysisCountersRef.current = extractAnalysisCounters(
+        prior.metadata ? prior : pipelineResult || {}
+      );
+
       const { fetchFullActiveAccountPlan } = await import(
         "@/src/utils/accountPlanApi"
       );
@@ -6015,10 +6049,21 @@ export default function BankParserWorkbench() {
       }
     } catch (error) {
       console.error("[banka-ekstresi] reanalyze failed", error);
-      clearReanalyzeUi(
-        error?.message || "Yeniden analiz tamamlanamadı."
+      showToast(
+        error?.message || "Yeniden analiz tamamlanamadı.",
+        "error"
       );
       reanalyzeOptionsRef.current = null;
+    } finally {
+      // Pipeline erken return (try öncesi) kilidi bırakmaz — parent her zaman temizler
+      releaseReanalyzeClick({
+        lockRef: reanalyzeClickLockRef,
+        setIsReanalyzing,
+        clearOverrides: () => {
+          pipelinePlanOverrideRef.current = null;
+          pipelineFileNameOverrideRef.current = null;
+        },
+      });
     }
   };
   handleReanalyzeWithNewPlanRef.current = handleReanalyzeWithNewPlan;
