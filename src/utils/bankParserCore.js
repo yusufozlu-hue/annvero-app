@@ -301,6 +301,22 @@ export function buildBankParserResult({
   });
 }
 
+/** Ekstre hesap no ipucu — dosya adından (örn. 00158018033466201.pdf) veya açık alanlardan. */
+export function inferStatementAccountHint(options = {}) {
+  const direct = String(
+    options.statementAccountHint ||
+      options.accountNumber ||
+      options.hesapNo ||
+      ""
+  ).replace(/\D/g, "");
+  if (direct.length >= 8) return direct;
+
+  const file = String(options.sourceFileName || options.fileName || "");
+  const base = file.split(/[/\\]/).pop() || "";
+  const fromName = base.match(/(\d{10,})/);
+  return fromName ? fromName[1] : "";
+}
+
 export function buildMovementMappingContext(options = {}) {
   const companyPlans = options.companyPlans || [];
   const learningMemory = options.learningMemory || [];
@@ -332,8 +348,12 @@ export function buildMovementMappingContext(options = {}) {
       selectedCompany?.accountingRules || selectedCompany || {}
     );
 
+  const statementAccountHint = inferStatementAccountHint(options);
+
   return {
     selectedCompany,
+    company: selectedCompany,
+    companyId: selectedCompanyId || selectedCompany?.id || "",
     companyPlans,
     companyRules: options.companyRules,
     selectedBank: options.selectedBank,
@@ -345,6 +365,9 @@ export function buildMovementMappingContext(options = {}) {
     sourceFileName: options.sourceFileName,
     sourceType: options.sourceType || "bank",
     currency: options.currency || "TRY",
+    statementAccountHint,
+    statementAccountType: options.statementAccountType || "",
+    persistVadeliMemory: options.persistVadeliMemory === true,
     legacyRules: bankaKurallari,
     planIndex,
     planCodeSet: options.planCodeSet || planIndex.codeSet || buildAccountPlanCodeSet(companyPlans),

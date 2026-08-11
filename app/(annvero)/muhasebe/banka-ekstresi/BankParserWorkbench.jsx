@@ -3115,9 +3115,9 @@ export default function BankParserWorkbench() {
       accountingRules,
       declarationAccrualRecords,
       selectedCompanyId,
-      sourceFileName: selectedFile?.name || "",
+      sourceFileName: selectedFile?.name || fileName || "",
       sourceFileType: detectSourceFileType(
-        selectedFile?.name || "",
+        selectedFile?.name || fileName || "",
         selectedFile?.type || ""
       ),
       sourceType: "bank",
