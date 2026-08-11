@@ -425,7 +425,7 @@ function planRowCode(plan = {}) {
   return compactCode(plan.accountCode || plan.code || plan.hesapKodu || "");
 }
 
-function planImpliesAccountType(plan = {}, wantType = "") {
+function planImpliesAccountType(plan = {}, wantType = "", options = {}) {
   const want = normalizeAccountType(wantType);
   const name = planRowName(plan);
   // V001/V002 kodları tek başına tür ayırt etmez; ad zorunlu.
@@ -435,10 +435,15 @@ function planImpliesAccountType(plan = {}, wantType = "") {
     );
   }
   if (want === "VADESIZ") {
-    return (
-      /\bVADESIZ\b|\bDEMAND\b|\bCHECKING\b/.test(name) &&
-      !/\bVADEL[Iİ]\b/.test(name)
-    );
+    // Vadeli etiketli satır asla VADESIZ sayılmaz (Türkçe İ normalize sonrası).
+    if (/\bVADEL[Iİ]\b|TERM\s*DEPOSIT/.test(name)) return false;
+    if (/\bVADESIZ\b|\bDEMAND\b|\bCHECKING\b/.test(name)) return true;
+    // Prod planlarında vadesiz satırlarda sıkça "VADESIZ" kelimesi yok
+    // (örn. "VAKIFBANK TL … ÖNBÜRO"). Aynı banka + yaprak 102 + vadeli değil.
+    if (options.allowImplicitDemand && isLeaf102Code(planRowCode(plan))) {
+      return true;
+    }
+    return false;
   }
   return false;
 }
@@ -474,55 +479,91 @@ export function resolve102RoleFromAccountPlan({
     (excludeCodes || []).map((c) => compactCode(c)).filter(Boolean)
   );
   const wantDigits = digitsOnly(accountNumber);
-  const scored = [];
 
-  for (const plan of companyPlans || []) {
-    if (plan?.isActive === false) continue;
-    const code = planRowCode(plan);
-    if (!isLeaf102Code(code) || exclude.has(code)) continue;
-    if (!planImpliesAccountType(plan, wantType)) continue;
-    if (!planCurrencyOk(plan, currency)) continue;
-
-    let score = 10;
-    const reasons = ["plan_type"];
-    const name = planRowName(plan);
-
-    if (bankName && bankNamesCompatible(name, bankName)) {
-      score += 30;
-      reasons.push("bank");
-    } else if (bankName) {
-      // Banka adı planda yoksa zayıf aday; yine de tek adaysa kabul edilebilir
-      score += 0;
-      reasons.push("bank_absent");
-    }
-
-    if (wantDigits && wantDigits.length >= 8) {
-      const nameDigits = digitsOnly(name);
-      if (
-        nameDigits &&
-        (nameDigits.includes(wantDigits) ||
-          wantDigits.includes(nameDigits) ||
-          nameDigits.endsWith(wantDigits.slice(-10)) ||
-          wantDigits.endsWith(nameDigits.slice(-10)))
-      ) {
-        score += 50;
-        reasons.push("account_number");
+  const scorePlans = (allowImplicitDemand) => {
+    const scored = [];
+    for (const plan of companyPlans || []) {
+      if (plan?.isActive === false) continue;
+      const code = planRowCode(plan);
+      if (!isLeaf102Code(code) || exclude.has(code)) continue;
+      if (!planImpliesAccountType(plan, wantType, { allowImplicitDemand })) {
+        continue;
       }
-    }
+      if (!planCurrencyOk(plan, currency)) continue;
 
-    scored.push({ code, plan, score, reasons, name });
+      let score = 10;
+      const reasons = ["plan_type"];
+      const name = planRowName(plan);
+
+      if (bankName && bankNamesCompatible(name, bankName)) {
+        score += 30;
+        reasons.push("bank");
+      } else if (bankName) {
+        // Banka adı verilmişse diğer banka adayları havuza girmez (aşağıda elenir)
+        reasons.push("bank_absent");
+      }
+
+      if (wantDigits && wantDigits.length >= 8) {
+        const nameDigits = digitsOnly(name);
+        if (
+          nameDigits &&
+          (nameDigits.includes(wantDigits) ||
+            wantDigits.includes(nameDigits) ||
+            nameDigits.endsWith(wantDigits.slice(-10)) ||
+            wantDigits.endsWith(nameDigits.slice(-10)))
+        ) {
+          score += 50;
+          reasons.push("account_number");
+        }
+      }
+
+      if (wantType === "VADESIZ") {
+        if (/\bVADESIZ\b|\bDEMAND\b|\bCHECKING\b/.test(name)) {
+          score += 25;
+          reasons.push("explicit_vadesiz");
+        }
+        if (/\bONBURO\b|\bON\s*BURO\b/.test(name)) {
+          score += 20;
+          reasons.push("onburo");
+        }
+      }
+
+      scored.push({ code, plan, score, reasons, name });
+    }
+    scored.sort((a, b) => b.score - a.score || a.code.localeCompare(b.code));
+    return scored;
+  };
+
+  // VADESIZ: önce açık etiket; yoksa aynı bankanın vadeli-olmayan yaprak 102'leri
+  let scored = scorePlans(false);
+  if (
+    wantType === "VADESIZ" &&
+    bankName &&
+    !scored.some((s) => s.reasons.includes("bank"))
+  ) {
+    scored = scorePlans(true);
+  } else if (wantType === "VADESIZ" && !scored.length) {
+    scored = scorePlans(true);
   }
 
-  scored.sort((a, b) => b.score - a.score || a.code.localeCompare(b.code));
   if (!scored.length) {
     return { ok: false, ambiguous: false, code: "", reason: "no_plan_match" };
   }
 
-  // Banka adı verilen senaryoda bank eşleşmesi olmayanları ele (çok gürültülü plan)
+  // Banka adı verildiyse yalnızca aynı banka — yabancı bankaya sessiz kaçış yok
   let pool = scored;
   if (bankName) {
     const withBank = scored.filter((s) => s.reasons.includes("bank"));
-    if (withBank.length) pool = withBank;
+    if (!withBank.length) {
+      return {
+        ok: false,
+        ambiguous: false,
+        code: "",
+        reason: "no_bank_plan_match",
+        candidates: scored.slice(0, 12),
+      };
+    }
+    pool = withBank;
   }
 
   const best = pool[0];
@@ -541,6 +582,8 @@ export function resolve102RoleFromAccountPlan({
   const strong =
     best.reasons.includes("account_number") ||
     best.reasons.includes("bank") ||
+    best.reasons.includes("explicit_vadesiz") ||
+    best.reasons.includes("onburo") ||
     pool.length === 1;
   if (!strong) {
     return {

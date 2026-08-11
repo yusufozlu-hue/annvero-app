@@ -602,12 +602,21 @@ export function BankPipelineResultCard({
             type="button"
             onClick={onReanalyzeWithNewPlan}
             disabled={isReanalyzing || isExporting}
-            className="rounded-xl bg-sky-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+            aria-busy={isReanalyzing ? "true" : "false"}
+            className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
             data-testid="bank-reanalyze-with-new-plan"
           >
-            {isReanalyzing
-              ? "Yeniden analiz ediliyor…"
-              : "Yeni hesap planıyla yeniden analiz et"}
+            {isReanalyzing ? (
+              <>
+                <span
+                  className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white"
+                  aria-hidden="true"
+                />
+                Yeniden analiz ediliyor…
+              </>
+            ) : (
+              "Yeni hesap planıyla yeniden analiz et"
+            )}
           </button>
         ) : null}
         <button
