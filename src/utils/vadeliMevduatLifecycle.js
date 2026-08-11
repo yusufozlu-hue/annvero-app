@@ -415,6 +415,161 @@ function findPlanAccount(companyPlans = [], prefixes = []) {
   return "";
 }
 
+function planRowName(plan = {}) {
+  return normalizeParserText(
+    plan.accountName || plan.name || plan.hesapAdi || plan.description || ""
+  );
+}
+
+function planRowCode(plan = {}) {
+  return compactCode(plan.accountCode || plan.code || plan.hesapKodu || "");
+}
+
+function planImpliesAccountType(plan = {}, wantType = "") {
+  const want = normalizeAccountType(wantType);
+  const name = planRowName(plan);
+  // V001/V002 kodları tek başına tür ayırt etmez; ad zorunlu.
+  if (want === "VADELI") {
+    return (
+      /\bVADEL[Iİ]\b|TERM\s*DEPOSIT/.test(name) && !/\bVADESIZ\b/.test(name)
+    );
+  }
+  if (want === "VADESIZ") {
+    return (
+      /\bVADESIZ\b|\bDEMAND\b|\bCHECKING\b/.test(name) &&
+      !/\bVADEL[Iİ]\b/.test(name)
+    );
+  }
+  return false;
+}
+
+function planCurrencyOk(plan = {}, currency = "TL") {
+  const want = normalizeCurrency(currency);
+  const name = planRowName(plan);
+  if (!want) return true;
+  if (want === "TL") {
+    if (/\b(USD|EUR|GBP|CHF)\b/.test(name)) return false;
+    return true;
+  }
+  return name.includes(want) || !/\b(USD|EUR|GBP|CHF|TL|TRY)\b/.test(name);
+}
+
+/**
+ * Firma banka kartı boş/eksikse hesap planındaki yaprak 102 satırlarından
+ * VADELI / VADESIZ çözümle. Belirsiz çoklu adayda otomatik seçim yok.
+ */
+export function resolve102RoleFromAccountPlan({
+  companyPlans = [],
+  bankName = "",
+  currency = "TL",
+  accountType = "",
+  accountNumber = "",
+  excludeCodes = [],
+} = {}) {
+  const wantType = normalizeAccountType(accountType);
+  if (wantType !== "VADELI" && wantType !== "VADESIZ") {
+    return { ok: false, ambiguous: false, code: "", reason: "bad_type" };
+  }
+  const exclude = new Set(
+    (excludeCodes || []).map((c) => compactCode(c)).filter(Boolean)
+  );
+  const wantDigits = digitsOnly(accountNumber);
+  const scored = [];
+
+  for (const plan of companyPlans || []) {
+    if (plan?.isActive === false) continue;
+    const code = planRowCode(plan);
+    if (!isLeaf102Code(code) || exclude.has(code)) continue;
+    if (!planImpliesAccountType(plan, wantType)) continue;
+    if (!planCurrencyOk(plan, currency)) continue;
+
+    let score = 10;
+    const reasons = ["plan_type"];
+    const name = planRowName(plan);
+
+    if (bankName && bankNamesCompatible(name, bankName)) {
+      score += 30;
+      reasons.push("bank");
+    } else if (bankName) {
+      // Banka adı planda yoksa zayıf aday; yine de tek adaysa kabul edilebilir
+      score += 0;
+      reasons.push("bank_absent");
+    }
+
+    if (wantDigits && wantDigits.length >= 8) {
+      const nameDigits = digitsOnly(name);
+      if (
+        nameDigits &&
+        (nameDigits.includes(wantDigits) ||
+          wantDigits.includes(nameDigits) ||
+          nameDigits.endsWith(wantDigits.slice(-10)) ||
+          wantDigits.endsWith(nameDigits.slice(-10)))
+      ) {
+        score += 50;
+        reasons.push("account_number");
+      }
+    }
+
+    scored.push({ code, plan, score, reasons, name });
+  }
+
+  scored.sort((a, b) => b.score - a.score || a.code.localeCompare(b.code));
+  if (!scored.length) {
+    return { ok: false, ambiguous: false, code: "", reason: "no_plan_match" };
+  }
+
+  // Banka adı verilen senaryoda bank eşleşmesi olmayanları ele (çok gürültülü plan)
+  let pool = scored;
+  if (bankName) {
+    const withBank = scored.filter((s) => s.reasons.includes("bank"));
+    if (withBank.length) pool = withBank;
+  }
+
+  const best = pool[0];
+  const ties = pool.filter((s) => s.score === best.score);
+  if (ties.length > 1) {
+    return {
+      ok: false,
+      ambiguous: true,
+      code: "",
+      reason: "ambiguous_plan_102",
+      candidates: ties,
+    };
+  }
+
+  // Güçlü bağ: hesap no veya (banka + tür)
+  const strong =
+    best.reasons.includes("account_number") ||
+    best.reasons.includes("bank") ||
+    pool.length === 1;
+  if (!strong) {
+    return {
+      ok: false,
+      ambiguous: false,
+      code: "",
+      reason: "weak_plan_match",
+      best,
+    };
+  }
+
+  return {
+    ok: true,
+    ambiguous: false,
+    code: best.code,
+    reason: "plan_unique",
+    bank: {
+      bankName: bankName || "",
+      accountName: best.name,
+      accountType: wantType,
+      lucaAccountCode: best.code,
+      accountNumber: accountNumber || "",
+      currency: normalizeCurrency(currency),
+      isActive: true,
+      fromAccountPlan: true,
+    },
+  };
+}
+
 function clearTaxWarnings(row) {
   const warn = String(row.warning || "")
     .split("|")
@@ -654,6 +809,21 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     }
   }
 
+  // Firma banka kartı boş/eksik: hesap planından tek kesin VADELI 102
+  if (!statementCode || !statementBank) {
+    const fromPlan = resolve102RoleFromAccountPlan({
+      companyPlans,
+      bankName: selectedBank,
+      currency,
+      accountType: "VADELI",
+      accountNumber: hintAccount,
+    });
+    if (fromPlan.ok) {
+      statementBank = fromPlan.bank;
+      statementCode = fromPlan.code;
+    }
+  }
+
   if (!statementCode || !statementBank) {
     return {
       movements: list,
@@ -670,12 +840,31 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     statementBank = { ...statementBank, accountType: "VADELI" };
   }
 
-  const vadesiz = resolveVadesizCounter102({
+  let vadesiz = resolveVadesizCounter102({
     company,
     sourceBank: statementBank,
     currency,
     bankName: selectedBank || statementBank.bankName,
   });
+
+  if (!vadesiz.ok) {
+    const fromPlan = resolve102RoleFromAccountPlan({
+      companyPlans,
+      bankName: selectedBank || statementBank.bankName || "",
+      currency,
+      accountType: "VADESIZ",
+      excludeCodes: [statementCode],
+    });
+    if (fromPlan.ok) {
+      vadesiz = {
+        ok: true,
+        ambiguous: false,
+        code: fromPlan.code,
+        bank: fromPlan.bank,
+        reason: "plan_unique_vadesiz",
+      };
+    }
+  }
 
   const faizCode =
     findPlanAccount(companyPlans, ["642.01.001", "642.01", "642"]) ||
