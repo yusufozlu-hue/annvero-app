@@ -130,7 +130,7 @@ await test("source wiring: card + workbench + no premature isReanalyzing clear",
   assert.match(oneClick, /BankReanalyzeWithNewPlanButton/);
   assert.match(workbench, /claimReanalyzeClick/);
   assert.match(workbench, /releaseReanalyzeClick/);
-  assert.match(workbench, /Pipeline erken return \(try öncesi\) kilidi bırakmaz/);
+  assert.match(workbench, /Reanalyze kilidi handleReanalyzeWithNewPlan/);
   assert.match(buttonSrc, /runReanalyzeButtonClick/);
   assert.match(buttonSrc, /setLocalReanalyzeBusy\(true\)/);
   assert.ok(

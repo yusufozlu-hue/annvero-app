@@ -44,7 +44,8 @@
     "test:missing-account-center": "node --import ./scripts/_alias-loader.mjs ./scripts/test-missing-account-center-empty-list.mjs",
     "test:missing-account-center-staging": "node --import ./scripts/_alias-loader.mjs ./scripts/test-missing-account-center-staging-e2e.mjs",
     "test:account-plan-merge": "node --import ./scripts/_alias-loader.mjs ./scripts/test-account-plan-merge.mjs",
-    "test:bank-reanalyze-click": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-reanalyze-click-interaction.mjs"
+    "test:bank-reanalyze-click": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-reanalyze-click-interaction.mjs",
+    "test:bank-reanalyze-orchestration": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-reanalyze-orchestration.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.65",

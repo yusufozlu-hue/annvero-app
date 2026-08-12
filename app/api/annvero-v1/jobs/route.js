@@ -285,12 +285,8 @@ export async function POST(request) {
   }
 
   const idempotencyKey = String(payload.metadata?.idempotency_key || "").trim();
-  // Normal yükleme: aynı anahtar → duplicate. Reanalyze :rev:N ile yeni kayıt açar.
-  if (
-    idempotencyKey &&
-    !idempotencyKey.endsWith(":nohash") &&
-    !incoming.reanalyze
-  ) {
+  // Aynı idempotency (normal veya plan-aware reanalyze) → yeni iş yok; mevcut kayıt dön.
+  if (idempotencyKey && !idempotencyKey.endsWith(":nohash")) {
     const { data: existingRows, error: existingError } = await ctx.supabase
       .from(AUDIT_EVENTS_TABLE)
       .select("id, company_id, entity_type, entity_id, action, metadata, created_at")
@@ -310,6 +306,8 @@ export async function POST(request) {
         companyId,
         persisted: false,
         duplicate: true,
+        reanalyze: Boolean(incoming.reanalyze),
+        existingJob: true,
         view: publicV1JobView(existingRows[0]),
       });
     }

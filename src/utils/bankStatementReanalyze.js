@@ -24,13 +24,20 @@ export function canFilelessReanalyze({
 }
 
 /**
- * @param {{ companyId?: string, contentHash?: string, revision?: number, engineVersion?: string }} opts
+ * @param {{
+ *   companyId?: string,
+ *   contentHash?: string,
+ *   revision?: number,
+ *   engineVersion?: string,
+ *   planFingerprint?: string,
+ * }} opts
  */
 export function buildRevisionIdempotencyKey({
   companyId = "",
   contentHash = "",
   revision = 2,
   engineVersion = ANNVERO_V1_ENGINE_VERSION,
+  planFingerprint = "",
 } = {}) {
   const base = buildIdempotencyKey({
     companyId,
@@ -38,7 +45,13 @@ export function buildRevisionIdempotencyKey({
     engineVersion,
   });
   const rev = Math.max(2, Number(revision) || 2);
-  return `${base}:rev:${rev}`;
+  const plan = String(planFingerprint || "")
+    .trim()
+    .slice(0, 64);
+  // Aynı source + revision + plan → sunucu ikinci job açmaz
+  return plan
+    ? `${base}:rev:${rev}:plan:${plan}`
+    : `${base}:rev:${rev}`;
 }
 
 export function nextRevisionNumber(priorRevision = 1) {

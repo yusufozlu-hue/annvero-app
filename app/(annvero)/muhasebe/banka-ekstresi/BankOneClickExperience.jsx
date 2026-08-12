@@ -597,12 +597,17 @@ export function BankPipelineResultCard({
             Bakiye Uyuşmazlığını İncele
           </button>
         ) : null}
-        {(isDuplicate || Boolean(result?.fromCanonicalSnapshot)) &&
+        {(isDuplicate ||
+          Boolean(result?.fromCanonicalSnapshot) ||
+          Boolean(result?.reanalyzeFailed)) &&
         typeof onReanalyzeWithNewPlan === "function" ? (
           <BankReanalyzeWithNewPlanButton
             onReanalyzeWithNewPlan={onReanalyzeWithNewPlan}
             isReanalyzing={isReanalyzing}
             isExporting={isExporting}
+            reanalyzeFailed={Boolean(result?.reanalyzeFailed)}
+            fromCanonicalSnapshot={Boolean(result?.fromCanonicalSnapshot)}
+            isDuplicate={isDuplicate}
           />
         ) : null}
         <button
