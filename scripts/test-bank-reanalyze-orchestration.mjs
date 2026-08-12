@@ -34,7 +34,6 @@ function test(name, fn) {
 
 const {
   buildReanalyzeFlightKey,
-  claimOrJoinReanalyzeFlight,
   attachReanalyzeFlightPromise,
   completeReanalyzeFlight,
   failReanalyzeFlight,
@@ -344,14 +343,30 @@ await test("unmount/remount: module flight survives (no second start)", async ()
   await claimB.flight.promise;
 });
 
-await test("revision idempotency key includes plan fingerprint", () => {
+await test("revision idempotency key includes plan + pipeline version", () => {
   const k = buildRevisionIdempotencyKey({
     companyId: "c",
     contentHash: "h",
     revision: 2,
     planFingerprint: "abc123",
+    sourceId: "src1",
+    sourceRevision: 14,
+    snapshotFingerprint: "h",
   });
   assert.match(k, /:rev:2:plan:abc123/);
+  assert.match(k, /:pipe:/);
+  assert.match(k, /:src:src1/);
+  assert.match(k, /:srev:14/);
+  assert.match(k, /:snap:h/);
+
+  const stale = buildRevisionIdempotencyKey({
+    companyId: "c",
+    contentHash: "h",
+    revision: 2,
+    planFingerprint: "abc123",
+    pipelineVersion: "br/0.0.1+vl/0.0.1",
+  });
+  assert.notEqual(k, stale);
 });
 
 await test("source wiring: workbench uses orchestration + preserve card", () => {
@@ -370,12 +385,16 @@ await test("source wiring: workbench uses orchestration + preserve card", () => 
   assert.match(workbench, /attachReanalyzeFlightPromise/);
   assert.match(workbench, /shouldFollowExistingJobOnConflict/);
   assert.match(workbench, /planFingerprint/);
+  assert.match(workbench, /ANNVERO_BANK_REANALYZE_PIPELINE_VERSION/);
+  assert.match(workbench, /isCompatibleExistingReanalyzeJob/);
+  assert.match(workbench, /staleExistingJob/);
   assert.match(
     workbench,
     /Reanalyze \/ snapshot: kart ve dosya bilgisi pipeline bitene kadar korunur/
   );
   assert.match(workbench, /Reanalyze kilidi handleReanalyzeWithNewPlan/);
   assert.match(jobsRoute, /existingJob:\s*true/);
+  assert.match(jobsRoute, /compatibleExistingJob/);
   assert.match(jobsRoute, /idempotency_key/);
 });
 

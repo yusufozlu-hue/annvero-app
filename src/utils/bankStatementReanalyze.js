@@ -7,12 +7,22 @@ import {
   ANNVERO_V1_ENGINE_VERSION,
   buildIdempotencyKey,
 } from "@/src/utils/annveroV1Orchestration";
+import { VADELI_LIFECYCLE_ALGORITHM_VERSION } from "@/src/utils/vadeliMevduatLifecycle";
 
 export const REANALYZE_BUTTON_LABEL =
   "Yeni hesap planıyla yeniden analiz et";
 
 export const REANALYZE_UI_HINT =
   "Kalıcı canonical hareket snapshot'ı ve arşiv kaynağı ile yeni aktif hesap planı uygulanır; dosya yeniden yüklenmez, ikinci Drive/source oluşturulmaz.";
+
+/**
+ * Deterministik reanalyze pipeline sürümü.
+ * Engine + lifecycle birlikte; kod/algoritma değişince eski completed job reuse edilmez.
+ */
+export const ANNVERO_BANK_REANALYZE_PIPELINE_VERSION = [
+  "br/2.1.0",
+  VADELI_LIFECYCLE_ALGORITHM_VERSION,
+].join("+");
 
 /** Dosyasız reanalyze — checkpoint veya File şart değil; snapshot yeterli. */
 export function canFilelessReanalyze({
@@ -30,6 +40,10 @@ export function canFilelessReanalyze({
  *   revision?: number,
  *   engineVersion?: string,
  *   planFingerprint?: string,
+ *   pipelineVersion?: string,
+ *   sourceId?: string,
+ *   sourceRevision?: number|string,
+ *   snapshotFingerprint?: string,
  * }} opts
  */
 export function buildRevisionIdempotencyKey({
@@ -38,6 +52,10 @@ export function buildRevisionIdempotencyKey({
   revision = 2,
   engineVersion = ANNVERO_V1_ENGINE_VERSION,
   planFingerprint = "",
+  pipelineVersion = ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+  sourceId = "",
+  sourceRevision = "",
+  snapshotFingerprint = "",
 } = {}) {
   const base = buildIdempotencyKey({
     companyId,
@@ -48,10 +66,54 @@ export function buildRevisionIdempotencyKey({
   const plan = String(planFingerprint || "")
     .trim()
     .slice(0, 64);
-  // Aynı source + revision + plan → sunucu ikinci job açmaz
-  return plan
-    ? `${base}:rev:${rev}:plan:${plan}`
-    : `${base}:rev:${rev}`;
+  const pipe = String(pipelineVersion || ANNVERO_BANK_REANALYZE_PIPELINE_VERSION)
+    .trim()
+    .slice(0, 96);
+  const src = String(sourceId || "")
+    .trim()
+    .slice(0, 36);
+  const srev = String(sourceRevision ?? "")
+    .trim()
+    .slice(0, 16);
+  const snap = String(snapshotFingerprint || contentHash || "")
+    .trim()
+    .slice(0, 64);
+  // Aynı kod+source+plan → dedupe; farklı pipelineVersion → yeni uçuş
+  const parts = [base, `rev:${rev}`];
+  if (plan) parts.push(`plan:${plan}`);
+  if (pipe) parts.push(`pipe:${pipe}`);
+  if (src) parts.push(`src:${src}`);
+  if (srev) parts.push(`srev:${srev}`);
+  if (snap) parts.push(`snap:${snap}`);
+  return parts.join(":");
+}
+
+/**
+ * Mevcut completed job bu istemci pipeline sürümüyle uyumlu mu?
+ * Uyumsuz / eksik result → yeni idempotent uçuş açılmalı.
+ */
+export function isCompatibleExistingReanalyzeJob({
+  existingMetadata = null,
+  expectedIdempotencyKey = "",
+  expectedPipelineVersion = ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+} = {}) {
+  const meta = existingMetadata && typeof existingMetadata === "object"
+    ? existingMetadata
+    : {};
+  const existingKey = String(meta.idempotency_key || meta.idempotencyKey || "").trim();
+  const expected = String(expectedIdempotencyKey || "").trim();
+  if (!existingKey || !expected || existingKey !== expected) {
+    return { ok: false, reason: "idempotency_mismatch" };
+  }
+  const pipeToken = `:pipe:${String(expectedPipelineVersion || "").trim()}`;
+  if (pipeToken.length > 6 && !existingKey.includes(pipeToken)) {
+    return { ok: false, reason: "pipeline_version_stale" };
+  }
+  const terminal = String(meta.terminal_status || meta.terminalStatus || "").trim();
+  if (!terminal) {
+    return { ok: false, reason: "result_incomplete" };
+  }
+  return { ok: true, reason: "compatible" };
 }
 
 export function nextRevisionNumber(priorRevision = 1) {

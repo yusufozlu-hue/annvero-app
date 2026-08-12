@@ -220,6 +220,7 @@ import {
   findPriorJobByContentHash,
 } from "@/src/utils/bankBalanceMismatchReview";
 import {
+  ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
   REANALYZE_BUTTON_LABEL,
   assertSameTenantReanalyze,
   buildRevisionCompareView,
@@ -229,6 +230,7 @@ import {
   countTrulyNotFoundFromGroups,
   deriveRevisionCounters,
   extractAnalysisCounters,
+  isCompatibleExistingReanalyzeJob,
   nextRevisionNumber,
   shouldBypassIdempotencyHistoryBlock,
   shouldBypassSessionDedupBlock,
@@ -565,6 +567,7 @@ export default function BankParserWorkbench() {
   const canonicalSourceIdRef = useRef(null);
   const canonicalContentHashRef = useRef("");
   const canonicalFileNameRef = useRef("");
+  const canonicalSourceRevisionRef = useRef(1);
   /** Reanalyze sırasında taze plan / dosya adı — React state closure gecikmesini aşar */
   const pipelinePlanOverrideRef = useRef(null);
   const pipelineFileNameOverrideRef = useRef(null);
@@ -889,6 +892,7 @@ export default function BankParserWorkbench() {
           canonicalSourceIdRef.current = null;
           canonicalContentHashRef.current = "";
           canonicalFileNameRef.current = "";
+          canonicalSourceRevisionRef.current = 1;
           return;
         }
         if (!snap.ok || !snap.source || !snap.movements?.length) return;
@@ -912,6 +916,10 @@ export default function BankParserWorkbench() {
           canonicalFileNameRef.current = snap.source.fileName;
           setFileName(snap.source.fileName);
         }
+        canonicalSourceRevisionRef.current = Math.max(
+          1,
+          Number(snap.source.revision) || 1
+        );
         if (snap.source.detectedBank) {
           activeBankRef.current = snap.source.detectedBank;
           setSelectedBank(snap.source.detectedBank);
@@ -922,28 +930,46 @@ export default function BankParserWorkbench() {
           setV1AuditHistory(hist.runs);
           const latest = hist.runs[0];
           const meta = latest?.metadata || {};
+          const existingKey = String(meta.idempotency_key || "").trim();
+          const pipeToken = `:pipe:${ANNVERO_BANK_REANALYZE_PIPELINE_VERSION}`;
+          const staleJobResult =
+            !existingKey ||
+            (pipeToken.length > 6 && !existingKey.includes(pipeToken));
+          // Stale completed job sayaçlarını nihai sonuç gibi bağlama —
+          // hydrate reanalyze çalışacak; kart/dosya korunur.
           setPipelineResult({
-            movementCount: Number(meta.movement_count || legacy.length),
-            lucaRowCount: Number(meta.luca_row_count || 0),
-            reviewCount: Number(meta.review_count || 0),
-            uniqueUnresolvedMovements: Number(meta.review_count || 0),
-            autoMatchedCount: Number(meta.auto_matched_count || 0),
-            terminalStatus: meta.terminal_status || "",
-            reviewRequired: Boolean(meta.review_required),
-            canAutoApprove: Boolean(meta.can_auto_approve),
+            movementCount:
+              Number(meta.movement_count || legacy.length) || legacy.length,
+            lucaRowCount: staleJobResult ? 0 : Number(meta.luca_row_count || 0),
+            reviewCount: staleJobResult ? null : Number(meta.review_count || 0),
+            uniqueUnresolvedMovements: staleJobResult
+              ? null
+              : Number(meta.review_count || 0),
+            autoMatchedCount: staleJobResult
+              ? null
+              : Number(meta.auto_matched_count || 0),
+            terminalStatus: staleJobResult ? "" : meta.terminal_status || "",
+            reviewRequired: staleJobResult
+              ? true
+              : Boolean(meta.review_required),
+            canAutoApprove: staleJobResult
+              ? false
+              : Boolean(meta.can_auto_approve),
             driveArchived: Boolean(meta.drive_archived),
             driveSkipped: Boolean(meta.drive_skipped),
             revision: meta.revision || null,
             priorJobId: latest.id,
             fromCanonicalSnapshot: true,
+            staleExistingJob: staleJobResult,
             accountPlanCount: Number(meta.account_plan_count || 0),
             documentResolutionCount: documentResolutionsRef.current.length,
+            pipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
           });
           setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
           setCompletedSteps((prev) => ({
             ...prev,
             preview: true,
-            analysis: true,
+            analysis: !staleJobResult,
           }));
           if (snap.source.planContentFingerprint) {
             lastReanalyzePlanFpRef.current = String(
@@ -954,7 +980,10 @@ export default function BankParserWorkbench() {
           const hydrateKey = buildReanalyzeFlightKey({
             companyId: selectedCompanyId,
             sourceId: snap.source.id || canonicalSourceIdRef.current,
-            sourceRevision: Number(meta.revision || 1) || 1,
+            sourceRevision:
+              Number(snap.source.revision) ||
+              Number(meta.revision || 1) ||
+              1,
             planFingerprint:
               snap.source.planContentFingerprint ||
               lastReanalyzePlanFpRef.current ||
@@ -1025,6 +1054,7 @@ export default function BankParserWorkbench() {
       canonicalSourceIdRef.current = null;
       canonicalContentHashRef.current = "";
       canonicalFileNameRef.current = "";
+      canonicalSourceRevisionRef.current = 1;
       documentResolutionsRef.current = [];
       pendingCanonicalHydrateKeyRef.current = "";
       activeReanalyzeFlightKeyRef.current = "";
@@ -2768,6 +2798,7 @@ export default function BankParserWorkbench() {
     canonicalSourceIdRef.current = null;
     canonicalContentHashRef.current = "";
     canonicalFileNameRef.current = "";
+    canonicalSourceRevisionRef.current = 1;
     companyApproveResumeRef.current = false;
     duplicatePriorJobRef.current = null;
     reanalyzeOptionsRef.current = null;
@@ -2810,6 +2841,7 @@ export default function BankParserWorkbench() {
       canonicalSourceIdRef.current = null;
       canonicalContentHashRef.current = "";
       canonicalFileNameRef.current = "";
+      canonicalSourceRevisionRef.current = 1;
       companyApproveResumeRef.current = false;
       clearActiveBank();
       resetFileInput();
@@ -5513,12 +5545,19 @@ export default function BankParserWorkbench() {
             contentHash,
             revision,
             planFingerprint: planFp,
+            pipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+            sourceId: canonicalSourceIdRef.current || "",
+            sourceRevision:
+              canonicalSourceRevisionRef.current ||
+              reanalyzeOpts?.sourceRevision ||
+              "",
+            snapshotFingerprint: contentHash,
           })
         : buildIdempotencyKey({
             companyId: selectedCompanyId,
             contentHash,
           });
-      await persistV1JobSummary({
+      const persistResult = await persistV1JobSummary({
         companyId: selectedCompanyId,
         jobId,
         leaseId,
@@ -5531,6 +5570,9 @@ export default function BankParserWorkbench() {
           supersedesJobId: reanalyzeOpts?.revisionOf || "",
           accountPlanCount,
           planContentFingerprint: planFp || undefined,
+          pipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+          sourceId: canonicalSourceIdRef.current || undefined,
+          sourceRevision: canonicalSourceRevisionRef.current || undefined,
           resolvedMissingCount: revisionCompare?.resolvedMissing ?? 0,
           trulyNotFoundCount: revisionCompare?.trulyNotFound ?? 0,
           balanceResolutionApplied: Boolean(
@@ -5549,7 +5591,26 @@ export default function BankParserWorkbench() {
         revision: reanalyzeOpts?.reanalyze ? revision : null,
         supersedesJobId: reanalyzeOpts?.revisionOf || "",
       });
-      stageOutputs[V1_JOB_STATE.PERSISTING] = { ok: true };
+      // Stale/uyumsuz existingJob → yerel sonucu koru; eski kartı bağlama
+      if (
+        reanalyzeOpts?.reanalyze &&
+        persistResult?.existingJob &&
+        !isCompatibleExistingReanalyzeJob({
+          existingMetadata: persistResult?.view?.metadata || {},
+          expectedIdempotencyKey: idempotencyKey,
+          expectedPipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+        }).ok
+      ) {
+        console.warn(
+          "[banka-ekstresi] stale existingJob ignored; keeping local analysis result",
+          persistResult?.view?.id || ""
+        );
+      }
+      stageOutputs[V1_JOB_STATE.PERSISTING] = {
+        ok: true,
+        existingJob: Boolean(persistResult?.existingJob),
+        persisted: Boolean(persistResult?.persisted),
+      };
 
       const result = {
         movementCount: movementsRef.current.length,
@@ -6058,6 +6119,12 @@ export default function BankParserWorkbench() {
               canonicalFileNameRef.current = snap.source.fileName;
               setFileName(snap.source.fileName);
             }
+            if (snap.source.revision) {
+              canonicalSourceRevisionRef.current = Math.max(
+                1,
+                Number(snap.source.revision) || 1
+              );
+            }
             if (
               !canFilelessReanalyze({
                 hasFile: Boolean(selectedFile),
@@ -6393,6 +6460,10 @@ export default function BankParserWorkbench() {
             companyId: selectedCompanyId,
             contentHash,
             revision,
+            pipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+            sourceId: canonicalSourceIdRef.current || "",
+            sourceRevision: canonicalSourceRevisionRef.current || "",
+            snapshotFingerprint: contentHash,
           }),
           summary: {
             ...buildV1ResultSummary({

@@ -176,11 +176,11 @@ export function applyDocumentResolutionsToMovements(
     const mid = resolveSourceMovementId(m);
     const hit = lookupDocumentResolution(lookup, { sourceMovementId: mid });
     if (!hit?.accountCode) return m;
-    if (String(m.counterAccountCode || m.accountCode || "").trim()) return m;
+    // Yalnız karşı hesap — statement/banka accountCode'unu 193 vb. ile ezme
+    if (String(m.counterAccountCode || "").trim()) return m;
     return {
       ...m,
       counterAccountCode: hit.accountCode,
-      accountCode: hit.accountCode,
       accountName: hit.accountName || m.accountName || "",
       documentResolutionApplied: true,
       documentResolutionId: hit.id,

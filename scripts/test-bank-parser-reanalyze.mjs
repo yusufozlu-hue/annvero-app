@@ -122,7 +122,8 @@ test("revision idempotency key differs from base so old result preserved", () =>
   });
   assert.notEqual(base, rev2);
   assert.notEqual(rev2, rev3);
-  assert.ok(rev2.endsWith(":rev:2"));
+  assert.match(rev2, /:rev:2/);
+  assert.match(rev2, /:pipe:/);
   assert.equal(nextRevisionNumber(1), 2);
   assert.equal(nextRevisionNumber(2), 3);
 });

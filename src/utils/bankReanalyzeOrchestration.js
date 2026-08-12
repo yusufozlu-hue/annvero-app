@@ -33,13 +33,18 @@ export function buildReanalyzeFlightKey({
 }
 
 /**
- * Revision + plan fingerprint — aynı kaynak/plan tekrarında sunucu yeni job açmaz.
+ * Revision + plan + pipelineVersion — aynı kod/kaynak/plan tekrarında dedupe;
+ * farklı pipelineVersion eski completed job’u reuse etmez.
  * @param {{
  *   companyId?: string,
  *   contentHash?: string,
  *   revision?: number,
  *   planFingerprint?: string,
  *   engineVersion?: string,
+ *   pipelineVersion?: string,
+ *   sourceId?: string,
+ *   sourceRevision?: number|string,
+ *   snapshotFingerprint?: string,
  * }} opts
  */
 export function buildPlanAwareRevisionIdempotencyKey({
@@ -48,9 +53,25 @@ export function buildPlanAwareRevisionIdempotencyKey({
   revision = 2,
   planFingerprint = "",
   engineVersion = "",
+  pipelineVersion = "",
+  sourceId = "",
+  sourceRevision = "",
+  snapshotFingerprint = "",
 } = {}) {
   const rev = Math.max(2, Number(revision) || 2);
   const plan = String(planFingerprint || "nopfp")
+    .trim()
+    .slice(0, 64);
+  const pipe = String(pipelineVersion || "nopipe")
+    .trim()
+    .slice(0, 96);
+  const src = String(sourceId || "")
+    .trim()
+    .slice(0, 36);
+  const srev = String(sourceRevision ?? "")
+    .trim()
+    .slice(0, 16);
+  const snap = String(snapshotFingerprint || contentHash || "nosnap")
     .trim()
     .slice(0, 64);
   const baseParts = [
@@ -59,7 +80,11 @@ export function buildPlanAwareRevisionIdempotencyKey({
     String(engineVersion || "").trim() || "eng",
     `rev:${rev}`,
     `plan:${plan || "nopfp"}`,
+    `pipe:${pipe || "nopipe"}`,
   ];
+  if (src) baseParts.push(`src:${src}`);
+  if (srev) baseParts.push(`srev:${srev}`);
+  if (snap) baseParts.push(`snap:${snap}`);
   return baseParts.join(":");
 }
 

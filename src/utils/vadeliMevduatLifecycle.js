@@ -20,6 +20,12 @@ export const VADELI_LIFECYCLE_ROLE = Object.freeze({
   STOPAJ: "FAIZ_STOPAJI",
 });
 
+/**
+ * Lifecycle algoritma sürümü — idempotency / pipelineVersion bileşeni.
+ * Kod değişince bump: eski tamamlanmış 2/2 job yeni analiz yerine kullanılmaz.
+ */
+export const VADELI_LIFECYCLE_ALGORITHM_VERSION = "vl/2.1.0";
+
 export const LIFECYCLE_OPEN_RE =
   /\b(HESAP\s*ACMA|VADEL[Iİ].*ACMA|MEVDUAT\s*ACMA|ACILIS)/i;
 export const LIFECYCLE_CLOSE_RE =

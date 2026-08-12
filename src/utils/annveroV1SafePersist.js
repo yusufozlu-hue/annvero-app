@@ -97,7 +97,7 @@ export function buildSafeV1PersistPayload({
   const meta = {
     engine_version: ANNVERO_V1_ENGINE_VERSION,
     job_id: sanitizeString(jobId, 80),
-    idempotency_key: sanitizeString(idempotencyKey, 200),
+    idempotency_key: sanitizeString(idempotencyKey, 480),
     lease_id: sanitizeString(leaseId, 80),
     terminal_status: sanitizeString(summary.terminalStatus || summary.terminal_status, 40),
     checkpoint_phase: sanitizeString(
@@ -242,7 +242,7 @@ export function sanitizeIncomingV1JobBody(body = {}) {
   const jobId = sanitizeString(body.jobId || body.job_id, 80);
   const idempotencyKey = sanitizeString(
     body.idempotencyKey || body.idempotency_key,
-    200
+    480
   );
   const leaseId = sanitizeString(body.leaseId || body.lease_id, 80);
   const summary = isPlainObject(body.summary) ? body.summary : {};
