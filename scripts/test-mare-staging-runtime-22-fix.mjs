@@ -9,7 +9,11 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mapParsedRowsToStandardMovements } from "@/src/utils/bankMovementMapper.js";
+import {
+  mapParsedRowsToStandardMovements,
+  mapSingleParsedRowToMovement,
+  finalizeMappedBankMovements,
+} from "@/src/utils/bankMovementMapper.js";
 import {
   bankMovementToStandardLucaRows,
   buildElektrawebPreviewRows,
@@ -24,6 +28,7 @@ import {
   applyVadeliMevduatLifecycle,
   VADELI_LIFECYCLE_ALGORITHM_VERSION,
 } from "@/src/utils/vadeliMevduatLifecycle.js";
+import { applyFaizStopajiClassification } from "@/src/utils/faizStopajiClassify.js";
 import {
   ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
   buildRevisionIdempotencyKey,
@@ -35,6 +40,11 @@ import {
   snapshotMovementsToLegacyRows,
 } from "@/src/utils/bankCanonicalSnapshot.js";
 import { ANNVERO_V1_ENGINE_VERSION } from "@/src/utils/annveroV1Orchestration.js";
+import {
+  buildMovementMappingContext,
+  inferStatementAccountHint,
+  runAccountingAnalysisOnMovementsAsync,
+} from "@/src/utils/bankParserCore.js";
 
 /** Staging snapshot hareketleri — kimlik yok. */
 const STAGING_MOVEMENTS = [
@@ -258,15 +268,16 @@ test("STAGING PASS: filename hint → 4/4 · V005/V001 · inceleme 0", () => {
     true
   );
 
+  let lifecyclePasses = 0;
   const options = ctx({
     sourceFileName: FILE,
     statementAccountHint: "00158018033466201",
+    onVadeliLifecyclePass: () => {
+      lifecyclePasses += 1;
+    },
   });
   const mapped = mapParsedRowsToStandardMovements(legacyRows(), options);
-  const life = applyVadeliMevduatLifecycle(mapped, options);
-  assert.equal(life.applied, true);
-  assert.equal(life.bundle?.statementCode, "102.10.V005");
-  assert.equal(life.bundle?.vadesizCode, "102.10.V001");
+  assert.equal(lifecyclePasses, 1);
 
   const byType = Object.fromEntries(mapped.map((m) => [m.transactionType, m]));
   assert.equal(byType[BANK_TRANSACTION_TYPE.VADELI_ACILIS]?.accountCode, "102.10.V005");
@@ -274,11 +285,14 @@ test("STAGING PASS: filename hint → 4/4 · V005/V001 · inceleme 0", () => {
     byType[BANK_TRANSACTION_TYPE.VADELI_ACILIS]?.counterAccountCode,
     "102.10.V001"
   );
+  assert.equal(byType[BANK_TRANSACTION_TYPE.FAIZ_GELIRI]?.accountCode, "102.10.V005");
   assert.equal(byType[BANK_TRANSACTION_TYPE.FAIZ_GELIRI]?.counterAccountCode, "642.01.001");
+  assert.equal(byType[BANK_TRANSACTION_TYPE.FAIZ_STOPAJI]?.accountCode, "102.10.V005");
   assert.equal(
     byType[BANK_TRANSACTION_TYPE.FAIZ_STOPAJI]?.counterAccountCode,
     "193.01.001"
   );
+  assert.equal(byType[BANK_TRANSACTION_TYPE.VADELI_KAPANIS]?.accountCode, "102.10.V005");
   assert.equal(
     byType[BANK_TRANSACTION_TYPE.VADELI_KAPANIS]?.counterAccountCode,
     "102.10.V001"
@@ -311,6 +325,163 @@ test("STAGING PASS: filename hint → 4/4 · V005/V001 · inceleme 0", () => {
     selectedBank: "VAKIFBANK",
   });
   assert.ok(Array.isArray(elektra) ? elektra.length >= 8 : true);
+});
+
+/**
+ * Eski hydrate yolu: unique-memo mapSingle + faiz/stopaj, lifecycle YOK.
+ * Açılış/kapanış V001 alamaz → 4/4 olmaz (canlı ddf53fb: otomatik 2 / inceleme 2).
+ */
+test("HYDRATE LEGACY FAIL: mapSingle without finalize → 4/4 olmaz", () => {
+  const options = ctx({
+    sourceFileName: FILE,
+    statementAccountHint: inferStatementAccountHint({ sourceFileName: FILE }),
+  });
+  assert.match(options.statementAccountHint, /158018033466201|00158018033466201/);
+  const mapped = legacyRows().map((row, i) =>
+    mapSingleParsedRowToMovement(row, options, i)
+  );
+  const { movements } = applyFaizStopajiClassification(mapped, options);
+  // Belge kararı stopaj damgası (canlı 2/2 kalıbı)
+  const stopaj = movements.find((m) =>
+    String(m.description || "").includes("Stopaj")
+  );
+  if (stopaj) {
+    stopaj.counterAccountCode = "193.01.001";
+    stopaj.reviewRequired = false;
+    stopaj.missingHesapCategory = "";
+  }
+  const s = summarize(movements);
+  assert.ok(s.matched < 4, `legacy matched=${s.matched}`);
+  assert.ok(s.unresolved >= 2, `legacy unresolved=${s.unresolved}`);
+  assert.ok(s.missing >= 2, `legacy missing=${s.missing}`);
+  assert.equal(
+    movements.some(
+      (m) =>
+        m.transactionType === BANK_TRANSACTION_TYPE.VADELI_ACILIS &&
+        m.counterAccountCode === "102.10.V001"
+    ),
+    false
+  );
+  assert.equal(
+    movements.some((m) => m.vadeliLifecycleRole),
+    false
+  );
+});
+
+test("HYDRATE PASS: runAccountingAnalysisOnMovementsAsync → 4/4 · lifecycle ×1", async () => {
+  let lifecyclePasses = 0;
+  const hint = inferStatementAccountHint({ sourceFileName: FILE });
+  const result = await runAccountingAnalysisOnMovementsAsync({
+    ...buildMovementMappingContext(
+      ctx({
+        sourceFileName: FILE,
+        statementAccountHint: hint,
+        persistVadeliMemory: false,
+      })
+    ),
+    movementRows: legacyRows(),
+    onVadeliLifecyclePass: () => {
+      lifecyclePasses += 1;
+    },
+  });
+  assert.equal(lifecyclePasses, 1);
+
+  const mapped = result.movementRows || [];
+  const byType = Object.fromEntries(mapped.map((m) => [m.transactionType, m]));
+  assert.equal(byType[BANK_TRANSACTION_TYPE.VADELI_ACILIS]?.accountCode, "102.10.V005");
+  assert.equal(
+    byType[BANK_TRANSACTION_TYPE.VADELI_ACILIS]?.counterAccountCode,
+    "102.10.V001"
+  );
+  assert.equal(byType[BANK_TRANSACTION_TYPE.FAIZ_GELIRI]?.counterAccountCode, "642.01.001");
+  assert.equal(
+    byType[BANK_TRANSACTION_TYPE.FAIZ_STOPAJI]?.counterAccountCode,
+    "193.01.001"
+  );
+  assert.equal(
+    byType[BANK_TRANSACTION_TYPE.VADELI_KAPANIS]?.counterAccountCode,
+    "102.10.V001"
+  );
+
+  const s = summarize(mapped);
+  assert.equal(s.matched, 4);
+  assert.equal(s.unresolved, 0);
+  assert.equal(s.missing, 0);
+  assert.equal(s.lucaRows, 8);
+  const borc = s.luca.reduce((n, r) => n + (Number(r.borc) || 0), 0);
+  const alacak = s.luca.reduce((n, r) => n + (Number(r.alacak) || 0), 0);
+  assert.ok(Math.abs(borc - alacak) < 0.011);
+
+  const fis = analyzeStandardLucaRows(s.luca, {
+    companyId: COMPANY.id,
+    accountPlanCodes: STAGING_PLANS.map((p) => p.accountCode),
+  });
+  assert.equal(fis.summary.hataRowCount, 0);
+  assert.equal(fis.summary.gectiRowCount, 8);
+});
+
+test("PDF batch ve hydrate analysis aynı muhasebe bacakları", async () => {
+  const options = ctx({
+    sourceFileName: FILE,
+    statementAccountHint: inferStatementAccountHint({ sourceFileName: FILE }),
+  });
+  const batch = mapParsedRowsToStandardMovements(legacyRows(), options);
+  const analyzed = await runAccountingAnalysisOnMovementsAsync({
+    ...buildMovementMappingContext(options),
+    movementRows: legacyRows(),
+  });
+  const hydrate = analyzed.movementRows || [];
+
+  const legKey = (m) =>
+    [
+      m.transactionType,
+      m.accountCode,
+      m.counterAccountCode,
+      m.vadeliLifecycleRole || "",
+    ].join("|");
+  const batchKeys = batch.map(legKey).sort();
+  const hydrateKeys = hydrate.map(legKey).sort();
+  assert.deepEqual(hydrateKeys, batchKeys);
+
+  const sBatch = summarize(batch);
+  const sHydrate = summarize(hydrate);
+  assert.equal(sBatch.matched, 4);
+  assert.equal(sHydrate.matched, 4);
+  assert.equal(sBatch.unresolved, 0);
+  assert.equal(sHydrate.unresolved, 0);
+});
+
+test("finalizeMappedBankMovements lifecycle tek geçiş (çift apply yok)", () => {
+  let passes = 0;
+  const options = ctx({
+    sourceFileName: FILE,
+    statementAccountHint: "00158018033466201",
+    onVadeliLifecyclePass: () => {
+      passes += 1;
+    },
+  });
+  const singles = legacyRows().map((row, i) =>
+    mapSingleParsedRowToMovement(row, options, i)
+  );
+  const once = finalizeMappedBankMovements(singles, options);
+  assert.equal(passes, 1);
+  assert.equal(
+    once.filter((m) => m.vadeliLifecycleRole).length,
+    4
+  );
+  // İkinci apply aynı kodları korur (yön ters çevrilmez)
+  const twice = applyVadeliMevduatLifecycle(once, options);
+  assert.equal(twice.applied, true);
+  assert.equal(twice.bundle?.statementCode, "102.10.V005");
+  assert.equal(twice.bundle?.vadesizCode, "102.10.V001");
+  for (let i = 0; i < once.length; i += 1) {
+    assert.equal(twice.movements[i].accountCode, once[i].accountCode);
+    assert.equal(
+      twice.movements[i].counterAccountCode,
+      once[i].counterAccountCode
+    );
+    assert.equal(twice.movements[i].direction, once[i].direction);
+  }
 });
 
 test("stale completed-job: eski pipe yok key uyumsuz", () => {

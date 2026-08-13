@@ -1628,27 +1628,44 @@ export function mapSingleParsedRowToMovement(row, context, index = 0) {
   }
 }
 
-export function mapParsedRowsToStandardMovements(parsedRows, context) {
-  const mapped = filterActiveBankParsedRows(parsedRows).map((row, index) =>
-    mapSingleParsedRowToMovement(row, context, index)
+/**
+ * Ortak muhasebe post-pass (PDF preview + hydrate/fileless analysis).
+ * Faiz/stopaj sınıflaması + vadeli lifecycle tek sefer; çift uygulama burada yok.
+ */
+export function finalizeMappedBankMovements(movements = [], context = {}) {
+  const list = Array.isArray(movements) ? movements : [];
+  // Belge içi faiz↔stopaj ilişkisi — PDF/Excel/hydrate aynı canonical tip
+  const { movements: afterStopaj } = applyFaizStopajiClassification(
+    list,
+    context
   );
-  // Belge içi faiz↔stopaj ilişkisi — PDF/Excel aynı canonical tip
-  const { movements: afterStopaj } = applyFaizStopajiClassification(mapped, context);
   const lifecycle = applyVadeliMevduatLifecycle(afterStopaj, context);
-  const movements = lifecycle.movements;
+  if (typeof context?.onVadeliLifecyclePass === "function") {
+    try {
+      context.onVadeliLifecyclePass({
+        applied: Boolean(lifecycle.applied),
+        unresolvedReason: lifecycle.unresolvedReason || "",
+        statementCode: lifecycle.bundle?.statementCode || "",
+        vadesizCode: lifecycle.bundle?.vadesizCode || "",
+      });
+    } catch {
+      /* test/diag hook — üretim akışını bozma */
+    }
+  }
+  const result = lifecycle.movements;
 
   if (lifecycle.applied && lifecycle.memoryRecords?.length) {
     const company = context.selectedCompany || context.company || null;
     const companyId = String(
       context.companyId || company?.id || ""
     ).trim();
-    for (const m of movements) {
+    for (const m of result) {
       if (!m.vadeliLifecycleRole) continue;
       m.vadeliMemoryKeys = lifecycle.memoryRecords
         .filter((r) => r.lifecycleRole === m.vadeliLifecycleRole)
         .map((r) => r.analysisKey);
     }
-    movements._vadeliLifecycleMemory = lifecycle.memoryRecords;
+    result._vadeliLifecycleMemory = lifecycle.memoryRecords;
 
     if (context?.persistVadeliMemory === true && companyId) {
       for (const rec of lifecycle.memoryRecords) {
@@ -1689,7 +1706,14 @@ export function mapParsedRowsToStandardMovements(parsedRows, context) {
     }
   }
 
-  return movements;
+  return result;
+}
+
+export function mapParsedRowsToStandardMovements(parsedRows, context) {
+  const mapped = filterActiveBankParsedRows(parsedRows).map((row, index) =>
+    mapSingleParsedRowToMovement(row, context, index)
+  );
+  return finalizeMappedBankMovements(mapped, context);
 }
 
 export function standardMovementToLucaPendingRow(movement) {

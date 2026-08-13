@@ -6,6 +6,7 @@ import {
   filterActiveBankParsedRows,
   mapParsedRowsToStandardMovements,
   mapSingleParsedRowToMovement,
+  finalizeMappedBankMovements,
   buildParserOnlyMovement,
   normalizeParserText,
   buildLearningMemoryIndex,
@@ -368,6 +369,7 @@ export function buildMovementMappingContext(options = {}) {
     statementAccountHint,
     statementAccountType: options.statementAccountType || "",
     persistVadeliMemory: options.persistVadeliMemory === true,
+    onVadeliLifecyclePass: options.onVadeliLifecyclePass,
     legacyRules: bankaKurallari,
     planIndex,
     planCodeSet: options.planCodeSet || planIndex.codeSet || buildAccountPlanCodeSet(companyPlans),
@@ -1021,6 +1023,11 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
   callCounts.memoHits = memoHits;
   await yieldToMain(0);
 
+  // Ortak post-pass: faiz/stopaj + vadeli lifecycle (mapParsedRowsToStandardMovements ile aynı).
+  // Unique-memo yolu mapSingle kullanır; lifecycle set üzerinde tek kez uygulanmalı.
+  const finalized = finalizeMappedBankMovements(analyzed, mappingContext);
+  await yieldToMain(0);
+
   const summaryStarted = Date.now();
   const uniqueReport = {
     movementCount: sourceMovements.length,
@@ -1043,7 +1050,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     enabled: false,
     core: 0,
     fallback: 0,
-    total: analyzed.length,
+    total: finalized.length,
     coreLimit: 0,
     skipped: true,
   };
@@ -1099,7 +1106,7 @@ export async function runAccountingAnalysisOnMovementsAsync(options = {}) {
     : null;
 
   return {
-    movementRows: analyzed,
+    movementRows: finalized,
     coreSummary,
     processedCount: sourceMovements.length,
     rowErrors,
