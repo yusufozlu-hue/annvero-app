@@ -133,7 +133,12 @@ export function movementRowToSnapshotMovement(row = {}, index = 0) {
     amount: direction === "CIKIS" ? -amountAbs : amountAbs,
     debit: debit > 0 ? debit : direction === "GIRIS" ? amountAbs : 0,
     credit: credit > 0 ? credit : direction === "CIKIS" ? amountAbs : 0,
-    balance: sanitizeNullableNumber(row.balance ?? row.bakiye),
+    balance: sanitizeNullableNumber(
+      row.balance ??
+        row.bakiye ??
+        row.rawRow?.balance ??
+        row.rawRow?.bakiye
+    ),
     currency: sanitizeText(row.currency || "TRY", 8).toUpperCase() || "TRY",
     direction:
       direction === "CIKIS" ||

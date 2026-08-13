@@ -47,10 +47,17 @@ import {
 } from "@/src/utils/bankParserCore.js";
 import {
   BALANCE_MATCHED,
+  BALANCE_EVIDENCE_MISSING,
   reconcileStatementBalances,
   normalizeBankBalanceForOutputGate,
   resolveBalanceInputForOutputGate,
 } from "@/src/utils/bankBalanceReconcile.js";
+import {
+  balanceEvidenceToReconcileHints,
+  buildStatementBalanceEvidenceFromReconcile,
+  extractStatementBalanceEvidenceFromSafeSummary,
+  mergeStatementBalanceEvidenceIntoSafeSummary,
+} from "@/src/utils/bankStatementBalanceEvidence.js";
 import { evaluateBankOutputGate } from "@/src/utils/bankOneClickPipeline.js";
 
 /** Staging snapshot hareketleri — kimlik yok. */
@@ -657,4 +664,72 @@ test("MARE hydrate balance: reconcile + normalize → gate açık · 4/4", async
   assert.equal(pdfLike.balanceMatched, true);
   assert.equal(hydrateLike.balanceMatched, true);
   assert.equal(pdfLike.balanceCode, hydrateLike.balanceCode);
+});
+
+test("FAIL legacy: staging movements without evidence → BALANCE_EVIDENCE_MISSING", () => {
+  // Mevcut staging snapshot hareketlerinde satır bakiyesi yok
+  const rows = legacyRows();
+  const missing = reconcileStatementBalances(rows, {});
+  assert.equal(missing.code, BALANCE_EVIDENCE_MISSING);
+  const gate = evaluateBankOutputGate(
+    {
+      ...normalizeBankBalanceForOutputGate({
+        balanceCode: missing.code,
+        balanceMatched: false,
+        delta: missing.delta,
+        openingBalance: missing.openingBalance,
+        closingBalance: missing.closingBalance,
+      }),
+      canAutoApprove: true,
+      reviewRequired: false,
+      errors: 0,
+      uniqueUnresolvedMovements: 0,
+    },
+    { lucaReady: true }
+  );
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.code, "BALANCE_NOT_MATCHED");
+});
+
+test("PASS: canonical statementBalanceEvidence hydrate → OUTPUT_READY", () => {
+  const rows = legacyRows();
+  const reconciled = reconcileStatementBalances(rows, {
+    openingBalance: 0,
+    closingBalance: 0,
+  });
+  const evidence = buildStatementBalanceEvidenceFromReconcile(reconciled, {
+    contentHash: "test-hash",
+  });
+  assert.equal(evidence.openingBalance, 0);
+  assert.equal(evidence.closingBalance, 0);
+  const safe = mergeStatementBalanceEvidenceIntoSafeSummary(
+    { movementCount: 4 },
+    evidence
+  );
+  const extracted = extractStatementBalanceEvidenceFromSafeSummary(safe);
+  const hydrate = reconcileStatementBalances(
+    rows,
+    balanceEvidenceToReconcileHints(extracted)
+  );
+  assert.equal(hydrate.code, BALANCE_MATCHED);
+  assert.equal(hydrate.openingBalance, 0);
+  assert.equal(hydrate.closingBalance, 0);
+  const gate = evaluateBankOutputGate(
+    {
+      ...normalizeBankBalanceForOutputGate({
+        balanceCode: hydrate.code,
+        balanceMatched: true,
+        delta: hydrate.delta,
+        openingBalance: hydrate.openingBalance,
+        closingBalance: hydrate.closingBalance,
+      }),
+      canAutoApprove: true,
+      reviewRequired: false,
+      errors: 0,
+      uniqueUnresolvedMovements: 0,
+    },
+    { lucaReady: true }
+  );
+  assert.equal(gate.allowed, true);
+  assert.equal(gate.code, "OUTPUT_READY");
 });

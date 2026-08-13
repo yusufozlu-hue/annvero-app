@@ -207,6 +207,13 @@ import {
   resolveBalanceInputForOutputGate,
 } from "@/src/utils/bankBalanceReconcile";
 import {
+  balanceEvidenceToReconcileHints,
+  buildStatementBalanceEvidenceFromReconcile,
+  extractStatementBalanceEvidenceFromSafeSummary,
+  mergeStatementBalanceEvidenceIntoSafeSummary,
+  recoverStatementBalanceEvidence,
+} from "@/src/utils/bankStatementBalanceEvidence";
+import {
   applyBalanceResolution,
 } from "@/src/utils/bankBalanceResolution";
 import {
@@ -570,6 +577,9 @@ export default function BankParserWorkbench() {
   const canonicalContentHashRef = useRef("");
   const canonicalFileNameRef = useRef("");
   const canonicalSourceRevisionRef = useRef(1);
+  /** Statement-level balance evidence from canonical safeSummary (fileless hydrate) */
+  const canonicalSafeSummaryRef = useRef({});
+  const canonicalBalanceEvidenceRef = useRef(null);
   /** Reanalyze sırasında taze plan / dosya adı — React state closure gecikmesini aşar */
   const pipelinePlanOverrideRef = useRef(null);
   const pipelineFileNameOverrideRef = useRef(null);
@@ -895,6 +905,8 @@ export default function BankParserWorkbench() {
           canonicalContentHashRef.current = "";
           canonicalFileNameRef.current = "";
           canonicalSourceRevisionRef.current = 1;
+          canonicalSafeSummaryRef.current = {};
+          canonicalBalanceEvidenceRef.current = null;
           return;
         }
         if (!snap.ok || !snap.source || !snap.movements?.length) return;
@@ -910,6 +922,14 @@ export default function BankParserWorkbench() {
         applyMovementPreview(stamped, null, stamped.length);
         canonicalSourceIdRef.current = snap.source.id;
         canonicalContentHashRef.current = snap.source.contentHash || "";
+        canonicalSafeSummaryRef.current =
+          snap.source.safeSummary && typeof snap.source.safeSummary === "object"
+            ? snap.source.safeSummary
+            : {};
+        canonicalBalanceEvidenceRef.current =
+          extractStatementBalanceEvidenceFromSafeSummary(
+            canonicalSafeSummaryRef.current
+          );
         lastDedupMetaRef.current = {
           ...(lastDedupMetaRef.current || {}),
           sourceFileHash: snap.source.contentHash || "",
@@ -1057,6 +1077,8 @@ export default function BankParserWorkbench() {
       canonicalContentHashRef.current = "";
       canonicalFileNameRef.current = "";
       canonicalSourceRevisionRef.current = 1;
+      canonicalSafeSummaryRef.current = {};
+      canonicalBalanceEvidenceRef.current = null;
       documentResolutionsRef.current = [];
       pendingCanonicalHydrateKeyRef.current = "";
       activeReanalyzeFlightKeyRef.current = "";
@@ -2801,6 +2823,8 @@ export default function BankParserWorkbench() {
     canonicalContentHashRef.current = "";
     canonicalFileNameRef.current = "";
     canonicalSourceRevisionRef.current = 1;
+    canonicalSafeSummaryRef.current = {};
+    canonicalBalanceEvidenceRef.current = null;
     companyApproveResumeRef.current = false;
     duplicatePriorJobRef.current = null;
     reanalyzeOptionsRef.current = null;
@@ -2844,6 +2868,8 @@ export default function BankParserWorkbench() {
       canonicalContentHashRef.current = "";
       canonicalFileNameRef.current = "";
       canonicalSourceRevisionRef.current = 1;
+      canonicalSafeSummaryRef.current = {};
+      canonicalBalanceEvidenceRef.current = null;
       companyApproveResumeRef.current = false;
       clearActiveBank();
       resetFileInput();
@@ -4584,6 +4610,15 @@ export default function BankParserWorkbench() {
             canonicalSourceIdRef.current = snapForHash.source.id;
             canonicalContentHashRef.current =
               snapForHash.source.contentHash || preHash;
+            canonicalSafeSummaryRef.current =
+              snapForHash.source.safeSummary &&
+              typeof snapForHash.source.safeSummary === "object"
+                ? snapForHash.source.safeSummary
+                : {};
+            canonicalBalanceEvidenceRef.current =
+              extractStatementBalanceEvidenceFromSafeSummary(
+                canonicalSafeSummaryRef.current
+              );
             lastDedupMetaRef.current = {
               ...(lastDedupMetaRef.current || {}),
               sourceFileHash:
@@ -4649,6 +4684,25 @@ export default function BankParserWorkbench() {
               } catch {
                 planFp = "";
               }
+              const upgradeBalance = reconcileStatementBalances(
+                upgradeMovements,
+                {}
+              );
+              const upgradeEvidence =
+                buildStatementBalanceEvidenceFromReconcile(upgradeBalance, {
+                  contentHash: preHash,
+                  currency: "TRY",
+                  extractedAt: new Date().toISOString(),
+                });
+              const upgradeSafeSummary =
+                mergeStatementBalanceEvidenceIntoSafeSummary(
+                  {
+                    movementCount: upgradeMovements.length,
+                    snapshotUpgrade: true,
+                    priorJobId: prior?.id || "",
+                  },
+                  upgradeEvidence
+                );
               const snap = await persistBankCanonicalSnapshot({
                 companyId: selectedCompanyId,
                 contentHash: preHash,
@@ -4678,11 +4732,7 @@ export default function BankParserWorkbench() {
                 v1AuditEntityId: prior?.id || "",
                 schemaVersion: BANK_CANONICAL_SCHEMA_VERSION,
                 movements: upgradeMovements,
-                safeSummary: {
-                  movementCount: upgradeMovements.length,
-                  snapshotUpgrade: true,
-                  priorJobId: prior?.id || "",
-                },
+                safeSummary: upgradeSafeSummary,
               });
               if (!snap?.ok || !snap.source?.id) {
                 throw new Error(
@@ -4693,6 +4743,8 @@ export default function BankParserWorkbench() {
               }
               canonicalSourceIdRef.current = snap.source.id;
               canonicalContentHashRef.current = preHash;
+              canonicalSafeSummaryRef.current = upgradeSafeSummary;
+              canonicalBalanceEvidenceRef.current = upgradeEvidence;
               lastDedupMetaRef.current = {
                 ...(lastDedupMetaRef.current || {}),
                 sourceFileHash: preHash,
@@ -5015,11 +5067,78 @@ export default function BankParserWorkbench() {
               null,
               movementsRef.current.length
             );
-            // Canonical hydrate: sahte matched=true + boş code yok.
-            // Hareket bakiyelerinden gerçek reconcile → kanonik balanceCode.
+            // Canonical hydrate: statement-level evidence (safeSummary) → hints.
+            // Satır bakiyesi yoksa ve evidence yoksa BALANCE_EVIDENCE_MISSING kalır;
+            // 4/4 muhasebe veya borç≈alacak ile matched uydurulmaz.
+            const hydrateEvidence =
+              canonicalBalanceEvidenceRef.current ||
+              extractStatementBalanceEvidenceFromSafeSummary(
+                canonicalSafeSummaryRef.current
+              ) ||
+              (() => {
+                // Kontrollü recovery: yalnız aynı company/source/hash + doğrulanmış
+                // V1 metadata (opening+closing). Sahte 0/0 veya yalnız balance_code YOK.
+                const runs = Array.isArray(v1AuditHistory)
+                  ? v1AuditHistory
+                  : [];
+                const hash = String(
+                  canonicalContentHashRef.current || ""
+                ).trim();
+                for (const run of runs) {
+                  const meta = run?.metadata || {};
+                  if (
+                    meta.opening_balance == null ||
+                    meta.closing_balance == null
+                  ) {
+                    continue;
+                  }
+                  const idem = String(meta.idempotency_key || "");
+                  if (
+                    hash &&
+                    !idem.includes(hash.slice(0, 12)) &&
+                    meta.content_hash &&
+                    meta.content_hash !== hash
+                  ) {
+                    continue;
+                  }
+                  const recovered = recoverStatementBalanceEvidence({
+                    expectedBinding: {
+                      companyId: selectedCompanyId,
+                      sourceId: canonicalSourceIdRef.current,
+                      contentHash: hash,
+                      revision: canonicalSourceRevisionRef.current,
+                    },
+                    candidateBinding: {
+                      companyId: selectedCompanyId,
+                      sourceId: canonicalSourceIdRef.current,
+                      contentHash: hash || meta.content_hash || "",
+                      revision:
+                        meta.revision ?? canonicalSourceRevisionRef.current,
+                    },
+                    candidateEvidence: {
+                      openingBalance: meta.opening_balance,
+                      closingBalance: meta.closing_balance,
+                      delta: meta.balance_delta,
+                      calculatedClosing: meta.expected_closing,
+                      code: meta.balance_code,
+                      matched: meta.balance_code === BALANCE_MATCHED,
+                      evidenceSource:
+                        meta.balance_evidence_source ||
+                        "verified_source_metadata",
+                    },
+                  });
+                  if (recovered.ok && recovered.evidence) {
+                    canonicalBalanceEvidenceRef.current = recovered.evidence;
+                    return recovered.evidence;
+                  }
+                }
+                return null;
+              })();
+            const hydrateHints =
+              balanceEvidenceToReconcileHints(hydrateEvidence);
             const snapBalance = reconcileStatementBalances(
               movementsRef.current,
-              {}
+              hydrateHints
             );
             const snapBalanceNorm = normalizeBankBalanceForOutputGate({
               balanceCode: snapBalance.code,
@@ -5046,6 +5165,7 @@ export default function BankParserWorkbench() {
               openingBalance: snapBalanceNorm.openingBalance,
               closingBalance: snapBalanceNorm.closingBalance,
               fromCanonicalSnapshot: true,
+              hasStatementBalanceEvidence: Boolean(hydrateEvidence),
             };
             stageOutputs[V1_JOB_STATE.DEDUPLICATING] = {
               ok: true,
@@ -5072,6 +5192,9 @@ export default function BankParserWorkbench() {
             balanceMismatch: Boolean(preview.balanceMismatch),
             balanceCode: preview.balance?.code || "",
             balanceMatched: preview.balance?.code === BALANCE_MATCHED,
+            balanceDelta: preview.balance?.delta ?? null,
+            openingBalance: preview.balance?.openingBalance ?? null,
+            closingBalance: preview.balance?.closingBalance ?? null,
           };
           stageOutputs[V1_JOB_STATE.DEDUPLICATING] = {
             ok: true,
@@ -5094,6 +5217,21 @@ export default function BankParserWorkbench() {
               } catch {
                 planFp = "";
               }
+              const balanceEvidence = buildStatementBalanceEvidenceFromReconcile(
+                preview.balance,
+                {
+                  contentHash,
+                  currency: "TRY",
+                  extractedAt: new Date().toISOString(),
+                }
+              );
+              const snapSafeSummary = mergeStatementBalanceEvidenceIntoSafeSummary(
+                {
+                  movementCount: movementsRef.current.length,
+                  parseMode: stageDurations.parseMode || "",
+                },
+                balanceEvidence
+              );
               const snap = await persistBankCanonicalSnapshot({
                 companyId: selectedCompanyId,
                 contentHash,
@@ -5123,14 +5261,13 @@ export default function BankParserWorkbench() {
                 v1AuditEntityId: jobId,
                 schemaVersion: BANK_CANONICAL_SCHEMA_VERSION,
                 movements: movementsRef.current,
-                safeSummary: {
-                  movementCount: movementsRef.current.length,
-                  parseMode: stageDurations.parseMode || "",
-                },
+                safeSummary: snapSafeSummary,
               });
               if (snap?.ok && snap.source?.id) {
                 canonicalSourceIdRef.current = snap.source.id;
                 canonicalContentHashRef.current = contentHash;
+                canonicalSafeSummaryRef.current = snapSafeSummary;
+                canonicalBalanceEvidenceRef.current = balanceEvidence;
               }
             }
           } catch (persistSnapErr) {
@@ -5530,6 +5667,14 @@ export default function BankParserWorkbench() {
         balanceDelta: balanceForGate.delta,
         openingBalance: balanceForGate.openingBalance,
         closingBalance: balanceForGate.closingBalance,
+        expectedClosing:
+          balanceResult?.expectedClosing ??
+          balanceResult?.calculatedClosing ??
+          null,
+        balanceEvidenceSource:
+          balanceResult?.evidenceSource ||
+          canonicalBalanceEvidenceRef.current?.evidenceSource ||
+          "",
       });
 
       const accountPlanCount = Array.isArray(companyPlans)
@@ -6174,6 +6319,15 @@ export default function BankParserWorkbench() {
               applyMovementPreview(stamped, null, stamped.length);
               canonicalSourceIdRef.current = snap.source.id;
               canonicalContentHashRef.current = snap.source.contentHash || "";
+              canonicalSafeSummaryRef.current =
+                snap.source.safeSummary &&
+                typeof snap.source.safeSummary === "object"
+                  ? snap.source.safeSummary
+                  : {};
+              canonicalBalanceEvidenceRef.current =
+                extractStatementBalanceEvidenceFromSafeSummary(
+                  canonicalSafeSummaryRef.current
+                );
               lastDedupMetaRef.current = {
                 ...(lastDedupMetaRef.current || {}),
                 sourceFileHash: snap.source.contentHash || "",

@@ -1557,6 +1557,14 @@ export function buildParserOnlyMovement(row = {}, context = {}, index = 0) {
   const direction =
     row?.yon === "CIKIS" || row?.direction === "CIKIS" ? "CIKIS" : "GIRIS";
   const date = formatParserDate(row?.tarih || row?.date);
+  // null ≠ 0: gerçek 0,00 satır bakiyesini koru (canonical hydrate için)
+  const balRaw = row?.bakiye ?? row?.balance;
+  const balNum =
+    balRaw == null || balRaw === ""
+      ? null
+      : Number.isFinite(Number(balRaw))
+        ? Number(balRaw)
+        : null;
 
   return {
     id: `preview-${index + 1}-${String(date || "x")}-${amount}`,
@@ -1564,6 +1572,8 @@ export function buildParserOnlyMovement(row = {}, context = {}, index = 0) {
     description,
     amount,
     direction,
+    bakiye: balNum,
+    balance: balNum,
     bankName: row?.banka || row?.bankName || context?.selectedBank || "",
     rawRow: row,
     matchedRule: null,
