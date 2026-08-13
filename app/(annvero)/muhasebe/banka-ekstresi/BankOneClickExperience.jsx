@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import BalanceMismatchResolutionCenter from "./BalanceMismatchResolutionCenter";
+import { BankReanalyzeWithNewPlanButton } from "@/src/components/BankReanalyzeWithNewPlanButton";
 import {
   buildMissingAccountsHint,
   formatDurationMs,
@@ -596,28 +597,18 @@ export function BankPipelineResultCard({
             Bakiye Uyuşmazlığını İncele
           </button>
         ) : null}
-        {(isDuplicate || Boolean(result?.fromCanonicalSnapshot)) &&
+        {(isDuplicate ||
+          Boolean(result?.fromCanonicalSnapshot) ||
+          Boolean(result?.reanalyzeFailed)) &&
         typeof onReanalyzeWithNewPlan === "function" ? (
-          <button
-            type="button"
-            onClick={onReanalyzeWithNewPlan}
-            disabled={isReanalyzing || isExporting}
-            aria-busy={isReanalyzing ? "true" : "false"}
-            className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-            data-testid="bank-reanalyze-with-new-plan"
-          >
-            {isReanalyzing ? (
-              <>
-                <span
-                  className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white"
-                  aria-hidden="true"
-                />
-                Yeniden analiz ediliyor…
-              </>
-            ) : (
-              "Yeni hesap planıyla yeniden analiz et"
-            )}
-          </button>
+          <BankReanalyzeWithNewPlanButton
+            onReanalyzeWithNewPlan={onReanalyzeWithNewPlan}
+            isReanalyzing={isReanalyzing}
+            isExporting={isExporting}
+            reanalyzeFailed={Boolean(result?.reanalyzeFailed)}
+            fromCanonicalSnapshot={Boolean(result?.fromCanonicalSnapshot)}
+            isDuplicate={isDuplicate}
+          />
         ) : null}
         <button
           type="button"

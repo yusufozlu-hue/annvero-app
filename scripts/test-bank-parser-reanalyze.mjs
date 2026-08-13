@@ -122,7 +122,8 @@ test("revision idempotency key differs from base so old result preserved", () =>
   });
   assert.notEqual(base, rev2);
   assert.notEqual(rev2, rev3);
-  assert.ok(rev2.endsWith(":rev:2"));
+  assert.match(rev2, /:rev:2/);
+  assert.match(rev2, /:pipe:/);
   assert.equal(nextRevisionNumber(1), 2);
   assert.equal(nextRevisionNumber(2), 3);
 });
@@ -236,7 +237,12 @@ test("UI button label + duplicate card wiring present", () => {
     ),
     "utf8"
   );
-  assert.match(oneClick, /Yeni hesap planıyla yeniden analiz et/);
+  const reanalyzeBtn = fs.readFileSync(
+    path.join(root, "src/components/BankReanalyzeWithNewPlanButton.js"),
+    "utf8"
+  );
+  assert.match(reanalyzeBtn, /Yeni hesap planıyla yeniden analiz et/);
+  assert.match(oneClick, /BankReanalyzeWithNewPlanButton/);
   assert.match(oneClick, /onReanalyzeWithNewPlan/);
   assert.match(oneClick, /revisionCompare/);
   assert.match(oneClick, /Önceki vs yeni analiz/);

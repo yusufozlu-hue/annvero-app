@@ -902,6 +902,11 @@ export function buildV1ResultSummary({
   canAutoApprove = null,
   balanceMismatch = false,
   balanceCode = "",
+  openingBalance = null,
+  closingBalance = null,
+  balanceDelta = null,
+  expectedClosing = null,
+  balanceEvidenceSource = "",
 } = {}) {
   const resolvedReviewRequired =
     reviewRequired != null
@@ -913,6 +918,11 @@ export function buildV1ResultSummary({
       : balanceMismatch
         ? false
         : Boolean(fisKontrol?.canAutoApprove);
+  const finiteOrNull = (value) => {
+    if (value == null || value === "") return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
   return {
     engineVersion: ANNVERO_V1_ENGINE_VERSION,
     terminalStatus,
@@ -942,6 +952,11 @@ export function buildV1ResultSummary({
     balanceCode: String(
       balanceCode || (balanceMismatch ? "BALANCE_MISMATCH" : "")
     ).slice(0, 40),
+    openingBalance: finiteOrNull(openingBalance),
+    closingBalance: finiteOrNull(closingBalance),
+    balanceDelta: finiteOrNull(balanceDelta),
+    expectedClosing: finiteOrNull(expectedClosing),
+    balanceEvidenceSource: String(balanceEvidenceSource || "").slice(0, 64),
     // hassas alanlar bilinçli olarak yok
   };
 }

@@ -222,3 +222,149 @@ export function reconcileStatementBalances(transactions = [], hints = {}) {
     closingEvidence,
   };
 }
+
+const BALANCE_FAILURE_CODES = new Set([
+  BALANCE_MISMATCH,
+  BALANCE_EVIDENCE_MISSING,
+  MISSING_OPENING_BALANCE,
+  MISSING_CLOSING_BALANCE,
+  BALANCE_EMPTY,
+]);
+
+/**
+ * Output gate için kanonik bakiye sonucu.
+ * - BALANCE_MATCHED kodu → başarı (PDF reconcile güvenilir)
+ * - boş kod + matched=true yalnız açılış/kapanış + delta≈0 ile yükseltilir
+ * - unknown / evidence yok → başarı sayılmaz
+ */
+export function normalizeBankBalanceForOutputGate(input = {}) {
+  const codeRaw = String(input.balanceCode || input.code || "").trim();
+  const matchedFlag =
+    input.balanceMatched === true || input.matched === true;
+  const opening = toNum(
+    input.openingBalance ?? input.opening ?? input.statementOpeningBalance
+  );
+  const closing = toNum(
+    input.closingBalance ?? input.closing ?? input.statementClosingBalance
+  );
+  const deltaRaw = input.delta;
+  const deltaNum =
+    deltaRaw == null || deltaRaw === ""
+      ? null
+      : Number.isFinite(Number(deltaRaw))
+        ? Number(deltaRaw)
+        : null;
+  const deltaOk =
+    deltaNum != null && Number.isFinite(deltaNum) && Math.abs(deltaNum) <= TOLERANCE;
+  const hasOpenClose = opening != null && closing != null;
+
+  if (BALANCE_FAILURE_CODES.has(codeRaw)) {
+    return {
+      balanceCode: codeRaw,
+      balanceMatched: false,
+      balanceMismatch: codeRaw === BALANCE_MISMATCH,
+      delta: deltaNum,
+      openingBalance: opening,
+      closingBalance: closing,
+      normalizedFrom: "explicit_failure",
+    };
+  }
+
+  if (codeRaw === BALANCE_MATCHED) {
+    if (deltaNum != null && !deltaOk) {
+      return {
+        balanceCode: BALANCE_MISMATCH,
+        balanceMatched: false,
+        balanceMismatch: true,
+        delta: deltaNum,
+        openingBalance: opening,
+        closingBalance: closing,
+        normalizedFrom: "matched_code_nonzero_delta",
+      };
+    }
+    return {
+      balanceCode: BALANCE_MATCHED,
+      balanceMatched: true,
+      balanceMismatch: false,
+      delta: deltaNum == null ? 0 : deltaNum,
+      openingBalance: opening,
+      closingBalance: closing,
+      normalizedFrom: "canonical_matched_code",
+    };
+  }
+
+  // Boş/bilinmeyen kod: yalnız açık matched + sayısal fark 0 + açılış/kapanış
+  if (matchedFlag && deltaOk && hasOpenClose) {
+    return {
+      balanceCode: BALANCE_MATCHED,
+      balanceMatched: true,
+      balanceMismatch: false,
+      delta: deltaNum,
+      openingBalance: opening,
+      closingBalance: closing,
+      normalizedFrom: "matched_flag_with_evidence",
+    };
+  }
+
+  if (matchedFlag && !codeRaw) {
+    return {
+      balanceCode: BALANCE_EVIDENCE_MISSING,
+      balanceMatched: false,
+      balanceMismatch: false,
+      delta: deltaNum,
+      openingBalance: opening,
+      closingBalance: closing,
+      normalizedFrom: "matched_without_evidence",
+    };
+  }
+
+  if (deltaNum != null && !deltaOk && hasOpenClose) {
+    return {
+      balanceCode: BALANCE_MISMATCH,
+      balanceMatched: false,
+      balanceMismatch: true,
+      delta: deltaNum,
+      openingBalance: opening,
+      closingBalance: closing,
+      normalizedFrom: "nonzero_delta",
+    };
+  }
+
+  return {
+    balanceCode: codeRaw || BALANCE_EVIDENCE_MISSING,
+    balanceMatched: false,
+    balanceMismatch: false,
+    delta: deltaNum,
+    openingBalance: opening,
+    closingBalance: closing,
+    normalizedFrom: "unknown_or_incomplete",
+  };
+}
+
+/**
+ * Parse stage / balanceResult → gate girdisi (tek giriş noktası).
+ */
+export function resolveBalanceInputForOutputGate({
+  balanceResult = null,
+  parsingStage = null,
+} = {}) {
+  return normalizeBankBalanceForOutputGate({
+    balanceCode:
+      balanceResult?.code ||
+      balanceResult?.balanceCode ||
+      parsingStage?.balanceCode ||
+      "",
+    balanceMatched:
+      balanceResult?.matched === true ||
+      balanceResult?.balanceMatched === true ||
+      parsingStage?.balanceMatched === true,
+    delta:
+      balanceResult?.delta ??
+      parsingStage?.balanceDelta ??
+      parsingStage?.delta,
+    openingBalance:
+      balanceResult?.openingBalance ?? parsingStage?.openingBalance,
+    closingBalance:
+      balanceResult?.closingBalance ?? parsingStage?.closingBalance,
+  });
+}

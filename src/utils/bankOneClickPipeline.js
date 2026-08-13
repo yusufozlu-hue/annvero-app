@@ -2,6 +2,10 @@
  * Tek tuş banka üretim hattı — saf progress / guard / UI yardımcıları.
  */
 
+import {
+  normalizeBankBalanceForOutputGate,
+} from "@/src/utils/bankBalanceReconcile";
+
 export const PIPELINE_PHASES = Object.freeze({
   IDLE: "IDLE",
   PARSING: "PARSING",
@@ -186,8 +190,17 @@ export function evaluateBankOutputGate(result = {}, { lucaReady = true } = {}) {
     Boolean(result.duplicate) ||
     result.code === "DUPLICATE_CONTENT" ||
     result.terminalStatus === "duplicate";
-  const balanceMatched =
-    result.balanceMatched === true || result.balanceCode === "BALANCE_MATCHED";
+  const balance = normalizeBankBalanceForOutputGate({
+    balanceCode: result.balanceCode || "",
+    balanceMatched: result.balanceMatched,
+    matched: result.matched,
+    delta: result.delta ?? result.balanceDelta,
+    openingBalance:
+      result.openingBalance ?? result.statementOpeningBalance,
+    closingBalance:
+      result.closingBalance ?? result.statementClosingBalance,
+  });
+  const balanceMatched = balance.balanceMatched === true;
   const errors = Math.max(0, Number(result.errors) || 0);
   const critical = Math.max(0, Number(result.critical) || 0);
   const lowConfidence = Math.max(0, Number(result.lowConfidence) || 0);
@@ -232,6 +245,8 @@ export function evaluateBankOutputGate(result = {}, { lucaReady = true } = {}) {
     code,
     message,
     balanceMatched,
+    balanceCode: balance.balanceCode,
+    balanceDelta: balance.delta,
     errors,
     critical,
     lowConfidence,

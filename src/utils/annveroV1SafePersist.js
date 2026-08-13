@@ -34,6 +34,11 @@ export const V1_SAFE_METADATA_KEYS = Object.freeze([
   "content_hash_present",
   "balance_mismatch",
   "balance_code",
+  "opening_balance",
+  "closing_balance",
+  "balance_delta",
+  "expected_closing",
+  "balance_evidence_source",
   "balance_resolution_applied",
   "balance_resolution_change_count",
   "balance_resolution_learned",
@@ -97,7 +102,7 @@ export function buildSafeV1PersistPayload({
   const meta = {
     engine_version: ANNVERO_V1_ENGINE_VERSION,
     job_id: sanitizeString(jobId, 80),
-    idempotency_key: sanitizeString(idempotencyKey, 200),
+    idempotency_key: sanitizeString(idempotencyKey, 480),
     lease_id: sanitizeString(leaseId, 80),
     terminal_status: sanitizeString(summary.terminalStatus || summary.terminal_status, 40),
     checkpoint_phase: sanitizeString(
@@ -140,6 +145,32 @@ export function buildSafeV1PersistPayload({
     balance_code: sanitizeString(
       summary.balanceCode || summary.balance_code || "",
       40
+    ),
+    // null ≠ 0 — gerçek 0,00 bakiyeyi sakla; yoksa alanı yazma
+    opening_balance: sanitizeNumber(
+      summary.openingBalance ?? summary.opening_balance,
+      null
+    ),
+    closing_balance: sanitizeNumber(
+      summary.closingBalance ?? summary.closing_balance,
+      null
+    ),
+    balance_delta: sanitizeNumber(
+      summary.balanceDelta ?? summary.delta ?? summary.balance_delta,
+      null
+    ),
+    expected_closing: sanitizeNumber(
+      summary.expectedClosing ??
+        summary.calculatedClosing ??
+        summary.expected_closing,
+      null
+    ),
+    balance_evidence_source: sanitizeString(
+      summary.balanceEvidenceSource ||
+        summary.evidenceSource ||
+        summary.balance_evidence_source ||
+        "",
+      64
     ),
     balance_resolution_applied: Boolean(
       summary.balanceResolutionApplied ?? summary.balance_resolution_applied
@@ -186,6 +217,19 @@ export function buildSafeV1PersistPayload({
   if (!meta.reanalyze) delete meta.reanalyze;
   if (!meta.balance_mismatch) delete meta.balance_mismatch;
   if (!meta.balance_code) delete meta.balance_code;
+  if (meta.opening_balance == null || Number.isNaN(meta.opening_balance)) {
+    delete meta.opening_balance;
+  }
+  if (meta.closing_balance == null || Number.isNaN(meta.closing_balance)) {
+    delete meta.closing_balance;
+  }
+  if (meta.balance_delta == null || Number.isNaN(meta.balance_delta)) {
+    delete meta.balance_delta;
+  }
+  if (meta.expected_closing == null || Number.isNaN(meta.expected_closing)) {
+    delete meta.expected_closing;
+  }
+  if (!meta.balance_evidence_source) delete meta.balance_evidence_source;
   if (!meta.balance_resolution_applied) {
     delete meta.balance_resolution_applied;
     delete meta.balance_resolution_change_count;
@@ -242,7 +286,7 @@ export function sanitizeIncomingV1JobBody(body = {}) {
   const jobId = sanitizeString(body.jobId || body.job_id, 80);
   const idempotencyKey = sanitizeString(
     body.idempotencyKey || body.idempotency_key,
-    200
+    480
   );
   const leaseId = sanitizeString(body.leaseId || body.lease_id, 80);
   const summary = isPlainObject(body.summary) ? body.summary : {};

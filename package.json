@@ -37,13 +37,17 @@
     "test:bank-company-guard": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-statement-company-guard.mjs",
     "test:bank-parser-reanalyze": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-parser-reanalyze.mjs",
     "test:bank-canonical-snapshot": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-canonical-snapshot.mjs",
+    "test:bank-statement-balance-evidence": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-statement-balance-evidence.mjs",
     "test:v1-canonical-surface": "node ./scripts/test-v1-canonical-result-surface.mjs",
     "test:bank-ocr": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-ocr.mjs",
     "test:bank-balance-resolution": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-balance-resolution-center.mjs",
     "test:pdf-excel-missing-parity": "node --import ./scripts/_alias-loader.mjs ./scripts/test-pdf-excel-missing-account-parity.mjs",
     "test:missing-account-center": "node --import ./scripts/_alias-loader.mjs ./scripts/test-missing-account-center-empty-list.mjs",
     "test:missing-account-center-staging": "node --import ./scripts/_alias-loader.mjs ./scripts/test-missing-account-center-staging-e2e.mjs",
-    "test:account-plan-merge": "node --import ./scripts/_alias-loader.mjs ./scripts/test-account-plan-merge.mjs"
+    "test:account-plan-merge": "node --import ./scripts/_alias-loader.mjs ./scripts/test-account-plan-merge.mjs",
+    "test:bank-reanalyze-click": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-reanalyze-click-interaction.mjs",
+    "test:bank-reanalyze-orchestration": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-reanalyze-orchestration.mjs",
+    "test:mare-staging-22": "node --import ./scripts/_alias-loader.mjs --test ./scripts/test-mare-staging-runtime-22-fix.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.65",

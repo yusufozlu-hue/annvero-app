@@ -285,12 +285,9 @@ export async function POST(request) {
   }
 
   const idempotencyKey = String(payload.metadata?.idempotency_key || "").trim();
-  // Normal yükleme: aynı anahtar → duplicate. Reanalyze :rev:N ile yeni kayıt açar.
-  if (
-    idempotencyKey &&
-    !idempotencyKey.endsWith(":nohash") &&
-    !incoming.reanalyze
-  ) {
+  // Aynı tam idempotency (rev+plan+pipe+src+srev+snap) → mevcut kayıt.
+  // Eski :rev:N:plan:… (pipe yok) anahtarlar yeni pipeline ile eşleşmez → yeni job.
+  if (idempotencyKey && !idempotencyKey.endsWith(":nohash")) {
     const { data: existingRows, error: existingError } = await ctx.supabase
       .from(AUDIT_EVENTS_TABLE)
       .select("id, company_id, entity_type, entity_id, action, metadata, created_at")
@@ -301,17 +298,32 @@ export async function POST(request) {
       .order("created_at", { ascending: false })
       .limit(1);
     if (!existingError && existingRows?.[0]) {
-      if (incoming.leaseId) {
-        releaseLease(companyId, incoming.leaseId);
+      const existingMeta = existingRows[0].metadata || {};
+      const existingKey = String(
+        existingMeta.idempotency_key || ""
+      ).trim();
+      // Anahtar birebir aynı değilse veya result eksikse stale say — yeni persist
+      const terminal = String(existingMeta.terminal_status || "").trim();
+      const compatible =
+        existingKey === idempotencyKey && Boolean(terminal);
+      if (!compatible) {
+        // fall through — yeni audit satırı yaz
+      } else {
+        if (incoming.leaseId) {
+          releaseLease(companyId, incoming.leaseId);
+        }
+        return NextResponse.json({
+          ok: true,
+          action: "persist",
+          companyId,
+          persisted: false,
+          duplicate: true,
+          reanalyze: Boolean(incoming.reanalyze),
+          existingJob: true,
+          compatibleExistingJob: true,
+          view: publicV1JobView(existingRows[0]),
+        });
       }
-      return NextResponse.json({
-        ok: true,
-        action: "persist",
-        companyId,
-        persisted: false,
-        duplicate: true,
-        view: publicV1JobView(existingRows[0]),
-      });
     }
   }
 

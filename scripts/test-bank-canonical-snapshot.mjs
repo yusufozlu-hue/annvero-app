@@ -470,11 +470,17 @@ await test("result card shows reanalyze for snapshot restore", () => {
     ),
     "utf8"
   );
-  assert.match(
-    src,
-    /isDuplicate \|\| Boolean\(result\?\.fromCanonicalSnapshot\)/
+  const buttonSrc = fs.readFileSync(
+    path.join(root, "src/components/BankReanalyzeWithNewPlanButton.js"),
+    "utf8"
   );
-  assert.match(src, /data-testid=\"bank-reanalyze-with-new-plan\"/);
+  // Kart: duplicate / hydrate snapshot / hata → buton yüzeyi; mode loading|retry|ready|hidden
+  assert.ok(src.includes("BankReanalyzeWithNewPlanButton"));
+  assert.ok(src.includes("fromCanonicalSnapshot"));
+  assert.ok(src.includes("reanalyzeFailed"));
+  assert.ok(buttonSrc.includes('data-testid'));
+  assert.ok(buttonSrc.includes("bank-reanalyze-with-new-plan"));
+  assert.ok(buttonSrc.includes("resolveReanalyzeButtonMode"));
 });
 
 await test("workbench duplicate upgrade/restore skips Drive and V1 job create", () => {
@@ -685,7 +691,8 @@ test("workbench persists document resolutions on apply and hydrates them", () =>
   assert.match(wb, /persistBankStatementResolutions/);
   assert.match(wb, /undoBankStatementResolutions/);
   assert.match(wb, /documentResolutionsRef/);
-  assert.match(wb, /pendingCanonicalHydrateReanalyzeRef/);
+  assert.match(wb, /pendingCanonicalHydrateKeyRef/);
+  assert.match(wb, /consumeCanonicalHydrateReanalyze/);
   assert.match(wb, /documentResolutions:\s*documentResolutionsRef\.current/);
   assert.match(wb, /buildResolutionPayloadsFromApply/);
 });
