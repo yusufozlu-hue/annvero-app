@@ -259,6 +259,7 @@ test("Luca/Elektra output gate requires matched balance and clean review", () =>
   );
   assert.equal(ready.allowed, true);
   assert.equal(ready.code, "OUTPUT_READY");
+  assert.equal(ready.balanceCode, "BALANCE_MATCHED");
 
   assert.equal(
     evaluateBankOutputGate(
@@ -305,6 +306,137 @@ test("Luca/Elektra output gate requires matched balance and clean review", () =>
     ).code,
     "DUPLICATE_CONTENT"
   );
+});
+
+test("LEGACY FAIL: empty balanceCode alone → BALANCE_NOT_MATCHED (hydrate wiring)", () => {
+  // Canlı 5f41b99: stageOutputs.balanceMatched=true ama gate'e yalnız balanceCode:"" gidiyordu.
+  const legacyGateInput = {
+    balanceCode: "",
+    canAutoApprove: true,
+    reviewRequired: false,
+    errors: 0,
+    critical: 0,
+    lowConfidence: 0,
+    missingCount: 0,
+    uniqueUnresolvedMovements: 0,
+  };
+  const legacy = evaluateBankOutputGate(legacyGateInput, { lucaReady: true });
+  assert.equal(legacy.allowed, false);
+  assert.equal(legacy.code, "BALANCE_NOT_MATCHED");
+});
+
+test("matched=true without open/close evidence stays closed", () => {
+  const closed = evaluateBankOutputGate(
+    {
+      balanceCode: "",
+      balanceMatched: true,
+      canAutoApprove: true,
+      reviewRequired: false,
+      errors: 0,
+      uniqueUnresolvedMovements: 0,
+    },
+    { lucaReady: true }
+  );
+  assert.equal(closed.allowed, false);
+  assert.equal(closed.code, "BALANCE_NOT_MATCHED");
+  assert.equal(closed.balanceMatched, false);
+});
+
+test("empty code + matched + delta0 + open/close → normalize opens gate", () => {
+  const open = evaluateBankOutputGate(
+    {
+      balanceCode: "",
+      balanceMatched: true,
+      delta: 0,
+      openingBalance: 0,
+      closingBalance: 0,
+      canAutoApprove: true,
+      reviewRequired: false,
+      errors: 0,
+      critical: 0,
+      lowConfidence: 0,
+      missingCount: 0,
+      uniqueUnresolvedMovements: 0,
+    },
+    { lucaReady: true }
+  );
+  assert.equal(open.allowed, true);
+  assert.equal(open.code, "OUTPUT_READY");
+  assert.equal(open.balanceCode, "BALANCE_MATCHED");
+  assert.equal(open.balanceMatched, true);
+});
+
+test("balanceMatched false / unknown / nonzero delta keep gate closed", () => {
+  assert.equal(
+    evaluateBankOutputGate(
+      {
+        balanceCode: "BALANCE_MATCHED",
+        balanceMatched: false,
+        delta: 1.5,
+        openingBalance: 10,
+        closingBalance: 8,
+        canAutoApprove: true,
+      },
+      { lucaReady: true }
+    ).code,
+    "BALANCE_NOT_MATCHED"
+  );
+  assert.equal(
+    evaluateBankOutputGate(
+      {
+        balanceMatched: undefined,
+        balanceCode: "",
+        canAutoApprove: true,
+      },
+      { lucaReady: true }
+    ).code,
+    "BALANCE_NOT_MATCHED"
+  );
+  assert.equal(
+    evaluateBankOutputGate(
+      {
+        balanceCode: "",
+        balanceMatched: true,
+        delta: 12.5,
+        openingBalance: 100,
+        closingBalance: 80,
+        canAutoApprove: true,
+      },
+      { lucaReady: true }
+    ).code,
+    "BALANCE_NOT_MATCHED"
+  );
+});
+
+test("PDF BALANCE_MATCHED ≡ hydrate normalized evidence for gate", () => {
+  const pdf = evaluateBankOutputGate(
+    {
+      balanceCode: "BALANCE_MATCHED",
+      canAutoApprove: true,
+      reviewRequired: false,
+      errors: 0,
+      uniqueUnresolvedMovements: 0,
+    },
+    { lucaReady: true }
+  );
+  const hydrate = evaluateBankOutputGate(
+    {
+      balanceCode: "",
+      balanceMatched: true,
+      delta: 0,
+      openingBalance: 0,
+      closingBalance: 0,
+      canAutoApprove: true,
+      reviewRequired: false,
+      errors: 0,
+      uniqueUnresolvedMovements: 0,
+    },
+    { lucaReady: true }
+  );
+  assert.equal(pdf.allowed, true);
+  assert.equal(hydrate.allowed, true);
+  assert.equal(pdf.code, hydrate.code);
+  assert.equal(pdf.balanceCode, hydrate.balanceCode);
 });
 
 test("service mode visibility: only with explicit debug flag", () => {

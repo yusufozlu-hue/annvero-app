@@ -45,6 +45,13 @@ import {
   inferStatementAccountHint,
   runAccountingAnalysisOnMovementsAsync,
 } from "@/src/utils/bankParserCore.js";
+import {
+  BALANCE_MATCHED,
+  reconcileStatementBalances,
+  normalizeBankBalanceForOutputGate,
+  resolveBalanceInputForOutputGate,
+} from "@/src/utils/bankBalanceReconcile.js";
+import { evaluateBankOutputGate } from "@/src/utils/bankOneClickPipeline.js";
 
 /** Staging snapshot hareketleri — kimlik yok. */
 const STAGING_MOVEMENTS = [
@@ -552,4 +559,102 @@ test("pipeline version constant is deterministic", () => {
     ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
     `br/2.1.0+${VADELI_LIFECYCLE_ALGORITHM_VERSION}`
   );
+});
+
+test("LEGACY hydrate balance wiring: empty code → gate BALANCE_NOT_MATCHED", () => {
+  // Eski fileless stageOutputs: balanceMatched true ama code "" — gate'e yalnız code gidiyordu.
+  const legacyParsing = { balanceCode: "", balanceMatched: true };
+  const legacyGateInput = {
+    balanceCode: legacyParsing.balanceCode || "",
+    // eski çağrı matched flag taşımıyordu
+    canAutoApprove: true,
+    reviewRequired: false,
+    errors: 0,
+    uniqueUnresolvedMovements: 0,
+  };
+  const legacy = evaluateBankOutputGate(legacyGateInput, { lucaReady: true });
+  assert.equal(legacy.allowed, false);
+  assert.equal(legacy.code, "BALANCE_NOT_MATCHED");
+});
+
+test("MARE hydrate balance: reconcile + normalize → gate açık · 4/4", async () => {
+  const rows = legacyRows();
+  // Net hareket 0 → açılış=kapanış=0 ile mutabakat
+  const reconciled = reconcileStatementBalances(rows, {
+    openingBalance: 0,
+    closingBalance: 0,
+  });
+  assert.equal(reconciled.code, BALANCE_MATCHED);
+  assert.equal(reconciled.matched, true);
+  assert.equal(reconciled.delta, 0);
+
+  const normalized = normalizeBankBalanceForOutputGate({
+    balanceCode: reconciled.code,
+    balanceMatched: reconciled.matched,
+    delta: reconciled.delta,
+    openingBalance: reconciled.openingBalance,
+    closingBalance: reconciled.closingBalance,
+  });
+  assert.equal(normalized.balanceCode, BALANCE_MATCHED);
+  assert.equal(normalized.balanceMatched, true);
+
+  // Eski boş-code + matched senaryosu da evidence ile yükselir
+  const fromEmpty = normalizeBankBalanceForOutputGate({
+    balanceCode: "",
+    balanceMatched: true,
+    delta: 0,
+    openingBalance: 0,
+    closingBalance: 0,
+  });
+  assert.equal(fromEmpty.balanceCode, BALANCE_MATCHED);
+
+  const analyzed = await runAccountingAnalysisOnMovementsAsync({
+    ...buildMovementMappingContext(
+      ctx({
+        sourceFileName: FILE,
+        statementAccountHint: inferStatementAccountHint({ sourceFileName: FILE }),
+        persistVadeliMemory: false,
+      })
+    ),
+    movementRows: rows,
+  });
+  const s = summarize(analyzed.movementRows || []);
+  assert.equal(s.matched, 4);
+  assert.equal(s.unresolved, 0);
+  assert.equal(s.lucaRows, 8);
+
+  const gate = evaluateBankOutputGate(
+    {
+      ...normalized,
+      canAutoApprove: true,
+      reviewRequired: false,
+      errors: 0,
+      critical: 0,
+      lowConfidence: 0,
+      missingCount: 0,
+      uniqueUnresolvedMovements: 0,
+    },
+    { lucaReady: true }
+  );
+  assert.equal(gate.allowed, true);
+  assert.equal(gate.code, "OUTPUT_READY");
+
+  // resolveBalanceInputForOutputGate PDF ≡ hydrate
+  const pdfLike = resolveBalanceInputForOutputGate({
+    balanceResult: { code: BALANCE_MATCHED, matched: true, delta: 0 },
+    parsingStage: null,
+  });
+  const hydrateLike = resolveBalanceInputForOutputGate({
+    balanceResult: null,
+    parsingStage: {
+      balanceCode: "",
+      balanceMatched: true,
+      balanceDelta: 0,
+      openingBalance: 0,
+      closingBalance: 0,
+    },
+  });
+  assert.equal(pdfLike.balanceMatched, true);
+  assert.equal(hydrateLike.balanceMatched, true);
+  assert.equal(pdfLike.balanceCode, hydrateLike.balanceCode);
 });

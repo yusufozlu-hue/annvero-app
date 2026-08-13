@@ -203,6 +203,8 @@ import {
   BALANCE_MATCHED,
   BALANCE_MISMATCH,
   reconcileStatementBalances,
+  normalizeBankBalanceForOutputGate,
+  resolveBalanceInputForOutputGate,
 } from "@/src/utils/bankBalanceReconcile";
 import {
   applyBalanceResolution,
@@ -5013,15 +5015,36 @@ export default function BankParserWorkbench() {
               null,
               movementsRef.current.length
             );
+            // Canonical hydrate: sahte matched=true + boş code yok.
+            // Hareket bakiyelerinden gerçek reconcile → kanonik balanceCode.
+            const snapBalance = reconcileStatementBalances(
+              movementsRef.current,
+              {}
+            );
+            const snapBalanceNorm = normalizeBankBalanceForOutputGate({
+              balanceCode: snapBalance.code,
+              balanceMatched: snapBalance.matched === true,
+              delta: snapBalance.delta,
+              openingBalance: snapBalance.openingBalance,
+              closingBalance: snapBalance.closingBalance,
+            });
+            balanceResult = {
+              ...snapBalance,
+              code: snapBalanceNorm.balanceCode,
+              matched: snapBalanceNorm.balanceMatched,
+            };
             stageDurations.previewMs = 0;
             stageDurations.parseMode = "canonical_snapshot";
             stageDurations.bankName = runBank;
             stageOutputs[V1_JOB_STATE.PARSING] = {
               movementCount: movementsRef.current.length,
               durationMs: 0,
-              balanceMismatch: false,
-              balanceCode: "",
-              balanceMatched: true,
+              balanceMismatch: Boolean(snapBalanceNorm.balanceMismatch),
+              balanceCode: snapBalanceNorm.balanceCode,
+              balanceMatched: snapBalanceNorm.balanceMatched === true,
+              balanceDelta: snapBalanceNorm.delta,
+              openingBalance: snapBalanceNorm.openingBalance,
+              closingBalance: snapBalanceNorm.closingBalance,
               fromCanonicalSnapshot: true,
             };
             stageOutputs[V1_JOB_STATE.DEDUPLICATING] = {
@@ -5385,12 +5408,13 @@ export default function BankParserWorkbench() {
         if (!stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS]) {
           const controlMeta =
             stageOutputs[V1_JOB_STATE.CONTROLLING_VOUCHERS] || {};
+          const balanceForGate = resolveBalanceInputForOutputGate({
+            balanceResult,
+            parsingStage: stageOutputs[V1_JOB_STATE.PARSING],
+          });
           const outputGate = evaluateBankOutputGate(
             {
-              balanceCode:
-                balanceResult?.code ||
-                stageOutputs[V1_JOB_STATE.PARSING]?.balanceCode ||
-                "",
+              ...balanceForGate,
               canAutoApprove: Boolean(fisKontrolResult?.canAutoApprove),
               reviewRequired: Boolean(fisKontrolResult?.reviewRequired),
               errors: fisKontrolResult?.errors || 0,
@@ -5447,14 +5471,15 @@ export default function BankParserWorkbench() {
 
       // 11) persisting — güvenli özet
       const validationMeta = stageOutputs[V1_JOB_STATE.CONTROLLING_VOUCHERS] || {};
+      const balanceForGate = resolveBalanceInputForOutputGate({
+        balanceResult,
+        parsingStage: stageOutputs[V1_JOB_STATE.PARSING],
+      });
       const outputGate =
         stageOutputs[V1_JOB_STATE.GENERATING_EXPORTS]?.outputGate ||
         evaluateBankOutputGate(
           {
-            balanceCode:
-              balanceResult?.code ||
-              stageOutputs[V1_JOB_STATE.PARSING]?.balanceCode ||
-              "",
+            ...balanceForGate,
             canAutoApprove: Boolean(fisKontrolResult?.canAutoApprove),
             reviewRequired: Boolean(fisKontrolResult?.reviewRequired),
             errors: fisKontrolResult?.errors || 0,
@@ -5466,10 +5491,6 @@ export default function BankParserWorkbench() {
           },
           { lucaReady: lucaRef.current.length > 0 }
         );
-      const balanceCode =
-        balanceResult?.code ||
-        stageOutputs[V1_JOB_STATE.PARSING]?.balanceCode ||
-        "";
       const totalDurationMs = Math.round(performance.now() - tPipeline0);
       const terminalStatus = decideTerminalStatus({
         duplicate: terminalDuplicate,
@@ -5503,8 +5524,12 @@ export default function BankParserWorkbench() {
         reviewRequired:
           Boolean(fisKontrolResult?.reviewRequired) || !outputGate.allowed,
         canAutoApprove: outputGate.allowed,
-        balanceMismatch: balanceCode === BALANCE_MISMATCH,
-        balanceCode,
+        balanceMismatch: Boolean(balanceForGate.balanceMismatch),
+        balanceCode: balanceForGate.balanceCode,
+        balanceMatched: balanceForGate.balanceMatched === true,
+        balanceDelta: balanceForGate.delta,
+        openingBalance: balanceForGate.openingBalance,
+        closingBalance: balanceForGate.closingBalance,
       });
 
       const accountPlanCount = Array.isArray(companyPlans)
@@ -5632,8 +5657,12 @@ export default function BankParserWorkbench() {
         driveSkipped: resultSummary.driveSkipped,
         reviewRequired: resultSummary.reviewRequired,
         canAutoApprove: resultSummary.canAutoApprove,
-        balanceCode,
-        balanceMatched: balanceCode === BALANCE_MATCHED,
+        balanceCode: balanceForGate.balanceCode,
+        balanceMatched: balanceForGate.balanceMatched === true,
+        balanceMismatch: Boolean(balanceForGate.balanceMismatch),
+        balanceDelta: balanceForGate.delta,
+        openingBalance: balanceForGate.openingBalance,
+        closingBalance: balanceForGate.closingBalance,
         outputGateCode: outputGate.code,
         outputGateMessage: outputGate.message,
         lowConfidence: fisKontrolResult?.lowConfidence || 0,
