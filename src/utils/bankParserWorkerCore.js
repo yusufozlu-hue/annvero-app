@@ -6,6 +6,7 @@
 import { parseGarantiEkstre } from "@/parsers/garantiParser";
 import { parseVakifbankEkstre } from "@/parsers/vakifbankParser";
 import { assertSelectedBankMatchesSheet } from "@/src/utils/bankStatementFormatGuard";
+import { toParserBankId } from "@/src/utils/bankIdentity";
 import { normalizeParserText } from "@/src/utils/textNormalize";
 
 export const BANK_PARSE_STAGES = {
@@ -246,13 +247,14 @@ export function normalizeBankParsedRow(row, selectedBank) {
 }
 
 export function parseRowsForBank(sheetRows, selectedBank) {
-  assertSelectedBankMatchesSheet(sheetRows, selectedBank);
-  if (selectedBank === "GARANTI") return parseGarantiEkstre(sheetRows);
-  if (selectedBank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
-  if (selectedBank === "TEB") {
+  const bank = toParserBankId(selectedBank) || String(selectedBank || "").trim().toUpperCase();
+  assertSelectedBankMatchesSheet(sheetRows, bank);
+  if (bank === "GARANTI") return parseGarantiEkstre(sheetRows);
+  if (bank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
+  if (bank === "TEB") {
     return enrichTebParsedRowsLite(parseGenericBankEkstre(sheetRows, "TEB"));
   }
-  if (selectedBank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
-  if (selectedBank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
+  if (bank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
+  if (bank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
   return [];
 }

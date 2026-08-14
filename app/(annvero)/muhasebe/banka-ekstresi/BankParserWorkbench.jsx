@@ -3119,7 +3119,9 @@ export default function BankParserWorkbench() {
       const sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
       fileSheetRowsRef.current = sheetRows;
       fileSheetSourceRef.current = checkpoint.fileName;
-      const resolved = resolveParserBankFromSheet(sheetRows);
+      const resolved = resolveParserBankFromSheet(sheetRows, {
+        fileName: checkpoint.fileName || "",
+      });
       if (resolved.status === "detected" && resolved.bankId) {
         const label =
           BANK_PARSER_OPTIONS.find((b) => b.id === resolved.bankId)?.label ||
@@ -3128,7 +3130,20 @@ export default function BankParserWorkbench() {
         setActiveBank(resolved.bankId, {
           status: "detected",
           bankId: resolved.bankId,
+          canonicalBankId: resolved.canonicalBankId || null,
+          confidence: resolved.confidence || "high",
+          diagnostics: resolved.diagnostics || null,
           message: `${label} — otomatik tespit`,
+        });
+      } else if (resolved.status === "ambiguous") {
+        activeBankRef.current = "";
+        setSelectedBank("");
+        setBankDetection({
+          status: "ambiguous",
+          bankId: null,
+          diagnostics: resolved.diagnostics || null,
+          message:
+            "Birden fazla banka formatı olası görünüyor. Net bir banka ekstresi yükleyin; yanlış banka seçilmedi.",
         });
       } else {
         activeBankRef.current = "";
@@ -3136,7 +3151,9 @@ export default function BankParserWorkbench() {
         setBankDetection({
           status: "unknown",
           bankId: null,
-          message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+          diagnostics: resolved.diagnostics || null,
+          message:
+            "Banka ekstresi otomatik tanınamadı. Desteklenen Excel formatını yükleyin (TEB, Ziraat, Kuveyt Türk, Vakıfbank, Garanti).",
         });
       }
     } catch (error) {
@@ -4111,17 +4128,14 @@ export default function BankParserWorkbench() {
         return;
       }
       logManagedPipelineIssue("preview failed", error);
-      if (
-        error?.code === "BANK_FORMAT_MISMATCH" &&
-        error?.detectedBank &&
-        (error.detectedBank === "VAKIFBANK" || error.detectedBank === "GARANTI")
-      ) {
+      if (error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank) {
+        const detectedId = String(error.detectedBank || "").toUpperCase();
         const label =
-          BANK_PARSER_OPTIONS.find((b) => b.id === error.detectedBank)?.label ||
-          error.detectedBank;
-        setActiveBank(error.detectedBank, {
+          BANK_PARSER_OPTIONS.find((b) => b.id === detectedId)?.label ||
+          detectedId;
+        setActiveBank(detectedId, {
           status: "detected",
-          bankId: error.detectedBank,
+          bankId: detectedId,
           message: `${label} — otomatik tespit`,
         });
       }
@@ -4132,12 +4146,18 @@ export default function BankParserWorkbench() {
       setPreviewErrorDetail("");
       parserJob.reset();
       clearPreviewState({ resetParserJob: false });
+      const mismatchLabel =
+        error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+          ? BANK_PARSER_OPTIONS.find(
+              (b) => b.id === String(error.detectedBank).toUpperCase()
+            )?.label || String(error.detectedBank)
+          : "";
       setPipelineError({
         phase: PIPELINE_PHASES.PREVIEW,
         phaseLabel: getPipelinePhaseTitle(PIPELINE_PHASES.PREVIEW),
         message:
           error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
-            ? `Dosya ${error.detectedBank === "VAKIFBANK" ? "Vakıfbank" : "Garanti"} olarak algılandı. Banka seçimi güncellendi.`
+            ? `Dosya ${mismatchLabel} olarak algılandı. Banka seçimi güncellendi.`
             : detail,
         recoverable: Boolean(error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank),
         tone:
@@ -6024,23 +6044,26 @@ export default function BankParserWorkbench() {
       logManagedPipelineIssue("full pipeline failed", error, {
         phase: failedPhase,
       });
-      if (
-        error?.code === "BANK_FORMAT_MISMATCH" &&
-        error?.detectedBank &&
-        (error.detectedBank === "VAKIFBANK" || error.detectedBank === "GARANTI")
-      ) {
+      if (error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank) {
+        const detectedId = String(error.detectedBank || "").toUpperCase();
         const label =
-          BANK_PARSER_OPTIONS.find((b) => b.id === error.detectedBank)?.label ||
-          error.detectedBank;
-        setActiveBank(error.detectedBank, {
+          BANK_PARSER_OPTIONS.find((b) => b.id === detectedId)?.label ||
+          detectedId;
+        setActiveBank(detectedId, {
           status: "detected",
-          bankId: error.detectedBank,
+          bankId: detectedId,
           message: `${label} — otomatik tespit`,
         });
       }
+      const mismatchLabelFull =
+        error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+          ? BANK_PARSER_OPTIONS.find(
+              (b) => b.id === String(error.detectedBank).toUpperCase()
+            )?.label || String(error.detectedBank)
+          : "";
       const message =
         error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
-          ? `Dosya ${error.detectedBank === "VAKIFBANK" ? "Vakıfbank" : "Garanti"} olarak algılandı. Banka seçimi güncellendi.`
+          ? `Dosya ${mismatchLabelFull} olarak algılandı. Banka seçimi güncellendi.`
           : error?.code === "OCR_REQUIRED"
             ? error.message || "Taranmış PDF için OCR gerekli (OCR_REQUIRED)."
             : error?.code === "BALANCE_MISMATCH"

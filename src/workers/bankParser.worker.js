@@ -62,9 +62,7 @@ function joinRowHeaderText(row) {
 function isVakifbankStatementHeaderText(text) {
   const t = normalizeStatementHeaderText(text);
   if (!t) return false;
-  if (t.includes("islem tarihi")) return true;
-  if (t.includes("hareket tarih")) return true;
-  if (t.includes("b/a")) return true;
+  if (t.includes("b/a") && (t.includes("tutar") || t.includes("fis no"))) return true;
   if (t.includes("hesap hareket")) return true;
   if (t.includes("hesap") && t.includes("hareket") && t.includes("tutar")) return true;
   if (t.includes("fis no") && t.includes("hareket") && t.includes("tutar")) return true;
@@ -76,6 +74,8 @@ function isVakifbankStatementHeaderText(text) {
   ) {
     return true;
   }
+  if (t.includes("hareket tarih") && t.includes("tutar")) return true;
+  if (t.includes("islem tarihi") && t.includes("b/a")) return true;
   return false;
 }
 
@@ -93,16 +93,54 @@ function isGarantiStatementHeaderText(text) {
   return Boolean(hasTarih && hasAciklama && hasAmount && hasGarantiMarker);
 }
 
-function detectKnownBankFormat(sheetRows, scanLimit) {
-  if (!Array.isArray(sheetRows) || sheetRows.length === 0) return "UNKNOWN";
+function corpusText(sheetRows, scanLimit) {
+  if (!Array.isArray(sheetRows) || sheetRows.length === 0) return "";
   const limit = Math.min(sheetRows.length, Math.max(1, scanLimit || 40));
+  const parts = [];
   for (let i = 0; i < limit; i += 1) {
     const text = joinRowHeaderText(sheetRows[i]);
-    if (!text) continue;
-    if (isVakifbankStatementHeaderText(text)) return "VAKIFBANK";
-    if (isGarantiStatementHeaderText(text)) return "GARANTI";
+    if (text) parts.push(text);
+  }
+  return parts.join(" | ");
+}
+
+function detectKnownBankFormat(sheetRows, scanLimit) {
+  if (!Array.isArray(sheetRows) || sheetRows.length === 0) return "UNKNOWN";
+  const t = corpusText(sheetRows, scanLimit);
+  if (!t) return "UNKNOWN";
+  const compact = t.replace(/\s/g, "");
+
+  // Brand / IBAN önce — generic kolon tek başına seçtirmez
+  if (/vakif\s*bank|vakifbank/.test(t) || /tr\d{2}00015/.test(compact)) {
+    return "VAKIFBANK";
+  }
+  if (isVakifbankStatementHeaderText(t)) return "VAKIFBANK";
+
+  if (/garanti|bbva/.test(t) || /tr\d{2}00062/.test(compact)) {
+    return "GARANTI";
+  }
+  if (isGarantiStatementHeaderText(t)) return "GARANTI";
+
+  if (/\bteb\b|turkiye ekonomi|tebutris/.test(t) || /tr\d{2}00032/.test(compact)) {
+    return "TEB";
+  }
+  if (/ziraat|tczbtr/.test(t) || /tr\d{2}00010/.test(compact)) {
+    return "ZIRAAT";
+  }
+  if (/kuveyt|kteftr/.test(t) || /tr\d{2}00205/.test(compact)) {
+    return "KUVEYT";
   }
   return "UNKNOWN";
+}
+
+function banksMatch(a, b) {
+  const norm = (v) => {
+    const u = String(v || "").trim().toUpperCase();
+    if (u === "KUVEYTTURK" || u === "KUVEYTTÜRK") return "KUVEYT";
+    if (u === "VAKIF") return "VAKIFBANK";
+    return u;
+  };
+  return norm(a) === norm(b);
 }
 
 function assertSelectedBankMatchesSheet(sheetRows, selectedBank) {
@@ -111,8 +149,8 @@ function assertSelectedBankMatchesSheet(sheetRows, selectedBank) {
     .toUpperCase();
   if (!bank) return "UNKNOWN";
   const detected = detectKnownBankFormat(sheetRows);
-  if (detected === "UNKNOWN") return detected;
-  if ((detected === "GARANTI" || detected === "VAKIFBANK") && detected !== bank) {
+  if (detected === "UNKNOWN" || detected === "AMBIGUOUS") return detected;
+  if (!banksMatch(detected, bank)) {
     const err = new Error(
       "Seçilen banka ile yüklenen ekstre formatı uyuşmuyor. Dosyaya uygun bankayı seçip tekrar deneyin."
     );
@@ -631,14 +669,17 @@ function normalizeBankParsedRow(row, selectedBank) {
 }
 
 function parseRowsForBank(sheetRows, selectedBank) {
-  assertSelectedBankMatchesSheet(sheetRows, selectedBank);
-  if (selectedBank === "GARANTI") return parseGarantiEkstre(sheetRows);
-  if (selectedBank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
-  if (selectedBank === "TEB") {
+  let bank = String(selectedBank || "").trim().toUpperCase();
+  if (bank === "KUVEYTTURK" || bank === "KUVEYTTÜRK") bank = "KUVEYT";
+  if (bank === "VAKIF") bank = "VAKIFBANK";
+  assertSelectedBankMatchesSheet(sheetRows, bank);
+  if (bank === "GARANTI") return parseGarantiEkstre(sheetRows);
+  if (bank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
+  if (bank === "TEB") {
     return enrichTebParsedRowsLite(parseGenericBankEkstre(sheetRows, "TEB"));
   }
-  if (selectedBank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
-  if (selectedBank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
+  if (bank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
+  if (bank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
   return [];
 }
 
