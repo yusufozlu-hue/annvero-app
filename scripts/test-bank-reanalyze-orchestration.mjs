@@ -387,7 +387,9 @@ await test("source wiring: workbench uses orchestration + preserve card", () => 
   assert.match(workbench, /planFingerprint/);
   assert.match(workbench, /ANNVERO_BANK_REANALYZE_PIPELINE_VERSION/);
   assert.match(workbench, /isCompatibleExistingReanalyzeJob/);
+  assert.match(workbench, /isHydrateJobResultStale/);
   assert.match(workbench, /staleExistingJob/);
+  assert.match(workbench, /persistAuditWarning/);
   assert.match(
     workbench,
     /Reanalyze \/ snapshot: kart ve dosya bilgisi pipeline bitene kadar korunur/
@@ -395,7 +397,10 @@ await test("source wiring: workbench uses orchestration + preserve card", () => 
   assert.match(workbench, /Reanalyze kilidi handleReanalyzeWithNewPlan/);
   assert.match(jobsRoute, /existingJob:\s*true/);
   assert.match(jobsRoute, /compatibleExistingJob/);
+  assert.match(jobsRoute, /evaluateV1PersistIdempotencyDecision/);
+  assert.match(jobsRoute, /SOURCE_NOT_IN_COMPANY/);
   assert.match(jobsRoute, /idempotency_key/);
+  assert.doesNotMatch(jobsRoute, /force\s*[:=]\s*true/);
 });
 
 console.log("\nAll bank-reanalyze-orchestration tests finished.");

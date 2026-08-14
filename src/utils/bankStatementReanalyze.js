@@ -88,32 +88,294 @@ export function buildRevisionIdempotencyKey({
   return parts.join(":");
 }
 
+function metaText(meta, ...keys) {
+  for (const key of keys) {
+    const value = meta?.[key];
+    if (value != null && String(value).trim()) return String(value).trim();
+  }
+  return "";
+}
+
+function extractIdempotencyToken(key, label) {
+  const raw = String(key || "");
+  const match = raw.match(new RegExp(`:${label}:([^:]+)`));
+  return match ? match[1] : "";
+}
+
+const STALE_BALANCE_CODES = new Set([
+  "BALANCE_EVIDENCE_MISSING",
+  "BALANCE_EMPTY",
+  "MISSING_OPENING_BALANCE",
+  "MISSING_CLOSING_BALANCE",
+]);
+
 /**
- * Mevcut completed job bu istemci pipeline sürümüyle uyumlu mu?
- * Uyumsuz / eksik result → yeni idempotent uçuş açılmalı.
+ * Mevcut job bu istemci pipeline + sonuç sürümüyle uyumlu mu?
+ * Uyumsuz / eksik / stale result → yeni idempotent uçuş açılmalı.
  */
 export function isCompatibleExistingReanalyzeJob({
   existingMetadata = null,
   expectedIdempotencyKey = "",
   expectedPipelineVersion = ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+  incomingSummary = null,
 } = {}) {
-  const meta = existingMetadata && typeof existingMetadata === "object"
-    ? existingMetadata
-    : {};
-  const existingKey = String(meta.idempotency_key || meta.idempotencyKey || "").trim();
+  const meta =
+    existingMetadata && typeof existingMetadata === "object"
+      ? existingMetadata
+      : {};
+  const incoming =
+    incomingSummary && typeof incomingSummary === "object"
+      ? incomingSummary
+      : {};
+  const existingKey = String(
+    meta.idempotency_key || meta.idempotencyKey || ""
+  ).trim();
   const expected = String(expectedIdempotencyKey || "").trim();
   if (!existingKey || !expected || existingKey !== expected) {
     return { ok: false, reason: "idempotency_mismatch" };
   }
-  const pipeToken = `:pipe:${String(expectedPipelineVersion || "").trim()}`;
+
+  const expectedPipe = String(
+    expectedPipelineVersion ||
+      incoming.pipelineVersion ||
+      incoming.pipeline_version ||
+      ANNVERO_BANK_REANALYZE_PIPELINE_VERSION
+  ).trim();
+  const pipeToken = `:pipe:${expectedPipe}`;
   if (pipeToken.length > 6 && !existingKey.includes(pipeToken)) {
     return { ok: false, reason: "pipeline_version_stale" };
   }
-  const terminal = String(meta.terminal_status || meta.terminalStatus || "").trim();
+
+  const incomingEngine = metaText(
+    incoming,
+    "engineVersion",
+    "engine_version"
+  );
+  const existingEngine = metaText(meta, "engine_version", "engineVersion");
+  if (incomingEngine && existingEngine && incomingEngine !== existingEngine) {
+    return { ok: false, reason: "engine_mismatch" };
+  }
+
+  const incomingSrc = metaText(incoming, "sourceId", "source_id");
+  const existingSrc =
+    metaText(meta, "source_id", "sourceId") ||
+    extractIdempotencyToken(existingKey, "src");
+  if (incomingSrc && existingSrc && incomingSrc !== existingSrc) {
+    return { ok: false, reason: "source_mismatch" };
+  }
+
+  const incomingSrev = metaText(
+    incoming,
+    "sourceRevision",
+    "source_revision"
+  );
+  const existingSrev =
+    metaText(meta, "source_revision", "sourceRevision") ||
+    extractIdempotencyToken(existingKey, "srev");
+  if (incomingSrev && existingSrev && incomingSrev !== existingSrev) {
+    return { ok: false, reason: "source_revision_mismatch" };
+  }
+
+  const incomingSnap = metaText(
+    incoming,
+    "snapshotFingerprint",
+    "snapshot_fingerprint"
+  );
+  const existingSnap =
+    metaText(meta, "snapshot_fingerprint", "snapshotFingerprint") ||
+    extractIdempotencyToken(existingKey, "snap");
+  if (incomingSnap && existingSnap && incomingSnap !== existingSnap) {
+    return { ok: false, reason: "snapshot_mismatch" };
+  }
+
+  const incomingPlan = metaText(
+    incoming,
+    "planFingerprint",
+    "plan_fingerprint"
+  );
+  const existingPlan =
+    metaText(meta, "plan_fingerprint", "planFingerprint") ||
+    extractIdempotencyToken(existingKey, "plan");
+  if (incomingPlan && existingPlan && incomingPlan !== existingPlan) {
+    return { ok: false, reason: "plan_mismatch" };
+  }
+
+  const terminal = String(
+    meta.terminal_status || meta.terminalStatus || ""
+  ).trim();
   if (!terminal) {
     return { ok: false, reason: "result_incomplete" };
   }
+
+  const incomingBalance = metaText(
+    incoming,
+    "balanceCode",
+    "balance_code"
+  ).toUpperCase();
+  const existingBalance = metaText(meta, "balance_code", "balanceCode").toUpperCase();
+  if (
+    incomingBalance &&
+    incomingBalance !== existingBalance &&
+    (STALE_BALANCE_CODES.has(existingBalance) ||
+      incomingBalance === "BALANCE_MATCHED")
+  ) {
+    return { ok: false, reason: "result_stale" };
+  }
+
+  const incomingTerminal = metaText(
+    incoming,
+    "terminalStatus",
+    "terminal_status"
+  );
+  const incomingGate = metaText(
+    incoming,
+    "outputGateCode",
+    "output_gate_code"
+  ).toUpperCase();
+  if (
+    incomingTerminal === "completed" &&
+    incomingGate === "OUTPUT_READY" &&
+    terminal === "review_required" &&
+    (STALE_BALANCE_CODES.has(existingBalance) || !existingBalance)
+  ) {
+    return { ok: false, reason: "result_stale" };
+  }
+
   return { ok: true, reason: "compatible" };
+}
+
+/**
+ * Persist tek-istek kararı — client force bypass yok.
+ * reuse: aynı version+sonuç → mevcut job
+ * join: aynı version aktif/incomplete uçuş
+ * create: stale/uyumsuz → aynı request içinde yeni satır
+ * deny: tenant uyuşmazlığı
+ */
+export function assertSourceTenantMatch({
+  requestCompanyId = "",
+  sourceCompanyId = "",
+  sourceId = "",
+} = {}) {
+  const source = String(sourceId || "").trim();
+  if (!source) return { ok: true, code: "NO_SOURCE" };
+  const requestCompany = String(requestCompanyId || "").trim();
+  const sourceCompany = String(sourceCompanyId || "").trim();
+  if (!requestCompany || !sourceCompany || requestCompany !== sourceCompany) {
+    return {
+      ok: false,
+      status: 403,
+      code: "SOURCE_NOT_IN_COMPANY",
+    };
+  }
+  return { ok: true, code: "SOURCE_OWNED" };
+}
+
+export function evaluateV1PersistIdempotencyDecision({
+  incomingIdempotencyKey = "",
+  incomingCompanyId = "",
+  incomingSummary = null,
+  expectedPipelineVersion = ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+  existingRow = null,
+  incomingLeaseId = "",
+  activeLeaseId = "",
+} = {}) {
+  const incomingCompany = String(incomingCompanyId || "").trim();
+  if (existingRow) {
+    const existingCompany = String(
+      existingRow.company_id || existingRow.companyId || ""
+    ).trim();
+    if (
+      incomingCompany &&
+      existingCompany &&
+      incomingCompany !== existingCompany
+    ) {
+      return {
+        action: "deny",
+        status: 403,
+        code: "CROSS_TENANT_FORBIDDEN",
+        existingJob: false,
+        compatible: false,
+        reason: "company_mismatch",
+      };
+    }
+  }
+
+  if (!existingRow) {
+    return {
+      action: "create",
+      existingJob: false,
+      compatible: false,
+      reason: "no_existing",
+    };
+  }
+
+  const compat = isCompatibleExistingReanalyzeJob({
+    existingMetadata: existingRow.metadata || {},
+    expectedIdempotencyKey: incomingIdempotencyKey,
+    expectedPipelineVersion,
+    incomingSummary,
+  });
+
+  if (compat.ok) {
+    return {
+      action: "reuse",
+      existingJob: true,
+      compatible: true,
+      reason: "compatible",
+    };
+  }
+
+  if (compat.reason === "result_incomplete") {
+    const active = String(activeLeaseId || "").trim();
+    const ours = String(incomingLeaseId || "").trim();
+    if (active && ours && active !== ours) {
+      return {
+        action: "join",
+        existingJob: true,
+        compatible: true,
+        reason: "active_flight",
+      };
+    }
+    return {
+      action: "create",
+      existingJob: false,
+      compatible: false,
+      reason: "result_incomplete",
+      supersededJobId: existingRow.id || null,
+    };
+  }
+
+  return {
+    action: "create",
+    existingJob: false,
+    compatible: false,
+    reason: compat.reason,
+    supersededJobId: existingRow.id || null,
+  };
+}
+
+/**
+ * Hydrate: snapshot evidence varken job hâlâ EVIDENCE_MISSING ise stale.
+ */
+export function isHydrateJobResultStale({
+  existingMetadata = null,
+  expectedPipelineVersion = ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+  snapshotHasBalanceEvidence = false,
+} = {}) {
+  const meta =
+    existingMetadata && typeof existingMetadata === "object"
+      ? existingMetadata
+      : {};
+  const existingKey = String(
+    meta.idempotency_key || meta.idempotencyKey || ""
+  ).trim();
+  const pipeToken = `:pipe:${String(expectedPipelineVersion || "").trim()}`;
+  if (!existingKey || (pipeToken.length > 6 && !existingKey.includes(pipeToken))) {
+    return true;
+  }
+  if (!snapshotHasBalanceEvidence) return false;
+  const existingBalance = metaText(meta, "balance_code", "balanceCode").toUpperCase();
+  return STALE_BALANCE_CODES.has(existingBalance) || !existingBalance;
 }
 
 export function nextRevisionNumber(priorRevision = 1) {

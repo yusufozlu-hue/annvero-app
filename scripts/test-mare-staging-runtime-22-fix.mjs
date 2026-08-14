@@ -32,6 +32,7 @@ import { applyFaizStopajiClassification } from "@/src/utils/faizStopajiClassify.
 import {
   ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
   buildRevisionIdempotencyKey,
+  evaluateV1PersistIdempotencyDecision,
   isCompatibleExistingReanalyzeJob,
 } from "@/src/utils/bankStatementReanalyze.js";
 import {
@@ -559,6 +560,48 @@ test("stale completed-job: eski pipe yok key uyumsuz", () => {
     }).ok,
     false
   );
+});
+
+test("same-key EVIDENCE_MISSING job is result_stale vs OUTPUT_READY", () => {
+  const expected = buildRevisionIdempotencyKey({
+    companyId: "c",
+    contentHash: "h1",
+    revision: 2,
+    planFingerprint: "d652977ac49b121412aa8ecab4a4fe54ac8a69816759de62804353c939f07a9a",
+    sourceId: "src-1",
+    sourceRevision: 14,
+    snapshotFingerprint: "h1",
+  });
+  const existingRow = {
+    id: "old",
+    company_id: "c",
+    metadata: {
+      idempotency_key: expected,
+      terminal_status: "review_required",
+      balance_code: "BALANCE_EVIDENCE_MISSING",
+      auto_matched_count: 4,
+      review_count: 0,
+    },
+  };
+  const keyOnly =
+    String(existingRow.metadata.idempotency_key) === expected &&
+    Boolean(existingRow.metadata.terminal_status);
+  assert.equal(keyOnly, true);
+  const decision = evaluateV1PersistIdempotencyDecision({
+    incomingIdempotencyKey: expected,
+    incomingCompanyId: "c",
+    incomingSummary: {
+      terminalStatus: "completed",
+      balanceCode: "BALANCE_MATCHED",
+      outputGateCode: "OUTPUT_READY",
+      autoMatchedCount: 4,
+      reviewCount: 0,
+    },
+    existingRow,
+  });
+  assert.equal(decision.action, "create");
+  assert.equal(decision.reason, "result_stale");
+  assert.equal(decision.existingJob, false);
 });
 
 test("pipeline version constant is deterministic", () => {
