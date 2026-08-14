@@ -47,6 +47,7 @@
     "test:account-plan-merge": "node --import ./scripts/_alias-loader.mjs ./scripts/test-account-plan-merge.mjs",
     "test:bank-reanalyze-click": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-reanalyze-click-interaction.mjs",
     "test:bank-reanalyze-orchestration": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-reanalyze-orchestration.mjs",
+    "test:v1-job-persist-idempotency": "node --import ./scripts/_alias-loader.mjs ./scripts/test-v1-job-persist-idempotency.mjs",
     "test:mare-staging-22": "node --import ./scripts/_alias-loader.mjs --test ./scripts/test-mare-staging-runtime-22-fix.mjs"
   },
   "dependencies": {

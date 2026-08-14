@@ -50,6 +50,12 @@ export const V1_SAFE_METADATA_KEYS = Object.freeze([
   "account_plan_count",
   "resolved_missing_count",
   "truly_not_found_count",
+  "pipeline_version",
+  "source_id",
+  "source_revision",
+  "plan_fingerprint",
+  "snapshot_fingerprint",
+  "output_gate_code",
 ]);
 
 const FORBIDDEN_KEY_RE =
@@ -204,6 +210,27 @@ export function buildSafeV1PersistPayload({
       summary.trulyNotFoundCount ?? summary.truly_not_found_count,
       null
     ),
+    pipeline_version: sanitizeString(
+      summary.pipelineVersion || summary.pipeline_version || "",
+      96
+    ),
+    source_id: sanitizeString(summary.sourceId || summary.source_id || "", 36),
+    source_revision: sanitizeString(
+      summary.sourceRevision ?? summary.source_revision ?? "",
+      16
+    ),
+    plan_fingerprint: sanitizeString(
+      summary.planFingerprint || summary.plan_fingerprint || "",
+      64
+    ),
+    snapshot_fingerprint: sanitizeString(
+      summary.snapshotFingerprint || summary.snapshot_fingerprint || "",
+      64
+    ),
+    output_gate_code: sanitizeString(
+      summary.outputGateCode || summary.output_gate_code || "",
+      40
+    ),
   };
 
   // null sayısal alanları temizle
@@ -250,6 +277,12 @@ export function buildSafeV1PersistPayload({
   ) {
     delete meta.truly_not_found_count;
   }
+  if (!meta.pipeline_version) delete meta.pipeline_version;
+  if (!meta.source_id) delete meta.source_id;
+  if (!meta.source_revision) delete meta.source_revision;
+  if (!meta.plan_fingerprint) delete meta.plan_fingerprint;
+  if (!meta.snapshot_fingerprint) delete meta.snapshot_fingerprint;
+  if (!meta.output_gate_code) delete meta.output_gate_code;
 
   const payload = {
     company_id: sanitizeString(companyId, 80),

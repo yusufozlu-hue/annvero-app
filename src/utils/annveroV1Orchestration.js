@@ -907,6 +907,12 @@ export function buildV1ResultSummary({
   balanceDelta = null,
   expectedClosing = null,
   balanceEvidenceSource = "",
+  outputGateCode = "",
+  pipelineVersion = "",
+  sourceId = "",
+  sourceRevision = "",
+  planFingerprint = "",
+  snapshotFingerprint = "",
 } = {}) {
   const resolvedReviewRequired =
     reviewRequired != null
@@ -957,6 +963,12 @@ export function buildV1ResultSummary({
     balanceDelta: finiteOrNull(balanceDelta),
     expectedClosing: finiteOrNull(expectedClosing),
     balanceEvidenceSource: String(balanceEvidenceSource || "").slice(0, 64),
+    outputGateCode: String(outputGateCode || "").slice(0, 40),
+    pipelineVersion: String(pipelineVersion || "").slice(0, 96),
+    sourceId: String(sourceId || "").slice(0, 36),
+    sourceRevision: String(sourceRevision ?? "").slice(0, 16),
+    planFingerprint: String(planFingerprint || "").slice(0, 64),
+    snapshotFingerprint: String(snapshotFingerprint || "").slice(0, 64),
     // hassas alanlar bilinçli olarak yok
   };
 }

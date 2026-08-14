@@ -688,6 +688,15 @@ export function BankPipelineResultCard({
         </p>
       ) : null}
 
+      {result.persistAuditWarning ? (
+        <p
+          className="mt-2 text-xs text-amber-200/90"
+          data-testid="bank-persist-audit-warning"
+        >
+          {result.persistAuditWarning}
+        </p>
+      ) : null}
+
       {Array.isArray(auditHistory) && auditHistory.length > 0 ? (
         <div className="mt-5 border-t border-emerald-900/40 pt-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">

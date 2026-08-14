@@ -143,6 +143,11 @@ test("persist payload keeps supersedes / revision audit fields", () => {
       accountPlanCount: 4166,
       resolvedMissingCount: 40,
       trulyNotFoundCount: 3,
+      planFingerprint: "plan-fp-1",
+      pipelineVersion: "br/2.1.0+vl/2.1.0",
+      outputGateCode: "OUTPUT_READY",
+      sourceId: "6c1690b3-dad0-4361-b552-ed86575884de",
+      snapshotFingerprint: "snap-1",
     },
   });
   assert.equal(payload.metadata.reanalyze, true);
@@ -150,8 +155,11 @@ test("persist payload keeps supersedes / revision audit fields", () => {
   assert.equal(payload.metadata.supersedes_job_id, "prior-id");
   assert.equal(payload.metadata.revision_of, "prior-id");
   assert.equal(payload.metadata.account_plan_count, 4166);
+  assert.equal(payload.metadata.plan_fingerprint, "plan-fp-1");
+  assert.equal(payload.metadata.output_gate_code, "OUTPUT_READY");
   assert.ok(V1_SAFE_METADATA_KEYS.includes("supersedes_job_id"));
   assert.ok(V1_SAFE_METADATA_KEYS.includes("account_plan_count"));
+  assert.ok(V1_SAFE_METADATA_KEYS.includes("plan_fingerprint"));
 });
 
 test("sanitize accepts reanalyze revisionOf flags", () => {
@@ -284,6 +292,7 @@ test("UI button label + duplicate card wiring present", () => {
     "utf8"
   );
   assert.match(jobsRoute, /CROSS_TENANT_FORBIDDEN/);
+  assert.match(jobsRoute, /SOURCE_NOT_IN_COMPANY/);
   assert.match(jobsRoute, /supersedes_job_id/);
   assert.match(jobsRoute, /incoming\.reanalyze/);
 });

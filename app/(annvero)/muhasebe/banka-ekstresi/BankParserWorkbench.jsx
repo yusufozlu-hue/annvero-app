@@ -240,6 +240,7 @@ import {
   deriveRevisionCounters,
   extractAnalysisCounters,
   isCompatibleExistingReanalyzeJob,
+  isHydrateJobResultStale,
   nextRevisionNumber,
   shouldBypassIdempotencyHistoryBlock,
   shouldBypassSessionDedupBlock,
@@ -952,11 +953,13 @@ export default function BankParserWorkbench() {
           setV1AuditHistory(hist.runs);
           const latest = hist.runs[0];
           const meta = latest?.metadata || {};
-          const existingKey = String(meta.idempotency_key || "").trim();
-          const pipeToken = `:pipe:${ANNVERO_BANK_REANALYZE_PIPELINE_VERSION}`;
-          const staleJobResult =
-            !existingKey ||
-            (pipeToken.length > 6 && !existingKey.includes(pipeToken));
+          const staleJobResult = isHydrateJobResultStale({
+            existingMetadata: meta,
+            expectedPipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+            snapshotHasBalanceEvidence: Boolean(
+              canonicalBalanceEvidenceRef.current
+            ),
+          });
           // Stale completed job sayaçlarını nihai sonuç gibi bağlama —
           // hydrate reanalyze çalışacak; kart/dosya korunur.
           setPipelineResult({
@@ -5633,7 +5636,13 @@ export default function BankParserWorkbench() {
         duplicate: terminalDuplicate,
         reviewRequired:
           Boolean(fisKontrolResult?.reviewRequired) || !outputGate.allowed,
+        failed: false,
       });
+      const contentHash = lastDedupMetaRef.current?.sourceFileHash || "";
+      const revision = reanalyzeOpts?.revision || 2;
+      const planFp =
+        lastReanalyzePlanFpRef.current ||
+        String(reanalyzeOpts?.planFingerprint || "").trim();
 
       const resultSummary = buildV1ResultSummary({
         movementCount: movementsRef.current.length,
@@ -5657,7 +5666,7 @@ export default function BankParserWorkbench() {
         terminalStatus,
         parseMs: stageDurations.previewMs || null,
         chainMs: totalDurationMs,
-        contentHash: lastDedupMetaRef.current?.sourceFileHash || "",
+        contentHash,
         reviewRequired:
           Boolean(fisKontrolResult?.reviewRequired) || !outputGate.allowed,
         canAutoApprove: outputGate.allowed,
@@ -5675,6 +5684,12 @@ export default function BankParserWorkbench() {
           balanceResult?.evidenceSource ||
           canonicalBalanceEvidenceRef.current?.evidenceSource ||
           "",
+        outputGateCode: outputGate.code,
+        pipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+        sourceId: canonicalSourceIdRef.current || "",
+        sourceRevision: canonicalSourceRevisionRef.current || "",
+        planFingerprint: planFp,
+        snapshotFingerprint: contentHash,
       });
 
       const accountPlanCount = Array.isArray(companyPlans)
@@ -5704,11 +5719,6 @@ export default function BankParserWorkbench() {
         : null;
 
       emitV1(V1_JOB_STATE.PERSISTING, 60, "Güvenli özet kaydediliyor…");
-      const contentHash = lastDedupMetaRef.current?.sourceFileHash || "";
-      const revision = reanalyzeOpts?.revision || 2;
-      const planFp =
-        lastReanalyzePlanFpRef.current ||
-        String(reanalyzeOpts?.planFingerprint || "").trim();
       const idempotencyKey = reanalyzeOpts?.reanalyze
         ? buildRevisionIdempotencyKey({
             companyId: selectedCompanyId,
@@ -5739,10 +5749,13 @@ export default function BankParserWorkbench() {
           revisionOf: reanalyzeOpts?.revisionOf || "",
           supersedesJobId: reanalyzeOpts?.revisionOf || "",
           accountPlanCount,
-          planContentFingerprint: planFp || undefined,
-          pipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
-          sourceId: canonicalSourceIdRef.current || undefined,
-          sourceRevision: canonicalSourceRevisionRef.current || undefined,
+          planFingerprint: resultSummary.planFingerprint || planFp || undefined,
+          pipelineVersion: resultSummary.pipelineVersion,
+          sourceId: resultSummary.sourceId || undefined,
+          sourceRevision: resultSummary.sourceRevision || undefined,
+          snapshotFingerprint:
+            resultSummary.snapshotFingerprint || contentHash || undefined,
+          outputGateCode: resultSummary.outputGateCode,
           resolvedMissingCount: revisionCompare?.resolvedMissing ?? 0,
           trulyNotFoundCount: revisionCompare?.trulyNotFound ?? 0,
           balanceResolutionApplied: Boolean(
@@ -5761,25 +5774,41 @@ export default function BankParserWorkbench() {
         revision: reanalyzeOpts?.reanalyze ? revision : null,
         supersedesJobId: reanalyzeOpts?.revisionOf || "",
       });
-      // Stale/uyumsuz existingJob → yerel sonucu koru; eski kartı bağlama
-      if (
-        reanalyzeOpts?.reanalyze &&
+      const persistCompat = isCompatibleExistingReanalyzeJob({
+        existingMetadata: persistResult?.view?.metadata || {},
+        expectedIdempotencyKey: idempotencyKey,
+        expectedPipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+        incomingSummary: resultSummary,
+      });
+      const serverCompatible = Boolean(
+        persistResult?.compatibleExistingJob || persistResult?.compatible
+      );
+      let persistAuditWarning = "";
+      if (!persistResult?.ok) {
+        persistAuditWarning =
+          persistResult?.message ||
+          "Denetim kaydı yazılamadı. Analiz sonucu ekranda duruyor.";
+      } else if (
         persistResult?.existingJob &&
-        !isCompatibleExistingReanalyzeJob({
-          existingMetadata: persistResult?.view?.metadata || {},
-          expectedIdempotencyKey: idempotencyKey,
-          expectedPipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
-        }).ok
+        persistResult?.persisted === false &&
+        !serverCompatible &&
+        !persistCompat.ok
       ) {
-        console.warn(
-          "[banka-ekstresi] stale existingJob ignored; keeping local analysis result",
-          persistResult?.view?.id || ""
-        );
+        persistAuditWarning =
+          "Denetim geçmişi güncellenemedi (uyumsuz mevcut iş). Yeni kayıt yazılmadı.";
+      }
+      if (persistResult?.persisted && persistResult?.view?.id) {
+        v1JobIdRef.current =
+          persistResult.view.metadata?.job_id ||
+          persistResult.jobId ||
+          v1JobIdRef.current;
       }
       stageOutputs[V1_JOB_STATE.PERSISTING] = {
-        ok: true,
+        ok: Boolean(persistResult?.ok),
         existingJob: Boolean(persistResult?.existingJob),
         persisted: Boolean(persistResult?.persisted),
+        compatible: serverCompatible,
+        persistAuditWarning,
       };
 
       const result = {
@@ -5818,6 +5847,10 @@ export default function BankParserWorkbench() {
           validationMeta.findingClasses ||
           null,
         terminalStatus,
+        persistAuditWarning,
+        persistedJobId: persistResult?.jobId || persistResult?.view?.id || null,
+        persistExistingJob: Boolean(persistResult?.existingJob),
+        persistCompatible: serverCompatible,
         totalDurationMs,
         stageDurations,
         parseMode: stageDurations.parseMode || null,

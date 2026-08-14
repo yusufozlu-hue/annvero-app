@@ -24,6 +24,10 @@ import {
   buildLeaseKey,
   V1_JOB_STATE,
 } from "@/src/utils/annveroV1Orchestration";
+import {
+  ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+  evaluateV1PersistIdempotencyDecision,
+} from "@/src/utils/bankStatementReanalyze";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,6 +77,63 @@ function releaseLease(companyId, leaseId) {
   if (leaseId && existing.leaseId !== leaseId) return false;
   globalLeaseStore.delete(buildLeaseKey(companyId));
   return true;
+}
+
+function isMissingRelation(error) {
+  const msg = String(error?.message || error?.code || "");
+  return (
+    error?.code === "42P01" ||
+    error?.code === "PGRST205" ||
+    /does not exist|Could not find the table/i.test(msg)
+  );
+}
+
+async function loadOwnedBankSource(supabase, companyId, sourceId) {
+  const id = String(sourceId || "").trim();
+  const company = String(companyId || "").trim();
+  if (!id || !company) return { source: null, missingTable: false };
+  const { data, error } = await supabase
+    .from("bank_statement_sources")
+    .select("id, company_id, revision, content_hash, plan_content_fingerprint")
+    .eq("id", id)
+    .eq("company_id", company)
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (error) {
+    if (isMissingRelation(error)) return { source: null, missingTable: true };
+    return { source: null, missingTable: false, lookupError: true };
+  }
+  return { source: data || null, missingTable: false };
+}
+
+function persistDecisionResponse({
+  companyId,
+  persisted,
+  existingJob,
+  compatible,
+  reason,
+  reanalyze = false,
+  revision = null,
+  supersedesJobId = null,
+  view = null,
+  jobId = null,
+}) {
+  return NextResponse.json({
+    ok: true,
+    action: "persist",
+    companyId,
+    persisted: Boolean(persisted),
+    duplicate: Boolean(existingJob && compatible && !persisted),
+    reanalyze: Boolean(reanalyze),
+    existingJob: Boolean(existingJob),
+    compatible: Boolean(compatible),
+    compatibleExistingJob: Boolean(compatible && existingJob),
+    compatibilityReason: reason || null,
+    revision: revision || null,
+    supersedesJobId: supersedesJobId || null,
+    jobId: jobId || view?.id || view?.metadata?.job_id || null,
+    view,
+  });
 }
 
 export async function GET(request) {
@@ -175,6 +236,46 @@ export async function POST(request) {
       return jsonError("LEASE_MISMATCH", "Lease serbest bırakılamadı.", 409);
     }
     return NextResponse.json({ ok: true, action: "release", companyId });
+  }
+
+  if (action === "persist") {
+    const requestedSourceId = String(
+      incoming.summary?.sourceId || incoming.summary?.source_id || ""
+    ).trim();
+    if (requestedSourceId) {
+      const owned = await loadOwnedBankSource(
+        ctx.supabase,
+        companyId,
+        requestedSourceId
+      );
+      if (owned.missingTable) {
+        return jsonError(
+          "SCHEMA_MISSING",
+          "Canonical snapshot tabloları henüz uygulanmadı.",
+          503
+        );
+      }
+      if (owned.lookupError) {
+        return jsonError("SOURCE_LOOKUP_FAILED", "Kaynak doğrulanamadı.", 500);
+      }
+      if (!owned.source) {
+        return jsonError(
+          "SOURCE_NOT_IN_COMPANY",
+          "Kaynak bu firmaya ait değil.",
+          403
+        );
+      }
+      incoming.summary.sourceId = owned.source.id;
+      incoming.summary.sourceRevision = String(owned.source.revision ?? "");
+      if (owned.source.content_hash) {
+        incoming.summary.snapshotFingerprint = String(owned.source.content_hash);
+      }
+      if (owned.source.plan_content_fingerprint) {
+        incoming.summary.planFingerprint = String(
+          owned.source.plan_content_fingerprint
+        );
+      }
+    }
   }
 
   if (action === "checkpoint") {
@@ -285,8 +386,22 @@ export async function POST(request) {
   }
 
   const idempotencyKey = String(payload.metadata?.idempotency_key || "").trim();
-  // Aynı tam idempotency (rev+plan+pipe+src+srev+snap) → mevcut kayıt.
-  // Eski :rev:N:plan:… (pipe yok) anahtarlar yeni pipeline ile eşleşmez → yeni job.
+  const incomingSummary = {
+    ...incoming.summary,
+    engineVersion: payload.metadata.engine_version,
+    pipelineVersion:
+      payload.metadata.pipeline_version ||
+      ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+    sourceId: payload.metadata.source_id,
+    sourceRevision: payload.metadata.source_revision,
+    snapshotFingerprint: payload.metadata.snapshot_fingerprint,
+    planFingerprint: payload.metadata.plan_fingerprint,
+    outputGateCode: payload.metadata.output_gate_code,
+    balanceCode: payload.metadata.balance_code,
+    terminalStatus: payload.metadata.terminal_status,
+  };
+
+  let existingRow = null;
   if (idempotencyKey && !idempotencyKey.endsWith(":nohash")) {
     const { data: existingRows, error: existingError } = await ctx.supabase
       .from(AUDIT_EVENTS_TABLE)
@@ -298,33 +413,50 @@ export async function POST(request) {
       .order("created_at", { ascending: false })
       .limit(1);
     if (!existingError && existingRows?.[0]) {
-      const existingMeta = existingRows[0].metadata || {};
-      const existingKey = String(
-        existingMeta.idempotency_key || ""
-      ).trim();
-      // Anahtar birebir aynı değilse veya result eksikse stale say — yeni persist
-      const terminal = String(existingMeta.terminal_status || "").trim();
-      const compatible =
-        existingKey === idempotencyKey && Boolean(terminal);
-      if (!compatible) {
-        // fall through — yeni audit satırı yaz
-      } else {
-        if (incoming.leaseId) {
-          releaseLease(companyId, incoming.leaseId);
-        }
-        return NextResponse.json({
-          ok: true,
-          action: "persist",
-          companyId,
-          persisted: false,
-          duplicate: true,
-          reanalyze: Boolean(incoming.reanalyze),
-          existingJob: true,
-          compatibleExistingJob: true,
-          view: publicV1JobView(existingRows[0]),
-        });
-      }
+      existingRow = existingRows[0];
     }
+  }
+
+  const activeLease = readLease(companyId);
+  const decision = evaluateV1PersistIdempotencyDecision({
+    incomingIdempotencyKey: idempotencyKey,
+    incomingCompanyId: companyId,
+    incomingSummary,
+    expectedPipelineVersion:
+      payload.metadata.pipeline_version ||
+      ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+    existingRow,
+    incomingLeaseId: incoming.leaseId || "",
+    activeLeaseId: activeLease?.leaseId || "",
+  });
+
+  if (decision.action === "deny") {
+    return jsonError(
+      decision.code || "CROSS_TENANT_FORBIDDEN",
+      "Başka firmanın kaynağı veya planı kullanılamaz.",
+      decision.status || 403
+    );
+  }
+
+  if (decision.action === "reuse" || decision.action === "join") {
+    if (incoming.leaseId && decision.action === "reuse") {
+      releaseLease(companyId, incoming.leaseId);
+    }
+    return persistDecisionResponse({
+      companyId,
+      persisted: false,
+      existingJob: true,
+      compatible: true,
+      reason: decision.reason,
+      reanalyze: Boolean(incoming.reanalyze),
+      revision: existingRow?.metadata?.revision || payload.metadata?.revision || null,
+      supersedesJobId:
+        existingRow?.metadata?.supersedes_job_id ||
+        payload.metadata?.supersedes_job_id ||
+        null,
+      view: publicV1JobView(existingRow),
+      jobId: existingRow?.id || existingRow?.metadata?.job_id || null,
+    });
   }
 
   const written = await writeAuditEvent({
@@ -341,21 +473,24 @@ export async function POST(request) {
     releaseLease(companyId, incoming.leaseId);
   }
 
-  return NextResponse.json({
-    ok: true,
-    action: "persist",
+  return persistDecisionResponse({
     companyId,
     persisted: Boolean(written?.ok !== false),
-    duplicate: false,
+    existingJob: false,
+    compatible: false,
+    reason: decision.reason,
     reanalyze: Boolean(incoming.reanalyze),
     revision: payload.metadata?.revision || null,
-    supersedesJobId: payload.metadata?.supersedes_job_id || null,
+    supersedesJobId:
+      payload.metadata?.supersedes_job_id || decision.supersededJobId || null,
     view: publicV1JobView({
+      id: written?.id || null,
       company_id: companyId,
       entity_type: payload.entity_type,
       entity_id: payload.entity_id,
       metadata: payload.metadata,
       created_at: new Date().toISOString(),
     }),
+    jobId: written?.id || payload.entity_id,
   });
 }
