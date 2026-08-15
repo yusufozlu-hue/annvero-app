@@ -244,7 +244,20 @@ function scoreWorkerCandidates(sheetRows, options) {
     const hasBorcAlacak = t.includes("borc") && t.includes("alacak");
     const hasDekont = t.includes("dekont");
     const hasIslem = t.includes("islem no") || t.includes("islem kodu");
-    if (hasTarih && hasAciklama && hasBorcAlacak && (hasDekont || hasIslem)) {
+    const hasMuhTarih = t.includes("muh tarih") || t.includes("muhasebe tarih");
+    const hasValor = t.includes("valor");
+    const hasFisNo = t.includes("fis no");
+    const hasIslKd = t.includes("isl kd") || t.includes("islem kod");
+    const hasIslemAciklama = t.includes("islem aciklamasi");
+    if (
+      hasMuhTarih &&
+      hasValor &&
+      hasFisNo &&
+      hasBorcAlacak &&
+      (hasIslKd || hasIslemAciklama)
+    ) {
+      pushW(signals, "header_ziraat_export", WORKER_W.formatFingerprint + 12);
+    } else if (hasTarih && hasAciklama && hasBorcAlacak && (hasDekont || hasIslem)) {
       pushW(signals, "header_ziraat_dekont", 26);
     } else if (hasTarih && hasAciklama && hasBorcAlacak) {
       pushW(signals, "header_ziraat_borc_alacak", 10);
@@ -309,7 +322,9 @@ function detectBankDecision(sheetRows, scanLimitOrOptions) {
   const second = ranked[1];
   if (!top || top.score < WORKER_SELECT_MIN) {
     const exclusiveVakif = Boolean(
-      top?.signals?.some((s) => s.code === "header_vakif_native")
+      top?.signals?.some(
+        (s) => s.code === "header_vakif_native" || s.code === "header_ziraat_export"
+      )
     );
     if (
       !(
@@ -348,13 +363,6 @@ function detectBankDecision(sheetRows, scanLimitOrOptions) {
     parserBankId: top.parser,
     topScore: top.score,
   };
-}
-
-/** Geriye uyumluluk: kanonik string veya UNKNOWN/AMBIGUOUS */
-function detectKnownBankFormat(sheetRows, scanLimitOrOptions) {
-  const d = detectBankDecision(sheetRows, scanLimitOrOptions);
-  if (d.status === "DETECTED") return d.selectedBank;
-  return d.status;
 }
 
 function banksMatch(a, b) {

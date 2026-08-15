@@ -48,6 +48,8 @@ import {
   FIXTURE_D_FILENAME_ONLY_KUVEYT,
   FIXTURE_E_TEB_NAMED_STRONG_GARANTI,
   FIXTURE_F_TEB_NAMED_WEAK_GARANTI,
+  FIXTURE_ZIRAAT_REAL_EXPORT_ANON,
+  FIXTURE_TEB_NAMED_GARANTI_COLUMNS,
 } from "./fixtures/bank-excel/sheetRows.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -509,6 +511,58 @@ section("16) UI ↔ worker detector parity (aynı matris)");
     }
   }
   console.log("OK — UI/worker parity (canonical selectedBank + parserBankId)");
+}
+
+section("17) Gerçek Ziraat export + TEB-adlı Garanti kolonları");
+{
+  const z = detectExcelBank(FIXTURE_ZIRAAT_REAL_EXPORT_ANON.rows, {
+    sheetName: FIXTURE_ZIRAAT_REAL_EXPORT_ANON.sheetName,
+    fileName: FIXTURE_ZIRAAT_REAL_EXPORT_ANON.fileName,
+  });
+  assert.equal(z.status, "detected");
+  assert.equal(z.bankId, "ZIRAAT");
+  assert.equal(z.parserBankId, "ZIRAAT");
+  assert.ok(z.diagnostics.matchedSignals.includes("header_ziraat_export"));
+  assert.equal(parseRowsForBank(FIXTURE_ZIRAAT_REAL_EXPORT_ANON.rows, "ZIRAAT").length, 2);
+
+  // brand yok + native header → exclusive DETECTED
+  const zNativeOnly = detectExcelBank(
+    [
+      [
+        "Muh Tarih",
+        "Valor",
+        "Şube",
+        "Fiş No",
+        "İşl Kd",
+        "Borç",
+        "Alacak",
+        "Bakiye",
+        "İşlem Açıklaması",
+      ],
+      ["10.01.2026", "10.01.2026", "X", "1", "E", "1,00", "", "1", "ANON"],
+    ],
+    { fileName: "ekstre.xlsx", sheetName: "Sheet1" }
+  );
+  assert.equal(zNativeOnly.status, "detected");
+  assert.equal(zNativeOnly.bankId, "ZIRAAT");
+  assert.ok(zNativeOnly.diagnostics.matchedSignals.includes("header_ziraat_export"));
+
+  const tebNamed = detectExcelBank(FIXTURE_TEB_NAMED_GARANTI_COLUMNS.rows, {
+    sheetName: FIXTURE_TEB_NAMED_GARANTI_COLUMNS.sheetName,
+    fileName: FIXTURE_TEB_NAMED_GARANTI_COLUMNS.fileName,
+  });
+  assert.equal(tebNamed.status, "unknown");
+  assert.equal(tebNamed.bankId, null);
+  assert.notEqual(tebNamed.diagnostics.topCandidate, "TEB");
+  assert.equal(tebNamed.diagnostics.topCandidate, "GARANTI");
+  assert.ok(tebNamed.diagnostics.topScore < 45);
+  // dosya adı TEB seçtirmesin
+  assert.ok(
+    (tebNamed.diagnostics.matchedSignals || []).includes("header_garanti_export") ||
+      tebNamed.diagnostics.topScore === 28 ||
+      tebNamed.diagnostics.topScore === 36
+  );
+  console.log("OK — Ziraat real export + TEB-named ≠ TEB", decisionSummary(tebNamed));
 }
 
 console.log("\nALL PASS — bank excel auto-detect TEB/Ziraat/KuveytTürk");

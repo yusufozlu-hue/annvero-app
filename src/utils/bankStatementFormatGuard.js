@@ -11,6 +11,7 @@ import {
   detectExcelBank,
   detectKnownBankFormatScored,
 } from "@/src/utils/bankExcelAutoDetect";
+import { resolveExcelBankWithCompanyContext } from "@/src/utils/bankStatementCompanyBankResolve";
 
 export const BANK_FORMAT_MISMATCH_MESSAGE =
   "Seçilen banka ile yüklenen ekstre formatı uyuşmuyor.";
@@ -23,6 +24,9 @@ export const BANK_DETECT_UNKNOWN_MESSAGE =
 
 export const BANK_DETECT_AMBIGUOUS_MESSAGE =
   "Birden fazla banka formatı olası görünüyor. Net bir banka ekstresi yükleyin; yanlış banka seçilmedi.";
+
+export const BANK_DETECT_CONFIRM_MESSAGE =
+  "Bu ekstre hangi bankaya ait?";
 
 /** Bilinen Excel formatları (kanonik → parser id ile karşılaştırılır) */
 const KNOWN_BANK_FORMATS = new Set([
@@ -173,13 +177,24 @@ export function assertSelectedBankMatchesSheet(
 /**
  * Dosya başlığından banka çözümü.
  * bankId / selectedBank = kanonik; parserBankId = hot-path (KUVEYTTURK→KUVEYT).
+ * Firma bağlamı (bankAccounts / schema memory) verilirse güvenli TEB/Garanti ayrımı yapılır.
  */
 export function resolveParserBankFromSheet(sheetRows, scanLimitOrOptions = 40) {
   const options =
     typeof scanLimitOrOptions === "number"
       ? { scanLimit: scanLimitOrOptions }
       : scanLimitOrOptions || {};
-  const resolved = detectExcelBank(sheetRows, options);
+
+  const useCompanyContext =
+    Boolean(options.companyId) ||
+    Boolean(options.bankAccounts?.length) ||
+    Boolean(options.formatMemoryRecords) ||
+    options.useCompanyContext === true;
+
+  const resolved = useCompanyContext
+    ? resolveExcelBankWithCompanyContext(sheetRows, options)
+    : detectExcelBank(sheetRows, options);
+
   return {
     status: resolved.status,
     confidence: resolved.confidence,
@@ -188,8 +203,10 @@ export function resolveParserBankFromSheet(sheetRows, scanLimitOrOptions = 40) {
     canonicalBankId: resolved.canonicalBankId || null,
     selectedBank: resolved.diagnostics?.selectedBank ?? resolved.bankId,
     detected: resolved.detected,
+    resolutionSource: resolved.resolutionSource || null,
+    fingerprint: resolved.fingerprint || null,
     diagnostics: resolved.diagnostics,
   };
 }
 
-export { toParserBankId, bankIdsEqual };
+export { toParserBankId, bankIdsEqual, resolveExcelBankWithCompanyContext };

@@ -35,6 +35,43 @@ export const FIXTURE_ZIRAAT_XLS_ROWS = [
   ["14.01.2026", "FATURA", "200,00", "", "1800"],
 ];
 
+/**
+ * Gerçek Ziraat Excel export yapısal anonim fixture
+ * (Muh Tarih | Valor | Şube | Fiş No | İşl Kd | Borç | Alacak | …).
+ * Hassas veri yok.
+ */
+export const FIXTURE_ZIRAAT_REAL_EXPORT_ANON = {
+  sheetName: "TL Hesap",
+  fileName: "ekstre.xlsx",
+  rows: [
+    ["T.C. Ziraat Bankası A.Ş.", "", "", "", "", "", "", "", ""],
+    [
+      "Muh Tarih",
+      "Valor",
+      "Şube",
+      "Fiş No",
+      "İşl Kd",
+      "Borç",
+      "Alacak",
+      "Bakiye",
+      "İşlem Açıklaması",
+    ],
+    ["10.01.2026", "10.01.2026", "ANON", "F1", "EFT", "100,00", "", "900,00", "EFT GIDEN ANON"],
+    ["11.01.2026", "11.01.2026", "ANON", "F2", "GEL", "", "250,00", "1150,00", "GELEN HAVALE ANON"],
+  ],
+};
+
+/** TEB adlı fakat Garanti kolonları (yapısal anon fixture) → UNKNOWN */
+export const FIXTURE_TEB_NAMED_GARANTI_COLUMNS = {
+  sheetName: "Hesap Hareketleri",
+  fileName: "teb-named-garanti-columns.xlsx",
+  rows: [
+    ["Tarih", "Açıklama", "Unvan", "Özel İşlem Açıklaması", "Tutar", "Bakiye", "Dekont"],
+    ["01.03.2026", "EFT ANON", "ANON FIRMA", "", "1000,00", "1000", "D1"],
+    ["02.03.2026", "ODEME VAKIFBANK KREDI KARTI ANON", "ANON", "", "-50,00", "950", "D2"],
+  ],
+};
+
 export const FIXTURE_KUVEYTTURK_XLSX_ROWS = [
   ["Kuveyt Türk Katılım Bankası A.Ş.", "", "", "", ""],
   ["IBAN", "TR450020500000000000000003", "", "", ""],

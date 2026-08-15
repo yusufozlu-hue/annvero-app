@@ -8,7 +8,7 @@ import {
   toParserBankId,
 } from "@/src/utils/bankIdentity";
 
-export const BANK_EXCEL_DETECTOR_VERSION = "excel-auto-detect/1.0.2";
+export const BANK_EXCEL_DETECTOR_VERSION = "excel-auto-detect/1.0.3";
 
 /** formatGuard ile aynı — döngüsel import yok; İ→i̇ birleşik işaretini temizler */
 function normalizeStatementHeaderText(value) {
@@ -266,8 +266,22 @@ function scoreZiraat(corpus) {
   const hasBorcAlacak = t.includes("borc") && t.includes("alacak");
   const hasDekont = t.includes("dekont");
   const hasIslem = t.includes("islem no") || t.includes("islem kodu");
+  // Gerçek Ziraat Excel: Muh Tarih | Valor | Şube | Fiş No | İşl Kd | Borç | Alacak | …
+  const hasMuhTarih = t.includes("muh tarih") || t.includes("muhasebe tarih");
+  const hasValor = t.includes("valor");
+  const hasFisNo = t.includes("fis no");
+  const hasIslKd = t.includes("isl kd") || t.includes("islem kod");
+  const hasIslemAciklama = t.includes("islem aciklamasi");
 
-  if (hasTarih && hasAciklama && hasBorcAlacak && (hasDekont || hasIslem)) {
+  if (
+    hasMuhTarih &&
+    hasValor &&
+    hasFisNo &&
+    hasBorcAlacak &&
+    (hasIslKd || hasIslemAciklama)
+  ) {
+    pushSignal(signals, "header_ziraat_export", WEIGHTS.formatFingerprint + 12);
+  } else if (hasTarih && hasAciklama && hasBorcAlacak && (hasDekont || hasIslem)) {
     pushSignal(signals, "header_ziraat_dekont", WEIGHTS.distinctiveHeader);
   } else if (hasTarih && hasAciklama && hasBorcAlacak) {
     pushSignal(signals, "header_ziraat_borc_alacak", 10);
@@ -495,7 +509,10 @@ export function detectExcelBank(sheetRows, options = {}) {
   if (!top || top.score < SELECT_MIN_SCORE) {
     // Yalnız Vakıf native (B/A / fiş no) brand olmadan da yeter — Garanti/Kuveyt kolonları yetmez
     const exclusiveFormat = Boolean(
-      top?.signals?.some((s) => s.code === "header_vakif_native")
+      top?.signals?.some(
+        (s) =>
+          s.code === "header_vakif_native" || s.code === "header_ziraat_export"
+      )
     );
     const formatOnlyOk =
       exclusiveFormat &&
