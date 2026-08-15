@@ -36,7 +36,9 @@ const KNOWN_BANK_FORMATS = new Set([
 
 export function normalizeStatementHeaderText(value) {
   return String(value || "")
-    .toLowerCase()
+    .toLocaleLowerCase("tr-TR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/ı/g, "i")
     .replace(/ğ/g, "g")
     .replace(/ü/g, "u")
@@ -60,14 +62,8 @@ export function isVakifbankStatementHeaderText(text) {
   const t = normalizeStatementHeaderText(text);
   if (!t) return false;
 
+  // Generic "hesap hareket" / hesap+hareket+tutar YETMEZ (Kuveyt false-positive)
   if (t.includes("b/a") && (t.includes("tutar") || t.includes("fis no"))) {
-    return true;
-  }
-  if (t.includes("hesap hareket")) return true;
-  if (t.includes("hesap") && t.includes("hareket") && t.includes("tutar")) {
-    return true;
-  }
-  if (t.includes("fis no") && t.includes("hareket") && t.includes("tutar")) {
     return true;
   }
   if (
@@ -78,7 +74,16 @@ export function isVakifbankStatementHeaderText(text) {
   ) {
     return true;
   }
-  if (t.includes("hareket tarih") && t.includes("tutar")) return true;
+  if (
+    t.includes("fis no") &&
+    t.includes("tutar") &&
+    (t.includes("islem tarih") || t.includes("hareket tarih") || t.includes("islem"))
+  ) {
+    return true;
+  }
+  if (t.includes("hareket tarih") && t.includes("tutar") && t.includes("fis")) {
+    return true;
+  }
   if (t.includes("islem tarihi") && t.includes("b/a")) return true;
 
   return false;
@@ -151,18 +156,23 @@ export function assertSelectedBankMatchesSheet(
   }
 
   const detected = resolved.bankId;
-  if (KNOWN_BANK_FORMATS.has(detected) || KNOWN_BANK_FORMATS.has(resolved.canonicalBankId)) {
+  if (
+    KNOWN_BANK_FORMATS.has(detected) ||
+    KNOWN_BANK_FORMATS.has(resolved.canonicalBankId) ||
+    KNOWN_BANK_FORMATS.has(resolved.parserBankId)
+  ) {
     if (!bankIdsEqual(detected, bank)) {
       throw createBankFormatMismatchError(bank, detected);
     }
   }
 
+  // Dış sözleşme: kanonik id
   return detected;
 }
 
 /**
- * Dosya başlığından parser banka kimliği çözümü.
- * high/medium → bankId güvenle set; unknown/ambiguous → bankId null.
+ * Dosya başlığından banka çözümü.
+ * bankId / selectedBank = kanonik; parserBankId = hot-path (KUVEYTTURK→KUVEYT).
  */
 export function resolveParserBankFromSheet(sheetRows, scanLimitOrOptions = 40) {
   const options =
@@ -174,7 +184,9 @@ export function resolveParserBankFromSheet(sheetRows, scanLimitOrOptions = 40) {
     status: resolved.status,
     confidence: resolved.confidence,
     bankId: resolved.bankId,
+    parserBankId: resolved.parserBankId ?? null,
     canonicalBankId: resolved.canonicalBankId || null,
+    selectedBank: resolved.diagnostics?.selectedBank ?? resolved.bankId,
     detected: resolved.detected,
     diagnostics: resolved.diagnostics,
   };

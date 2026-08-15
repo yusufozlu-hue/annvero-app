@@ -210,10 +210,19 @@ test("resolveParserBankFromSheet detects Vakıf / Garanti / TEB / Ziraat / Kuvey
   assert.equal(vakif.bankId, "VAKIFBANK");
 
   const garanti = resolveParserBankFromSheet([
+    ["Türkiye Garanti Bankası A.Ş.", "", "", "", "", ""],
     ["Tarih", "Açıklama", "Etiket", "Tutar", "Bakiye", "Dekont No"],
   ]);
   assert.equal(garanti.status, "detected");
   assert.equal(garanti.bankId, "GARANTI");
+
+  const garantiWeak = resolveParserBankFromSheet([
+    ["Tarih", "Açıklama", "Etiket", "Tutar", "Bakiye", "Dekont No"],
+  ]);
+  assert.equal(garantiWeak.status, "unknown");
+  assert.equal(garantiWeak.bankId, null);
+  assert.equal(garantiWeak.diagnostics.topCandidate, "GARANTI");
+  assert.ok(garantiWeak.diagnostics.topScore < 45);
 
   const teb = resolveParserBankFromSheet([
     ["Türkiye Ekonomi Bankası", "", "", "", "", ""],
@@ -235,8 +244,10 @@ test("resolveParserBankFromSheet detects Vakıf / Garanti / TEB / Ziraat / Kuvey
     ["Tarih", "Açıklama", "Borç", "Alacak", "Bakiye"],
   ]);
   assert.equal(kuveyt.status, "detected");
-  assert.equal(kuveyt.bankId, "KUVEYT");
+  assert.equal(kuveyt.bankId, "KUVEYTTURK");
+  assert.equal(kuveyt.parserBankId, "KUVEYT");
   assert.equal(kuveyt.canonicalBankId, "KUVEYTTURK");
+  assert.equal(kuveyt.selectedBank, "KUVEYTTURK");
 
   const unknown = resolveParserBankFromSheet([["foo", "bar"]]);
   assert.equal(unknown.status, "unknown");

@@ -50,16 +50,127 @@ export const FIXTURE_KUVEYT_ALIAS_ROWS = [
   ["15.01.2026", "TAKSIT", "10,00", "", "955"],
 ];
 
+/** Ortak Kuveyt kolon satırı (tek başına kimlik değil) */
+export const KUVEYT_COLUMN_HEADER = [
+  "İşlem Tarihi",
+  "Açıklama",
+  "Tutar",
+  "Bakiye",
+  "İşlem Referans Numarası",
+];
+
+/** A: kolon + Kuveyt sheet corroborator → DETECTED */
+export const FIXTURE_A_KUVEYT_COLS_SHEET = {
+  sheetName: "KUVEYTTURK ORNEK",
+  fileName: "ekstre.xlsx",
+  rows: [
+    ["Hesap", "ANON-1 TL", "", "", ""],
+    ["Şube", "ANON", "", "", ""],
+    ["Hesap Hareketleri", "", "", "", ""],
+    KUVEYT_COLUMN_HEADER,
+    ["10.01.2026", "GELEN EFT ANONIM", "50,00", "950,00", "REFANON001"],
+  ],
+};
+
+/** B: aynı kolonlar, nötr sheet/meta/filename → UNKNOWN */
+export const FIXTURE_B_KUVEYT_COLS_NEUTRAL = {
+  sheetName: "Sheet1",
+  fileName: "ekstre.xlsx",
+  rows: [
+    KUVEYT_COLUMN_HEADER,
+    ["10.01.2026", "GELEN EFT ANONIM", "50,00", "950,00", "REFANON001"],
+  ],
+};
+
+/** C: kolonlar + açıklamada VakıfBank → UNKNOWN (VAKIF değil) */
+export const FIXTURE_C_KUVEYT_COLS_VAKIF_NARRATIVE = {
+  sheetName: "Sheet1",
+  fileName: "ekstre.xlsx",
+  rows: [
+    KUVEYT_COLUMN_HEADER,
+    [
+      "10.01.2026",
+      "ODEME VAKIFBANK KREDI KARTI REF-ANON",
+      "-100,00",
+      "900,00",
+      "REFANON002",
+    ],
+  ],
+};
+
+/** D: yalnız KUVEYTTURK filename → UNKNOWN */
+export const FIXTURE_D_FILENAME_ONLY_KUVEYT = {
+  sheetName: "Sheet1",
+  fileName: "KUVEYTTURK ORNEK.xlsx",
+  rows: [
+    ["Tarih", "Açıklama", "Tutar"],
+    ["10.01.2026", "X", "1"],
+  ],
+};
+
+/** E: TEB adlı + güçlü Garanti identity → GARANTI */
+export const FIXTURE_E_TEB_NAMED_STRONG_GARANTI = {
+  sheetName: "Hesap Hareketleri",
+  fileName: "TEB ORNEK.xlsx",
+  rows: [
+    ["Türkiye Garanti Bankası A.Ş.", "", "", "", "", ""],
+    ["IBAN", "TR620006200000000000000099", "", "", "", ""],
+    ["Tarih", "Açıklama", "Etiket", "Tutar", "Bakiye", "Dekont No"],
+    ["01.03.2026", "EFT ALACAK", "", "1000,00", "1000", "G1"],
+  ],
+};
+
+/** F: TEB adlı + yalnız zayıf Garanti kolonları → UNKNOWN */
+export const FIXTURE_F_TEB_NAMED_WEAK_GARANTI = {
+  sheetName: "Hesap Hareketleri",
+  fileName: "TEB ORNEK.xlsx",
+  rows: [
+    ["Tarih", "Açıklama", "Etiket", "Tutar", "Bakiye", "Dekont No"],
+    ["01.03.2026", "EFT ALACAK", "", "1000,00", "1000", "G1"],
+  ],
+};
+
+/**
+ * Geriye dönük: gerçek export yapısal anonim (sheet corroborator).
+ * Veri satırında karşı taraf VAKIFBANK — statement bankası değil.
+ */
+export const FIXTURE_KUVEYT_REAL_EXPORT_ANON = {
+  sheetName: "kuveytturk",
+  fileName: "KUVEYTTURK ORNEK.xlsx",
+  rows: [
+    ["Hesap", "ANON-HESAP - 1 TL", "", "", ""],
+    ["Şube", "ANON SUBE", "", "", ""],
+    ["Hesap Hareketleri", "", "", "", ""],
+    KUVEYT_COLUMN_HEADER,
+    [
+      "10.01.2026",
+      "ODEME VAKIFBANK KREDI KARTI REF-ANON",
+      "-100,00",
+      "900,00",
+      "REFANON001",
+    ],
+    ["11.01.2026", "GELEN EFT ANONIM", "50,00", "950,00", "REFANON002"],
+  ],
+};
+
 export const FIXTURE_VAKIF_ROWS = [
   ["Hesap No", "Fiş No", "İşlem Tarihi", "Açıklama", "Tutar", "B/A"],
   ["123", "1", "01.02.2026", "EFT GELEN", "1500,00", "A"],
   ["123", "2", "02.02.2026", "HAVALE GIDEN", "200,00", "B"],
 ];
 
+/** Güçlü Garanti (brand + native kolon) */
 export const FIXTURE_GARANTI_ROWS = [
+  ["Türkiye Garanti Bankası A.Ş.", "", "", "", "", ""],
   ["Tarih", "Açıklama", "Etiket", "Tutar", "Bakiye", "Dekont No"],
   ["01.03.2026", "EFT ALACAK", "", "1000,00", "1000", "G1"],
   ["02.03.2026", "POS HARCAMASI", "", "-50,00", "950", "G2"],
+];
+
+/** Zayıf Garanti kolonları (brand yok) */
+export const FIXTURE_GARANTI_WEAK_COLUMNS = [
+  ["Tarih", "Açıklama", "Etiket", "Tutar", "Bakiye", "Dekont No"],
+  ["01.03.2026", "EFT ALACAK", "", "1000,00", "1000", "G1"],
 ];
 
 export const FIXTURE_GENERIC_COLUMNS = [
@@ -82,8 +193,8 @@ export const FIXTURE_AMBIGUOUS_TEB_ZIRAAT = [
 export const FIXTURE_MULTI_SHEET_SIGNAL = {
   sheetName: "Kuveyt Hareket",
   rows: [
-    ["Tarih", "Açıklama", "Borç", "Alacak", "Bakiye"],
     ["IBAN", "TR450020500000000000000003", "", "", ""],
+    ["Tarih", "Açıklama", "Borç", "Alacak", "Bakiye"],
     ["16.01.2026", "ODEME", "5,00", "", "100"],
   ],
 };
