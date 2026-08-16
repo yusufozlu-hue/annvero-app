@@ -198,7 +198,75 @@ test("resolution revision persists safe audit fields and supersedes", () => {
     companyId: "company-a",
     contentHash: "safe-hash",
     revision: 2,
+    planFingerprint: "plan-fp-a",
+    pipelineVersion: "br/2.1.0+vl/2.1.0",
+    sourceId: "src-aaaa",
+    sourceRevision: "3",
+    snapshotFingerprint: "snap-fp-a",
   });
+  const sameKey = buildRevisionIdempotencyKey({
+    companyId: "company-a",
+    contentHash: "safe-hash",
+    revision: 2,
+    planFingerprint: "plan-fp-a",
+    pipelineVersion: "br/2.1.0+vl/2.1.0",
+    sourceId: "src-aaaa",
+    sourceRevision: "3",
+    snapshotFingerprint: "snap-fp-a",
+  });
+  const differentRevision = buildRevisionIdempotencyKey({
+    companyId: "company-a",
+    contentHash: "safe-hash",
+    revision: 3,
+    planFingerprint: "plan-fp-a",
+    pipelineVersion: "br/2.1.0+vl/2.1.0",
+    sourceId: "src-aaaa",
+    sourceRevision: "3",
+    snapshotFingerprint: "snap-fp-a",
+  });
+  const differentPipeline = buildRevisionIdempotencyKey({
+    companyId: "company-a",
+    contentHash: "safe-hash",
+    revision: 2,
+    planFingerprint: "plan-fp-a",
+    pipelineVersion: "br/9.9.9+vl/9.9.9",
+    sourceId: "src-aaaa",
+    sourceRevision: "3",
+    snapshotFingerprint: "snap-fp-a",
+  });
+  const differentSnapshot = buildRevisionIdempotencyKey({
+    companyId: "company-a",
+    contentHash: "safe-hash",
+    revision: 2,
+    planFingerprint: "plan-fp-a",
+    pipelineVersion: "br/2.1.0+vl/2.1.0",
+    sourceId: "src-aaaa",
+    sourceRevision: "3",
+    snapshotFingerprint: "snap-fp-b",
+  });
+  const differentPlan = buildRevisionIdempotencyKey({
+    companyId: "company-a",
+    contentHash: "safe-hash",
+    revision: 2,
+    planFingerprint: "plan-fp-b",
+    pipelineVersion: "br/2.1.0+vl/2.1.0",
+    sourceId: "src-aaaa",
+    sourceRevision: "3",
+    snapshotFingerprint: "snap-fp-a",
+  });
+
+  assert.match(key, /:rev:2(?::|$)/);
+  assert.match(key, /:pipe:br\/2\.1\.0\+vl\/2\.1\.0(?::|$)/);
+  assert.match(key, /:src:src-aaaa(?::|$)/);
+  assert.match(key, /:srev:3(?::|$)/);
+  assert.match(key, /:snap:snap-fp-a(?::|$)/);
+  assert.match(key, /:plan:plan-fp-a(?::|$)/);
+  assert.equal(key, sameKey);
+  assert.notEqual(key, differentRevision);
+  assert.notEqual(key, differentPipeline);
+  assert.notEqual(key, differentSnapshot);
+  assert.notEqual(key, differentPlan);
+
   const payload = buildSafeV1PersistPayload({
     companyId: "company-a",
     jobId: "revision-2",
@@ -214,7 +282,9 @@ test("resolution revision persists safe audit fields and supersedes", () => {
       balanceResolutionLearned: false,
     },
   });
-  assert.match(payload.metadata.idempotency_key, /:rev:2$/);
+  assert.match(payload.metadata.idempotency_key, /:rev:2(?::|$)/);
+  assert.match(payload.metadata.idempotency_key, /:pipe:/);
+  assert.match(payload.metadata.idempotency_key, /:snap:/);
   assert.equal(payload.metadata.revision_of, "prior-job");
   assert.equal(payload.metadata.supersedes_job_id, "prior-job");
   assert.equal(payload.metadata.balance_resolution_applied, true);

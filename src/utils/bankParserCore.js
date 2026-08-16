@@ -52,6 +52,7 @@ import {
   parseRowsForBank as parseRowsForBankWorkerSafe,
 } from "@/src/utils/bankParserWorkerCore";
 import { assertSelectedBankMatchesSheet } from "@/src/utils/bankStatementFormatGuard";
+import { toParserBankId } from "@/src/utils/bankIdentity";
 import { resolveParserName } from "@/src/utils/financialSourceArchitecture";
 import {
   buildAccountPlanCodeSet,
@@ -255,15 +256,16 @@ export {
 
 /** Ana thread: TEB için tam enrich; worker kendi lite sürümünü kullanır */
 export function parseRowsForBank(sheetRows, selectedBank) {
-  assertSelectedBankMatchesSheet(sheetRows, selectedBank);
-  if (selectedBank === "GARANTI") return parseGarantiEkstre(sheetRows);
-  if (selectedBank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
-  if (selectedBank === "TEB") {
+  const bank = toParserBankId(selectedBank) || String(selectedBank || "").trim().toUpperCase();
+  assertSelectedBankMatchesSheet(sheetRows, bank);
+  if (bank === "GARANTI") return parseGarantiEkstre(sheetRows);
+  if (bank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
+  if (bank === "TEB") {
     return enrichTebParsedRows(parseGenericBankEkstre(sheetRows, "TEB"));
   }
-  if (selectedBank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
-  if (selectedBank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
-  return parseRowsForBankWorkerSafe(sheetRows, selectedBank);
+  if (bank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
+  if (bank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
+  return parseRowsForBankWorkerSafe(sheetRows, bank);
 }
 
 export function buildBankParserResult({

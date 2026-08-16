@@ -199,7 +199,7 @@ test("formatElapsedClock and UI step statuses", async () => {
   assert.equal(formatDurationMs(400), "400 ms");
 });
 
-test("resolveParserBankFromSheet detects Vakıf / Garanti headers", async () => {
+test("resolveParserBankFromSheet detects Vakıf / Garanti / TEB / Ziraat / Kuveyt", async () => {
   const { resolveParserBankFromSheet } = await import(
     "../src/utils/bankStatementFormatGuard.js"
   );
@@ -210,14 +210,53 @@ test("resolveParserBankFromSheet detects Vakıf / Garanti headers", async () => 
   assert.equal(vakif.bankId, "VAKIFBANK");
 
   const garanti = resolveParserBankFromSheet([
+    ["Türkiye Garanti Bankası A.Ş.", "", "", "", "", ""],
     ["Tarih", "Açıklama", "Etiket", "Tutar", "Bakiye", "Dekont No"],
   ]);
   assert.equal(garanti.status, "detected");
   assert.equal(garanti.bankId, "GARANTI");
 
+  const garantiWeak = resolveParserBankFromSheet([
+    ["Tarih", "Açıklama", "Etiket", "Tutar", "Bakiye", "Dekont No"],
+  ]);
+  assert.equal(garantiWeak.status, "unknown");
+  assert.equal(garantiWeak.bankId, null);
+  assert.equal(garantiWeak.diagnostics.topCandidate, "GARANTI");
+  assert.ok(garantiWeak.diagnostics.topScore < 45);
+
+  const teb = resolveParserBankFromSheet([
+    ["Türkiye Ekonomi Bankası", "", "", "", "", ""],
+    ["IBAN", "TR330003200000000000000001", "", "", "", ""],
+    ["Tarih", "Açıklama", "Borç", "Alacak", "Bakiye", "İşlem No"],
+  ]);
+  assert.equal(teb.status, "detected");
+  assert.equal(teb.bankId, "TEB");
+
+  const ziraat = resolveParserBankFromSheet([
+    ["T.C. Ziraat Bankası", "", "", "", ""],
+    ["Tarih", "Açıklama", "Borç", "Alacak", "Bakiye", "Dekont No"],
+  ]);
+  assert.equal(ziraat.status, "detected");
+  assert.equal(ziraat.bankId, "ZIRAAT");
+
+  const kuveyt = resolveParserBankFromSheet([
+    ["Kuveyt Türk Katılım Bankası", "", "", "", ""],
+    ["Tarih", "Açıklama", "Borç", "Alacak", "Bakiye"],
+  ]);
+  assert.equal(kuveyt.status, "detected");
+  assert.equal(kuveyt.bankId, "KUVEYTTURK");
+  assert.equal(kuveyt.parserBankId, "KUVEYT");
+  assert.equal(kuveyt.canonicalBankId, "KUVEYTTURK");
+  assert.equal(kuveyt.selectedBank, "KUVEYTTURK");
+
   const unknown = resolveParserBankFromSheet([["foo", "bar"]]);
   assert.equal(unknown.status, "unknown");
   assert.equal(unknown.bankId, null);
+
+  const generic = resolveParserBankFromSheet([
+    ["Tarih", "Açıklama", "Borç", "Alacak", "Bakiye"],
+  ]);
+  assert.equal(generic.status, "unknown");
 });
 
 test("pipeline requires explicit bank — empty selectedBank blocks start", () => {

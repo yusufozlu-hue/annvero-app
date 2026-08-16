@@ -1,19 +1,48 @@
 /**
  * Banka ekstresi başlık imzası — seçili banka ile dosya formatı uyumu.
  * Parser / worker / ana thread aynı kuralları kullanır.
+ *
+ * Excel auto-detect puanlaması: bankExcelAutoDetect.js
+ * Kanonik kimlik: bankIdentity.js
  */
+
+import { bankIdsEqual, toParserBankId } from "@/src/utils/bankIdentity";
+import {
+  detectExcelBank,
+  detectKnownBankFormatScored,
+} from "@/src/utils/bankExcelAutoDetect";
+import { resolveExcelBankWithCompanyContext } from "@/src/utils/bankStatementCompanyBankResolve";
 
 export const BANK_FORMAT_MISMATCH_MESSAGE =
   "Seçilen banka ile yüklenen ekstre formatı uyuşmuyor.";
 
 export const BANK_FORMAT_MISMATCH_HINT =
-  "Dosyayı yeniden seçin; sistem bankayı otomatik ayarlamayı dener. Gerekirse bankayı düzeltip tekrar deneyin.";
+  "Dosyayı yeniden seçin; sistem bankayı otomatik ayarlamayı dener.";
 
-const KNOWN_BANK_FORMATS = new Set(["GARANTI", "VAKIFBANK"]);
+export const BANK_DETECT_UNKNOWN_MESSAGE =
+  "Banka ekstresi otomatik tanınamadı. Desteklenen Excel formatını yükleyin (TEB, Ziraat, Kuveyt Türk, Vakıfbank, Garanti).";
+
+export const BANK_DETECT_AMBIGUOUS_MESSAGE =
+  "Birden fazla banka formatı olası görünüyor. Net bir banka ekstresi yükleyin; yanlış banka seçilmedi.";
+
+export const BANK_DETECT_CONFIRM_MESSAGE =
+  "Bu ekstre hangi bankaya ait?";
+
+/** Bilinen Excel formatları (kanonik → parser id ile karşılaştırılır) */
+const KNOWN_BANK_FORMATS = new Set([
+  "GARANTI",
+  "VAKIFBANK",
+  "TEB",
+  "ZIRAAT",
+  "KUVEYT",
+  "KUVEYTTURK",
+]);
 
 export function normalizeStatementHeaderText(value) {
   return String(value || "")
-    .toLowerCase()
+    .toLocaleLowerCase("tr-TR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/ı/g, "i")
     .replace(/ğ/g, "g")
     .replace(/ü/g, "u")
@@ -29,19 +58,16 @@ export function joinRowHeaderText(row) {
   return row.map((cell) => normalizeStatementHeaderText(cell)).join(" ");
 }
 
-/** Vakıfbank native ekstre başlığı (HESAP/HAREKET, İŞLEM TARİHİ, B/A, …) */
+/**
+ * Vakıfbank native ekstre — sıkı fingerprint (yalnız "islem tarihi" yetmez).
+ * Geriye uyumluluk için export edilir; asıl skor bankExcelAutoDetect’tedir.
+ */
 export function isVakifbankStatementHeaderText(text) {
   const t = normalizeStatementHeaderText(text);
   if (!t) return false;
 
-  if (t.includes("islem tarihi")) return true;
-  if (t.includes("hareket tarih")) return true;
-  if (t.includes("b/a")) return true;
-  if (t.includes("hesap hareket")) return true;
-  if (t.includes("hesap") && t.includes("hareket") && t.includes("tutar")) {
-    return true;
-  }
-  if (t.includes("fis no") && t.includes("hareket") && t.includes("tutar")) {
+  // Generic "hesap hareket" / hesap+hareket+tutar YETMEZ (Kuveyt false-positive)
+  if (t.includes("b/a") && (t.includes("tutar") || t.includes("fis no"))) {
     return true;
   }
   if (
@@ -52,6 +78,17 @@ export function isVakifbankStatementHeaderText(text) {
   ) {
     return true;
   }
+  if (
+    t.includes("fis no") &&
+    t.includes("tutar") &&
+    (t.includes("islem tarih") || t.includes("hareket tarih") || t.includes("islem"))
+  ) {
+    return true;
+  }
+  if (t.includes("hareket tarih") && t.includes("tutar") && t.includes("fis")) {
+    return true;
+  }
+  if (t.includes("islem tarihi") && t.includes("b/a")) return true;
 
   return false;
 }
@@ -64,7 +101,6 @@ export function isGarantiStatementHeaderText(text) {
   const t = normalizeStatementHeaderText(text);
   if (!t || isVakifbankStatementHeaderText(t)) return false;
 
-  // "islem tarihi" contains "tarih" — Vakıf imzası yukarıda elendi.
   const hasTarih = t.includes("tarih");
   const hasAciklama =
     t.includes("aciklama") || t.includes("islem aciklamasi");
@@ -73,24 +109,25 @@ export function isGarantiStatementHeaderText(text) {
     t.includes("bakiye") ||
     t.includes("borc") ||
     t.includes("alacak");
-  // Gerçek Garanti export: Etiket ve/veya Dekont No
-  const hasGarantiMarker = t.includes("dekont") || t.includes("etiket");
+  const hasEtiket = t.includes("etiket");
+  const hasDekont = t.includes("dekont");
+  const hasBorcAlacakPair = t.includes("borc") && t.includes("alacak");
+  // Etiket klasik Garanti; dekont yalnız tutar kolonlu export’ta (borç/alacak yok)
+  const hasGarantiMarker = hasEtiket || (hasDekont && !hasBorcAlacakPair);
 
   return Boolean(hasTarih && hasAciklama && hasAmount && hasGarantiMarker);
 }
 
-export function detectKnownBankFormat(sheetRows, scanLimit = 40) {
-  if (!Array.isArray(sheetRows) || sheetRows.length === 0) return "UNKNOWN";
-
-  const limit = Math.min(sheetRows.length, Math.max(1, scanLimit));
-  for (let i = 0; i < limit; i += 1) {
-    const text = joinRowHeaderText(sheetRows[i]);
-    if (!text) continue;
-    if (isVakifbankStatementHeaderText(text)) return "VAKIFBANK";
-    if (isGarantiStatementHeaderText(text)) return "GARANTI";
-  }
-
-  return "UNKNOWN";
+/**
+ * @param {unknown[][]} sheetRows
+ * @param {number|{scanLimit?:number,fileName?:string,sheetName?:string}} [scanLimitOrOptions]
+ */
+export function detectKnownBankFormat(sheetRows, scanLimitOrOptions = 40) {
+  const options =
+    typeof scanLimitOrOptions === "number"
+      ? { scanLimit: scanLimitOrOptions }
+      : scanLimitOrOptions || {};
+  return detectKnownBankFormatScored(sheetRows, options);
 }
 
 export function createBankFormatMismatchError(selectedBank, detectedBank) {
@@ -104,43 +141,72 @@ export function createBankFormatMismatchError(selectedBank, detectedBank) {
 }
 
 /**
- * Bilinen format (Garanti/Vakıfbank) seçili bankadan farklıysa parse'ı engeller.
- * UNKNOWN için banka parser'ı kendi başlık aramasına bırakılır.
+ * Bilinen format seçili bankadan farklıysa parse’ı engeller.
+ * UNKNOWN / AMBIGUOUS → uyumsuzluk fırlatılmaz (üst katman UNKNOWN kartı gösterir).
  */
-export function assertSelectedBankMatchesSheet(sheetRows, selectedBank) {
+export function assertSelectedBankMatchesSheet(
+  sheetRows,
+  selectedBank,
+  options = {}
+) {
   const bank = String(selectedBank || "")
     .trim()
     .toUpperCase();
   if (!bank) return "UNKNOWN";
 
-  const detected = detectKnownBankFormat(sheetRows);
-  if (detected === "UNKNOWN") return detected;
-
-  if (KNOWN_BANK_FORMATS.has(detected) && detected !== bank) {
-    throw createBankFormatMismatchError(bank, detected);
+  const resolved = detectExcelBank(sheetRows, options);
+  if (resolved.status !== "detected" || !resolved.bankId) {
+    return resolved.detected || "UNKNOWN";
   }
 
+  const detected = resolved.bankId;
+  if (
+    KNOWN_BANK_FORMATS.has(detected) ||
+    KNOWN_BANK_FORMATS.has(resolved.canonicalBankId) ||
+    KNOWN_BANK_FORMATS.has(resolved.parserBankId)
+  ) {
+    if (!bankIdsEqual(detected, bank)) {
+      throw createBankFormatMismatchError(bank, detected);
+    }
+  }
+
+  // Dış sözleşme: kanonik id
   return detected;
 }
 
 /**
- * Dosya başlığından parser banka kimliği çözümü.
- * high → bankId güvenle set edilebilir; unknown → kullanıcı seçmeli.
+ * Dosya başlığından banka çözümü.
+ * bankId / selectedBank = kanonik; parserBankId = hot-path (KUVEYTTURK→KUVEYT).
+ * Firma bağlamı (bankAccounts / schema memory) verilirse güvenli TEB/Garanti ayrımı yapılır.
  */
-export function resolveParserBankFromSheet(sheetRows, scanLimit = 40) {
-  const detected = detectKnownBankFormat(sheetRows, scanLimit);
-  if (detected === "VAKIFBANK" || detected === "GARANTI") {
-    return {
-      status: "detected",
-      confidence: "high",
-      bankId: detected,
-      detected,
-    };
-  }
+export function resolveParserBankFromSheet(sheetRows, scanLimitOrOptions = 40) {
+  const options =
+    typeof scanLimitOrOptions === "number"
+      ? { scanLimit: scanLimitOrOptions }
+      : scanLimitOrOptions || {};
+
+  const useCompanyContext =
+    Boolean(options.companyId) ||
+    Boolean(options.bankAccounts?.length) ||
+    Boolean(options.formatMemoryRecords) ||
+    options.useCompanyContext === true;
+
+  const resolved = useCompanyContext
+    ? resolveExcelBankWithCompanyContext(sheetRows, options)
+    : detectExcelBank(sheetRows, options);
+
   return {
-    status: "unknown",
-    confidence: "unknown",
-    bankId: null,
-    detected: "UNKNOWN",
+    status: resolved.status,
+    confidence: resolved.confidence,
+    bankId: resolved.bankId,
+    parserBankId: resolved.parserBankId ?? null,
+    canonicalBankId: resolved.canonicalBankId || null,
+    selectedBank: resolved.diagnostics?.selectedBank ?? resolved.bankId,
+    detected: resolved.detected,
+    resolutionSource: resolved.resolutionSource || null,
+    fingerprint: resolved.fingerprint || null,
+    diagnostics: resolved.diagnostics,
   };
 }
+
+export { toParserBankId, bankIdsEqual, resolveExcelBankWithCompanyContext };

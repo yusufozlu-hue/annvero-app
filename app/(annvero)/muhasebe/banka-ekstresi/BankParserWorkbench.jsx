@@ -90,6 +90,8 @@ import {
 import {
   fetchLearningMemoryForCompany,
   createLearningMemoryRecord,
+  createLearningMemoryRecordDetailed,
+  updateLearningMemoryRecord,
   recordLearningMemoryUsage,
 } from "@/src/utils/learningMemory";
 import { queueUnrecognizedTransactions } from "@/src/utils/transactionMemoryApi";
@@ -169,12 +171,23 @@ import { parseBankExcelOnMainThread } from "@/src/utils/bankExcelMainThreadParse
 import { runBankParserWorker } from "@/src/utils/workerParserBridge";
 import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
 import {
+  BANK_DETECT_CONFIRM_MESSAGE,
   BANK_FORMAT_MISMATCH_HINT,
   BANK_FORMAT_MISMATCH_MESSAGE,
   assertSelectedBankMatchesSheet,
   resolveParserBankFromSheet,
 } from "@/src/utils/bankStatementFormatGuard";
+import {
+  extractStatementFormatMemoryFromLearning,
+  loadCompanyStatementFormatMemory,
+  mergeStatementFormatMemorySources,
+  persistConfirmedStatementFormatMemory,
+  STATEMENT_FORMAT_CONFIRMATION_SOURCE,
+  STATEMENT_FORMAT_PERSIST_WARNING,
+  syncLocalStatementFormatCacheFromServer,
+} from "@/src/utils/bankStatementFormatMemory";
 import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils";
+
 import {
   canonicalToLegacyBankRow,
   legacyBankRowsToCanonical,
@@ -618,6 +631,9 @@ export default function BankParserWorkbench() {
     bankId: null,
     message: "",
   });
+  /** Format hafızası server yazımı başarısız — kalıcı öğrenme yok uyarısı */
+  const [formatMemoryPersistWarning, setFormatMemoryPersistWarning] =
+    useState("");
   const [elapsedSec, setElapsedSec] = useState(0);
   /** Servis UI: Luca önizleme; normal kullanıcı Çözüm Merkezi kullanır */
   const [, setShowUserLucaReview] = useState(false);
@@ -2890,6 +2906,7 @@ export default function BankParserWorkbench() {
     pdfMetaRef.current = null;
     activeBankRef.current = "";
     setSelectedBank("");
+    setFormatMemoryPersistWarning("");
     setBankDetection({
       status: "pending",
       bankId: null,
@@ -3119,24 +3136,72 @@ export default function BankParserWorkbench() {
       const sheetRows = readSheetRowsFromArrayBuffer(arrayBuffer);
       fileSheetRowsRef.current = sheetRows;
       fileSheetSourceRef.current = checkpoint.fileName;
-      const resolved = resolveParserBankFromSheet(sheetRows);
+      const serverFormatMemory = extractStatementFormatMemoryFromLearning(
+        learningMemory || [],
+        selectedCompanyId || ""
+      );
+      if (selectedCompanyId && serverFormatMemory.length) {
+        syncLocalStatementFormatCacheFromServer(
+          selectedCompanyId,
+          serverFormatMemory
+        );
+      }
+      const formatMemoryRecords = mergeStatementFormatMemorySources({
+        companyId: selectedCompanyId || "",
+        serverRecords: serverFormatMemory,
+        localRecords: loadCompanyStatementFormatMemory(selectedCompanyId || ""),
+      });
+      const resolved = resolveParserBankFromSheet(sheetRows, {
+        fileName: checkpoint.fileName || "",
+        companyId: selectedCompanyId || "",
+        bankAccounts: selectedCompany?.bankAccounts || [],
+        accountPlan102: (companyPlans || []).filter((row) =>
+          String(row?.accountCode || row?.hesapKodu || "").startsWith("102")
+        ),
+        formatMemoryRecords,
+        useCompanyContext: true,
+      });
       if (resolved.status === "detected" && resolved.bankId) {
+        const parserId = resolved.parserBankId || resolved.bankId;
         const label =
+          BANK_PARSER_OPTIONS.find((b) => b.id === parserId)?.label ||
           BANK_PARSER_OPTIONS.find((b) => b.id === resolved.bankId)?.label ||
           resolved.bankId;
         // Ref önce — state güncellemesini beklemeyen pipeline için
-        setActiveBank(resolved.bankId, {
+        // UI/parser hot-path id (KUVEYTTURK → KUVEYT)
+        setActiveBank(parserId, {
           status: "detected",
-          bankId: resolved.bankId,
+          bankId: parserId,
+          canonicalBankId: resolved.canonicalBankId || resolved.bankId,
+          parserBankId: parserId,
+          confidence: resolved.confidence || "high",
+          resolutionSource: resolved.resolutionSource || null,
+          diagnostics: resolved.diagnostics || null,
           message: `${label} — otomatik tespit`,
+        });
+      } else if (
+        resolved.status === "requires_confirmation" ||
+        resolved.status === "ambiguous" ||
+        resolved.status === "unknown"
+      ) {
+        activeBankRef.current = "";
+        setSelectedBank("");
+        setBankDetection({
+          status: "requires_confirmation",
+          bankId: null,
+          diagnostics: resolved.diagnostics || null,
+          fingerprint: resolved.fingerprint || null,
+          resolutionSource: resolved.resolutionSource || null,
+          message: BANK_DETECT_CONFIRM_MESSAGE,
         });
       } else {
         activeBankRef.current = "";
         setSelectedBank("");
         setBankDetection({
-          status: "unknown",
+          status: "requires_confirmation",
           bankId: null,
-          message: "Banka otomatik belirlenemedi. Lütfen bankayı seçin.",
+          diagnostics: resolved.diagnostics || null,
+          message: BANK_DETECT_CONFIRM_MESSAGE,
         });
       }
     } catch (error) {
@@ -4111,17 +4176,14 @@ export default function BankParserWorkbench() {
         return;
       }
       logManagedPipelineIssue("preview failed", error);
-      if (
-        error?.code === "BANK_FORMAT_MISMATCH" &&
-        error?.detectedBank &&
-        (error.detectedBank === "VAKIFBANK" || error.detectedBank === "GARANTI")
-      ) {
+      if (error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank) {
+        const detectedId = String(error.detectedBank || "").toUpperCase();
         const label =
-          BANK_PARSER_OPTIONS.find((b) => b.id === error.detectedBank)?.label ||
-          error.detectedBank;
-        setActiveBank(error.detectedBank, {
+          BANK_PARSER_OPTIONS.find((b) => b.id === detectedId)?.label ||
+          detectedId;
+        setActiveBank(detectedId, {
           status: "detected",
-          bankId: error.detectedBank,
+          bankId: detectedId,
           message: `${label} — otomatik tespit`,
         });
       }
@@ -4132,12 +4194,18 @@ export default function BankParserWorkbench() {
       setPreviewErrorDetail("");
       parserJob.reset();
       clearPreviewState({ resetParserJob: false });
+      const mismatchLabel =
+        error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+          ? BANK_PARSER_OPTIONS.find(
+              (b) => b.id === String(error.detectedBank).toUpperCase()
+            )?.label || String(error.detectedBank)
+          : "";
       setPipelineError({
         phase: PIPELINE_PHASES.PREVIEW,
         phaseLabel: getPipelinePhaseTitle(PIPELINE_PHASES.PREVIEW),
         message:
           error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
-            ? `Dosya ${error.detectedBank === "VAKIFBANK" ? "Vakıfbank" : "Garanti"} olarak algılandı. Banka seçimi güncellendi.`
+            ? `Dosya ${mismatchLabel} olarak algılandı. Banka seçimi güncellendi.`
             : detail,
         recoverable: Boolean(error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank),
         tone:
@@ -6024,23 +6092,26 @@ export default function BankParserWorkbench() {
       logManagedPipelineIssue("full pipeline failed", error, {
         phase: failedPhase,
       });
-      if (
-        error?.code === "BANK_FORMAT_MISMATCH" &&
-        error?.detectedBank &&
-        (error.detectedBank === "VAKIFBANK" || error.detectedBank === "GARANTI")
-      ) {
+      if (error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank) {
+        const detectedId = String(error.detectedBank || "").toUpperCase();
         const label =
-          BANK_PARSER_OPTIONS.find((b) => b.id === error.detectedBank)?.label ||
-          error.detectedBank;
-        setActiveBank(error.detectedBank, {
+          BANK_PARSER_OPTIONS.find((b) => b.id === detectedId)?.label ||
+          detectedId;
+        setActiveBank(detectedId, {
           status: "detected",
-          bankId: error.detectedBank,
+          bankId: detectedId,
           message: `${label} — otomatik tespit`,
         });
       }
+      const mismatchLabelFull =
+        error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
+          ? BANK_PARSER_OPTIONS.find(
+              (b) => b.id === String(error.detectedBank).toUpperCase()
+            )?.label || String(error.detectedBank)
+          : "";
       const message =
         error?.code === "BANK_FORMAT_MISMATCH" && error?.detectedBank
-          ? `Dosya ${error.detectedBank === "VAKIFBANK" ? "Vakıfbank" : "Garanti"} olarak algılandı. Banka seçimi güncellendi.`
+          ? `Dosya ${mismatchLabelFull} olarak algılandı. Banka seçimi güncellendi.`
           : error?.code === "OCR_REQUIRED"
             ? error.message || "Taranmış PDF için OCR gerekli (OCR_REQUIRED)."
             : error?.code === "BALANCE_MISMATCH"
@@ -6805,6 +6876,83 @@ export default function BankParserWorkbench() {
     });
   };
 
+  /**
+   * Belirsiz Excel formatı — bir defalık banka onayı.
+   * Dosya yeniden yüklenmez; server learning_memory yazılır; pipeline devam eder.
+   * Server yazımı başarısızsa görünür uyarı; kalıcı öğrenme başarılı sayılmaz.
+   */
+  const handleConfirmStatementBankAndContinue = async (bankId) => {
+    const next = String(bankId || "")
+      .trim()
+      .toUpperCase();
+    if (!next || !selectedCompanyId) {
+      showToast("Firma ve banka seçimi gerekli.", "error");
+      return;
+    }
+    const sheetRows = fileSheetRowsRef.current;
+    const label =
+      BANK_PARSER_OPTIONS.find((b) => b.id === next)?.label || next;
+
+    let persistWarning = "";
+    let remembered = false;
+
+    if (Array.isArray(sheetRows) && sheetRows.length) {
+      const persistResult = await persistConfirmedStatementFormatMemory({
+        companyId: selectedCompanyId,
+        sheetRows,
+        bankId: next,
+        sheetName: "",
+        confirmationSource: STATEMENT_FORMAT_CONFIRMATION_SOURCE.USER_CONFIRMED,
+        existingLearningRecords: learningMemory || [],
+        createRecord: createLearningMemoryRecordDetailed,
+        updateRecord: async (id, fields) => {
+          const ok = await updateLearningMemoryRecord(id, fields);
+          return ok
+            ? { data: { id, ...fields }, error: null }
+            : { data: null, error: "update_failed" };
+        },
+      });
+
+      if (persistResult.persisted && persistResult.serverRecord) {
+        remembered = true;
+        setLearningMemory((prev) => {
+          const nextList = [...(prev || [])];
+          const idx = nextList.findIndex(
+            (r) => String(r.id) === String(persistResult.serverRecord.id)
+          );
+          if (idx >= 0) nextList[idx] = persistResult.serverRecord;
+          else nextList.unshift(persistResult.serverRecord);
+          return nextList;
+        });
+        setFormatMemoryPersistWarning("");
+      } else {
+        persistWarning =
+          persistResult.warning || STATEMENT_FORMAT_PERSIST_WARNING;
+        setFormatMemoryPersistWarning(persistWarning);
+      }
+    }
+
+    setActiveBank(next, {
+      status: "manual",
+      bankId: next,
+      parserBankId: next,
+      canonicalBankId: next === "KUVEYT" ? "KUVEYTTURK" : next,
+      resolutionSource: "user_confirmed",
+      formatMemoryPersisted: remembered,
+      message: remembered
+        ? `${label} — onaylandı (format kalıcı hatırlandı)`
+        : `${label} — onaylandı (oturum; kalıcı öğrenme yazılamadı)`,
+    });
+    setPipelineError(null);
+    setPreviewErrorDetail("");
+    if (persistWarning) {
+      showToast(persistWarning, "warning");
+    } else {
+      showToast(`${label} onaylandı; işlem devam ediyor…`, "success");
+    }
+    void runFullBankPipeline();
+  };
+
   const handleRetryPipeline = () => {
     // Kaynak checkpoint'ten devam — yoksa yeniden seçim zorunlu (sahte retry yok)
     const hasSource = hasUsableSourceCheckpoint(sourceCheckpointRef.current);
@@ -7172,29 +7320,28 @@ export default function BankParserWorkbench() {
                 </div>
               ) : null}
 
-              {bankDetection.status === "unknown" ? (
-                <div>
-                  <p className="mb-2 text-sm text-amber-200/95">
-                    Banka otomatik belirlenemedi. Lütfen bankayı seçin.
+              {bankDetection.status === "requires_confirmation" ||
+              bankDetection.status === "unknown" ||
+              bankDetection.status === "ambiguous" ? (
+                <div className="max-w-xl space-y-2">
+                  <p className="text-sm text-amber-200/95">
+                    {bankDetection.message || BANK_DETECT_CONFIRM_MESSAGE}
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    Bu seçim yalnız bu firma için bu ekstre formatını hatırlar;
+                    dosyayı yeniden yüklemeniz gerekmez.
                   </p>
                   <select
-                    value={selectedBank || ""}
-                    disabled={isJobBusy || isLoadingCompanies}
+                    value=""
+                    disabled={
+                      isJobBusy || isLoadingCompanies || !selectedCompanyId
+                    }
                     onChange={(e) => {
                       const next = e.target.value;
                       if (!next) return;
-                      const label =
-                        BANK_PARSER_OPTIONS.find((b) => b.id === next)?.label ||
-                        next;
-                      setActiveBank(next, {
-                        status: "manual",
-                        bankId: next,
-                        message: `${label} — elle seçildi`,
-                      });
-                      setPipelineError(null);
-                      setPreviewErrorDetail("");
+                      void handleConfirmStatementBankAndContinue(next);
                     }}
-                    className={`w-full max-w-xl disabled:opacity-60 ${annveroInputClass}`}
+                    className={`w-full disabled:opacity-60 ${annveroInputClass}`}
                   >
                     <option value="">Banka seçin…</option>
                     {BANK_PARSER_OPTIONS.map((bank) => (
@@ -7216,8 +7363,17 @@ export default function BankParserWorkbench() {
                       `${
                         BANK_PARSER_OPTIONS.find((b) => b.id === selectedBank)
                           ?.label || selectedBank
-                      } — elle seçildi`}
+                      } — onaylandı`}
                   </p>
+                  {formatMemoryPersistWarning ? (
+                    <p
+                      className="mt-2 text-xs text-amber-200/95"
+                      data-testid="format-memory-persist-warning"
+                      role="status"
+                    >
+                      {formatMemoryPersistWarning}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -7235,7 +7391,9 @@ export default function BankParserWorkbench() {
                 !selectedFile ||
                 !getRunBank() ||
                 bankDetection.status === "pending" ||
-                bankDetection.status === "unknown"
+                bankDetection.status === "unknown" ||
+                bankDetection.status === "requires_confirmation" ||
+                bankDetection.status === "ambiguous"
               }
               className={`w-full max-w-xl rounded-xl px-7 py-3.5 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto ${annveroBtnPrimary}`}
             >

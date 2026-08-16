@@ -43,7 +43,9 @@ function normalizeParserText(value) {
 // ——— DUPLICATE: bankStatementFormatGuard (worker-needed subset) ———
 function normalizeStatementHeaderText(value) {
   return String(value || "")
-    .toLowerCase()
+    .toLocaleLowerCase("tr-TR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/ı/g, "i")
     .replace(/ğ/g, "g")
     .replace(/ü/g, "u")
@@ -62,12 +64,11 @@ function joinRowHeaderText(row) {
 function isVakifbankStatementHeaderText(text) {
   const t = normalizeStatementHeaderText(text);
   if (!t) return false;
-  if (t.includes("islem tarihi")) return true;
-  if (t.includes("hareket tarih")) return true;
-  if (t.includes("b/a")) return true;
-  if (t.includes("hesap hareket")) return true;
-  if (t.includes("hesap") && t.includes("hareket") && t.includes("tutar")) return true;
-  if (t.includes("fis no") && t.includes("hareket") && t.includes("tutar")) return true;
+  // Generic "hesap hareket" / hesap+hareket+tutar YETMEZ (Kuveyt false-positive)
+  if (t.includes("b/a") && (t.includes("tutar") || t.includes("fis no"))) return true;
+  if (t.includes("fis no") && t.includes("tutar") && (t.includes("islem") || t.includes("hesap no"))) {
+    return true;
+  }
   if (
     t.includes("hesap no") &&
     t.includes("fis no") &&
@@ -76,7 +77,22 @@ function isVakifbankStatementHeaderText(text) {
   ) {
     return true;
   }
+  if (t.includes("hareket tarih") && t.includes("tutar") && t.includes("fis")) return true;
+  if (t.includes("islem tarihi") && t.includes("b/a")) return true;
   return false;
+}
+
+function isColumnHeaderRowText(text) {
+  const t = normalizeStatementHeaderText(text);
+  if (!t) return false;
+  const hasTarih = t.includes("tarih");
+  const hasAciklama = t.includes("aciklama");
+  const hasAmount =
+    t.includes("tutar") ||
+    t.includes("bakiye") ||
+    (t.includes("borc") && t.includes("alacak")) ||
+    t.includes("b/a");
+  return hasTarih && hasAciklama && hasAmount;
 }
 
 function isGarantiStatementHeaderText(text) {
@@ -93,35 +109,291 @@ function isGarantiStatementHeaderText(text) {
   return Boolean(hasTarih && hasAciklama && hasAmount && hasGarantiMarker);
 }
 
-function detectKnownBankFormat(sheetRows, scanLimit) {
-  if (!Array.isArray(sheetRows) || sheetRows.length === 0) return "UNKNOWN";
+function corpusText(sheetRows, scanLimit) {
+  if (!Array.isArray(sheetRows) || sheetRows.length === 0) return "";
   const limit = Math.min(sheetRows.length, Math.max(1, scanLimit || 40));
+  const parts = [];
   for (let i = 0; i < limit; i += 1) {
     const text = joinRowHeaderText(sheetRows[i]);
-    if (!text) continue;
-    if (isVakifbankStatementHeaderText(text)) return "VAKIFBANK";
-    if (isGarantiStatementHeaderText(text)) return "GARANTI";
+    if (text) parts.push(text);
   }
-  return "UNKNOWN";
+  return parts.join(" | ");
 }
 
-function assertSelectedBankMatchesSheet(sheetRows, selectedBank) {
+/** Brand/IBAN için yalnız meta + kolon başlığı (hareket açıklaması hariç) */
+function identityCorpusText(sheetRows, scanLimit) {
+  if (!Array.isArray(sheetRows) || sheetRows.length === 0) return "";
+  const limit = Math.min(sheetRows.length, Math.max(1, scanLimit || 40));
+  let headerIdx = -1;
+  for (let i = 0; i < limit; i += 1) {
+    if (isColumnHeaderRowText(joinRowHeaderText(sheetRows[i]))) {
+      headerIdx = i;
+      break;
+    }
+  }
+  const end = headerIdx >= 0 ? headerIdx : Math.min(6, limit - 1);
+  const parts = [];
+  for (let i = 0; i <= end && i < limit; i += 1) {
+    const text = joinRowHeaderText(sheetRows[i]);
+    if (text) parts.push(text);
+  }
+  return parts.join(" | ");
+}
+
+const WORKER_SELECT_MIN = 45;
+const WORKER_AMBIGUITY_GAP = 12;
+const WORKER_AMBIGUITY_FLOOR = 35;
+const WORKER_W = Object.freeze({
+  brand: 42,
+  iban: 36,
+  bic: 30,
+  formatFingerprint: 22,
+  sheetName: 14,
+  filename: 8,
+});
+
+function pushW(bag, code, weight) {
+  bag.push({ code, weight });
+}
+
+function scoreWorkerCandidates(sheetRows, options) {
+  const scanLimit = options.scanLimit || 40;
+  const t = corpusText(sheetRows, scanLimit);
+  const id = identityCorpusText(sheetRows, scanLimit);
+  const idCompact = id.replace(/\s/g, "");
+  const sheet = normalizeStatementHeaderText(options.sheetName || "");
+  const file = normalizeStatementHeaderText(options.fileName || "");
+
+  function scoreVakif() {
+    const signals = [];
+    if (/vakif\s*bank|vakifbank|vakiflar\s+bank/.test(id)) pushW(signals, "brand_vakifbank", WORKER_W.brand);
+    if (/tr\d{2}00015/.test(idCompact)) pushW(signals, "iban_00015", WORKER_W.iban);
+    if (/tvbatr2a|tvba\s*tr/.test(id)) pushW(signals, "bic_tvba", WORKER_W.bic);
+    const strongNative =
+      (t.includes("b/a") &&
+        (t.includes("fis no") || t.includes("hesap no") || t.includes("tutar"))) ||
+      (t.includes("hesap no") &&
+        t.includes("fis no") &&
+        t.includes("tutar") &&
+        (t.includes("islem") || t.includes("aciklama"))) ||
+      (t.includes("fis no") &&
+        t.includes("tutar") &&
+        (t.includes("islem tarih") || t.includes("hareket tarih")));
+    if (strongNative) pushW(signals, "header_vakif_native", WORKER_W.formatFingerprint + 8);
+    if (/vakif/.test(sheet)) pushW(signals, "sheet_name", WORKER_W.sheetName);
+    if (/vakif/.test(file)) pushW(signals, "filename_hint", WORKER_W.filename);
+    return { canonical: "VAKIFBANK", parser: "VAKIFBANK", score: signals.reduce((s, x) => s + x.weight, 0), signals };
+  }
+
+  function scoreGaranti() {
+    const signals = [];
+    if (/garanti|bbva/.test(id)) pushW(signals, "brand_garanti", WORKER_W.brand);
+    if (/tr\d{2}00062/.test(idCompact)) pushW(signals, "iban_00062", WORKER_W.iban);
+    if (/tgbatris|tgba\s*tr/.test(id)) pushW(signals, "bic_tgba", WORKER_W.bic);
+    const looksVakif = t.includes("b/a") || (t.includes("hesap no") && t.includes("fis no"));
+    const hasTarih = t.includes("tarih");
+    const hasAciklama = t.includes("aciklama") || t.includes("islem aciklamasi");
+    const hasAmount =
+      t.includes("tutar") || t.includes("bakiye") || t.includes("borc") || t.includes("alacak");
+    const hasEtiket = t.includes("etiket");
+    const hasDekont = t.includes("dekont");
+    const hasBorcAlacakPair = t.includes("borc") && t.includes("alacak");
+    if (
+      hasTarih &&
+      hasAciklama &&
+      hasAmount &&
+      !looksVakif &&
+      (hasEtiket || (hasDekont && !hasBorcAlacakPair))
+    ) {
+      pushW(signals, "header_garanti_export", WORKER_W.formatFingerprint + 6);
+    }
+    if (/garanti/.test(sheet)) pushW(signals, "sheet_name", WORKER_W.sheetName);
+    if (/garanti|bbva/.test(file)) pushW(signals, "filename_hint", WORKER_W.filename);
+    return { canonical: "GARANTI", parser: "GARANTI", score: signals.reduce((s, x) => s + x.weight, 0), signals };
+  }
+
+  function scoreTeb() {
+    const signals = [];
+    if (/\bteb\b|turkiye ekonomi bank|turkiye ekonomi|ekonomi bankasi/.test(id)) {
+      pushW(signals, "brand_teb", WORKER_W.brand);
+    }
+    if (/tr\d{2}00032/.test(idCompact)) pushW(signals, "iban_00032", WORKER_W.iban);
+    if (/tebutris|tebu\s*tr/.test(id)) pushW(signals, "bic_tebu", WORKER_W.bic);
+    const hasTarih = t.includes("tarih");
+    const hasAciklama = t.includes("aciklama");
+    const hasBorcAlacak = t.includes("borc") && t.includes("alacak");
+    const hasIslemNo = t.includes("islem no") || t.includes("islem numarasi");
+    const hasBakiye = t.includes("bakiye");
+    if (hasTarih && hasAciklama && hasBorcAlacak && hasIslemNo) {
+      pushW(signals, "header_teb_islem_no", 30);
+    } else if (hasTarih && hasAciklama && hasBorcAlacak && hasBakiye) {
+      pushW(signals, "header_teb_borc_alacak", 10);
+    }
+    if (/\bteb\b/.test(sheet)) pushW(signals, "sheet_name", WORKER_W.sheetName);
+    if (/\bteb\b/.test(file)) pushW(signals, "filename_hint", WORKER_W.filename);
+    return { canonical: "TEB", parser: "TEB", score: signals.reduce((s, x) => s + x.weight, 0), signals };
+  }
+
+  function scoreZiraat() {
+    const signals = [];
+    if (/t\.?\s*c\.?\s*ziraat|ziraat bank|ziraat/.test(id)) pushW(signals, "brand_ziraat", WORKER_W.brand);
+    if (/tr\d{2}00010/.test(idCompact)) pushW(signals, "iban_00010", WORKER_W.iban);
+    if (/tczbtr|tczb\s*tr/.test(id)) pushW(signals, "bic_tczb", WORKER_W.bic);
+    const hasTarih = t.includes("tarih");
+    const hasAciklama = t.includes("aciklama");
+    const hasBorcAlacak = t.includes("borc") && t.includes("alacak");
+    const hasDekont = t.includes("dekont");
+    const hasIslem = t.includes("islem no") || t.includes("islem kodu");
+    const hasMuhTarih = t.includes("muh tarih") || t.includes("muhasebe tarih");
+    const hasValor = t.includes("valor");
+    const hasFisNo = t.includes("fis no");
+    const hasIslKd = t.includes("isl kd") || t.includes("islem kod");
+    const hasIslemAciklama = t.includes("islem aciklamasi");
+    if (
+      hasMuhTarih &&
+      hasValor &&
+      hasFisNo &&
+      hasBorcAlacak &&
+      (hasIslKd || hasIslemAciklama)
+    ) {
+      pushW(signals, "header_ziraat_export", WORKER_W.formatFingerprint + 12);
+    } else if (hasTarih && hasAciklama && hasBorcAlacak && (hasDekont || hasIslem)) {
+      pushW(signals, "header_ziraat_dekont", 26);
+    } else if (hasTarih && hasAciklama && hasBorcAlacak) {
+      pushW(signals, "header_ziraat_borc_alacak", 10);
+    }
+    if (/ziraat/.test(sheet)) pushW(signals, "sheet_name", WORKER_W.sheetName);
+    if (/ziraat/.test(file)) pushW(signals, "filename_hint", WORKER_W.filename);
+    return { canonical: "ZIRAAT", parser: "ZIRAAT", score: signals.reduce((s, x) => s + x.weight, 0), signals };
+  }
+
+  function scoreKuveyt() {
+    const signals = [];
+    if (/kuveyt\s*turk|kuveytturk|kuveyt/.test(id)) pushW(signals, "brand_kuveytturk", WORKER_W.brand);
+    if (/tr\d{2}00205/.test(idCompact)) pushW(signals, "iban_00205", WORKER_W.iban);
+    if (/kteftris|ktef\s*tr/.test(id)) pushW(signals, "bic_ktef", WORKER_W.bic);
+    const hasBorcAlacak = t.includes("borc") && t.includes("alacak");
+    const looksVakifNative =
+      t.includes("b/a") || (t.includes("hesap no") && t.includes("fis no"));
+    const hasCols =
+      !looksVakifNative &&
+      !hasBorcAlacak &&
+      t.includes("islem tarihi") &&
+      t.includes("aciklama") &&
+      t.includes("tutar") &&
+      t.includes("bakiye") &&
+      (t.includes("islem referans") ||
+        t.includes("referans numara") ||
+        t.includes("referans no"));
+    if (hasCols) pushW(signals, "header_kuveyt_columns", 32);
+    else if (t.includes("tarih") && t.includes("aciklama") && hasBorcAlacak) {
+      pushW(signals, "header_kuveyt_borc_alacak", 10);
+    }
+    if (/kuveyt/.test(sheet)) pushW(signals, "sheet_name", WORKER_W.sheetName);
+    if (/kuveyt/.test(file)) pushW(signals, "filename_hint", WORKER_W.filename);
+    return { canonical: "KUVEYTTURK", parser: "KUVEYT", score: signals.reduce((s, x) => s + x.weight, 0), signals };
+  }
+
+  return [scoreVakif(), scoreGaranti(), scoreTeb(), scoreZiraat(), scoreKuveyt()].sort(
+    (a, b) => b.score - a.score
+  );
+}
+
+/**
+ * UI scored detector ile aynı karar (zero-import mirror).
+ * Dış: selectedBank = kanonik; parserBankId = hot-path.
+ * @returns {{ status: string, selectedBank: string|null, parserBankId: string|null, topScore: number }}
+ */
+function detectBankDecision(sheetRows, scanLimitOrOptions) {
+  if (!Array.isArray(sheetRows) || sheetRows.length === 0) {
+    return {
+      status: "UNKNOWN",
+      selectedBank: null,
+      parserBankId: null,
+      topScore: 0,
+    };
+  }
+  const options =
+    typeof scanLimitOrOptions === "number"
+      ? { scanLimit: scanLimitOrOptions }
+      : scanLimitOrOptions || {};
+  const ranked = scoreWorkerCandidates(sheetRows, options);
+  const top = ranked[0];
+  const second = ranked[1];
+  if (!top || top.score < WORKER_SELECT_MIN) {
+    const exclusiveVakif = Boolean(
+      top?.signals?.some(
+        (s) => s.code === "header_vakif_native" || s.code === "header_ziraat_export"
+      )
+    );
+    if (
+      !(
+        exclusiveVakif &&
+        top.score >= WORKER_W.formatFingerprint &&
+        !(
+          second &&
+          second.score >= WORKER_AMBIGUITY_FLOOR &&
+          top.score - second.score < WORKER_AMBIGUITY_GAP
+        )
+      )
+    ) {
+      return {
+        status: "UNKNOWN",
+        selectedBank: null,
+        parserBankId: null,
+        topScore: top?.score || 0,
+      };
+    }
+  }
+  if (
+    second &&
+    second.score >= WORKER_AMBIGUITY_FLOOR &&
+    top.score - second.score < WORKER_AMBIGUITY_GAP
+  ) {
+    return {
+      status: "AMBIGUOUS",
+      selectedBank: null,
+      parserBankId: null,
+      topScore: top.score,
+    };
+  }
+  return {
+    status: "DETECTED",
+    selectedBank: top.canonical,
+    parserBankId: top.parser,
+    topScore: top.score,
+  };
+}
+
+function banksMatch(a, b) {
+  const norm = (v) => {
+    const u = String(v || "").trim().toUpperCase();
+    if (u === "KUVEYTTURK" || u === "KUVEYTTÜRK") return "KUVEYT";
+    if (u === "VAKIF") return "VAKIFBANK";
+    return u;
+  };
+  return norm(a) === norm(b);
+}
+
+function assertSelectedBankMatchesSheet(sheetRows, selectedBank, options) {
   const bank = String(selectedBank || "")
     .trim()
     .toUpperCase();
   if (!bank) return "UNKNOWN";
-  const detected = detectKnownBankFormat(sheetRows);
-  if (detected === "UNKNOWN") return detected;
-  if ((detected === "GARANTI" || detected === "VAKIFBANK") && detected !== bank) {
+  const decision = detectBankDecision(sheetRows, options || {});
+  if (decision.status === "UNKNOWN" || decision.status === "AMBIGUOUS") {
+    return decision.status;
+  }
+  if (!banksMatch(decision.selectedBank, bank)) {
     const err = new Error(
       "Seçilen banka ile yüklenen ekstre formatı uyuşmuyor. Dosyaya uygun bankayı seçip tekrar deneyin."
     );
     err.code = "BANK_FORMAT_MISMATCH";
     err.selectedBank = bank;
-    err.detectedBank = detected;
+    err.detectedBank = decision.selectedBank;
     throw err;
   }
-  return detected;
+  return decision.selectedBank;
 }
 
 // ——— DUPLICATE: parsers/garantiParser.js ———
@@ -630,15 +902,18 @@ function normalizeBankParsedRow(row, selectedBank) {
   };
 }
 
-function parseRowsForBank(sheetRows, selectedBank) {
-  assertSelectedBankMatchesSheet(sheetRows, selectedBank);
-  if (selectedBank === "GARANTI") return parseGarantiEkstre(sheetRows);
-  if (selectedBank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
-  if (selectedBank === "TEB") {
+function parseRowsForBank(sheetRows, selectedBank, options) {
+  let bank = String(selectedBank || "").trim().toUpperCase();
+  if (bank === "KUVEYTTURK" || bank === "KUVEYTTÜRK") bank = "KUVEYT";
+  if (bank === "VAKIF") bank = "VAKIFBANK";
+  assertSelectedBankMatchesSheet(sheetRows, bank, options || {});
+  if (bank === "GARANTI") return parseGarantiEkstre(sheetRows);
+  if (bank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
+  if (bank === "TEB") {
     return enrichTebParsedRowsLite(parseGenericBankEkstre(sheetRows, "TEB"));
   }
-  if (selectedBank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
-  if (selectedBank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
+  if (bank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
+  if (bank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
   return [];
 }
 
@@ -714,7 +989,12 @@ self.onmessage = async function onBankParserMessage(event) {
     await yieldToWorker();
 
     const parseStarted = Date.now();
-    const parsedRows = parseRowsForBank(sheetRows, bankName);
+    const detectOpts = {
+      sheetName: data.sheetName || data.options?.sheetName || "",
+      fileName: data.fileName || data.options?.fileName || data.options?.sourceFileName || "",
+      scanLimit: data.options?.scanLimit || 40,
+    };
+    const parsedRows = parseRowsForBank(sheetRows, bankName, detectOpts);
     const parseMs = Date.now() - parseStarted;
 
     postProgress(phase, `${parsedRows.length} satır normalize ediliyor`);
@@ -732,13 +1012,22 @@ self.onmessage = async function onBankParserMessage(event) {
     );
     const normalizeMs = Date.now() - normalizeStarted;
 
+    let parserBankId = bankName;
+    if (parserBankId === "KUVEYTTURK" || parserBankId === "KUVEYTTÜRK") {
+      parserBankId = "KUVEYT";
+    }
+    if (parserBankId === "VAKIF") parserBankId = "VAKIFBANK";
+    const selectedCanonical =
+      parserBankId === "KUVEYT" ? "KUVEYTTURK" : parserBankId;
+
     self.postMessage({
       type: "result",
       requestId,
       normalizedRows,
       parseMode: "worker",
       rawCount: sheetRows.length,
-      selectedBank: bankName,
+      selectedBank: selectedCanonical,
+      parserBankId,
       timings: {
         parseMs,
         normalizeMs,

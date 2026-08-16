@@ -89,6 +89,7 @@ function bankNameTokens(name = "") {
   if (/HALK/.test(text)) tokens.add("HALKBANK");
   if (/DENIZ/.test(text)) tokens.add("DENIZBANK");
   if (/TEB|TURK\s*EKONOMI/.test(text)) tokens.add("TEB");
+  if (/KUVEYT/.test(text)) tokens.add("KUVEYT");
   if (/QNB|FINANSBANK/.test(text)) tokens.add("QNB");
   if (/ING/.test(text)) tokens.add("ING");
   tokens.add(text.replace(/\s+/g, ""));

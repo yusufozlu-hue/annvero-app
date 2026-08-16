@@ -181,20 +181,29 @@ assert.match(bridgeSource, /console\.warn\("\[workerParserBridge\] worker\.onerr
 console.log("OK — classic worker + result protocol");
 
 section("3) Workbench: single XLSX + sheetRows to worker / fallback");
-const pageSource = readFileSync(
-  path.join(root, "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"),
-  "utf8"
-);
-assert.match(pageSource, /sheetRows/);
-assert.match(pageSource, /bankName:\s*selectedBank/);
-assert.match(
-  pageSource,
-  /parseBankExcelOnMainThread\(\s*file,\s*bank,\s*onProgress,\s*\{\s*sheetRows/
-);
-assert.doesNotMatch(pageSource, /arrayBuffer:\s*workerBuffer/);
-assert.doesNotMatch(pageSource, /JSON\.stringify/);
-assert.doesNotMatch(pageSource, /JSON\.parse/);
-console.log("OK — workbench wire-up");
+{
+  // Canonical contract (main @ 8ccc0f4 + this branch):
+  // - Worker payload: { type:"parse", bankName, sheetRows, options } — never File / raw arrayBuffer
+  // - Fallback: parseBankExcelOnMainThread(sourceFile, bank, onProgress, { sheetRows, arrayBuffer? })
+  //   First arg is checkpoint File (`sourceFile`). Stale tests expecting bare `file` were wrong;
+  //   with sheetRows present the File must not be re-read (see §9).
+  const pageSource = readFileSync(
+    path.join(root, "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"),
+    "utf8"
+  );
+  assert.match(pageSource, /sheetRows/);
+  assert.match(pageSource, /bankName:\s*selectedBank/);
+  assert.match(pageSource, /runBankParserWorker\s*\(\s*\{[\s\S]*?sheetRows[\s\S]*?bankName:\s*bank/);
+  assert.match(
+    pageSource,
+    /parseBankExcelOnMainThread\(\s*sourceFile\s*,\s*bank\s*,\s*onProgress\s*,\s*\{\s*sheetRows/
+  );
+  assert.doesNotMatch(pageSource, /parseBankExcelOnMainThread\(\s*file\s*,/);
+  assert.doesNotMatch(pageSource, /arrayBuffer:\s*workerBuffer/);
+  assert.doesNotMatch(pageSource, /JSON\.stringify/);
+  assert.doesNotMatch(pageSource, /JSON\.parse/);
+  console.log("OK — workbench sheetRows path + sourceFile fallback contract");
+}
 
 section("4) Worker boot + parse: Vakıfbank");
 {
@@ -291,7 +300,19 @@ section("8) Kuveyt Türk regression");
     coreNorm,
     "KUVEYT"
   );
-  console.log("OK — Kuveyt", { rows: workerResult.normalizedRows.length });
+  const aliasResult = await runClassicWorkerParse({
+    bankName: "KUVEYTTURK",
+    sheetRows: kuveytRows,
+    requestId: "test-kuveytturk",
+  });
+  assertSameFingerprints(
+    aliasResult.normalizedRows,
+    workerResult.normalizedRows,
+    "KUVEYTTURK→KUVEYT"
+  );
+  console.log("OK — Kuveyt (+ KUVEYTTURK alias)", {
+    rows: workerResult.normalizedRows.length,
+  });
 }
 
 section("9) Forced failure → main-thread sheetRows fallback (no re-read)");
