@@ -19,6 +19,7 @@ import {
   MISSING_OPENING_BALANCE,
   reconcileStatementBalances,
 } from "@/src/utils/bankBalanceReconcile.js";
+import { normalizeOcrStatementText } from "@/src/utils/bankOcr/normalizeOcrStatementText.js";
 
 export { reconcileStatementBalances } from "@/src/utils/bankBalanceReconcile.js";
 
@@ -106,16 +107,270 @@ function countStatementDates(text = "") {
     .length;
 }
 
-function scoreExtractedStatementText(text = "") {
+function countStatementAmounts(text = "") {
+  return (
+    String(text || "").match(
+      /-?\d{1,3}(?:[.\s']\d{3})*(?:,\d{2})|-?\d+(?:,\d{2})/g
+    ) || []
+  ).length;
+}
+
+const DATE_LINE_START_RE = /^\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}\b/;
+const AMOUNT_TOKEN_RE =
+  /-?\d{1,3}(?:[.\s']\d{3})*(?:,\d{2})|-?\d+(?:,\d{2})/;
+
+/**
+ * Eski (P0-bug) skor — yalnızca regresyon testleri için.
+ * Uzun latin1 çöpü letter tavanı + sahte tarihlerle daha kısa ama yapısal pdfjs’i yenebiliyordu.
+ */
+export function scoreExtractedStatementTextLegacy(text = "") {
   const t = String(text || "");
   const dates = countStatementDates(t);
-  const amounts = (
-    t.match(/-?\d{1,3}(?:[.\s']\d{3})*(?:,\d{2})|-?\d+(?:,\d{2})/g) || []
-  ).length;
+  const amounts = countStatementAmounts(t);
   const letters = (t.match(/[A-Za-zÇĞİÖŞÜçğıöşü]/g) || []).length;
-  // Latin1 stream çöpü yüksek letter skoru üretir ama tarih yoksa banka ekstresi sayılmaz.
   if (dates === 0) return Math.min(letters, 20);
   return dates * 20 + amounts * 5 + Math.min(letters, 400);
+}
+
+/**
+ * Hafif yapısal + parse kalite ölçümü (tam pipeline değil).
+ * Uzunluk / banka adı tek başına kazanamaz.
+ */
+export function probeExtractCandidate(text = "", { name = "unknown" } = {}) {
+  const t = String(text || "");
+  const lines = t
+    .split(/\r?\n/)
+    .map((line) => String(line || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const dateCount = countStatementDates(t);
+  const amountCount = countStatementAmounts(t);
+  const letterCount = (t.match(/[A-Za-zÇĞİÖŞÜçğıöşü]/g) || []).length;
+  let controlChars = 0;
+  let replacementLike = 0;
+  for (let i = 0; i < t.length; i += 1) {
+    const c = t.charCodeAt(i);
+    if (c < 9 || (c > 13 && c < 32) || c === 0x7f || c === 0xfffd) controlChars += 1;
+  }
+  replacementLike = (t.match(/\uFFFD|Ã.|Â./g) || []).length;
+  const dateStartLines = lines.filter((line) => DATE_LINE_START_RE.test(line)).length;
+  const structuredTxLines = lines.filter(
+    (line) => DATE_LINE_START_RE.test(line) && AMOUNT_TOKEN_RE.test(line)
+  ).length;
+  const longMergedLines = lines.filter((line) => line.length > 160).length;
+  const avgLineLen = lines.length
+    ? Math.round(lines.reduce((sum, line) => sum + line.length, 0) / lines.length)
+    : 0;
+  const controlRatio = t.length ? controlChars / t.length : 0;
+  const replacementRatio = t.length ? replacementLike / t.length : 0;
+  const longMergedRatio = lines.length ? longMergedLines / lines.length : 0;
+
+  // Sınırlı parse probe — normalize yalnız yapısal adaylarda (uzun birleşmiş çöpte yok).
+  let parsedTx = 0;
+  let withDirection = 0;
+  let withBalance = 0;
+  let dupRate = 0;
+  let usedNormalizeProbe = false;
+  if (t && (structuredTxLines > 0 || dateStartLines > 0 || dateCount > 0)) {
+    let parsed = parsePdfMovementLines(t, {});
+    let txs = parsed.transactions || [];
+    if (
+      !txs.length &&
+      dateStartLines > 0 &&
+      t.length <= 100_000 &&
+      longMergedRatio < 0.25 &&
+      controlRatio < 0.02
+    ) {
+      const normalized = normalizeOcrStatementText(t);
+      if (normalized && normalized !== t) {
+        const retry = parsePdfMovementLines(normalized, {});
+        if ((retry.transactions || []).length > 0) {
+          parsed = retry;
+          txs = retry.transactions || [];
+          usedNormalizeProbe = true;
+        }
+      }
+    }
+    parsedTx = txs.length;
+    withDirection = txs.filter((tx) => tx.direction === "GIRIS" || tx.direction === "CIKIS")
+      .length;
+    withBalance = txs.filter((tx) => Number.isFinite(Number(tx.balance))).length;
+    if (txs.length > 1) {
+      const keys = new Set();
+      let dups = 0;
+      for (const tx of txs) {
+        const key = [
+          tx.transactionDate || "",
+          tx.direction || "",
+          Number(tx.debit) || 0,
+          Number(tx.credit) || 0,
+          String(tx.description || "").slice(0, 48),
+        ].join("|");
+        if (keys.has(key)) dups += 1;
+        else keys.add(key);
+      }
+      dupRate = dups / txs.length;
+    }
+  }
+
+  const unparsedRate =
+    dateStartLines > 0 ? Math.max(0, dateStartLines - parsedTx) / dateStartLines : 1;
+
+  return {
+    name: String(name || "unknown"),
+    textLen: t.length,
+    lineCount: lines.length,
+    dateCount,
+    amountCount,
+    letterCount,
+    dateStartLines,
+    structuredTxLines,
+    longMergedLines,
+    avgLineLen,
+    controlRatio,
+    replacementRatio,
+    longMergedRatio,
+    parsedTx,
+    withDirection,
+    withBalance,
+    dupRate,
+    unparsedRate,
+    usedNormalizeProbe,
+    bank: detectBankFromPdfText(t),
+  };
+}
+
+/**
+ * Öncelik: A yapı → B parse → C bakiye → D metin kalitesi.
+ * Length/bank adı tek başına yetmez; geçerli pdfjs corrupt latin1’i yener.
+ */
+export function scoreExtractCandidate(probe = {}) {
+  const p = probe && typeof probe === "object" ? probe : {};
+  const structured = Number(p.structuredTxLines) || 0;
+  const dateStarts = Number(p.dateStartLines) || 0;
+  const parsedTx = Number(p.parsedTx) || 0;
+  const withDirection = Number(p.withDirection) || 0;
+  const withBalance = Number(p.withBalance) || 0;
+  const dates = Number(p.dateCount) || 0;
+  const amounts = Number(p.amountCount) || 0;
+
+  if (!p.textLen && !dates && !parsedTx) return 0;
+
+  // A — yapısal geçerlilik
+  let score = 0;
+  score += Math.min(structured, 80) * 50;
+  score += Math.min(dateStarts, 80) * 12;
+  score += Math.min(amounts, 120) * 2;
+  // Serbest tarih tokenları (satır başı olmayan) düşük ağırlık — latin1 çöpü şişirmesin
+  score += Math.min(dates, 40) * 2;
+
+  // B — parse sonucu (baskın)
+  score += Math.min(parsedTx, 200) * 120;
+  score += Math.min(withDirection, 200) * 15;
+  score -= Math.round((Number(p.unparsedRate) || 0) * 250);
+  score -= Math.round((Number(p.dupRate) || 0) * 180);
+
+  // C — bakiye kanıtı
+  score += Math.min(withBalance, 200) * 25;
+
+  // D — metin kalitesi cezaları + anlamsız uzunluk
+  score -= Math.round((Number(p.controlRatio) || 0) * 900);
+  score -= Math.round((Number(p.replacementRatio) || 0) * 700);
+  score -= Math.round((Number(p.longMergedRatio) || 0) * 500);
+  if (structured === 0 && parsedTx === 0 && (Number(p.textLen) || 0) > 4000) {
+    score -= Math.min(900, Math.floor((Number(p.textLen) || 0) / 80));
+  }
+  if ((Number(p.avgLineLen) || 0) > 200 && structured < 2) {
+    score -= 180;
+  }
+  // Letter bonus neredeyse yok (eski bug kaynağı)
+  score += Math.min(Number(p.letterCount) || 0, 40);
+
+  return Math.round(score);
+}
+
+/**
+ * Adaylar arasından kazananı seç. İkisi de çürükse OCR_REQUIRED.
+ * @returns {{ decision: 'use'|'OCR_REQUIRED', winner: object|null, ranked: object[], reason: string }}
+ */
+export function selectBestExtractCandidate(candidates = [], { preferNames = ["pdfjs", "native"] } = {}) {
+  const list = (Array.isArray(candidates) ? candidates : [])
+    .filter((c) => c && typeof c === "object")
+    .map((c) => {
+      const probe =
+        c.probe && typeof c.probe === "object"
+          ? c.probe
+          : probeExtractCandidate(c.text || "", { name: c.name || "unknown" });
+      const score = Number.isFinite(Number(c.score))
+        ? Number(c.score)
+        : scoreExtractCandidate(probe);
+      return {
+        name: String(c.name || probe.name || "unknown"),
+        text: String(c.text || ""),
+        probe,
+        score,
+      };
+    })
+    .filter((c) => c.text.length > 0 || (c.probe?.parsedTx || 0) > 0);
+
+  if (!list.length) {
+    return {
+      decision: "OCR_REQUIRED",
+      winner: null,
+      ranked: [],
+      reason: "no_extract_candidates",
+    };
+  }
+
+  const prefer = new Set((preferNames || []).map(String));
+  list.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const aPref = prefer.has(a.name) ? 1 : 0;
+    const bPref = prefer.has(b.name) ? 1 : 0;
+    if (bPref !== aPref) return bPref - aPref;
+    // Eşitlikte daha az birleşmiş / daha kısa metin (çöp değil yapı)
+    const aMerge = Number(a.probe?.longMergedRatio) || 0;
+    const bMerge = Number(b.probe?.longMergedRatio) || 0;
+    if (aMerge !== bMerge) return aMerge - bMerge;
+    return (Number(a.probe?.textLen) || 0) - (Number(b.probe?.textLen) || 0);
+  });
+
+  const best = list[0];
+  const second = list[1];
+  const bestUsable =
+    (best.probe?.parsedTx || 0) > 0 ||
+    (best.probe?.structuredTxLines || 0) >= 1 ||
+    ((best.probe?.dateStartLines || 0) >= 1 && (best.probe?.amountCount || 0) >= 1);
+
+  if (!bestUsable) {
+    return {
+      decision: "OCR_REQUIRED",
+      winner: null,
+      ranked: list,
+      reason: "all_candidates_unusable",
+    };
+  }
+
+  // İkinci aday parse’ta açık ara öndeyse (nadir tie-break) — zaten sort skorla yönetir.
+  let reason = "highest_structural_parse_score";
+  if (second && best.score === second.score && prefer.has(best.name)) {
+    reason = "tie_prefer_native_pdfjs";
+  } else if ((best.probe?.parsedTx || 0) > (second?.probe?.parsedTx || 0)) {
+    reason = "more_parsed_transactions";
+  } else if ((best.probe?.structuredTxLines || 0) > (second?.probe?.structuredTxLines || 0)) {
+    reason = "better_structured_tx_lines";
+  }
+
+  return {
+    decision: "use",
+    winner: best,
+    ranked: list,
+    reason,
+  };
+}
+
+/** @deprecated Eski formül; yeni seçim selectBestExtractCandidate kullanır. */
+export function scoreExtractedStatementText(text = "") {
+  return scoreExtractCandidate(probeExtractCandidate(text));
 }
 
 function buildExtractDiagnostics({
@@ -125,6 +380,8 @@ function buildExtractDiagnostics({
   textLen = 0,
   dateCount = 0,
   letterCount = 0,
+  selectionReason = "",
+  candidateScores = undefined,
 } = {}) {
   return {
     extractPath,
@@ -133,6 +390,8 @@ function buildExtractDiagnostics({
     textLen: Number(textLen) || 0,
     dateCount: Number(dateCount) || 0,
     letterCount: Number(letterCount) || 0,
+    selectionReason: selectionReason ? String(selectionReason).slice(0, 96) : undefined,
+    candidateScores: Array.isArray(candidateScores) ? candidateScores : undefined,
   };
 }
 
@@ -754,20 +1013,43 @@ export async function parseBankStatementPdf(bytes, options = {}) {
           pdfjsErrorCode = String(e?.code || e?.name || "PDFJS_THROW").slice(0, 64);
         }
         const latinText = extractPdfTextLayer(buf, { signal });
-        const pdfjsScore = scoreExtractedStatementText(pdfjsText);
-        const latinScore = scoreExtractedStatementText(latinText);
-        // Tarih/tutar skoru yüksek olanı seç — Latin1 stream çöpü hareket kırar.
-        const usePdfjs = pdfjsScore >= latinScore && pdfjsScore > 0;
-        const chosen = usePdfjs
-          ? pdfjsText || latinText
-          : latinText || pdfjsText;
-        const extractPath = usePdfjs
-          ? "pdfjs"
-          : countStatementDates(latinText) > 0
-            ? "latin1"
-            : pdfjsOk
-              ? "pdfjs-weak"
-              : "none";
+        const candidates = [];
+        if (pdfjsText) candidates.push({ name: "pdfjs", text: pdfjsText });
+        if (latinText) candidates.push({ name: "latin1", text: latinText });
+        const selection = selectBestExtractCandidate(candidates);
+        const candidateScores = (selection.ranked || []).map((c) => ({
+          name: c.name,
+          score: c.score,
+          parsedTx: c.probe?.parsedTx || 0,
+          structuredTxLines: c.probe?.structuredTxLines || 0,
+          textLen: c.probe?.textLen || 0,
+          longMergedRatio: Number(c.probe?.longMergedRatio || 0),
+        }));
+
+        if (selection.decision === "OCR_REQUIRED" || !selection.winner) {
+          return {
+            text: "",
+            forceOcr: true,
+            diag: buildExtractDiagnostics({
+              extractPath: "none",
+              pdfjsOk,
+              pdfjsErrorCode: pdfjsErrorCode || "EXTRACT_UNUSABLE",
+              textLen: 0,
+              dateCount: 0,
+              letterCount: 0,
+              selectionReason: selection.reason || "all_candidates_unusable",
+              candidateScores,
+            }),
+          };
+        }
+
+        const chosen = selection.winner.text || "";
+        const winnerName = selection.winner.name;
+        let extractPath = winnerName;
+        if (winnerName === "pdfjs" && !pdfjsOk) extractPath = "pdfjs-weak";
+        if (winnerName === "latin1" && countStatementDates(latinText) < 1) {
+          extractPath = pdfjsOk ? "pdfjs-weak" : "none";
+        }
         return {
           text: chosen,
           diag: buildExtractDiagnostics({
@@ -778,6 +1060,8 @@ export async function parseBankStatementPdf(bytes, options = {}) {
             dateCount: countStatementDates(chosen),
             letterCount: (String(chosen || "").match(/[A-Za-zÇĞİÖŞÜçğıöşü]/g) || [])
               .length,
+            selectionReason: selection.reason,
+            candidateScores,
           }),
         };
       })(),
@@ -789,6 +1073,25 @@ export async function parseBankStatementPdf(bytes, options = {}) {
     ]);
     text = raced?.text || "";
     extractDiag = raced?.diag || extractDiag;
+    if (raced?.forceOcr) {
+      // Metin adayı vardı ama yapısal/parse açısından kullanılamadı → layoutFallback OCR.
+      const hadTextLayer = (extractDiag?.candidateScores || []).some(
+        (c) => (Number(c?.textLen) || 0) > 0
+      );
+      return {
+        ok: false,
+        status: BANK_PARSE_STATUS.OCR_REQUIRED,
+        code: "OCR_REQUIRED",
+        message: SAFE.OCR_REQUIRED,
+        transactions: [],
+        sourceFileHash,
+        pageCount: pages,
+        ocrRequired: true,
+        layoutFallback: hadTextLayer || undefined,
+        priorCode: hadTextLayer ? "PDF_UNSUPPORTED_LAYOUT" : undefined,
+        extractDiagnostics: extractDiag,
+      };
+    }
   } catch (error) {
     if (error?.code === "PDF_CANCELLED" || signal?.aborted) {
       return {
@@ -840,10 +1143,6 @@ export async function parseBankStatementPdf(bytes, options = {}) {
       extractDiagnostics: extractDiag,
     };
   }
-
-  const { normalizeOcrStatementText } = await import(
-    "@/src/utils/bankOcr/normalizeOcrStatementText.js"
-  );
 
   let workingText = text;
   let parsed = parsePdfMovementLines(workingText, {
