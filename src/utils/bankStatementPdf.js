@@ -20,8 +20,24 @@ import {
   reconcileStatementBalances,
 } from "@/src/utils/bankBalanceReconcile.js";
 import { normalizeOcrStatementText } from "@/src/utils/bankOcr/normalizeOcrStatementText.js";
+import {
+  looksLikeZiraatPdfLayout,
+  looksLikeZiraatStatementHeader,
+  looksLikeZiraatDekont,
+  parseZiraatPdfLayout,
+  classifyZiraatPdfDocument,
+  BANK_PDF_DOCUMENT_TYPE,
+} from "@/src/utils/bankPdf/ziraatPdfLayout.js";
 
 export { reconcileStatementBalances } from "@/src/utils/bankBalanceReconcile.js";
+export {
+  looksLikeZiraatPdfLayout,
+  looksLikeZiraatStatementHeader,
+  looksLikeZiraatDekont,
+  parseZiraatPdfLayout,
+  classifyZiraatPdfDocument,
+  BANK_PDF_DOCUMENT_TYPE,
+} from "@/src/utils/bankPdf/ziraatPdfLayout.js";
 
 export const PDF_MAX_BYTES = 8 * 1024 * 1024;
 export const PDF_MAX_PAGES = 80;
@@ -170,9 +186,18 @@ export function probeExtractCandidate(text = "", { name = "unknown" } = {}) {
   let withBalance = 0;
   let dupRate = 0;
   let usedNormalizeProbe = false;
-  if (t && (structuredTxLines > 0 || dateStartLines > 0 || dateCount > 0)) {
+  let usedZiraatLayoutProbe = false;
+  if (t && (structuredTxLines > 0 || dateStartLines > 0 || dateCount > 0 || looksLikeZiraatPdfLayout(t))) {
     let parsed = parsePdfMovementLines(t, {});
     let txs = parsed.transactions || [];
+    if (!txs.length && looksLikeZiraatPdfLayout(t)) {
+      const ziraat = parseZiraatPdfLayout({ text: t, context: {} });
+      if ((ziraat.transactions || []).length > 0) {
+        parsed = ziraat;
+        txs = ziraat.transactions || [];
+        usedZiraatLayoutProbe = true;
+      }
+    }
     if (
       !txs.length &&
       dateStartLines > 0 &&
@@ -187,6 +212,13 @@ export function probeExtractCandidate(text = "", { name = "unknown" } = {}) {
           parsed = retry;
           txs = retry.transactions || [];
           usedNormalizeProbe = true;
+        } else if (looksLikeZiraatPdfLayout(normalized)) {
+          const zRetry = parseZiraatPdfLayout({ text: normalized, context: {} });
+          if ((zRetry.transactions || []).length > 0) {
+            parsed = zRetry;
+            txs = zRetry.transactions || [];
+            usedZiraatLayoutProbe = true;
+          }
         }
       }
     }
@@ -235,6 +267,7 @@ export function probeExtractCandidate(text = "", { name = "unknown" } = {}) {
     dupRate,
     unparsedRate,
     usedNormalizeProbe,
+    usedZiraatLayoutProbe,
     bank: detectBankFromPdfText(t),
   };
 }
@@ -447,10 +480,11 @@ function rebuildLinesFromPdfJsItems(items = []) {
 /**
  * pdf.js getTextContent + Y geometrisi — VakıfBank tablo satırlarını korur.
  * Latin1 Tj fallback’tan önce tercih edilir (çöp stream metni hareket kırar).
+ * @returns {Promise<string|{text:string, pagesItems:Array}>}
  */
 export async function extractPdfTextLayerPdfJs(
   bytes,
-  { maxChars = 500_000, signal, maxPages = PDF_MAX_PAGES } = {}
+  { maxChars = 500_000, signal, maxPages = PDF_MAX_PAGES, withItems = false } = {}
 ) {
   if (signal?.aborted) {
     const err = new Error(SAFE.CANCELLED);
@@ -458,7 +492,7 @@ export async function extractPdfTextLayerPdfJs(
     throw err;
   }
   const data = asBytes(bytes);
-  if (!data.length) return "";
+  if (!data.length) return withItems ? { text: "", pagesItems: [] } : "";
 
   // Independent copy — transferable/detached views break getDocument on some runtimes.
   const copy =
@@ -497,6 +531,7 @@ export async function extractPdfTextLayerPdfJs(
   }
   const total = Math.min(Number(pdf.numPages) || 0, maxPages);
   const out = [];
+  const pagesItems = [];
   let chars = 0;
   for (let p = 1; p <= total; p += 1) {
     if (signal?.aborted) {
@@ -509,7 +544,25 @@ export async function extractPdfTextLayerPdfJs(
       // Geometry items only — no marked content / extra deps
       includeMarkedContent: false,
     });
-    const lines = rebuildLinesFromPdfJsItems(content?.items || []);
+    const rawItems = content?.items || [];
+    if (withItems) {
+      pagesItems.push({
+        page: p,
+        items: rawItems
+          .filter((it) => it && typeof it.str === "string" && String(it.str).trim())
+          .map((it) => {
+            const tr = it.transform || [1, 0, 0, 1, 0, 0];
+            return {
+              str: String(it.str),
+              x: Number(tr[4]) || 0,
+              y: Number(tr[5]) || 0,
+              w: Number(it.width) || 0,
+              h: Math.abs(Number(tr[3]) || 10) || 10,
+            };
+          }),
+      });
+    }
+    const lines = rebuildLinesFromPdfJsItems(rawItems);
     if (total > 1) {
       const mark = `--- page ${p} ---`;
       out.push(mark);
@@ -528,7 +581,8 @@ export async function extractPdfTextLayerPdfJs(
   } catch {
     /* ignore */
   }
-  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const text = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return withItems ? { text, pagesItems } : text;
 }
 
 /**
@@ -994,22 +1048,29 @@ export async function parseBankStatementPdf(bytes, options = {}) {
   const timeoutMs = Number(options.timeoutMs) || PDF_PARSE_TIMEOUT_MS;
   let text = "";
   let extractDiag = buildExtractDiagnostics();
+  let extractPagesItems = null;
+  let extractZiraatParsed = null;
   try {
     const raced = await Promise.race([
       (async () => {
         let pdfjsText = "";
         let pdfjsOk = false;
         let pdfjsErrorCode = "";
+        let pdfjsPagesItems = null;
         try {
-          pdfjsText = await extractPdfTextLayerPdfJs(buf, {
+          const pdfjsResult = await extractPdfTextLayerPdfJs(buf, {
             signal,
             maxPages: PDF_MAX_PAGES,
+            withItems: true,
           });
+          pdfjsText = pdfjsResult?.text || "";
+          pdfjsPagesItems = pdfjsResult?.pagesItems || null;
           pdfjsOk = Boolean(pdfjsText && pdfjsText.length > 0);
           if (!pdfjsOk) pdfjsErrorCode = "PDFJS_EMPTY";
         } catch (e) {
           pdfjsText = "";
           pdfjsOk = false;
+          pdfjsPagesItems = null;
           pdfjsErrorCode = String(e?.code || e?.name || "PDFJS_THROW").slice(0, 64);
         }
         const latinText = extractPdfTextLayer(buf, { signal });
@@ -1024,7 +1085,39 @@ export async function parseBankStatementPdf(bytes, options = {}) {
           structuredTxLines: c.probe?.structuredTxLines || 0,
           textLen: c.probe?.textLen || 0,
           longMergedRatio: Number(c.probe?.longMergedRatio || 0),
+          usedZiraatLayoutProbe: Boolean(c.probe?.usedZiraatLayoutProbe),
         }));
+
+        // Ziraat layout salvage — skor OCR_REQUIRED dese bile dekont/ekstre parse edilebilir
+        const salvageText = pdfjsText || latinText || "";
+        if (
+          (selection.decision === "OCR_REQUIRED" || !selection.winner) &&
+          salvageText &&
+          looksLikeZiraatPdfLayout(salvageText)
+        ) {
+          const ziraat = parseZiraatPdfLayout({
+            text: salvageText,
+            pagesItems: pdfjsPagesItems,
+            context: { sourceFileHash },
+          });
+          if ((ziraat.transactions || []).length > 0) {
+            return {
+              text: salvageText,
+              pagesItems: pdfjsPagesItems,
+              ziraatParsed: ziraat,
+              diag: buildExtractDiagnostics({
+                extractPath: pdfjsText ? "pdfjs" : "latin1",
+                pdfjsOk,
+                pdfjsErrorCode,
+                textLen: salvageText.length,
+                dateCount: countStatementDates(salvageText),
+                letterCount: (salvageText.match(/[A-Za-zÇĞİÖŞÜçğıöşü]/g) || []).length,
+                selectionReason: "ziraat_layout_salvage",
+                candidateScores,
+              }),
+            };
+          }
+        }
 
         if (selection.decision === "OCR_REQUIRED" || !selection.winner) {
           return {
@@ -1052,6 +1145,7 @@ export async function parseBankStatementPdf(bytes, options = {}) {
         }
         return {
           text: chosen,
+          pagesItems: winnerName === "pdfjs" ? pdfjsPagesItems : null,
           diag: buildExtractDiagnostics({
             extractPath,
             pdfjsOk,
@@ -1073,6 +1167,8 @@ export async function parseBankStatementPdf(bytes, options = {}) {
     ]);
     text = raced?.text || "";
     extractDiag = raced?.diag || extractDiag;
+    extractPagesItems = raced?.pagesItems || null;
+    extractZiraatParsed = raced?.ziraatParsed || null;
     if (raced?.forceOcr) {
       // Metin adayı vardı ama yapısal/parse açısından kullanılamadı → layoutFallback OCR.
       const hadTextLayer = (extractDiag?.candidateScores || []).some(
@@ -1145,11 +1241,67 @@ export async function parseBankStatementPdf(bytes, options = {}) {
   }
 
   let workingText = text;
-  let parsed = parsePdfMovementLines(workingText, {
-    ...options,
-    sourceFileHash,
-    selectedBank: options.selectedBank || detectBankFromPdfText(workingText),
-  });
+  const bankHint = options.selectedBank || detectBankFromPdfText(workingText);
+  const ziraatLayoutFingerprint =
+    looksLikeZiraatPdfLayout(workingText) &&
+    (looksLikeZiraatStatementHeader(workingText) ||
+      looksLikeZiraatDekont(workingText) ||
+      Boolean(extractZiraatParsed?.transactions?.length));
+
+  let parsed;
+  if (extractZiraatParsed && (extractZiraatParsed.transactions || []).length) {
+    parsed = extractZiraatParsed;
+  } else if (bankHint === "ZIRAAT" || looksLikeZiraatPdfLayout(workingText)) {
+    const ziraat = parseZiraatPdfLayout({
+      text: workingText,
+      pagesItems: extractPagesItems,
+      context: {
+        ...options,
+        sourceFileHash,
+        selectedBank: "ZIRAAT",
+      },
+    });
+    const generic = parsePdfMovementLines(workingText, {
+      ...options,
+      sourceFileHash,
+      selectedBank: bankHint,
+    });
+    const zCount = (ziraat.transactions || []).length;
+    const gCount = (generic.transactions || []).length;
+    // Güçlü Ziraat layout (ekstre kolon / dekont) veya daha çok hareket → adapter
+    if (zCount > gCount || (ziraatLayoutFingerprint && zCount > 0 && zCount >= gCount)) {
+      parsed = ziraat;
+    } else if (gCount > 0) {
+      parsed = generic;
+    } else {
+      parsed = ziraat;
+    }
+  } else {
+    parsed = parsePdfMovementLines(workingText, {
+      ...options,
+      sourceFileHash,
+      selectedBank: bankHint,
+    });
+  }
+
+  // Ziraat layout — hâlâ 0 ise son bir deneme
+  if (
+    !(parsed.transactions || []).length &&
+    (bankHint === "ZIRAAT" || looksLikeZiraatPdfLayout(workingText))
+  ) {
+    const ziraat = parseZiraatPdfLayout({
+      text: workingText,
+      pagesItems: extractPagesItems,
+      context: {
+        ...options,
+        sourceFileHash,
+        selectedBank: "ZIRAAT",
+      },
+    });
+    if ((ziraat.transactions || []).length > 0) {
+      parsed = ziraat;
+    }
+  }
 
   // pdf.js satırları çoğu zaman tarih/açıklama/tutarı ayrı satırda bırakır —
   // OCR normalizer’ı aynı birleştirme kurallarını uygular (sahte hareket yok).
@@ -1163,11 +1315,21 @@ export async function parseBankStatementPdf(bytes, options = {}) {
     if ((retry.transactions || []).length > 0) {
       parsed = retry;
       workingText = normalized;
+    } else if (
+      looksLikeZiraatPdfLayout(normalized) ||
+      detectBankFromPdfText(normalized) === "ZIRAAT"
+    ) {
+      const zRetry = parseZiraatPdfLayout({
+        text: normalized,
+        pagesItems: extractPagesItems,
+        context: { ...options, sourceFileHash, selectedBank: "ZIRAAT" },
+      });
+      if ((zRetry.transactions || []).length > 0) {
+        parsed = zRetry;
+        workingText = normalized;
+      }
     }
   }
-
-  const hints = extractBalanceHintsFromText(workingText);
-  const balance = reconcileStatementBalances(parsed.transactions, hints);
 
   if (!parsed.transactions.length) {
     // Metin katmanı var ama hareket çıkarılamadı → OCR fallback zorunlu.
@@ -1192,11 +1354,57 @@ export async function parseBankStatementPdf(bytes, options = {}) {
 
   text = workingText;
 
-  const status = balance.reviewRequired
-    ? BANK_PARSE_STATUS.REVIEW_REQUIRED
-    : parsed.warnings.length
-      ? BANK_PARSE_STATUS.WARNING
-      : BANK_PARSE_STATUS.OK;
+  const documentType =
+    parsed.documentType ||
+    classifyZiraatPdfDocument(workingText) ||
+    BANK_PDF_DOCUMENT_TYPE.UNKNOWN_BANK_DOCUMENT;
+  const isTransferReceipt =
+    documentType === BANK_PDF_DOCUMENT_TYPE.BANK_TRANSFER_RECEIPT;
+
+  // Dekont: ekstre bakiye mutabakatına sokma — sahte 0/0 yok, OUTPUT_READY yok.
+  // Hareketler preview'da kalır.
+  let balance;
+  if (isTransferReceipt) {
+    balance = {
+      ok: false,
+      code: BALANCE_EVIDENCE_MISSING,
+      delta: null,
+      reviewRequired: true,
+      matched: false,
+      message:
+        "Havale dekontunda açılış/kapanış bakiyesi yok (BALANCE_EVIDENCE_MISSING). Ekstre mutabakatı uygulanmadı; sahte 0/0 üretilmedi.",
+      signModel: "n/a_transfer_receipt",
+      openingBalance: null,
+      closingBalance: null,
+      credits: null,
+      debits: null,
+      expectedClosing: null,
+      evidenceSource: null,
+      documentType,
+    };
+  } else {
+    const hints = extractBalanceHintsFromText(workingText);
+    balance = reconcileStatementBalances(parsed.transactions, hints);
+  }
+
+  const ownershipReview =
+    Boolean(parsed.reviewRequired) ||
+    (parsed.transactions || []).some(
+      (t) => t.reviewRequired || t.direction === "UNKNOWN"
+    );
+  const reviewReason =
+    parsed.reviewReason ||
+    parsed.diagnostics?.reviewReason ||
+    (ownershipReview && isTransferReceipt
+      ? (parsed.transactions || []).find((t) => t.reviewReason)?.reviewReason || ""
+      : "");
+
+  const status =
+    balance.reviewRequired || ownershipReview
+      ? BANK_PARSE_STATUS.REVIEW_REQUIRED
+      : parsed.warnings.length
+        ? BANK_PARSE_STATUS.WARNING
+        : BANK_PARSE_STATUS.OK;
 
   let code = "OK";
   if (
@@ -1210,21 +1418,46 @@ export async function parseBankStatementPdf(bytes, options = {}) {
     code = balance.code;
   }
 
+  const parserDiagnostics = {
+    documentType,
+    detectedBank: parsed.bank || "ZIRAAT",
+    parserMode: parsed.diagnostics?.parserMode || parsed.diagnostics?.winner || null,
+    transactionCount: parsed.transactions.length,
+    directionResolution: parsed.diagnostics?.directionResolution || null,
+    accountOwnershipEvidence: parsed.diagnostics?.accountOwnershipEvidence || [],
+    balanceEvidence: isTransferReceipt
+      ? "none"
+      : parsed.diagnostics?.balanceEvidence || balance.evidenceSource || null,
+    reviewReason,
+    outputGateClosed:
+      isTransferReceipt ||
+      balance.code === BALANCE_EVIDENCE_MISSING ||
+      Boolean(balance.reviewRequired) ||
+      ownershipReview,
+    ...(parsed.diagnostics || {}),
+  };
+
   return {
-    ok: !balance.reviewRequired,
+    ok: !balance.reviewRequired && !ownershipReview,
     status,
     code,
     message: balance.reviewRequired
       ? balance.message
       : balance.code === BALANCE_EVIDENCE_MISSING
         ? balance.message || ""
-        : "",
+        : ownershipReview
+          ? reviewReason || "İnceleme gerekli"
+          : "",
     transactions: parsed.transactions,
     warnings: parsed.warnings,
     sourceFileHash,
     pageCount: pages,
     detectedBank: parsed.bank,
+    documentType,
     balance,
+    diagnostics: parserDiagnostics,
+    reviewRequired: Boolean(balance.reviewRequired || ownershipReview),
+    reviewReason,
     elapsedMs: Date.now() - started,
     sourceType: BANK_STATEMENT_SOURCE.PDF,
     sheetRows: pdfTextToSheetRows(text),

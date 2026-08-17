@@ -51,6 +51,8 @@ function toNumber(value, fallback = 0) {
 
 function directionFromAmounts({ debit = 0, credit = 0, amount = 0, direction = "" } = {}) {
   const d = empty(direction).toUpperCase();
+  // Explicit UNKNOWN must never be inferred as GIRIS/CIKIS from amount sign.
+  if (d === "UNKNOWN" || d === "BILINMIYOR" || d === "UNRESOLVED") return "UNKNOWN";
   if (d === "CIKIS" || d === "OUT" || d === "DEBIT") return "CIKIS";
   if (d === "GIRIS" || d === "IN" || d === "CREDIT") return "GIRIS";
   if (toNumber(debit) > 0 && toNumber(credit) <= 0) return "GIRIS";
@@ -132,6 +134,8 @@ export function createCanonicalBankTransaction(partial = {}) {
   );
   const documentNo = empty(partial.documentNo || partial.dekontNo || partial.document_no);
   const amountAbs = Math.abs(signed || debit || credit);
+  const signedForId =
+    direction === "CIKIS" ? -amountAbs : direction === "UNKNOWN" ? amountAbs : amountAbs;
   const transactionId =
     empty(partial.transactionId || partial.id) ||
     buildMovementIdentityKey({
@@ -139,11 +143,13 @@ export function createCanonicalBankTransaction(partial = {}) {
       bank,
       accountIdentity,
       transactionDate,
-      amount: amountAbs * (direction === "CIKIS" ? -1 : 1),
+      amount: signedForId,
       direction,
       description,
       documentNo,
     });
+
+  const reviewReason = empty(partial.reviewReason || partial.review_reason);
 
   return Object.freeze({
     transactionId,
@@ -153,6 +159,7 @@ export function createCanonicalBankTransaction(partial = {}) {
     transactionDate,
     valueDate: empty(partial.valueDate || partial.value_date) || transactionDate,
     description,
+    // UNKNOWN: unsigned absolute — direction not invented from sign
     amount: direction === "CIKIS" ? -amountAbs : amountAbs,
     direction,
     balance:
@@ -178,7 +185,8 @@ export function createCanonicalBankTransaction(partial = {}) {
         ? null
         : toNumber(partial.ocrConfidence, null),
     lowOcrConfidence: Boolean(partial.lowOcrConfidence),
-    reviewRequired: Boolean(partial.reviewRequired),
+    reviewRequired: Boolean(partial.reviewRequired) || direction === "UNKNOWN" || Boolean(reviewReason),
+    reviewReason,
     sourceBoundingBox: partial.sourceBoundingBox || null,
   });
 }
