@@ -33,6 +33,8 @@ function signedAmount(tx = {}) {
   const debit = Math.abs(debitRaw ?? 0);
   const credit = Math.abs(creditRaw ?? 0);
   const dir = String(tx.direction || tx.yon || "").toUpperCase();
+  // Ownership-unresolved receipt movements must not invent statement math.
+  if (dir === "UNKNOWN" || dir === "BILINMIYOR" || dir === "UNRESOLVED") return 0;
   if (dir === "CIKIS" || dir === "OUT" || dir === "DEBIT") return -Math.abs(debit || credit);
   if (dir === "GIRIS" || dir === "IN" || dir === "CREDIT") return Math.abs(debit || credit);
   if (credit > 0 && debit <= 0) return -credit;

@@ -220,3 +220,193 @@ export function movementsToLegacyRows(bank) {
     sheetName: "Ekstre",
   }));
 }
+
+function pdfEscape(text = "") {
+  return String(text)
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+}
+
+/**
+ * Anonim Ziraat ekstre layout fixture:
+ * - tekrarlayan sayfa başlığı
+ * - çok satırlı açıklama
+ * - 0,00 bakiye
+ * - sayfa sınırı (birleşmeme)
+ * Koordinatlı kolonlar (Tm) — whitespace regex’e bağımlı değil.
+ */
+export function buildZiraatLayoutPdfFixture() {
+  const pages = [];
+
+  function pageContent(pageNum, rows) {
+    const ops = ["BT /F1 9 Tf"];
+    const put = (x, y, text) => {
+      ops.push(`1 0 0 1 ${x} ${y} Tm (${pdfEscape(text)}) Tj`);
+    };
+    put(40, 800, "T.C. Ziraat Bankasi A.S. Hesap Ekstresi");
+    put(40, 785, `Sayfa ${pageNum}`);
+    // Header columns
+    put(40, 760, "Muh Tarih");
+    put(100, 760, "Valor");
+    put(160, 760, "Sube");
+    put(210, 760, "Fis No");
+    put(270, 760, "Isl Kd");
+    put(330, 760, "Borc");
+    put(390, 760, "Alacak");
+    put(450, 760, "Bakiye");
+    put(40, 745, "Islem Aciklamasi");
+    let y = 720;
+    for (const row of rows) {
+      if (row.type === "header_repeat") {
+        put(40, y, "Muh Tarih");
+        put(100, y, "Valor");
+        put(160, y, "Sube");
+        put(210, y, "Fis No");
+        put(270, y, "Isl Kd");
+        put(330, y, "Borc");
+        put(390, y, "Alacak");
+        put(450, y, "Bakiye");
+        y -= 16;
+        continue;
+      }
+      put(40, y, row.tarih);
+      put(100, y, row.valor || row.tarih);
+      put(160, y, row.sube || "ANON");
+      put(210, y, row.fis || "");
+      put(270, y, row.kod || "EFT");
+      put(330, y, row.borc);
+      put(390, y, row.alacak);
+      put(450, y, row.bakiye);
+      y -= 14;
+      put(40, y, row.aciklama1);
+      y -= 12;
+      if (row.aciklama2) {
+        put(40, y, row.aciklama2);
+        y -= 14;
+      } else {
+        y -= 4;
+      }
+    }
+    ops.push("ET");
+    return ops.join("\n");
+  }
+
+  pages.push(
+    pageContent(1, [
+      {
+        tarih: "10.01.2026",
+        valor: "10.01.2026",
+        fis: "F100",
+        borc: "100,00",
+        alacak: "0,00",
+        bakiye: "900,00",
+        aciklama1: "EFT GIDEN ANON FIRMA REF",
+        aciklama2: "DEVAM SATIR ACIKLAMA BOLUMU",
+      },
+      {
+        tarih: "11.01.2026",
+        valor: "11.01.2026",
+        fis: "F101",
+        borc: "0,00",
+        alacak: "250,00",
+        bakiye: "0,00",
+        aciklama1: "GELEN HAVALE ANON",
+      },
+    ])
+  );
+  pages.push(
+    pageContent(2, [
+      { type: "header_repeat" },
+      {
+        tarih: "12.01.2026",
+        valor: "12.01.2026",
+        fis: "F102",
+        borc: "50,00",
+        alacak: "0,00",
+        bakiye: "200,00",
+        aciklama1: "MASRAF ANON SAYFA IKI",
+      },
+    ])
+  );
+
+  const objects = [];
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  const kids = pages.map((_, i) => `${3 + i * 2} 0 R`).join(" ");
+  objects[2] = `<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`;
+  let next = 3;
+  for (let i = 0; i < pages.length; i += 1) {
+    const pageObj = next;
+    const contentObj = next + 1;
+    objects[pageObj] =
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents ${contentObj} 0 R /Resources << /Font << /F1 ${3 + pages.length * 2} 0 R >> >> >>`;
+    const stream = pages[i];
+    objects[contentObj] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+    next += 2;
+  }
+  const fontObj = next;
+  objects[fontObj] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (let i = 1; i <= fontObj; i += 1) {
+    offsets[i] = Buffer.byteLength(pdf, "latin1");
+    pdf += `${i} 0 obj\n${objects[i]}\nendobj\n`;
+  }
+  const xrefPos = Buffer.byteLength(pdf, "latin1");
+  pdf += `xref\n0 ${fontObj + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let i = 1; i <= fontObj; i += 1) {
+    pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${fontObj + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`;
+  const out = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i += 1) out[i] = pdf.charCodeAt(i) & 0xff;
+  return out;
+}
+
+/** Anonim Ziraat internet bankacılığı dekont (tek hareket, sahiplik yok). */
+export function buildZiraatDekontPdfFixture(overrides = {}) {
+  const lines = [
+    "T.C. Ziraat Bankasi A.S.",
+    "Hesaptan TL Havale",
+    "SUBE KODU/ADI : 307/ANON SUBESI",
+    "VALOR : 12.08.2025",
+    "Kanal : INTERNET",
+    "Aciklama : ANON FIRMA ODEME REF 999",
+    "Havale Tutari : 4.770,00 TRY",
+    "18/12/2025-14:09:12 INTERNET",
+    ...(overrides.extraLines || []),
+  ];
+  return buildTextPdf(lines, { pageCount: 1, bankLabel: "Ziraat Internet Bankaciligi" });
+}
+
+/**
+ * Anonim dekont + etiketli IBAN tarafları (sahiplik testleri).
+ * Gerçek kişi/firma PII yok — sentetik TR IBAN.
+ */
+export function buildZiraatDekontOwnershipPdfFixture({
+  firmRole = "sender",
+  firmIban = "TR330001000000000000000001",
+  counterpartyIban = "TR330006200000000000000002",
+  amount = "1.000,00",
+  withFees = false,
+} = {}) {
+  const senderIban = firmRole === "sender" ? firmIban : counterpartyIban;
+  const receiverIban = firmRole === "receiver" ? firmIban : counterpartyIban;
+  const lines = [
+    "T.C. Ziraat Bankasi A.S.",
+    "Internet Bankaciligi Dekont",
+    "VALOR : 12.08.2025",
+    `Gonderen IBAN : ${senderIban}`,
+    `Alici IBAN : ${receiverIban}`,
+    "Aciklama : ANON TRANSFER REF 1001",
+    `Havale Tutari : ${amount} TRY`,
+  ];
+  if (withFees) {
+    lines.push("Masraf : 5,00 TRY", "BSMV : 1,00 TRY", "Toplam Masraf : 6,00 TRY");
+  }
+  lines.push("12/08/2025-10:00:00 INTERNET");
+  return buildTextPdf(lines, { pageCount: 1, bankLabel: "Ziraat Internet Bankaciligi" });
+}
+
