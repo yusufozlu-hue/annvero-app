@@ -382,9 +382,28 @@ export function buildZiraatDekontPdfFixture(overrides = {}) {
 }
 
 /**
- * Anonim dekont + etiketli IBAN tarafları (sahiplik testleri).
- * Gerçek kişi/firma PII yok — sentetik TR IBAN.
+ * Anonim VakıfBank 2-token ekstre (tutar + bakiye).
+ * Tutar kolonları işaretsiz; çalışan bakiye 2. satırda düşer (CIKIS).
+ * Başlıkta Valör + çoklu ":" — Ziraat dekont false-positive tuzağı.
  */
+export function buildVakifTwoTokenPdfFixture() {
+  const lines = [
+    "VakifBank Hesap Ekstresi",
+    "Hesap No: 1000000001",
+    "IBAN : TR330015000000000000000001",
+    "Sube : ANON SUBE",
+    "Hesap Turu : VADESIZ TL",
+    "Valor : 01.01.2026",
+    "Aciklama : DONEM",
+    "Bakiye : 9.000,00",
+    "Hesap Hareketleri",
+    "01.01.2026 EFT GELEN ANON A 1.000,00 11.000,00",
+    "02.01.2026 HAVALE GIDEN ANON B 2.000,00 9.000,00",
+  ];
+  return buildTextPdf(lines, { pageCount: 1, bankLabel: "VakifBank Hesap Ekstresi" });
+}
+
+/** Anonim Ziraat dekont + etiketli IBAN tarafları (sahiplik). Sentetik TR IBAN. */
 export function buildZiraatDekontOwnershipPdfFixture({
   firmRole = "sender",
   firmIban = "TR330001000000000000000001",

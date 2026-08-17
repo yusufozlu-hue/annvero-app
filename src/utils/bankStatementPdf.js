@@ -28,6 +28,11 @@ import {
   classifyZiraatPdfDocument,
   BANK_PDF_DOCUMENT_TYPE,
 } from "@/src/utils/bankPdf/ziraatPdfLayout.js";
+import {
+  looksLikeVakifBankBrand,
+  applyVakifStatementPostParse,
+  classifyVakifPdfDocument,
+} from "@/src/utils/bankPdf/vakifPdfLayout.js";
 
 export { reconcileStatementBalances } from "@/src/utils/bankBalanceReconcile.js";
 export {
@@ -1251,7 +1256,11 @@ export async function parseBankStatementPdf(bytes, options = {}) {
   let parsed;
   if (extractZiraatParsed && (extractZiraatParsed.transactions || []).length) {
     parsed = extractZiraatParsed;
-  } else if (bankHint === "ZIRAAT" || looksLikeZiraatPdfLayout(workingText)) {
+  } else if (
+    (bankHint === "ZIRAAT" || looksLikeZiraatPdfLayout(workingText)) &&
+    bankHint !== "VAKIFBANK" &&
+    !looksLikeVakifBankBrand(workingText)
+  ) {
     const ziraat = parseZiraatPdfLayout({
       text: workingText,
       pagesItems: extractPagesItems,
@@ -1287,7 +1296,9 @@ export async function parseBankStatementPdf(bytes, options = {}) {
   // Ziraat layout — hâlâ 0 ise son bir deneme
   if (
     !(parsed.transactions || []).length &&
-    (bankHint === "ZIRAAT" || looksLikeZiraatPdfLayout(workingText))
+    (bankHint === "ZIRAAT" || looksLikeZiraatPdfLayout(workingText)) &&
+    bankHint !== "VAKIFBANK" &&
+    !looksLikeVakifBankBrand(workingText)
   ) {
     const ziraat = parseZiraatPdfLayout({
       text: workingText,
@@ -1316,8 +1327,10 @@ export async function parseBankStatementPdf(bytes, options = {}) {
       parsed = retry;
       workingText = normalized;
     } else if (
-      looksLikeZiraatPdfLayout(normalized) ||
-      detectBankFromPdfText(normalized) === "ZIRAAT"
+      (looksLikeZiraatPdfLayout(normalized) ||
+        detectBankFromPdfText(normalized) === "ZIRAAT") &&
+      detectBankFromPdfText(normalized) !== "VAKIFBANK" &&
+      !looksLikeVakifBankBrand(normalized)
     ) {
       const zRetry = parseZiraatPdfLayout({
         text: normalized,
@@ -1354,9 +1367,22 @@ export async function parseBankStatementPdf(bytes, options = {}) {
 
   text = workingText;
 
+  if (
+    (bankHint === "VAKIFBANK" || looksLikeVakifBankBrand(workingText)) &&
+    bankHint !== "ZIRAAT" &&
+    (parsed.transactions || []).length
+  ) {
+    parsed = applyVakifStatementPostParse(parsed, workingText);
+  }
+
   const documentType =
     parsed.documentType ||
-    classifyZiraatPdfDocument(workingText) ||
+    (bankHint === "ZIRAAT"
+      ? classifyZiraatPdfDocument(workingText)
+      : "") ||
+    (bankHint === "VAKIFBANK" || looksLikeVakifBankBrand(workingText)
+      ? classifyVakifPdfDocument(workingText)
+      : "") ||
     BANK_PDF_DOCUMENT_TYPE.UNKNOWN_BANK_DOCUMENT;
   const isTransferReceipt =
     documentType === BANK_PDF_DOCUMENT_TYPE.BANK_TRANSFER_RECEIPT;
