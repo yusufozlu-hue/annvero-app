@@ -12,6 +12,10 @@ import {
   evaluateBankOutputGate,
   PIPELINE_PHASES,
 } from "@/src/utils/bankOneClickPipeline";
+import {
+  ARCHIVED_HYDRATE_RESULT_SUBTITLE,
+  resolveCanonicalHydrateResultTitle,
+} from "@/src/utils/canonicalHydrateReuse";
 
 function IconBase({ children, className = "h-5 w-5" }) {
   return (
@@ -419,11 +423,10 @@ export function BankPipelineResultCard({
                 ? result.balanceMissing
                   ? "Bakiye kanıtı eksik"
                   : "Bakiye uyuşmazlığı"
-                : result.reanalyze
-                  ? "Yeniden analiz tamamlandı"
-                  : result.reviewRequired
+                : resolveCanonicalHydrateResultTitle(result) ||
+                  (result.reviewRequired
                     ? "İnceleme Gerekli"
-                    : "İşlem ve Kontrol Tamamlandı"}
+                    : "İşlem ve Kontrol Tamamlandı")}
           </h3>
           <p className={`mt-1 text-sm ${subtitleTone}`}>
             {isDuplicate
@@ -432,7 +435,9 @@ export function BankPipelineResultCard({
               : isBalanceReview
                 ? result.message ||
                   "Bakiye uyuşmazlığı — otomatik fiş üretilmedi, inceleme gerekli"
-                : result.reanalyze
+                : result.archivedHydrateResult
+                  ? ARCHIVED_HYDRATE_RESULT_SUBTITLE
+                  : result.reanalyze
                   ? "Mevcut arşiv kaynağı yeni hesap planıyla yeniden analiz edildi."
                   : result.reviewRequired
                     ? "Kritik veya düşük güven satırlar var — otomatik onay / Luca-Elektra aktarımı kapalı."

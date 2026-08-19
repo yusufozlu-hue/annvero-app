@@ -449,6 +449,7 @@ test("wiring: server tek istekte karar verir; force bypass yok; ikinci persist y
   assert.match(jobsRoute, /\.eq\("company_id", company\)/);
 
   assert.match(workbench, /isHydrateJobResultStale/);
+  assert.match(workbench, /decideCanonicalHydrateReanalyze/);
   assert.match(workbench, /persistAuditWarning/);
   assert.match(workbench, /outputGateCode: resultSummary\.outputGateCode/);
   assert.match(workbench, /planFingerprint: resultSummary\.planFingerprint/);

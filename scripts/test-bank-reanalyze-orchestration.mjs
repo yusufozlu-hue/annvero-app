@@ -389,6 +389,8 @@ await test("source wiring: workbench uses orchestration + preserve card", () => 
   assert.match(workbench, /isCompatibleExistingReanalyzeJob/);
   assert.match(workbench, /isHydrateJobResultStale/);
   assert.match(workbench, /staleExistingJob/);
+  assert.match(workbench, /decideCanonicalHydrateReanalyze/);
+  assert.match(workbench, /shouldSkipHydratePipeline/);
   assert.match(workbench, /persistAuditWarning/);
   assert.match(
     workbench,

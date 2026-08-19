@@ -134,8 +134,14 @@ import {
   clearAllReanalyzeFlights,
   armCanonicalHydrateReanalyze,
   consumeCanonicalHydrateReanalyze,
+  markHydrateReanalyzeConsumed,
   shouldFollowExistingJobOnConflict,
 } from "@/src/utils/bankReanalyzeClick";
+import {
+  buildCanonicalHydrateBoundResult,
+  decideCanonicalHydrateReanalyze,
+  shouldSkipHydratePipeline,
+} from "@/src/utils/canonicalHydrateReuse";
 import {
   BankPipelineErrorCard,
   BankPipelineProgressPanel,
@@ -963,84 +969,104 @@ export default function BankParserWorkbench() {
           activeBankRef.current = snap.source.detectedBank;
           setSelectedBank(snap.source.detectedBank);
         }
+        let planFp = String(snap.source.planContentFingerprint || "").trim();
+        try {
+          const { fetchFullActiveAccountPlan } = await import(
+            "@/src/utils/accountPlanApi"
+          );
+          const plan = await fetchFullActiveAccountPlan(selectedCompanyId);
+          if (cancelled) return;
+          if (plan.accounts?.length) {
+            planFp = await fingerprintAccountPlanAccounts(plan.accounts);
+          }
+        } catch {
+          /* snapshot plan fingerprint fallback */
+        }
+        if (planFp) lastReanalyzePlanFpRef.current = planFp;
+        else if (snap.source.planContentFingerprint) {
+          lastReanalyzePlanFpRef.current = String(
+            snap.source.planContentFingerprint
+          );
+          planFp = lastReanalyzePlanFpRef.current;
+        }
         const hist = await listV1JobHistory(selectedCompanyId, 20);
         if (cancelled) return;
+        const sourceId = snap.source.id || canonicalSourceIdRef.current;
+        const sourceRevision =
+          Number(snap.source.revision) ||
+          Number(canonicalSourceRevisionRef.current || 1) ||
+          1;
+        const snapshotFingerprint =
+          snap.source.contentHash || canonicalContentHashRef.current || "";
+        const hydrateKey = buildReanalyzeFlightKey({
+          companyId: selectedCompanyId,
+          sourceId,
+          sourceRevision,
+          planFingerprint: planFp,
+        });
+        const hydrateDecision = decideCanonicalHydrateReanalyze({
+          expectedCompanyId: selectedCompanyId,
+          expectedSourceId: sourceId,
+          expectedSourceRevision: String(sourceRevision),
+          expectedSnapshotFingerprint: snapshotFingerprint,
+          expectedPlanFingerprint: planFp,
+          expectedPipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+          jobs: hist?.runs || [],
+          snapshotHasBalanceEvidence: Boolean(
+            canonicalBalanceEvidenceRef.current
+          ),
+        });
         if (hist?.runs?.length) {
           setV1AuditHistory(hist.runs);
-          const latest = hist.runs[0];
-          const meta = latest?.metadata || {};
-          const staleJobResult = isHydrateJobResultStale({
-            existingMetadata: meta,
-            expectedPipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
-            snapshotHasBalanceEvidence: Boolean(
-              canonicalBalanceEvidenceRef.current
-            ),
-          });
-          // Stale completed job sayaçlarını nihai sonuç gibi bağlama —
-          // hydrate reanalyze çalışacak; kart/dosya korunur.
-          setPipelineResult({
-            movementCount:
-              Number(meta.movement_count || legacy.length) || legacy.length,
-            lucaRowCount: staleJobResult ? 0 : Number(meta.luca_row_count || 0),
-            reviewCount: staleJobResult ? null : Number(meta.review_count || 0),
-            uniqueUnresolvedMovements: staleJobResult
-              ? null
-              : Number(meta.review_count || 0),
-            autoMatchedCount: staleJobResult
-              ? null
-              : Number(meta.auto_matched_count || 0),
-            terminalStatus: staleJobResult ? "" : meta.terminal_status || "",
-            reviewRequired: staleJobResult
-              ? true
-              : Boolean(meta.review_required),
-            canAutoApprove: staleJobResult
-              ? false
-              : Boolean(meta.can_auto_approve),
-            driveArchived: Boolean(meta.drive_archived),
-            driveSkipped: Boolean(meta.drive_skipped),
-            revision: meta.revision || null,
-            priorJobId: latest.id,
-            fromCanonicalSnapshot: true,
-            staleExistingJob: staleJobResult,
-            accountPlanCount: Number(meta.account_plan_count || 0),
-            documentResolutionCount: documentResolutionsRef.current.length,
-            pipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
-          });
-          setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
-          setCompletedSteps((prev) => ({
-            ...prev,
-            preview: true,
-            analysis: !staleJobResult,
-          }));
-          if (snap.source.planContentFingerprint) {
-            lastReanalyzePlanFpRef.current = String(
-              snap.source.planContentFingerprint
-            );
+          const bindJob = hydrateDecision.job;
+          if (bindJob) {
+            const meta = bindJob.metadata || {};
+            const staleJobResult =
+              !hydrateDecision.bindArchivedResult ||
+              isHydrateJobResultStale({
+                existingMetadata: meta,
+                expectedPipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+                snapshotHasBalanceEvidence: Boolean(
+                  canonicalBalanceEvidenceRef.current
+                ),
+              });
+            const bound = buildCanonicalHydrateBoundResult({
+              job: bindJob,
+              movementCount: legacy.length,
+              documentResolutionCount: documentResolutionsRef.current.length,
+              pipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+              staleExistingJob: staleJobResult,
+              archivedHydrateResult: hydrateDecision.bindArchivedResult,
+            });
+            setPipelineResult(bound);
+            setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+            if (bound.lucaReadyHint && !staleJobResult) {
+              setLucaReady(true);
+              setCompletedSteps((prev) => ({
+                ...prev,
+                preview: true,
+                analysis: true,
+                luca: true,
+              }));
+            } else {
+              setCompletedSteps((prev) => ({
+                ...prev,
+                preview: true,
+                analysis: !staleJobResult,
+              }));
+            }
           }
-          // Stale V1 meta yerine gerçek Eksik üret — single-flight hydrate key
-          const hydrateKey = buildReanalyzeFlightKey({
-            companyId: selectedCompanyId,
-            sourceId: snap.source.id || canonicalSourceIdRef.current,
-            sourceRevision:
-              Number(snap.source.revision) ||
-              Number(meta.revision || 1) ||
-              1,
-            planFingerprint:
-              snap.source.planContentFingerprint ||
-              lastReanalyzePlanFpRef.current ||
-              "",
-          });
-          const armed = armCanonicalHydrateReanalyze(hydrateKey);
-          if (armed.armed) {
-            pendingCanonicalHydrateKeyRef.current = hydrateKey;
+          // Uyumlu completed OUTPUT_READY → hydrate reanalyze arm etme.
+          if (hydrateDecision.arm) {
+            const armed = armCanonicalHydrateReanalyze(hydrateKey);
+            if (armed.armed) {
+              pendingCanonicalHydrateKeyRef.current = hydrateKey;
+            }
+          } else {
+            markHydrateReanalyzeConsumed(hydrateKey);
+            pendingCanonicalHydrateKeyRef.current = "";
           }
         } else if (documentResolutionsRef.current.length) {
-          const hydrateKey = buildReanalyzeFlightKey({
-            companyId: selectedCompanyId,
-            sourceId: snap.source?.id || canonicalSourceIdRef.current,
-            sourceRevision: 1,
-            planFingerprint: lastReanalyzePlanFpRef.current || "",
-          });
           const armed = armCanonicalHydrateReanalyze(hydrateKey);
           if (armed.armed) {
             pendingCanonicalHydrateKeyRef.current = hydrateKey;
@@ -1387,6 +1413,27 @@ export default function BankParserWorkbench() {
     if (!movementsRef.current?.length) return;
     if (isJobBusy || isReanalyzing) return;
     if (!v1AuditHistory?.length && !documentResolutionsRef.current?.length) {
+      return;
+    }
+    if (
+      shouldSkipHydratePipeline({
+        reason: "hydrate",
+        expectedCompanyId: selectedCompanyId,
+        expectedSourceId: canonicalSourceIdRef.current,
+        expectedSourceRevision: String(
+          canonicalSourceRevisionRef.current || 1
+        ),
+        expectedSnapshotFingerprint: canonicalContentHashRef.current,
+        expectedPlanFingerprint: lastReanalyzePlanFpRef.current,
+        expectedPipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+        jobs: v1AuditHistory || [],
+        snapshotHasBalanceEvidence: Boolean(
+          canonicalBalanceEvidenceRef.current
+        ),
+      })
+    ) {
+      consumeCanonicalHydrateReanalyze(hydrateKey);
+      pendingCanonicalHydrateKeyRef.current = "";
       return;
     }
     if (!consumeCanonicalHydrateReanalyze(hydrateKey)) {
@@ -6313,6 +6360,27 @@ export default function BankParserWorkbench() {
       }
     } catch {
       /* plan sonra tekrar denenecek */
+    }
+
+    if (
+      shouldSkipHydratePipeline({
+        reason,
+        expectedCompanyId: selectedCompanyId,
+        expectedSourceId: canonicalSourceIdRef.current,
+        expectedSourceRevision: String(
+          canonicalSourceRevisionRef.current || 1
+        ),
+        expectedSnapshotFingerprint: canonicalContentHashRef.current,
+        expectedPlanFingerprint: planFp,
+        expectedPipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
+        jobs: v1AuditHistory || [],
+        snapshotHasBalanceEvidence: Boolean(
+          canonicalBalanceEvidenceRef.current
+        ),
+      })
+    ) {
+      if (opts?.flightKey) markHydrateReanalyzeConsumed(opts.flightKey);
+      return;
     }
 
     const priorHint =

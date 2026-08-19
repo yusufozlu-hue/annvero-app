@@ -47,6 +47,7 @@
     "test:account-plan-merge": "node --import ./scripts/_alias-loader.mjs ./scripts/test-account-plan-merge.mjs",
     "test:bank-reanalyze-click": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-reanalyze-click-interaction.mjs",
     "test:bank-reanalyze-orchestration": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-reanalyze-orchestration.mjs",
+    "test:canonical-hydrate-reanalysis-gate": "node --import ./scripts/_alias-loader.mjs ./scripts/test-canonical-hydrate-reanalysis-gate.mjs",
     "test:bank-pdf-extract-path": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-pdf-extract-path-selection.mjs",
     "test:ziraat-pdf-layout": "node --import ./scripts/_alias-loader.mjs ./scripts/test-ziraat-pdf-layout.mjs",
     "test:vakif-pdf-layout": "node --import ./scripts/_alias-loader.mjs ./scripts/test-vakif-pdf-layout.mjs",
