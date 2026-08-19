@@ -14,6 +14,7 @@ export {
   clearAllReanalyzeFlights,
   armCanonicalHydrateReanalyze,
   consumeCanonicalHydrateReanalyze,
+  markHydrateReanalyzeConsumed,
   shouldFollowExistingJobOnConflict,
   __resetReanalyzeOrchestrationForTests,
 } from "@/src/utils/bankReanalyzeOrchestration";
