@@ -388,6 +388,132 @@ await test("compatible bind is OUTPUT_READY / BALANCE_MATCHED", () => {
   );
 });
 
+function formatBalanceAmountLikeUi(value) {
+  if (value == null || value === "" || !Number.isFinite(Number(value))) {
+    return "—";
+  }
+  return Number(value).toLocaleString("tr-TR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+const ZERO_EVIDENCE = {
+  openingBalance: 0,
+  closingBalance: 0,
+  calculatedClosing: 0,
+  delta: 0,
+  credits: 0,
+  debits: 0,
+  matched: true,
+  code: "BALANCE_MATCHED",
+  evidenceVersion: "sbe/1.0.0",
+  evidenceSource: "canonical_snapshot",
+};
+
+await test("canonical evidence 0/0/0/0 → UI 0,00 (null !== 0)", () => {
+  const job = completedReadyJob();
+  // Job metadata intentionally omits amount fields — canonical is authoritative.
+  const bound = buildCanonicalHydrateBoundResult({
+    job,
+    archivedHydrateResult: true,
+    staleExistingJob: false,
+    movementCount: 4,
+    canonicalBalanceEvidence: ZERO_EVIDENCE,
+  });
+  assert.equal(bound.openingBalance, 0);
+  assert.equal(bound.statementClosingBalance, 0);
+  assert.equal(bound.computedClosingBalance, 0);
+  assert.equal(bound.reconciliationDelta, 0);
+  assert.equal(bound.balanceCode, "BALANCE_MATCHED");
+  assert.equal(bound.balanceMatched, true);
+  assert.equal(bound.hasStatementBalanceEvidence, true);
+  assert.equal(formatBalanceAmountLikeUi(bound.openingBalance), "0,00");
+  assert.equal(formatBalanceAmountLikeUi(bound.statementClosingBalance), "0,00");
+  assert.equal(formatBalanceAmountLikeUi(bound.computedClosingBalance), "0,00");
+  assert.equal(formatBalanceAmountLikeUi(bound.reconciliationDelta), "0,00");
+});
+
+await test("null evidence → UI — (no invented zeros)", () => {
+  const job = completedReadyJob();
+  const bound = buildCanonicalHydrateBoundResult({
+    job,
+    archivedHydrateResult: true,
+    staleExistingJob: false,
+    movementCount: 4,
+    canonicalBalanceEvidence: null,
+  });
+  assert.equal(bound.openingBalance, null);
+  assert.equal(bound.statementClosingBalance, null);
+  assert.equal(bound.computedClosingBalance, null);
+  assert.equal(bound.reconciliationDelta, null);
+  assert.equal(bound.hasStatementBalanceEvidence, false);
+  assert.equal(bound.balanceCode, "BALANCE_MATCHED");
+  assert.equal(formatBalanceAmountLikeUi(bound.openingBalance), "—");
+  assert.equal(formatBalanceAmountLikeUi(bound.statementClosingBalance), "—");
+});
+
+await test("incomplete evidence does not invent balance summary", () => {
+  const job = completedReadyJob();
+  const bound = buildCanonicalHydrateBoundResult({
+    job,
+    archivedHydrateResult: true,
+    staleExistingJob: false,
+    canonicalBalanceEvidence: {
+      openingBalance: 0,
+      // closing missing → incomplete
+      matched: true,
+      code: "BALANCE_MATCHED",
+    },
+  });
+  assert.equal(bound.openingBalance, null);
+  assert.equal(bound.statementClosingBalance, null);
+  assert.equal(bound.hasStatementBalanceEvidence, false);
+});
+
+await test("stale bind ignores evidence amounts", () => {
+  const job = completedReadyJob();
+  const bound = buildCanonicalHydrateBoundResult({
+    job,
+    archivedHydrateResult: false,
+    staleExistingJob: true,
+    canonicalBalanceEvidence: ZERO_EVIDENCE,
+  });
+  assert.equal(bound.openingBalance, null);
+  assert.equal(bound.statementClosingBalance, null);
+  assert.equal(bound.hasStatementBalanceEvidence, false);
+  assert.equal(bound.archivedHydrateResult, false);
+});
+
+await test("compatible completed reuse stays pipeline=0 persist=0", () => {
+  __resetReanalyzeOrchestrationForTests();
+  const job = completedReadyJob();
+  const expected = expectedBindings();
+  let pipelineCalls = 0;
+  const result = runCanonicalHydrateReanalyzeIfNeeded({
+    ...expected,
+    jobs: [job],
+    flightKey: flightKeyFor(expected),
+    invokePipeline: () => {
+      pipelineCalls += 1;
+    },
+  });
+  assert.equal(result.bindArchivedResult, true);
+  assert.equal(result.pipelineInvocations, 0);
+  assert.equal(result.networkPersist, 0);
+  assert.equal(result.jobsPosted, 0);
+  assert.equal(result.snapshotPosted, 0);
+  assert.equal(pipelineCalls, 0);
+  const bound = buildCanonicalHydrateBoundResult({
+    job,
+    archivedHydrateResult: true,
+    staleExistingJob: false,
+    canonicalBalanceEvidence: ZERO_EVIDENCE,
+  });
+  assert.equal(bound.openingBalance, 0);
+  assert.equal(bound.balanceMatched, true);
+});
+
 await test("wiring: workbench gates hydrate arm; one-click shows archive title", () => {
   const workbench = fs.readFileSync(
     path.join(
@@ -410,13 +536,17 @@ await test("wiring: workbench gates hydrate arm; one-click shows archive title",
   assert.match(workbench, /decideCanonicalHydrateReanalyze/);
   assert.match(workbench, /shouldSkipHydratePipeline/);
   assert.match(workbench, /buildCanonicalHydrateBoundResult/);
+  assert.match(workbench, /canonicalBalanceEvidence:\s*canonicalBalanceEvidenceRef\.current/);
   assert.match(workbench, /markHydrateReanalyzeConsumed/);
   assert.match(workbench, /isHydrateJobResultStale/);
   assert.match(workbench, /armCanonicalHydrateReanalyze/);
   assert.match(reuse, /Arşiv sonucu yüklendi/);
   assert.match(reuse, /Yeniden analiz tamamlandı/);
+  assert.match(reuse, /normalizeCanonicalEvidenceForBoundResult|canonicalBalanceEvidence/);
+  assert.match(reuse, /statementClosingBalance/);
   assert.match(oneClick, /resolveCanonicalHydrateResultTitle/);
   assert.match(oneClick, /ARCHIVED_HYDRATE_RESULT_SUBTITLE/);
+  assert.match(oneClick, /formatBalanceAmount\(result\.openingBalance\)/);
   assert.doesNotMatch(workbench, /84384297-270c-47cd-ac5a-d693ba80b84a/);
 });
 

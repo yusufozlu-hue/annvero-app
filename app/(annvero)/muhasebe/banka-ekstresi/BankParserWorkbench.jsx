@@ -1037,6 +1037,9 @@ export default function BankParserWorkbench() {
               pipelineVersion: ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
               staleExistingJob: staleJobResult,
               archivedHydrateResult: hydrateDecision.bindArchivedResult,
+              // Canonical source evidence is authoritative for balance cards.
+              // Job metadata may omit opening/closing amounts; do not invent.
+              canonicalBalanceEvidence: canonicalBalanceEvidenceRef.current,
             });
             setPipelineResult(bound);
             setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);

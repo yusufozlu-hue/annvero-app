@@ -313,6 +313,52 @@ export function resolveCanonicalHydrateResultTitle(result = {}) {
   return "";
 }
 
+/**
+ * Prefer canonical statementBalanceEvidence for UI balance cards.
+ * Preserves real 0 (null !== 0). Does not invent amounts when evidence is absent.
+ * Job metadata remains a supporting source for gate/status codes only.
+ */
+function finiteBalanceOrNull(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeCanonicalEvidenceForBoundResult(evidence = null) {
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+    return null;
+  }
+  const openingBalance = finiteBalanceOrNull(
+    evidence.openingBalance ?? evidence.opening_balance
+  );
+  const closingBalance = finiteBalanceOrNull(
+    evidence.closingBalance ?? evidence.closing_balance
+  );
+  // Incomplete evidence must not fabricate a balance summary for the UI.
+  if (openingBalance == null || closingBalance == null) return null;
+  return {
+    openingBalance,
+    closingBalance,
+    calculatedClosing: finiteBalanceOrNull(
+      evidence.calculatedClosing ??
+        evidence.calculated_closing ??
+        evidence.expectedClosing ??
+        evidence.expected_closing
+    ),
+    delta: finiteBalanceOrNull(
+      evidence.delta ?? evidence.balanceDelta ?? evidence.balance_delta
+    ),
+    debits: finiteBalanceOrNull(evidence.debits),
+    credits: finiteBalanceOrNull(evidence.credits),
+    code: text(evidence.code || evidence.balanceCode || evidence.balance_code),
+    matched:
+      evidence.matched === true ||
+      evidence.balanceMatched === true ||
+      String(evidence.code || evidence.balanceCode || "")
+        .toUpperCase() === "BALANCE_MATCHED",
+  };
+}
+
 export function buildCanonicalHydrateBoundResult({
   job = null,
   movementCount = 0,
@@ -320,10 +366,16 @@ export function buildCanonicalHydrateBoundResult({
   pipelineVersion = ANNVERO_BANK_REANALYZE_PIPELINE_VERSION,
   staleExistingJob = false,
   archivedHydrateResult = false,
+  canonicalBalanceEvidence = null,
 } = {}) {
   const meta = jobMetadata(job);
   const lucaRowCount = Number(meta.luca_row_count ?? meta.lucaRowCount ?? 0) || 0;
   const reviewCount = Number(meta.review_count ?? meta.reviewCount ?? 0) || 0;
+  const evidence = staleExistingJob
+    ? null
+    : normalizeCanonicalEvidenceForBoundResult(canonicalBalanceEvidence);
+  const jobBalanceCode = metaText(meta, "balance_code", "balanceCode");
+  const balanceCode = evidence?.code || jobBalanceCode;
   return {
     movementCount:
       Number(meta.movement_count ?? meta.movementCount ?? movementCount) ||
@@ -355,12 +407,22 @@ export function buildCanonicalHydrateBoundResult({
     accountPlanCount: Number(meta.account_plan_count ?? meta.accountPlanCount ?? 0) || 0,
     documentResolutionCount: Number(documentResolutionCount) || 0,
     pipelineVersion,
-    balanceCode: metaText(meta, "balance_code", "balanceCode"),
-    balanceMatched:
-      metaText(meta, "balance_code", "balanceCode").toUpperCase() ===
-      "BALANCE_MATCHED",
+    balanceCode,
+    balanceMatched: evidence
+      ? evidence.matched === true
+      : jobBalanceCode.toUpperCase() === "BALANCE_MATCHED",
     outputGateCode: metaText(meta, "output_gate_code", "outputGateCode"),
     lucaReadyHint: !staleExistingJob && lucaRowCount > 0,
+    // UI BankPipelineResultCard balanceStats keys (preserve real 0).
+    openingBalance: evidence ? evidence.openingBalance : null,
+    statementClosingBalance: evidence ? evidence.closingBalance : null,
+    computedClosingBalance: evidence
+      ? evidence.calculatedClosing ?? evidence.closingBalance
+      : null,
+    reconciliationDelta: evidence ? evidence.delta : null,
+    totalDebit: evidence ? evidence.debits : null,
+    totalCredit: evidence ? evidence.credits : null,
+    hasStatementBalanceEvidence: Boolean(evidence),
   };
 }
 
