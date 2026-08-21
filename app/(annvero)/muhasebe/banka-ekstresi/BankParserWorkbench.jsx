@@ -48,16 +48,18 @@ import {
   saveAccountMemoryFromEdit,
 } from "@/src/utils/accountMemoryV1";
 import {
-  buildCariMemoryCanonicalKey,
   formatMemoryDecisionReportText,
   findSimilarMemoryTargets,
   hydrateAccountMemoryForPipeline,
   loadAccountMemoryV2Records,
   migrateAccountMemoryV2InvertedDirections,
   normalizeMemoryDirection,
-  saveAccountMemoryV2Decision,
   traceAccountMemoryLookup,
 } from "@/src/utils/accountMemoryV2";
+import {
+  hydrateFirmAccountingMemoryCache,
+  persistUserConfirmedAccountingMemory,
+} from "@/src/utils/accountingMemoryV1";
 import { runCariResolutionGroupApply } from "@/src/utils/cariResolutionGroupApply";
 import {
   reanalyzeAfterMissingAccountApply,
@@ -1305,7 +1307,15 @@ export default function BankParserWorkbench() {
       return;
     }
 
-    fetchLearningMemoryForCompany(selectedCompanyId).then(setLearningMemory);
+    let cancelled = false;
+    fetchLearningMemoryForCompany(selectedCompanyId).then((rows) => {
+      if (cancelled) return;
+      setLearningMemory(rows || []);
+      hydrateFirmAccountingMemoryCache(rows || [], selectedCompanyId);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCompanyId]);
 
   const companyPlans = useMemo(
@@ -2145,7 +2155,7 @@ export default function BankParserWorkbench() {
         lucaRef.current || [],
         group.rowIds || []
       );
-      const applyResult = runCariResolutionGroupApply({
+      const applyResult = await runCariResolutionGroupApply({
         lucaRows: lucaRef.current || [],
         group,
         accountCode: code,
@@ -2153,8 +2163,18 @@ export default function BankParserWorkbench() {
         selectedCompanyId,
         selectedBank,
         resolveMemoryLearnContext,
+        existingLearningRecords: learningMemory,
+        createRecord: createLearningMemoryRecordDetailed,
+        updateRecord: updateLearningMemoryRecord,
+        company: selectedCompany,
+        accountPlanCodes: (companyPlans || [])
+          .map((p) => String(p.code || p.hesapKodu || "").trim())
+          .filter(Boolean),
       });
       lucaRef.current = applyResult.lucaRows;
+      if (applyResult.warning) {
+        showToast(applyResult.warning, "error");
+      }
 
       // Belgeye özel karar — server revision (canonical hareketler dokunulmaz)
       let persistNote = "";
@@ -2380,7 +2400,7 @@ export default function BankParserWorkbench() {
       for (const group of groups) {
         if (!isAccountAllowedForDirection(code, group.direction)) continue;
         if (group.foreignVendor && isExpenseAccountCode(code)) continue;
-        const applyResult = runCariResolutionGroupApply({
+        const applyResult = await runCariResolutionGroupApply({
           lucaRows: nextRows,
           group,
           accountCode: code,
@@ -2388,11 +2408,21 @@ export default function BankParserWorkbench() {
           selectedCompanyId,
           selectedBank,
           resolveMemoryLearnContext,
+          existingLearningRecords: learningMemory,
+          createRecord: createLearningMemoryRecordDetailed,
+          updateRecord: updateLearningMemoryRecord,
+          company: selectedCompany,
+          accountPlanCodes: (companyPlans || [])
+            .map((p) => String(p.code || p.hesapKodu || "").trim())
+            .filter(Boolean),
         });
         nextRows = applyResult.lucaRows;
         totalUpdated += applyResult.updated || 0;
         if (applyResult.learned) anyLearned = true;
         if (applyResult.learnPersistFailed) learnFailed = true;
+        if (applyResult.warning) {
+          showToast(applyResult.warning, "error");
+        }
         if (canonicalSourceIdRef.current && selectedCompanyId) {
           allPayloads.push(
             ...buildResolutionPayloadsFromApply({
@@ -2630,7 +2660,7 @@ export default function BankParserWorkbench() {
     await exportExcel(false, { allowPartialMissing: true });
   };
 
-  const handleApplyHesapToAnalysisGroup = (
+  const handleApplyHesapToAnalysisGroup = async (
     row,
     accountCode,
     { learn = false, similar = false } = {}
@@ -2775,34 +2805,35 @@ export default function BankParserWorkbench() {
       if (!learnCtx.ok) {
         // hesap uygulandı; öğrenme atlandı
       } else {
-        const saved = saveAccountMemoryV2Decision(
-          {
-            ...row,
-            hesapKodu: code,
-            accountCode: code,
-            analysisKey: learnCtx.analysisKey,
-            canonicalAnalysisKey: buildCariMemoryCanonicalKey(
-              learnCtx.analysisKey || learnCtx.description,
-              learnCtx.direction
-            ),
-            direction: learnCtx.direction,
-            transactionType: seedType,
-            belgeTuru: row.belgeTuru || "",
-            documentType: row.belgeTuru || "",
-            cariId: code,
-            normalizedDescription: learnCtx.description,
-            finalDescriptionTemplate:
-              row.fisAciklama || row.detayAciklama || row.aciklama || "",
-            source: similar ? "similar-learn" : "group-learn",
-          },
-          { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
-        );
-        learned = Boolean(saved);
+        const persistResult = await persistUserConfirmedAccountingMemory({
+          companyId: selectedCompanyId,
+          bankId: selectedBank,
+          bankName: selectedBank,
+          direction: learnCtx.direction,
+          transactionType: seedType,
+          descriptionOrKey: learnCtx.description,
+          analysisKey: learnCtx.analysisKey || learnCtx.description,
+          accountCode: code,
+          company: selectedCompany,
+          accountPlanCodes: (companyPlans || [])
+            .map((p) => String(p.code || p.hesapKodu || "").trim())
+            .filter(Boolean),
+          source: similar ? "similar-learn" : "group-learn",
+          seedRow: row,
+          rememberForCompany: true,
+          existingServerRows: learningMemory,
+          createRecord: createLearningMemoryRecordDetailed,
+          updateRecord: updateLearningMemoryRecord,
+        });
+        learned = Boolean(persistResult.persisted);
+        if (persistResult.warning) {
+          showToast(persistResult.warning, "error");
+        }
       }
     }
     if (learn && !learned) {
       showToast(
-        "İşlem uygulandı fakat otomatik tanı kaydedilemedi",
+        "İşlem uygulandı fakat kalıcı firma hafızası kaydedilemedi",
         "error"
       );
     } else {
@@ -2819,7 +2850,7 @@ export default function BankParserWorkbench() {
     }
   };
 
-  const handleApplyHesapToSingleRow = (row, accountCode, { learn = false } = {}) => {
+  const handleApplyHesapToSingleRow = async (row, accountCode, { learn = false } = {}) => {
     const code = String(accountCode || "").trim();
     if (!code || !row?.id) return;
     const learnCtx = resolveMemoryLearnContext(row);
@@ -2862,33 +2893,34 @@ export default function BankParserWorkbench() {
     syncLucaPage(lucaPage);
     let learned = false;
     if (learn && selectedCompanyId && learnCtx.ok) {
-      const saved = saveAccountMemoryV2Decision(
-        {
-          ...row,
-          hesapKodu: code,
-          accountCode: code,
-          analysisKey: learnCtx.analysisKey,
-          canonicalAnalysisKey: buildCariMemoryCanonicalKey(
-            learnCtx.analysisKey || learnCtx.description,
-            learnCtx.direction
-          ),
-          direction: learnCtx.direction,
-          transactionType: learnCtx.transactionType || row.transactionType || "",
-          belgeTuru: row.belgeTuru || "",
-          documentType: row.belgeTuru || "",
-          cariId: code,
-          normalizedDescription: learnCtx.description,
-          finalDescriptionTemplate:
-            row.fisAciklama || row.detayAciklama || row.aciklama || "",
-          source: "row-learn",
-        },
-        { firmaId: selectedCompanyId, kaynakAdi: selectedBank }
-      );
-      learned = Boolean(saved);
+      const persistResult = await persistUserConfirmedAccountingMemory({
+        companyId: selectedCompanyId,
+        bankId: selectedBank,
+        bankName: selectedBank,
+        direction: learnCtx.direction,
+        transactionType: learnCtx.transactionType || row.transactionType || "",
+        descriptionOrKey: learnCtx.description,
+        analysisKey: learnCtx.analysisKey || learnCtx.description,
+        accountCode: code,
+        company: selectedCompany,
+        accountPlanCodes: (companyPlans || [])
+          .map((p) => String(p.code || p.hesapKodu || "").trim())
+          .filter(Boolean),
+        source: "row-learn",
+        seedRow: row,
+        rememberForCompany: true,
+        existingServerRows: learningMemory,
+        createRecord: createLearningMemoryRecordDetailed,
+        updateRecord: updateLearningMemoryRecord,
+      });
+      learned = Boolean(persistResult.persisted);
+      if (persistResult.warning) {
+        showToast(persistResult.warning, "error");
+      }
     }
     if (learn && !learned) {
       showToast(
-        "İşlem uygulandı fakat otomatik tanı kaydedilemedi",
+        "İşlem uygulandı fakat kalıcı firma hafızası kaydedilemedi",
         "error"
       );
     } else {

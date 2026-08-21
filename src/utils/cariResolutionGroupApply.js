@@ -1,14 +1,36 @@
 /**
  * Çözüm Merkezi yeşil buton uygulama gövdesi (React state’siz).
  * BankParserWorkbench.handleApplyCariResolutionGroup bunu çağırır.
+ *
+ * Öğrenme: server learning_memory yetkili → local V2 cache activate.
+ * `skipServerPersist` yalnız test enjeksiyonu (`__testOnly`); production UI’dan gelmez.
  */
 import {
   buildCariMemoryCanonicalKey,
+  deleteAccountMemoryV2Record,
+  loadAccountMemoryV2Records,
   persistCariResolutionLearnWithReadback,
 } from "@/src/utils/accountMemoryV2";
+import { persistUserConfirmedAccountingMemory } from "@/src/utils/accountingMemoryV1";
 import { analyzeMissingHesapRows } from "@/src/utils/previewExportValidation";
+import {
+  createLearningMemoryRecordDetailed,
+  updateLearningMemoryRecord,
+} from "@/src/utils/learningMemory";
 
-export function runCariResolutionGroupApply({
+/**
+ * Production’da asla true olmamalı. Yalnız birim testleri `__testOnly.skipServerPersist` verir.
+ */
+function resolveTestSkipServerPersist(options = {}) {
+  const flag = Boolean(options?.__testOnly?.skipServerPersist);
+  if (!flag) return false;
+  // Node test ortamı dışında sessizce yok say
+  if (typeof process === "undefined") return false;
+  if (process.env.NODE_ENV === "production") return false;
+  return true;
+}
+
+export async function runCariResolutionGroupApply({
   lucaRows = [],
   group,
   accountCode,
@@ -16,7 +38,20 @@ export function runCariResolutionGroupApply({
   selectedCompanyId = "",
   selectedBank = "",
   resolveMemoryLearnContext,
+  existingLearningRecords = [],
+  createRecord = createLearningMemoryRecordDetailed,
+  updateRecord = updateLearningMemoryRecord,
+  currency = "TRY",
+  company = null,
+  accountPlanCodes = null,
+  /** @deprecated kullanma — yalnız __testOnly */
+  skipServerPersist = false,
+  __testOnly = null,
 } = {}) {
+  const testSkip = resolveTestSkipServerPersist({
+    __testOnly: __testOnly || (skipServerPersist ? { skipServerPersist: true } : null),
+  });
+
   const code = String(accountCode || "").trim();
   if (!group?.seedRow || !code) {
     return {
@@ -28,6 +63,8 @@ export function runCariResolutionGroupApply({
       learnSaveTrace: null,
       beforeMissing: 0,
       afterMissing: 0,
+      serverWriteCount: 0,
+      warning: null,
     };
   }
 
@@ -89,24 +126,91 @@ export function runCariResolutionGroupApply({
       ]
         .filter(Boolean)
         .join(" | "),
+      memoryDecisionSource: learn ? "Öğrenen Hafıza" : item.memoryDecisionSource,
     };
   });
 
   let learned = false;
   let learnPersistFailed = false;
   let learnSaveTrace = null;
+  let serverWriteCount = 0;
+  let warning = null;
+
   if (learn) {
-    const learnResult = persistCariResolutionLearnWithReadback({
-      seedRow: group.seedRow,
-      accountCode: code,
-      learnContext: learnCtx,
-      companyId: selectedCompanyId,
-      bankName: selectedBank,
-      source: "cari-resolution-center",
-    });
-    learnSaveTrace = learnResult.saveTrace || null;
-    learned = Boolean(learnResult.learnOk);
-    learnPersistFailed = !learned;
+    if (testSkip) {
+      // Yalnız birim test: local read-back zinciri
+      const localResult = persistCariResolutionLearnWithReadback({
+        seedRow: group.seedRow,
+        accountCode: code,
+        learnContext: learnCtx,
+        companyId: selectedCompanyId,
+        bankName: selectedBank,
+        source: "cari-resolution-center",
+      });
+      learnSaveTrace = localResult.saveTrace || null;
+      learned = Boolean(localResult.learnOk);
+      learnPersistFailed = !learned;
+    } else {
+      const persistResult = await persistUserConfirmedAccountingMemory({
+        companyId: selectedCompanyId,
+        bankId: selectedBank,
+        bankName: selectedBank,
+        direction: learnCtx.direction,
+        transactionType:
+          learnCtx.transactionType || group.seedRow.transactionType || "",
+        currency,
+        descriptionOrKey: learnCtx.description,
+        analysisKey: learnCtx.analysisKey || learnCtx.description,
+        accountCode: code,
+        company,
+        accountPlanCodes,
+        source: "cari-resolution-center",
+        seedRow: group.seedRow,
+        rememberForCompany: true,
+        existingServerRows: existingLearningRecords,
+        createRecord,
+        updateRecord,
+      });
+      learned = Boolean(persistResult.learned && persistResult.persisted);
+      learnPersistFailed = !persistResult.persisted;
+      serverWriteCount = Number(persistResult.serverWriteCount || 0);
+      warning = persistResult.warning || null;
+      learnSaveTrace = {
+        build: buildCariMemoryCanonicalKey(
+          learnCtx.analysisKey || learnCtx.description,
+          learnCtx.direction
+        ),
+        checkbox: true,
+        shouldLearn: true,
+        source: "cari-resolution-center",
+        persisted: Boolean(persistResult.persisted),
+        serverWriteCount,
+        serverWriteAttempt: Number(persistResult.serverWriteAttempt || 0),
+        activeCache: Number(persistResult.activeCache || 0),
+        signature: persistResult.signature || "",
+        rejectReason: persistResult.rejectReason || "",
+        immediateReadBack: {
+          autoApply: Boolean(persistResult.persisted),
+          rejectReason: persistResult.rejectReason || "",
+        },
+        supersededCount: persistResult.superseded ? 1 : 0,
+        activeCanonicalCountAfterSave: Number(persistResult.activeCache || 0),
+      };
+
+      // Eski local-only aktif BSA olmayan çakışan kayıtları pasifleştir (fail-safe)
+      if (!persistResult.persisted) {
+        const dangling = loadAccountMemoryV2Records().filter(
+          (r) =>
+            r.companyId === selectedCompanyId &&
+            r.serverPersisted !== true &&
+            (r.status === "pending" ||
+              r.analysisKey === (learnCtx.analysisKey || learnCtx.description))
+        );
+        for (const row of dangling) {
+          deleteAccountMemoryV2Record(row.id, { soft: true });
+        }
+      }
+    }
   }
 
   const afterMissing = analyzeMissingHesapRows(nextLuca).missingCount;
@@ -119,11 +223,7 @@ export function runCariResolutionGroupApply({
     learnSaveTrace,
     beforeMissing,
     afterMissing,
-    learnCtx,
-    // expose for tests — same canonical builder Workbench used historically
-    canonicalAnalysisKey: buildCariMemoryCanonicalKey(
-      learnCtx.analysisKey || learnCtx.description,
-      learnCtx.direction
-    ),
+    serverWriteCount,
+    warning,
   };
 }

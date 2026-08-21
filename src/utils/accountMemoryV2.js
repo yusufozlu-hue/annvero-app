@@ -85,6 +85,20 @@ function bankScopeCompatible(record, bankId, bankName) {
   const right = String(bankId || bankName || "")
     .trim()
     .toUpperCase();
+  // Her iki taraf da doluysa sıkı eşleşme — boş kayıtlar geriye uyumlu
+  if (!left || !right) return true;
+  return left === right;
+}
+
+function currencyCompatible(recordCurrency, queryCurrency) {
+  const left = String(recordCurrency || "")
+    .trim()
+    .toUpperCase()
+    .replace("TL", "TRY");
+  const right = String(queryCurrency || "")
+    .trim()
+    .toUpperCase()
+    .replace("TL", "TRY");
   if (!left || !right) return true;
   return left === right;
 }
@@ -350,6 +364,10 @@ function migrateV1Record(record = {}) {
     companyId: String(record.companyId || "").trim(),
     bankId: String(record.bankId || record.bankName || "").trim(),
     bankName: String(record.bankName || "").trim(),
+    currency: String(record.currency || "")
+      .trim()
+      .toUpperCase()
+      .replace("TL", "TRY"),
     analysisKey,
     canonicalAnalysisKey,
     normalizedDescription,
@@ -395,8 +413,17 @@ function migrateV1Record(record = {}) {
     createdAt,
     updatedAt: record.updatedAt || createdAt,
     isActive: record.isActive !== false,
+    status: String(
+      record.status || (record.isActive === false ? "disabled" : "active")
+    )
+      .trim()
+      .toLowerCase(),
     supersededBy: String(record.supersededBy || "").trim(),
     supersedeReason: String(record.supersedeReason || "").trim(),
+    serverId: record.serverId || null,
+    serverPersisted: Boolean(record.serverPersisted),
+    cacheUserId: record.cacheUserId || null,
+    cacheExpiresAt: record.cacheExpiresAt || null,
     schemaVersion: 2,
   };
 }
@@ -432,10 +459,39 @@ export function loadAccountMemoryV2Records() {
 }
 
 export function persistAccountMemoryV2Records(records = []) {
-  return writeJsonArray(
-    ACCOUNT_MEMORY_V2_STORAGE_KEY,
-    records.map(normalizeAccountMemoryV2Record)
+  const normalized = records.map(normalizeAccountMemoryV2Record);
+  const v2Ok = writeJsonArray(ACCOUNT_MEMORY_V2_STORAGE_KEY, normalized);
+  if (!v2Ok) return false;
+  // V1 aynasını da senkron tut — aksi halde load merge stale pending’i diriltir
+  writeJsonArray(
+    V1_STORAGE_KEY,
+    normalized.map((record) => ({
+      id: record.id,
+      companyId: record.companyId,
+      bankName: record.bankName,
+      normalizedDescription: record.normalizedDescription,
+      accountCode: record.accountCode,
+      accountName: record.accountName,
+      cariId: record.cariId,
+      cariName: record.counterpartyName,
+      counterAccountCode: "",
+      documentType: record.documentType,
+      belgeTuru: record.documentType,
+      analysisKey: record.analysisKey,
+      canonicalAnalysisKey: record.canonicalAnalysisKey,
+      direction: record.direction,
+      transactionType: record.transactionType,
+      descriptionTemplate: record.finalDescriptionTemplate,
+      iban: record.iban,
+      lastUsedAt: record.lastUsedAt,
+      usageCount: record.usageCount,
+      isActive: record.isActive !== false,
+      status: record.status || "active",
+      serverPersisted: Boolean(record.serverPersisted),
+      supersededBy: record.supersededBy || "",
+    }))
   );
+  return true;
 }
 
 export function createEmptyMemoryTelemetry() {
@@ -721,6 +777,23 @@ function correctionRatio(record) {
 
 export function isMemoryRecordAutoEligible(record) {
   if (!record || record.isActive === false) return false;
+  const status = String(record.status || "active").toLowerCase();
+  if (
+    status === "pending" ||
+    status === "disabled" ||
+    status === "superseded" ||
+    status === "passive" ||
+    status === "deleted"
+  ) {
+    return false;
+  }
+  if (
+    String(record.documentType || "").toUpperCase() ===
+      "BANK_STATEMENT_ACCOUNTING" &&
+    record.serverPersisted !== true
+  ) {
+    return false;
+  }
   if (record.decisionType === MEMORY_DECISION_TYPE.REVIEW) return false;
   if (!String(record.accountCode || "").trim()) return false;
   if (correctionRatio(record) >= MEMORY_AUTO_DISABLE_CORRECTION_RATIO) return false;
@@ -902,6 +975,24 @@ function pickBestRecord(candidates = []) {
 function filterSafeCandidates(candidates, query, { requireType = true } = {}) {
   return (candidates || []).filter((record) => {
     if (record.isActive === false) return false;
+    const status = String(record.status || "active").toLowerCase();
+    if (
+      status === "disabled" ||
+      status === "superseded" ||
+      status === "pending" ||
+      status === "passive" ||
+      status === "deleted"
+    ) {
+      return false;
+    }
+    // Server-authoritative firm learning: pending / unconfirmed cache uygulanmaz
+    if (
+      String(record.documentType || "").toUpperCase() ===
+        "BANK_STATEMENT_ACCOUNTING" &&
+      record.serverPersisted !== true
+    ) {
+      return false;
+    }
     if (query.companyId && record.companyId !== query.companyId) return false;
     if (!directionCompatible(record.direction, query.direction)) return false;
     if (
@@ -909,6 +1000,12 @@ function filterSafeCandidates(candidates, query, { requireType = true } = {}) {
         strict: requireType,
       })
     ) {
+      return false;
+    }
+    if (!bankScopeCompatible(record, query.bankId, query.bankName)) {
+      return false;
+    }
+    if (!currencyCompatible(record.currency, query.currency)) {
       return false;
     }
     if (!amountInRange(record, query.amount)) return false;
@@ -969,6 +1066,9 @@ export function resolveAccountMemoryV2Decision(query = {}, indexOrRecords, optio
     direction,
     transactionType,
     amount: query.amount,
+    bankId: String(query.bankId || query.bankName || "").trim(),
+    bankName: String(query.bankName || query.bankId || "").trim(),
+    currency: String(query.currency || "").trim(),
   };
 
   const finish = (payload) => {
@@ -1431,10 +1531,14 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
   const createdAt = previous?.createdAt || nowIso();
 
   const payload = normalizeAccountMemoryV2Record({
-    id: previous?.id || buildRecordId(),
+    id: previous?.id || input.id || buildRecordId(),
     companyId,
     bankId,
     bankName,
+    currency: String(input.currency || previous?.currency || "")
+      .trim()
+      .toUpperCase()
+      .replace("TL", "TRY"),
     analysisKey,
     canonicalAnalysisKey,
     normalizedDescription,
@@ -1482,7 +1586,22 @@ export function saveAccountMemoryV2Decision(input = {}, context = {}) {
     lastUsedAt: nowIso(),
     createdAt,
     updatedAt: nowIso(),
-    isActive: true,
+    isActive:
+      input.isActive === false || String(input.status || "").toLowerCase() === "pending"
+        ? false
+        : true,
+    status:
+      String(input.status || "").toLowerCase() === "pending"
+        ? "pending"
+        : String(input.status || "active").toLowerCase() === "disabled"
+          ? "disabled"
+          : "active",
+    serverId: input.serverId || previous?.serverId || null,
+    serverPersisted: Boolean(
+      input.serverPersisted ?? previous?.serverPersisted ?? false
+    ),
+    cacheUserId: input.cacheUserId || previous?.cacheUserId || null,
+    cacheExpiresAt: input.cacheExpiresAt || previous?.cacheExpiresAt || null,
     supersededBy: "",
     supersedeReason: "",
   });
@@ -1899,7 +2018,12 @@ export function deleteAccountMemoryV2Record(recordId, { soft = true } = {}) {
   if (soft) {
     const next = records.map((record) =>
       record.id === recordId
-        ? { ...record, isActive: false, updatedAt: nowIso() }
+        ? {
+            ...record,
+            isActive: false,
+            status: "disabled",
+            updatedAt: nowIso(),
+          }
         : record
     );
     persistAccountMemoryV2Records(next);

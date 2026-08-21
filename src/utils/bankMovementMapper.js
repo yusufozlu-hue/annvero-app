@@ -815,6 +815,14 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         analysisKey: firmAnalysisKey,
         direction,
         transactionType,
+        bankId: selectedBank || rawRow.banka || "",
+        bankName: selectedBank || rawRow.banka || "",
+        currency:
+          rawRow.currency ||
+          rawRow.paraBirimi ||
+          context.currency ||
+          context.paraBirimi ||
+          "",
         iban:
           String(rawRow.iban || "").replace(/\s+/g, "") ||
           (description.match(/TR\d{2}[\d\s]{20,}/i) || [""])[0].replace(
