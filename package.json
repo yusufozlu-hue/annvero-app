@@ -32,6 +32,7 @@
     "test:e-defter-kontrol": "node --import ./scripts/_alias-loader.mjs ./scripts/test-e-defter-kontrol.mjs",
     "test:edefter-persist": "node --import ./scripts/_alias-loader.mjs ./scripts/test-edefter-persist.mjs",
     "test:account-memory": "node --import ./scripts/_alias-loader.mjs ./scripts/test-account-memory-stabilize.mjs",
+    "test:accounting-memory-v1": "node --import ./scripts/_alias-loader.mjs ./scripts/test-accounting-memory-v1.mjs",
     "test:cari-biletduk": "node --import ./scripts/_alias-loader.mjs ./scripts/test-cari-biletduk-handler-apply.mjs",
     "test:annvero-v1": "node --import ./scripts/_alias-loader.mjs ./scripts/test-annvero-v1-orchestration.mjs",
     "test:annvero-v1:local-e2e": "node --import ./scripts/_alias-loader.mjs ./scripts/test-annvero-v1-local-e2e.mjs",

@@ -22,11 +22,57 @@ import {
 
 const TABLE = "learning_memory";
 
+const ALLOWED_DOCUMENT_TYPES = new Set([
+  "DK",
+  "MM",
+  "SM",
+  "BANK_STATEMENT_FORMAT",
+  "BANK_STATEMENT_ACCOUNTING",
+]);
+
+const ALLOWED_STATUS = new Set(["active", "passive", "deleted"]);
+
 function withLearningMemoryAliases(row = {}) {
   return {
     ...row,
     usage_count: row.usage_count ?? row.match_count ?? 0,
   };
+}
+
+function sanitizeClientLearningRecord(record = {}, companyId = "") {
+  const docType = String(record.document_type || record.documentType || "DK")
+    .trim()
+    .toUpperCase();
+  const status = String(record.status || "active")
+    .trim()
+    .toLowerCase();
+
+  // Client created_by / createdBy kabul edilmez — oturum audit katmanı yazar
+  const safe = buildSafeLearningMemoryPayload({
+    ...record,
+    company_id: companyId,
+    document_type: ALLOWED_DOCUMENT_TYPES.has(docType) ? docType : "DK",
+    status: ALLOWED_STATUS.has(status) ? status : "active",
+  });
+
+  // user_correction içinden client createdBy spoof’unu temizle
+  if (safe.user_correction) {
+    try {
+      const meta =
+        typeof safe.user_correction === "string"
+          ? JSON.parse(safe.user_correction)
+          : safe.user_correction;
+      if (meta && typeof meta === "object") {
+        delete meta.createdBy;
+        delete meta.created_by;
+        safe.user_correction = JSON.stringify(meta);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return safe;
 }
 
 function buildRecordPayload(record = {}) {
@@ -103,14 +149,18 @@ export async function POST(request) {
     );
   }
 
-  const insertPayload = buildSafeLearningMemoryPayload({
-    ...record,
-    company_id: companyId,
-    keyword: String(record.keyword).trim(),
-    document_type: record.document_type || "DK",
-    learned_at: record.learned_at || new Date().toISOString(),
-    status: record.status || "active",
-  });
+  if (!companyId) {
+    return NextResponse.json({ error: "Firma ID zorunludur." }, { status: 400 });
+  }
+
+  const insertPayload = sanitizeClientLearningRecord(
+    {
+      ...record,
+      keyword: String(record.keyword).trim(),
+      learned_at: record.learned_at || new Date().toISOString(),
+    },
+    companyId
+  );
 
   const { data, error } = await ctx.supabase
     .from(TABLE)
@@ -169,7 +219,9 @@ export async function PATCH(request) {
     );
     if (!accessCheck.ok) return accessCheck.response;
 
-    const payload = buildRecordPayload(record);
+    const payload = sanitizeClientLearningRecord(record, accessCheck.companyId);
+    // id güncellemede company_id değiştirilmez
+    delete payload.company_id;
     if (!Object.keys(payload).length) {
       return NextResponse.json({ data: null, skipped: true });
     }

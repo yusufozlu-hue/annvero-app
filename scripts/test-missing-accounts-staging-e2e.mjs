@@ -82,13 +82,13 @@ test("922 eksik satır ekonomik gruplama", () => {
   );
 });
 
-test("tekli seçim + yeniden analiz ≤20s", () => {
+test("tekli seçim + yeniden analiz ≤20s", async () => {
   const snap = buildCariResolutionGroups(lucaRows, {
     selectedBank: "VAKIFBANK",
   });
   const group = snap.groups[0];
   const t0 = performance.now();
-  const applied = runCariResolutionGroupApply({
+  const applied = await runCariResolutionGroupApply({
     lucaRows,
     group,
     accountCode: "320.01.E2E001",
@@ -116,7 +116,7 @@ test("tekli seçim + yeniden analiz ≤20s", () => {
   );
 });
 
-test("toplu uygulama + geri alma", () => {
+test("toplu uygulama + geri alma", async () => {
   const snap = buildCariResolutionGroups(lucaRows, {
     selectedBank: "VAKIFBANK",
   });
@@ -126,13 +126,14 @@ test("toplu uygulama + geri alma", () => {
   const undo = snapshotLucaRowsForUndo(lucaRows, rowIds);
   let next = lucaRows;
   for (const g of targets) {
-    next = runCariResolutionGroupApply({
+    const applied = await runCariResolutionGroupApply({
       lucaRows: next,
       group: g,
       accountCode: "320.01.E2E002",
       learn: false,
       selectedCompanyId: COMPANY_A,
-    }).lucaRows;
+    });
+    next = applied.lucaRows;
   }
   const missingMid = analyzeMissingHesapRows(next).missingCount;
   next = restoreLucaRowsFromUndoSnapshot(next, undo);

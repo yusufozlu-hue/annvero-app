@@ -184,7 +184,7 @@ test("classifyFisKontrolFindings groups root causes", () => {
   assert.ok(report.classes.every((c) => c.why && c.action));
 });
 
-test("apply + undo + reanalyze without reload", () => {
+test("apply + undo + reanalyze without reload", async () => {
   const rows = [
     row({ id: "x1", borc: 10 }),
     row({ id: "x2", borc: 20 }),
@@ -203,7 +203,7 @@ test("apply + undo + reanalyze without reload", () => {
   const group = snap.groups[0];
   assert.ok(group);
   const undo = snapshotLucaRowsForUndo(rows, group.rowIds);
-  const applied = runCariResolutionGroupApply({
+  const applied = await runCariResolutionGroupApply({
     lucaRows: rows,
     group,
     accountCode: "320.01.999",

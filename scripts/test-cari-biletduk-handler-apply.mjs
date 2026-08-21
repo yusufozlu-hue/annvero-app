@@ -25,14 +25,19 @@ import { normalizeBankAnalysisKey } from "@/src/utils/textNormalize.js";
 import { analyzeMissingHesapRows } from "@/src/utils/previewExportValidation.js";
 import { bankMovementToStandardLucaRows } from "@/src/utils/standardLucaRow.js";
 
+const __tests = [];
 function test(name, fn) {
-  try {
-    fn();
-    console.log(`PASS ${name}`);
-  } catch (error) {
-    console.error(`FAIL ${name}`);
-    throw error;
-  }
+  __tests.push(
+    Promise.resolve()
+      .then(() => fn())
+      .then(() => {
+        console.log(`PASS ${name}`);
+      })
+      .catch((error) => {
+        console.error(`FAIL ${name}`);
+        throw error;
+      })
+  );
 }
 
 function installMemoryStorage(initial = null) {
@@ -59,7 +64,7 @@ const DESC_B =
 const LIVE_KEY = normalizeBankAnalysisKey(DESC_A, "GIRIS");
 const CANON = buildCariMemoryCanonicalKey(DESC_A, "GIRIS");
 
-test("handler E2E: çakışan+bozuk upsert → yeşil buton learn → reload pipeline", () => {
+test("handler E2E: çakışan+bozuk upsert → yeşil buton learn → reload pipeline", async () => {
   const store = installMemoryStorage();
   const now = new Date().toISOString();
   // Canlıya benzer: biri live analysisKey + B0001 ama correctionRatio yüksek;
@@ -200,13 +205,14 @@ test("handler E2E: çakışan+bozuk upsert → yeşil buton learn → reload pip
   );
 
   // GERÇEK handler gövdesi (Workbench yeşil buton)
-  const applyResult = runCariResolutionGroupApply({
+  const applyResult = await runCariResolutionGroupApply({
     lucaRows,
     group: applyPayload,
     accountCode: ACCOUNT_GOOD,
     learn,
     selectedCompanyId: COMPANY,
     selectedBank: "VAKIFBANK",
+    __testOnly: { skipServerPersist: true },
     resolveMemoryLearnContext: (row) => {
       const direction = String(row.direction || "GIRIS").trim().toUpperCase();
       const description = String(
@@ -490,4 +496,5 @@ test("save: pipeline-auto eski cm:* kaydı supersede etmez", () => {
   assert.equal(String(legacy.supersededBy || ""), "");
 });
 
+await Promise.all(__tests);
 console.log("\nAll BİLET handler apply tests passed.");
