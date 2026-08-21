@@ -804,7 +804,7 @@ export function runVoucherControlStage(lucaRows = [], options = {}) {
     lucaBatchCount: batches.length,
     lucaGroupSize: LUCA_FIS_GROUP_SIZE,
     exportPayload,
-    fisKontrolHref: `/muhasebe/fis-kontrol?companyId=${encodeURIComponent(
+    fisKontrolHref: `/muhasebe/fis-kontrol?source=bank&companyId=${encodeURIComponent(
       String(options.companyId || options.firmaId || "")
     )}`,
   };

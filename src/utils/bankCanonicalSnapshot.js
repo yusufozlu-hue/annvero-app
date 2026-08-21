@@ -171,6 +171,25 @@ export function movementRowToSnapshotMovement(row = {}, index = 0) {
       bankName: sanitizeText(row.bankName || row.banka || "", 64),
       documentType: sanitizeText(row.documentType || "", 40),
       accountingScenario: sanitizeText(row.accountingScenario || "", 64),
+      // Archive → Luca handoff: muhasebe bacakları (ham belge / token yok)
+      accountCode: sanitizeText(
+        row.accountCode || row.hesapKodu || row.bankAccountCode || "",
+        64
+      ),
+      counterAccountCode: sanitizeText(
+        row.counterAccountCode || row.karsiHesapKodu || "",
+        64
+      ),
+      lucaDescription: sanitizeText(
+        row.lucaDescription || row.lucaAciklama || "",
+        480
+      ),
+      analysisKey: sanitizeText(row.analysisKey || "", 160),
+      accountingAnalyzed: Boolean(
+        row._accountingAnalyzed ||
+          row.accountingAnalyzed ||
+          (row.accountCode && row.counterAccountCode)
+      ),
     },
   };
 }
@@ -225,6 +244,16 @@ export function snapshotMovementToLegacyRow(row = {}) {
     status: empty(row.status) || "ok",
     documentType: empty(extra.documentType),
     accountingScenario: empty(extra.accountingScenario),
+    accountCode: empty(extra.accountCode || row.accountCode),
+    counterAccountCode: empty(
+      extra.counterAccountCode || row.counterAccountCode
+    ),
+    lucaDescription: empty(extra.lucaDescription || row.lucaDescription),
+    analysisKey: empty(extra.analysisKey || row.analysisKey),
+    _accountingAnalyzed: Boolean(
+      extra.accountingAnalyzed ||
+        (extra.accountCode && extra.counterAccountCode)
+    ),
     fromCanonicalSnapshot: true,
   };
   // Dosyasız muhasebe analizi için rawRow — sourceMovementId korunur
