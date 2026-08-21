@@ -578,6 +578,25 @@ await test("click-lock UI wiring", () => {
   assert.match(oneClick, /isNavigatingToFisKontrol/);
   assert.match(oneClick, /bank-go-to-fis-kontrol/);
   assert.match(oneClick, /Fiş Kontrol’e aktarılıyor/);
+  assert.match(oneClick, /result\.lucaRowCount/);
+});
+
+await test("archive hydrate: meta-only lucaReady must not enable handoff", () => {
+  const workbench = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/banka-ekstresi/BankParserWorkbench.jsx"
+    ),
+    "utf8"
+  );
+  assert.match(workbench, /materializedLucaRowCount/);
+  assert.match(workbench, /buildLucaRowsFromMovementsAsync/);
+  assert.match(workbench, /movementsHaveArchiveAccountingLegs/);
+  assert.match(workbench, /runAccountingAnalysisOnMovementsAsync/);
+  assert.doesNotMatch(
+    workbench,
+    /alert\("Önce ön izleme oluşturup Luca satırlarını hazırlayın\."\)/
+  );
 });
 
 if (failed > 0) {

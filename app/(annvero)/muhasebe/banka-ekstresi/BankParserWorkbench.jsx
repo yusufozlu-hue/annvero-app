@@ -142,6 +142,8 @@ import {
 import {
   buildCanonicalHydrateBoundResult,
   decideCanonicalHydrateReanalyze,
+  evaluateArchiveLucaHandoffReadiness,
+  movementsHaveArchiveAccountingLegs,
   shouldSkipHydratePipeline,
 } from "@/src/utils/canonicalHydrateReuse";
 import {
@@ -1032,6 +1034,130 @@ export default function BankParserWorkbench() {
                   canonicalBalanceEvidenceRef.current
                 ),
               });
+
+            let materializedLucaRowCount = 0;
+            let archiveHandoffCode = "";
+            let archiveHandoffMessage = "";
+
+            if (!staleJobResult && hydrateDecision.bindArchivedResult) {
+              let hasLegs = movementsHaveArchiveAccountingLegs(
+                movementsRef.current
+              );
+              // Eski snapshot’larda safeExtra bacak yoktu — PDF/network olmadan
+              // aynı accounting engine ile bellekte eşle (persist/job/Drive yok).
+              if (!hasLegs && movementsRef.current.length > 0) {
+                try {
+                  const {
+                    runAccountingAnalysisOnMovementsAsync,
+                  } = await ensureBankParserCore();
+                  if (cancelled) return;
+                  const bank =
+                    String(
+                      activeBankRef.current || selectedBank || ""
+                    ).trim() || undefined;
+                  const analyzed = await runAccountingAnalysisOnMovementsAsync({
+                    ...buildPipelineOptions(
+                      normalizedRef.current,
+                      undefined,
+                      bank
+                    ),
+                    movementRows: movementsRef.current,
+                    signal: null,
+                  });
+                  if (cancelled) return;
+                  const nextMovements = analyzed.movementRows || [];
+                  if (nextMovements.length) {
+                    movementsRef.current = nextMovements;
+                    applyMovementPreview(
+                      nextMovements,
+                      null,
+                      nextMovements.length
+                    );
+                    setAccountingAnalyzed(true);
+                    hasLegs =
+                      movementsHaveArchiveAccountingLegs(nextMovements);
+                  }
+                } catch {
+                  hasLegs = false;
+                }
+              }
+              if (!hasLegs) {
+                archiveHandoffCode = "ACCOUNTING_LEGS_MISSING";
+                archiveHandoffMessage =
+                  "Arşiv hareketlerinde muhasebe bacakları yok. Yeniden analiz gerekir; Fiş Kontrol satır uydurulmaz.";
+                lucaRef.current = [];
+                setLucaReady(false);
+                setTotalLucaCount(0);
+                setStandardLucaRows([]);
+              } else {
+                try {
+                  const {
+                    buildLucaRowsFromMovementsAsync,
+                    LUCA_MOVEMENT_CHUNK_SIZE,
+                  } = await ensureBankParserCore();
+                  if (cancelled) return;
+                  const bank =
+                    String(
+                      activeBankRef.current || selectedBank || ""
+                    ).trim() || undefined;
+                  const lucaResult = await buildLucaRowsFromMovementsAsync(
+                    movementsRef.current,
+                    buildPipelineOptions(normalizedRef.current, undefined, bank),
+                    {
+                      chunkSize: LUCA_MOVEMENT_CHUNK_SIZE,
+                      signal: null,
+                    }
+                  );
+                  if (cancelled) return;
+                  const rows = lucaResult.standardLucaRows || [];
+                  const readiness = evaluateArchiveLucaHandoffReadiness({
+                    movements: movementsRef.current,
+                    lucaRows: rows,
+                    lucaReady: rows.length > 0,
+                    balanceMatched: Boolean(
+                      canonicalBalanceEvidenceRef.current?.matched ||
+                        meta.balance_code === "BALANCE_MATCHED" ||
+                        meta.balanceCode === "BALANCE_MATCHED"
+                    ),
+                    outputGateCode:
+                      meta.output_gate_code || meta.outputGateCode || "",
+                    reviewRequired: Boolean(
+                      meta.review_required ?? meta.reviewRequired
+                    ),
+                  });
+                  if (readiness.allowed) {
+                    lucaRef.current = rows;
+                    materializedLucaRowCount = rows.length;
+                    setLucaReady(true);
+                    setTotalLucaCount(rows.length);
+                    setStandardLucaRows(rows.slice(0, PREVIEW_PAGE_SIZE));
+                    syncLucaPage(0);
+                    setPreviewSummary((prev) => ({
+                      ...(prev ||
+                        computeMovementPreviewSummary(movementsRef.current)),
+                      lucaRows: rows.length,
+                      totalMovements: movementsRef.current.length,
+                    }));
+                  } else {
+                    archiveHandoffCode = readiness.code;
+                    archiveHandoffMessage = readiness.message;
+                    lucaRef.current = [];
+                    setLucaReady(false);
+                    setTotalLucaCount(0);
+                    setStandardLucaRows([]);
+                  }
+                } catch {
+                  archiveHandoffCode = "LUCA_MATERIALIZE_FAILED";
+                  archiveHandoffMessage =
+                    "Arşiv Luca satırları hazırlanamadı. Yeniden analiz gerekir.";
+                  lucaRef.current = [];
+                  setLucaReady(false);
+                  setTotalLucaCount(0);
+                  setStandardLucaRows([]);
+                }
+              }
+            }
+
             const bound = buildCanonicalHydrateBoundResult({
               job: bindJob,
               movementCount: legacy.length,
@@ -1042,11 +1168,15 @@ export default function BankParserWorkbench() {
               // Canonical source evidence is authoritative for balance cards.
               // Job metadata may omit opening/closing amounts; do not invent.
               canonicalBalanceEvidence: canonicalBalanceEvidenceRef.current,
+              materializedLucaRowCount: staleJobResult
+                ? 0
+                : materializedLucaRowCount,
+              archiveHandoffCode,
+              archiveHandoffMessage,
             });
             setPipelineResult(bound);
             setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
             if (bound.lucaReadyHint && !staleJobResult) {
-              setLucaReady(true);
               setCompletedSteps((prev) => ({
                 ...prev,
                 preview: true,
@@ -1054,10 +1184,12 @@ export default function BankParserWorkbench() {
                 luca: true,
               }));
             } else {
+              setLucaReady(false);
               setCompletedSteps((prev) => ({
                 ...prev,
                 preview: true,
                 analysis: !staleJobResult,
+                luca: false,
               }));
             }
           }
@@ -2800,12 +2932,16 @@ export default function BankParserWorkbench() {
     event.preventDefault();
 
     if (!movementsRef.current.length || !lucaRef.current.length || !lucaReady) {
-      alert("Önce ön izleme oluşturup Luca satırlarını hazırlayın.");
+      showToast(
+        pipelineResult?.archiveHandoffMessage ||
+          "Önce ön izleme oluşturup Luca satırlarını hazırlayın.",
+        "error"
+      );
       return;
     }
 
     if (!selectedCompanyId) {
-      alert("Luca Fiş Üretici'ye geçmek için önce firma seçmelisin.");
+      showToast("Luca Fiş Üretici'ye geçmek için önce firma seçmelisin.", "error");
       return;
     }
 
@@ -2849,11 +2985,15 @@ export default function BankParserWorkbench() {
     if (fisKontrolNavLockRef.current || fisKontrolNavigating) return;
 
     if (!movementsRef.current.length || !lucaRef.current.length || !lucaReady) {
-      alert("Önce ön izleme oluşturup Luca satırlarını hazırlayın.");
+      showToast(
+        pipelineResult?.archiveHandoffMessage ||
+          "Önce ön izleme oluşturup Luca satırlarını hazırlayın.",
+        "error"
+      );
       return;
     }
     if (!selectedCompanyId) {
-      alert("Fiş Kontrol’e geçmek için önce firma seçmelisin.");
+      showToast("Fiş Kontrol’e geçmek için önce firma seçmelisin.", "error");
       return;
     }
 

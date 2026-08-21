@@ -537,17 +537,126 @@ await test("wiring: workbench gates hydrate arm; one-click shows archive title",
   assert.match(workbench, /shouldSkipHydratePipeline/);
   assert.match(workbench, /buildCanonicalHydrateBoundResult/);
   assert.match(workbench, /canonicalBalanceEvidence:\s*canonicalBalanceEvidenceRef\.current/);
+  assert.match(workbench, /materializedLucaRowCount/);
+  assert.match(workbench, /buildLucaRowsFromMovementsAsync/);
+  assert.match(workbench, /movementsHaveArchiveAccountingLegs/);
+  assert.match(workbench, /evaluateArchiveLucaHandoffReadiness/);
   assert.match(workbench, /markHydrateReanalyzeConsumed/);
-  assert.match(workbench, /isHydrateJobResultStale/);
-  assert.match(workbench, /armCanonicalHydrateReanalyze/);
-  assert.match(reuse, /Arşiv sonucu yüklendi/);
-  assert.match(reuse, /Yeniden analiz tamamlandı/);
-  assert.match(reuse, /normalizeCanonicalEvidenceForBoundResult|canonicalBalanceEvidence/);
-  assert.match(reuse, /statementClosingBalance/);
-  assert.match(oneClick, /resolveCanonicalHydrateResultTitle/);
-  assert.match(oneClick, /ARCHIVED_HYDRATE_RESULT_SUBTITLE/);
-  assert.match(oneClick, /formatBalanceAmount\(result\.openingBalance\)/);
+  assert.match(reuse, /lucaReadyHint/);
+  assert.match(reuse, /materializedLucaRowCount/);
+  assert.match(reuse, /ACCOUNTING_LEGS_MISSING/);
+  assert.match(oneClick, /result\.lucaRowCount/);
+  assert.match(oneClick, /archiveHandoffMessage/);
+  assert.doesNotMatch(workbench, /alert\("Önce ön izleme oluşturup Luca satırlarını hazırlayın\."\)/);
   assert.doesNotMatch(workbench, /84384297-270c-47cd-ac5a-d693ba80b84a/);
+});
+
+await test("preview FAIL repro: OUTPUT_READY meta + empty lucaRows → gate closed", async () => {
+  const job = completedReadyJob();
+  const bound = buildCanonicalHydrateBoundResult({
+    job,
+    archivedHydrateResult: true,
+    staleExistingJob: false,
+    movementCount: 4,
+    // Missing materializedLucaRowCount — eski bug: metadata luca_row_count ile buton açılırdı
+  });
+  assert.equal(bound.outputGateCode, "OUTPUT_READY");
+  assert.equal(bound.expectedLucaRowCount, 8);
+  assert.equal(bound.lucaRowCount, 0);
+  assert.equal(bound.lucaReadyHint, false);
+  const { evaluateBankOutputGate } = await import(
+    "@/src/utils/bankOneClickPipeline.js"
+  );
+  const gate = evaluateBankOutputGate(bound, {
+    lucaReady: Boolean(bound.lucaReadyHint) && bound.lucaRowCount > 0,
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.code, "LUCA_NOT_READY");
+});
+
+await test("archive legs → materialized 8 rows opens gate", async () => {
+  const {
+    movementsHaveArchiveAccountingLegs,
+    evaluateArchiveLucaHandoffReadiness,
+  } = await import("@/src/utils/canonicalHydrateReuse.js");
+  const { bankMovementToStandardLucaRows } = await import(
+    "@/src/utils/standardLucaRow.js"
+  );
+  const movements = [
+    {
+      amount: 1000000,
+      direction: "CIKIS",
+      accountCode: "102.10.V005",
+      counterAccountCode: "102.10.V001",
+      description: "open",
+      lucaDescription: "open",
+      _accountingAnalyzed: true,
+    },
+    {
+      amount: 33931.4,
+      direction: "GIRIS",
+      accountCode: "102.10.V005",
+      counterAccountCode: "642.01.001",
+      description: "faiz",
+      lucaDescription: "faiz",
+      _accountingAnalyzed: true,
+    },
+    {
+      amount: 5938,
+      direction: "CIKIS",
+      accountCode: "102.10.V005",
+      counterAccountCode: "193.01.001",
+      description: "stopaj",
+      lucaDescription: "stopaj",
+      _accountingAnalyzed: true,
+    },
+    {
+      amount: 1027993.4,
+      direction: "GIRIS",
+      accountCode: "102.10.V005",
+      counterAccountCode: "102.10.V001",
+      description: "close",
+      lucaDescription: "close",
+      _accountingAnalyzed: true,
+    },
+  ];
+  assert.equal(movementsHaveArchiveAccountingLegs(movements), true);
+  assert.equal(
+    movementsHaveArchiveAccountingLegs([{ amount: 1, accountCode: "102" }]),
+    false
+  );
+  const lucaRows = [];
+  movements.forEach((m, i) => {
+    lucaRows.push(
+      ...bankMovementToStandardLucaRows(m, i + 1, { firmaId: "co" })
+    );
+  });
+  assert.equal(lucaRows.length, 8);
+  const ready = evaluateArchiveLucaHandoffReadiness({
+    movements,
+    lucaRows,
+    lucaReady: true,
+    balanceMatched: true,
+    outputGateCode: "OUTPUT_READY",
+  });
+  assert.equal(ready.allowed, true);
+  assert.equal(ready.lucaRowCount, 8);
+  const job = completedReadyJob();
+  const bound = buildCanonicalHydrateBoundResult({
+    job,
+    archivedHydrateResult: true,
+    movementCount: 4,
+    materializedLucaRowCount: 8,
+  });
+  assert.equal(bound.lucaReadyHint, true);
+  assert.equal(bound.lucaRowCount, 8);
+  const { evaluateBankOutputGate } = await import(
+    "@/src/utils/bankOneClickPipeline.js"
+  );
+  const gate = evaluateBankOutputGate(bound, {
+    lucaReady: bound.lucaReadyHint && bound.lucaRowCount > 0,
+  });
+  assert.equal(gate.allowed, true);
 });
 
 if (failed > 0) {

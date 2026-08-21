@@ -126,6 +126,30 @@ test("movement round-trip preserves sourceMovementId", () => {
   assert.equal(legacy.fromCanonicalSnapshot, true);
 });
 
+test("movement round-trip preserves accounting legs for archive Luca", () => {
+  const snap = movementRowToSnapshotMovement(
+    {
+      id: "mov-open-1",
+      date: "2026-01-15",
+      description: "Vadeli acilis",
+      amount: -1000000,
+      direction: "CIKIS",
+      accountCode: "102.10.V005",
+      counterAccountCode: "102.10.V001",
+      lucaDescription: "Vadeli acilis",
+      _accountingAnalyzed: true,
+    },
+    0
+  );
+  assert.equal(snap.safeExtra.accountCode, "102.10.V005");
+  assert.equal(snap.safeExtra.counterAccountCode, "102.10.V001");
+  assert.equal(snap.safeExtra.accountingAnalyzed, true);
+  const legacy = snapshotMovementToLegacyRow(snap);
+  assert.equal(legacy.accountCode, "102.10.V005");
+  assert.equal(legacy.counterAccountCode, "102.10.V001");
+  assert.equal(legacy._accountingAnalyzed, true);
+});
+
 test("PDF and Excel parity on required fields", () => {
   const pdf = buildSnapshotMovementsFromRows([
     {

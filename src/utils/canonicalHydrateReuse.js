@@ -314,6 +314,89 @@ export function resolveCanonicalHydrateResultTitle(result = {}) {
 }
 
 /**
+ * Archive movements must carry both bank + counter legs before Luca materialization.
+ * Does not invent codes.
+ */
+export function movementsHaveArchiveAccountingLegs(movements = []) {
+  if (!Array.isArray(movements) || movements.length === 0) return false;
+  return movements.every((m) => {
+    const amount = Math.abs(Number(m?.amount ?? m?.tutar ?? 0));
+    if (!Number.isFinite(amount) || amount <= 0) return false;
+    const bank = text(m?.accountCode || m?.hesapKodu);
+    const counter = text(m?.counterAccountCode || m?.karsiHesapKodu);
+    return Boolean(bank && counter);
+  });
+}
+
+/**
+ * Preview FAIL repro: OUTPUT_READY + lucaReady metadata without real rows.
+ * Handlers must not navigate; UI must not enable export buttons.
+ */
+export function evaluateArchiveLucaHandoffReadiness({
+  movements = [],
+  lucaRows = [],
+  lucaReady = false,
+  balanceMatched = false,
+  outputGateCode = "",
+  reviewRequired = false,
+  fisKontrolCritical = 0,
+} = {}) {
+  const movementCount = Array.isArray(movements) ? movements.length : 0;
+  const rowCount = Array.isArray(lucaRows) ? lucaRows.length : 0;
+  const expectedRows = movementCount * 2;
+  const hasLegs = movementsHaveArchiveAccountingLegs(movements);
+  const balanced =
+    rowCount > 0 &&
+    lucaRows.every((r) => {
+      const borc = Number(r?.borc || 0) || 0;
+      const alacak = Number(r?.alacak || 0) || 0;
+      return borc >= 0 && alacak >= 0;
+    });
+  // Rough voucher balance: total debit == total credit
+  let totalBorc = 0;
+  let totalAlacak = 0;
+  for (const r of lucaRows || []) {
+    totalBorc += Number(r?.borc || 0) || 0;
+    totalAlacak += Number(r?.alacak || 0) || 0;
+  }
+  const totalsBalanced =
+    rowCount > 0 && Math.abs(totalBorc - totalAlacak) < 0.005;
+
+  let code = "OUTPUT_READY";
+  let message = "Luca satırları arşivden hazır.";
+  if (!balanceMatched || text(outputGateCode).toUpperCase() === "BALANCE_NOT_MATCHED") {
+    code = "BALANCE_NOT_MATCHED";
+    message = "Bakiye mutabakatı geçmeden çıktı açılamaz.";
+  } else if (reviewRequired || Number(fisKontrolCritical) > 0) {
+    code = "REVIEW_REQUIRED";
+    message = "Kritik bulgular veya inceleme varken çıktı açılamaz.";
+  } else if (!hasLegs) {
+    code = "ACCOUNTING_LEGS_MISSING";
+    message =
+      "Arşiv hareketlerinde muhasebe bacakları yok. Yeniden analiz gerekir; satır uydurulmaz.";
+  } else if (!lucaReady || rowCount === 0) {
+    code = "LUCA_NOT_READY";
+    message = "Luca satırları henüz hazırlanmadı.";
+  } else if (expectedRows > 0 && rowCount !== expectedRows) {
+    code = "LUCA_ROW_COUNT_MISMATCH";
+    message = `Luca satır sayısı beklenenle uyuşmuyor (${rowCount}/${expectedRows}).`;
+  } else if (!totalsBalanced || !balanced) {
+    code = "LUCA_UNBALANCED";
+    message = "Luca borç/alacak dengesi kurulamadı.";
+  }
+
+  return {
+    allowed: code === "OUTPUT_READY",
+    code,
+    message,
+    movementCount,
+    lucaRowCount: rowCount,
+    expectedLucaRowCount: expectedRows,
+    hasAccountingLegs: hasLegs,
+  };
+}
+
+/**
  * Prefer canonical statementBalanceEvidence for UI balance cards.
  * Preserves real 0 (null !== 0). Does not invent amounts when evidence is absent.
  * Job metadata remains a supporting source for gate/status codes only.
@@ -367,21 +450,39 @@ export function buildCanonicalHydrateBoundResult({
   staleExistingJob = false,
   archivedHydrateResult = false,
   canonicalBalanceEvidence = null,
+  /** Gerçek materialize edilmiş satır sayısı — metadata luca_row_count yetmez */
+  materializedLucaRowCount = null,
+  archiveHandoffCode = "",
+  archiveHandoffMessage = "",
 } = {}) {
   const meta = jobMetadata(job);
-  const lucaRowCount = Number(meta.luca_row_count ?? meta.lucaRowCount ?? 0) || 0;
+  const metaLucaRowCount =
+    Number(meta.luca_row_count ?? meta.lucaRowCount ?? 0) || 0;
+  const actualLuca =
+    materializedLucaRowCount == null
+      ? null
+      : Math.max(0, Number(materializedLucaRowCount) || 0);
+  const lucaRowCount = staleExistingJob
+    ? 0
+    : actualLuca != null
+      ? actualLuca
+      : 0;
   const reviewCount = Number(meta.review_count ?? meta.reviewCount ?? 0) || 0;
   const evidence = staleExistingJob
     ? null
     : normalizeCanonicalEvidenceForBoundResult(canonicalBalanceEvidence);
   const jobBalanceCode = metaText(meta, "balance_code", "balanceCode");
   const balanceCode = evidence?.code || jobBalanceCode;
+  // Metadata luca_row_count > 0 must NOT alone open the export gate (preview FAIL).
+  const lucaReadyHint =
+    !staleExistingJob && actualLuca != null && actualLuca > 0;
   return {
     movementCount:
       Number(meta.movement_count ?? meta.movementCount ?? movementCount) ||
       Number(movementCount) ||
       0,
-    lucaRowCount: staleExistingJob ? 0 : lucaRowCount,
+    lucaRowCount,
+    expectedLucaRowCount: staleExistingJob ? 0 : metaLucaRowCount,
     reviewCount: staleExistingJob ? null : reviewCount,
     uniqueUnresolvedMovements: staleExistingJob ? null : reviewCount,
     autoMatchedCount: staleExistingJob
@@ -412,7 +513,9 @@ export function buildCanonicalHydrateBoundResult({
       ? evidence.matched === true
       : jobBalanceCode.toUpperCase() === "BALANCE_MATCHED",
     outputGateCode: metaText(meta, "output_gate_code", "outputGateCode"),
-    lucaReadyHint: !staleExistingJob && lucaRowCount > 0,
+    lucaReadyHint,
+    archiveHandoffCode: text(archiveHandoffCode),
+    archiveHandoffMessage: text(archiveHandoffMessage),
     // UI BankPipelineResultCard balanceStats keys (preserve real 0).
     openingBalance: evidence ? evidence.openingBalance : null,
     statementClosingBalance: evidence ? evidence.closingBalance : null,

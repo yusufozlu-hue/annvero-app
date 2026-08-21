@@ -312,7 +312,10 @@ export function BankPipelineResultCard({
     Boolean(result.duplicate) ||
     result.code === "DUPLICATE_CONTENT" ||
     result.terminalStatus === "duplicate";
-  const outputGate = evaluateBankOutputGate(result, { lucaReady });
+  const outputGate = evaluateBankOutputGate(result, {
+    lucaReady:
+      Boolean(lucaReady) && Math.max(0, Number(result.lucaRowCount) || 0) > 0,
+  });
   const compareRows = Array.isArray(result.revisionCompare?.rows)
     ? result.revisionCompare.rows
     : null;
@@ -689,9 +692,11 @@ export function BankPipelineResultCard({
         <p
           className="mt-2 text-xs text-amber-200/85"
           data-testid="bank-output-gate-message"
-          data-output-gate-code={outputGate.code}
+          data-output-gate-code={
+            result.archiveHandoffCode || outputGate.code
+          }
         >
-          {outputGate.message}
+          {result.archiveHandoffMessage || outputGate.message}
         </p>
       ) : null}
 
