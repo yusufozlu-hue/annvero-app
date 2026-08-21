@@ -286,6 +286,7 @@ export function BankPipelineResultCard({
   onApplyBalanceResolution,
   isReanalyzing = false,
   isBalanceResolving = false,
+  isNavigatingToFisKontrol = false,
   auditHistory = [],
   primaryBtnClass = "",
   secondaryBtnClass = "",
@@ -637,10 +638,11 @@ export function BankPipelineResultCard({
           <button
             type="button"
             onClick={onGoToFisKontrol}
-            disabled={!outputGate.allowed}
+            disabled={!outputGate.allowed || isNavigatingToFisKontrol}
             className="rounded-xl border border-sky-600/50 bg-sky-950/40 px-4 py-3 text-sm font-semibold text-sky-100 transition hover:bg-sky-900/40 disabled:cursor-not-allowed disabled:opacity-50"
+            data-testid="bank-go-to-fis-kontrol"
           >
-            Fiş Kontrol’e Git
+            {isNavigatingToFisKontrol ? "Fiş Kontrol’e aktarılıyor…" : "Fiş Kontrol’e Git"}
           </button>
         ) : null}
         {missing > 0 ? (

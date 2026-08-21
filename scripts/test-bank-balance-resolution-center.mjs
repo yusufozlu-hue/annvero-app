@@ -340,7 +340,7 @@ test("resolution center UI exposes review/apply/undo and gated Fiş Kontrol", ()
   assert.match(resultCard, /bank-open-balance-resolution-center/);
   assert.match(
     resultCard,
-    /onGoToFisKontrol[\s\S]{0,180}disabled=\{!outputGate\.allowed\}/
+    /onGoToFisKontrol[\s\S]{0,280}disabled=\{!outputGate\.allowed(?:\s*\|\|\s*isNavigatingToFisKontrol)?\}/
   );
   const workbench = fs.readFileSync(
     path.join(

@@ -20,6 +20,143 @@ function normalizeLucaTransferSource(source) {
   return "";
 }
 
+function textId(value) {
+  return value == null ? "" : String(value).trim();
+}
+
+/**
+ * Auth user id — yalnızca mevcut güvenli oturumdan.
+ * Yoksa boş döner; kimlik uydurulmaz.
+ */
+export async function resolveAuthUserIdForTransfer() {
+  if (typeof window === "undefined") return "";
+  try {
+    const { getSupabaseClient } = await import("@/src/lib/supabaseClient");
+    const supabase = getSupabaseClient();
+    if (!supabase?.auth?.getSession) return "";
+    const { data } = await supabase.auth.getSession();
+    return textId(data?.session?.user?.id);
+  } catch {
+    return "";
+  }
+}
+
+function datasetExpiresAtMs(dataset) {
+  const explicit = Date.parse(dataset?.expiresAt || "");
+  if (!Number.isNaN(explicit)) return explicit;
+  const created = createdAtMs(dataset);
+  if (!created) return 0;
+  return created + LUCA_TRANSFER_TTL_MS;
+}
+
+function isLucaTransferExpired(dataset, nowMs = Date.now()) {
+  const expires = datasetExpiresAtMs(dataset);
+  if (!expires) return true;
+  return nowMs > expires;
+}
+
+/**
+ * Fiş Kontrol hydrate öncesi bağlama — satırları UI’ya vermeden çağır.
+ * Hassas satır içeriğini loglamaz.
+ */
+export function assertLucaTransferHydrateBinding({
+  dataset = null,
+  activeCompanyId = "",
+  urlCompanyId = "",
+  urlRunId = "",
+  authUserId = "",
+  expectedSource = "bank",
+  expectedSourceId = "",
+  expectedContentFingerprint = "",
+  nowMs = Date.now(),
+} = {}) {
+  if (!dataset || typeof dataset !== "object" || Array.isArray(dataset)) {
+    return { ok: false, code: "MALFORMED", cleanup: true };
+  }
+  if (!Array.isArray(dataset.rows) || !dataset.rows.length) {
+    return { ok: false, code: "MALFORMED", cleanup: true };
+  }
+  if (Number(dataset.schemaVersion) !== LUCA_TRANSFER_SCHEMA_VERSION) {
+    return { ok: false, code: "VERSION_MISMATCH", cleanup: true };
+  }
+
+  const active = textId(activeCompanyId);
+  const urlCompany = textId(urlCompanyId);
+  const dataCompany = textId(dataset.companyId || dataset.firmaId);
+  if (!active || !dataCompany || active !== dataCompany) {
+    return { ok: false, code: "COMPANY_MISMATCH", cleanup: true };
+  }
+  // URL companyId varsa yetkili aktif firma ile birebir aynı olmalı (manipülasyon reddi)
+  if (urlCompany && urlCompany !== active) {
+    return { ok: false, code: "URL_COMPANY_MISMATCH", cleanup: true };
+  }
+
+  const src = normalizeLucaTransferSource(
+    expectedSource || dataset.source || dataset.kaynakTipi
+  );
+  const dataSrc = normalizeLucaTransferSource(
+    dataset.source || dataset.kaynakTipi
+  );
+  if (!src || !dataSrc || src !== dataSrc) {
+    return { ok: false, code: "SOURCE_MISMATCH", cleanup: true };
+  }
+
+  const dataRun = textId(dataset.runId || dataset.datasetId);
+  const urlRun = textId(urlRunId);
+  if (urlRun && dataRun && urlRun !== dataRun) {
+    return { ok: false, code: "RUN_ID_MISMATCH", cleanup: true };
+  }
+
+  if (isLucaTransferExpired(dataset, nowMs)) {
+    return { ok: false, code: "EXPIRED", cleanup: true };
+  }
+
+  const dataUser = textId(dataset.authUserId || dataset.userId);
+  const sessionUser = textId(authUserId);
+  // Dataset kullanıcı bağlamı varsa oturum zorunlu ve eşleşmeli
+  if (dataUser) {
+    if (!sessionUser || sessionUser !== dataUser) {
+      return { ok: false, code: "AUTH_USER_MISMATCH", cleanup: true };
+    }
+  } else if (!sessionUser) {
+    // Yeni handoff’lar authUserId yazar; oturumsuz hydrate reddedilir
+    return { ok: false, code: "AUTH_REQUIRED", cleanup: false };
+  }
+
+  const expectSourceId = textId(expectedSourceId);
+  const dataSourceId = textId(dataset.sourceId);
+  if (expectSourceId && dataSourceId && expectSourceId !== dataSourceId) {
+    return { ok: false, code: "SOURCE_ID_MISMATCH", cleanup: true };
+  }
+  // sourceId dataset’te varsa aynı firmaya ait satır firmaId’si ile çelişmemeli
+  if (dataSourceId && dataCompany) {
+    const foreignRow = (dataset.rows || []).some((row) => {
+      const rowFirma = textId(row?.firmaId || row?.companyId);
+      return rowFirma && rowFirma !== dataCompany;
+    });
+    if (foreignRow) {
+      return { ok: false, code: "ROW_TENANT_MISMATCH", cleanup: true };
+    }
+  }
+
+  const expectFp = textId(expectedContentFingerprint);
+  const dataFp = textId(dataset.contentFingerprint);
+  if (expectFp && dataFp && expectFp !== dataFp) {
+    return { ok: false, code: "FINGERPRINT_MISMATCH", cleanup: true };
+  }
+
+  return {
+    ok: true,
+    code: "BINDING_OK",
+    cleanup: false,
+    companyId: dataCompany,
+    runId: dataRun,
+    source: dataSrc,
+    authUserId: dataUser || sessionUser,
+    expiresAt: dataset.expiresAt || "",
+  };
+}
+
 export function buildLucaTransferStorageKey(source, companyId, runId) {
   const src = normalizeLucaTransferSource(source);
   const company = String(companyId || "").trim() || "unknown";
@@ -193,11 +330,26 @@ export async function saveLucaTransferDataset(payload = {}) {
     return { ok: false, error: "missing_source_or_company" };
   }
 
+  const authUserId =
+    textId(payload.authUserId || payload.userId) ||
+    (await resolveAuthUserIdForTransfer());
+  const contentFingerprint =
+    textId(payload.contentFingerprint) ||
+    buildLucaTransferContentFingerprint(payload.rows || []);
+  const createdAt = payload.createdAt || new Date().toISOString();
+  const createdMs = Date.parse(createdAt);
+  const expiresAt =
+    payload.expiresAt ||
+    new Date(
+      (Number.isNaN(createdMs) ? Date.now() : createdMs) + LUCA_TRANSFER_TTL_MS
+    ).toISOString();
+
   const dataset = {
     schemaVersion: LUCA_TRANSFER_SCHEMA_VERSION,
     datasetId: runId,
     runId,
     source,
+    sourceId: textId(payload.sourceId),
     companyId,
     firmaId: companyId,
     companyName: payload.companyName || "",
@@ -208,7 +360,10 @@ export async function saveLucaTransferDataset(payload = {}) {
       payload.kaynakAdi ||
       payload.bankName ||
       (source === "bank" ? "BANKA" : "ELEKTRAWEB"),
-    createdAt: payload.createdAt || new Date().toISOString(),
+    authUserId,
+    contentFingerprint,
+    createdAt,
+    expiresAt,
     movementCount: Number(payload.movementCount) || 0,
     lucaRowCount: Array.isArray(payload.rows) ? payload.rows.length : 0,
     format: payload.format || "standard-luca-row-v1",
@@ -221,8 +376,12 @@ export async function saveLucaTransferDataset(payload = {}) {
     runId,
     companyId,
     source,
+    sourceId: dataset.sourceId,
+    authUserId,
+    contentFingerprint,
     rowCount: dataset.lucaRowCount,
     createdAt: dataset.createdAt,
+    expiresAt: dataset.expiresAt,
     schemaVersion: LUCA_TRANSFER_SCHEMA_VERSION,
   };
 
@@ -260,6 +419,9 @@ export async function saveLucaTransferDataset(payload = {}) {
       runId,
       source,
       companyId,
+      authUserId,
+      contentFingerprint,
+      expiresAt,
       rowCount: dataset.lucaRowCount,
       storage: "indexeddb",
     };
@@ -273,10 +435,89 @@ export async function saveLucaTransferDataset(payload = {}) {
   }
 }
 
+export async function deleteLucaTransferDataset({
+  source = "",
+  companyId = "",
+  runId = "",
+} = {}) {
+  if (typeof window === "undefined") return { ok: false };
+  const src = normalizeLucaTransferSource(source);
+  const company = textId(companyId);
+  const run = textId(runId);
+  if (!src || !company || !run) return { ok: false, error: "missing_key" };
+
+  const key = buildLucaTransferStorageKey(src, company, run);
+  const pointerKey = buildLucaTransferPointerKey(src, company);
+  try {
+    const db = await openLucaTransferDb();
+    const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readwrite");
+    const store = tx.objectStore(LUCA_TRANSFER_IDB_STORE);
+    store.delete(key);
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("indexeddb_delete_failed"));
+      tx.onabort = () => reject(tx.error || new Error("indexeddb_delete_aborted"));
+    });
+    db.close();
+  } catch {
+    // ignore
+  }
+  try {
+    const raw = localStorage.getItem(pointerKey);
+    const ptrRun = resolveRunIdFromPointerValue(raw);
+    if (!ptrRun || ptrRun === run) localStorage.removeItem(pointerKey);
+  } catch {
+    // ignore
+  }
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+  return { ok: true };
+}
+
+/** Logout / kullanıcı değişimi — tüm transfer dataset + pointer temizliği (satır loglanmaz). */
+export async function clearAllLucaTransferDatasets() {
+  if (typeof window === "undefined") return { ok: false };
+  clearPendingLucaRows();
+  try {
+    const db = await openLucaTransferDb();
+    const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readwrite");
+    const store = tx.objectStore(LUCA_TRANSFER_IDB_STORE);
+    store.clear();
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("indexeddb_clear_failed"));
+      tx.onabort = () => reject(tx.error || new Error("indexeddb_clear_aborted"));
+    });
+    db.close();
+  } catch {
+    // ignore
+  }
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("annvero:luca:")) keys.push(k);
+    }
+    for (const k of keys) localStorage.removeItem(k);
+  } catch {
+    // ignore
+  }
+  return { ok: true };
+}
+
 export async function loadLucaTransferDataset({
   source,
   companyId,
   runId = "",
+  authUserId = "",
+  strictBinding = false,
+  urlCompanyId = "",
+  expectedSourceId = "",
+  expectedContentFingerprint = "",
+  purgeOnReject = false,
 } = {}) {
   if (typeof window === "undefined") return null;
 
@@ -294,6 +535,17 @@ export async function loadLucaTransferDataset({
 
   const key = buildLucaTransferStorageKey(src, company, resolvedRunId);
 
+  const finishReject = async (dataset) => {
+    if (purgeOnReject && dataset) {
+      await deleteLucaTransferDataset({
+        source: src,
+        companyId: company,
+        runId: resolvedRunId,
+      });
+    }
+    return null;
+  };
+
   try {
     const db = await openLucaTransferDb();
     const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readonly");
@@ -304,7 +556,34 @@ export async function loadLucaTransferDataset({
     if (record) {
       const { key: _key, savedAt: _savedAt, ...dataset } = record;
       const validated = validateLucaTransferDataset(dataset, src, company);
-      if (validated) return validated;
+      if (!validated) return finishReject(dataset);
+
+      if (isLucaTransferExpired(validated)) {
+        await deleteLucaTransferDataset({
+          source: src,
+          companyId: company,
+          runId: resolvedRunId,
+        });
+        return null;
+      }
+
+      if (strictBinding) {
+        const binding = assertLucaTransferHydrateBinding({
+          dataset: validated,
+          activeCompanyId: company,
+          urlCompanyId: urlCompanyId || company,
+          urlRunId: resolvedRunId,
+          authUserId,
+          expectedSource: src,
+          expectedSourceId,
+          expectedContentFingerprint,
+        });
+        if (!binding.ok) {
+          if (binding.cleanup) await finishReject(validated);
+          return null;
+        }
+      }
+      return validated;
     }
   } catch (error) {
     console.warn("[luca-transfer] idb load failed, trying localStorage", error);
@@ -318,6 +597,28 @@ export async function loadLucaTransferDataset({
     const parsed = JSON.parse(raw);
     const validated = validateLucaTransferDataset(parsed, src, company);
     if (!validated) return null;
+
+    if (isLucaTransferExpired(validated)) {
+      localStorage.removeItem(key);
+      return null;
+    }
+
+    if (strictBinding) {
+      const binding = assertLucaTransferHydrateBinding({
+        dataset: validated,
+        activeCompanyId: company,
+        urlCompanyId: urlCompanyId || company,
+        urlRunId: resolvedRunId,
+        authUserId,
+        expectedSource: src,
+        expectedSourceId,
+        expectedContentFingerprint,
+      });
+      if (!binding.ok) {
+        if (binding.cleanup) localStorage.removeItem(key);
+        return null;
+      }
+    }
 
     try {
       const db = await openLucaTransferDb();
@@ -362,6 +663,56 @@ export function loadPendingLucaRows() {
   } catch {
     return null;
   }
+}
+
+/** Firma değişiminde veya tenant uyuşmazlığında eski global pending’i sil. */
+export function clearPendingLucaRows() {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(PENDING_LUCA_ROWS_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Deterministik aktarım runId — aynı satır içeriği ikinci tıklamada aynı anahtara yazar
+ * (mükerrer fiş üretmez). Hassas açıklama içermez.
+ */
+export function buildLucaTransferContentFingerprint(rows = []) {
+  const parts = (Array.isArray(rows) ? rows : []).map((row) =>
+    [
+      String(row?.fisNo ?? "").trim(),
+      String(row?.hesapKodu ?? row?.accountCode ?? "").trim(),
+      String(row?.borc ?? "").trim(),
+      String(row?.alacak ?? "").trim(),
+      String(row?.sourceMovementId ?? "").trim(),
+      String(row?.fisTarihi ?? row?.date ?? "").trim(),
+    ].join("|")
+  );
+  const raw = parts.join(";");
+  let hash = 2166136261;
+  for (let i = 0; i < raw.length; i += 1) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+export function buildFisKontrolTransferHref({
+  companyId = "",
+  runId = "",
+  source = "bank",
+} = {}) {
+  const params = new URLSearchParams();
+  const company = String(companyId || "").trim();
+  const run = String(runId || "").trim();
+  const src = normalizeLucaTransferSource(source) || "bank";
+  if (company) params.set("companyId", company);
+  if (src) params.set("source", src);
+  if (run) params.set("runId", run);
+  const qs = params.toString();
+  return qs ? `/muhasebe/fis-kontrol?${qs}` : "/muhasebe/fis-kontrol";
 }
 
 export const RULE_TAB_TO_STORAGE = {

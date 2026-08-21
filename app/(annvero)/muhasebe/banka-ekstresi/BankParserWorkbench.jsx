@@ -30,6 +30,8 @@ import {
   normalizeCompanyRecord,
   saveAccountPlansToStorage,
   saveLucaTransferDataset,
+  buildLucaTransferContentFingerprint,
+  buildFisKontrolTransferHref,
   setCompanyAccountPlan,
 } from "@/src/utils/companyCenter";
 import { loadAccountingRulesFromStorage } from "@/src/utils/accountingRuleEngine";
@@ -2837,6 +2839,73 @@ export default function BankParserWorkbench() {
         selectedCompanyId
       )}&runId=${encodeURIComponent(runId)}`
     );
+  };
+
+  const fisKontrolNavLockRef = useRef(false);
+  const [fisKontrolNavigating, setFisKontrolNavigating] = useState(false);
+
+  const handleGoToFisKontrol = async (event) => {
+    if (event?.preventDefault) event.preventDefault();
+    if (fisKontrolNavLockRef.current || fisKontrolNavigating) return;
+
+    if (!movementsRef.current.length || !lucaRef.current.length || !lucaReady) {
+      alert("Önce ön izleme oluşturup Luca satırlarını hazırlayın.");
+      return;
+    }
+    if (!selectedCompanyId) {
+      alert("Fiş Kontrol’e geçmek için önce firma seçmelisin.");
+      return;
+    }
+
+    fisKontrolNavLockRef.current = true;
+    setFisKontrolNavigating(true);
+    try {
+      const contentFp = buildLucaTransferContentFingerprint(lucaRef.current);
+      const runId = `bank-fis-${selectedCompanyId.slice(0, 8)}-${contentFp}`;
+      const { resolveAuthUserIdForTransfer } = await import(
+        "@/src/utils/companyCenter"
+      );
+      const authUserId = await resolveAuthUserIdForTransfer();
+      if (!authUserId) {
+        alert(
+          "Fiş Kontrol aktarımı için oturum gerekli. Yeniden giriş yapıp tekrar deneyin."
+        );
+        return;
+      }
+      const payload = buildStandardLucaTransferPayload({
+        firmaId: selectedCompanyId,
+        companyName: getCompanyDisplayName(selectedCompany),
+        kaynakTipi: KAYNAK_TIPI.BANKA,
+        kaynakAdi: selectedBank,
+        source: "bank",
+        bankId: selectedBank,
+        bankName: selectedBank,
+        runId,
+        movementCount: movementsRef.current.length,
+        rows: lucaRef.current,
+      });
+      payload.authUserId = authUserId;
+      payload.contentFingerprint = contentFp;
+      payload.sourceId = String(canonicalSourceIdRef.current || "").trim();
+
+      const saved = await saveLucaTransferDataset(payload);
+      if (!saved.ok) {
+        alert(
+          "Fiş Kontrol aktarımı kaydedilemedi. Banka Parser sonucunuz korunur; lütfen tekrar deneyin."
+        );
+        return;
+      }
+
+      const href = buildFisKontrolTransferHref({
+        companyId: selectedCompanyId,
+        runId: saved.runId || runId,
+        source: "bank",
+      });
+      router.push(href);
+    } finally {
+      fisKontrolNavLockRef.current = false;
+      setFisKontrolNavigating(false);
+    }
   };
 
   const markAppliedDeclarationsPaid = (declarationSummary) => {
@@ -7583,13 +7652,8 @@ export default function BankParserWorkbench() {
               onReviewMissing={handleReviewMissingAccounts}
               onPartialExport={handlePartialExportConfirm}
               onGoToLucaProducer={handleGoToLucaProducer}
-              onGoToFisKontrol={() => {
-                if (pipelineResult?.fisKontrolHref) {
-                  router.push(pipelineResult.fisKontrolHref);
-                } else {
-                  router.push("/muhasebe/fis-kontrol");
-                }
-              }}
+              onGoToFisKontrol={handleGoToFisKontrol}
+              isNavigatingToFisKontrol={fisKontrolNavigating}
               onReanalyzeWithNewPlan={handleReanalyzeWithNewPlan}
               onApplyBalanceResolution={handleApplyBalanceResolution}
               isReanalyzing={isReanalyzing}

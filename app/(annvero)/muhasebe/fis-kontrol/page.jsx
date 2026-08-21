@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import * as XLSX from "xlsx";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import AnnveroEditableDataTable from "@/src/components/AnnveroEditableDataTable";
@@ -14,7 +15,13 @@ import { useCompanyList } from "../hooks/useCompanyList";
 import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/previewRowEdit";
 import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
 import {
+  assertLucaTransferHydrateBinding,
+  clearAllLucaTransferDatasets,
+  clearPendingLucaRows,
+  deleteLucaTransferDataset,
+  loadLucaTransferDataset,
   loadPendingLucaRows,
+  resolveAuthUserIdForTransfer,
   savePendingLucaRows,
 } from "@/src/utils/companyCenter";
 import {
@@ -90,11 +97,36 @@ function riskBadgeClass(riskSeviyesi) {
   return "text-emerald-300";
 }
 
+function normalizeIncomingPayload(pending) {
+  if (!pending?.rows?.length || !isStandardLucaPayload(pending)) return null;
+  const normalizedRows = ensureStandardLucaRowIds(
+    pending.rows.map((row) =>
+      finalizeStandardLucaRow({
+        ...row,
+        firmaId: row.firmaId || pending.firmaId || pending.companyId || "",
+        kaynakTipi: row.kaynakTipi || pending.kaynakTipi || "",
+        kaynakAdi:
+          row.kaynakAdi ||
+          pending.kaynakAdi ||
+          pending.bankName ||
+          pending.selectedBank ||
+          "",
+      })
+    )
+  );
+  return { pending, normalizedRows };
+}
+
 export default function FisKontrolPage() {
   const { getCompanyDisplayName, selectedCompanyId } = useCompanyList();
+  const searchParams = useSearchParams();
+  const urlCompanyId = String(searchParams.get("companyId") || "").trim();
+  const urlSource = String(searchParams.get("source") || "").trim().toLowerCase();
+  const urlRunId = String(searchParams.get("runId") || "").trim();
 
   const [payload, setPayload] = useState(null);
   const [rows, setRows] = useState([]);
+  const [hydrateEmptyMessage, setHydrateEmptyMessage] = useState("");
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [editingRowId, setEditingRowId] = useState(null);
@@ -104,6 +136,7 @@ export default function FisKontrolPage() {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const processedKeysRef = useRef(new Set());
   const analysisAbortRef = useRef(null);
+  const hydratedRunKeyRef = useRef("");
 
   const parserJob = useParserJob({
     logMeta: {
@@ -124,116 +157,268 @@ export default function FisKontrolPage() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const loadPendingData = useCallback(() => {
-    const pending = loadPendingLucaRows();
-
-    if (!pending?.rows?.length || !isStandardLucaPayload(pending)) {
+  const applyNormalizedPayload = useCallback((normalized) => {
+    if (!normalized) {
       setPayload(null);
       setRows([]);
       return;
     }
+    setPayload(normalized.pending);
+    setRows(normalized.normalizedRows);
+    setEditingRowId(null);
+    setDraftRow(null);
+    setHydrateEmptyMessage("");
+  }, []);
 
-    const pendingFirma = String(pending.firmaId || pending.companyId || "").trim();
-    if (
-      selectedCompanyId &&
-      pendingFirma &&
-      pendingFirma !== String(selectedCompanyId).trim()
-    ) {
-      // Firma değişiminde önceki firmanın fişleri ekranda kalmaz
-      setPayload(null);
-      setRows([]);
+  const loadPendingData = useCallback(async () => {
+    const activeCompanyId = String(selectedCompanyId || "").trim();
+    const urlCompany = String(urlCompanyId || "").trim();
+    const transferSource =
+      urlSource === "bank" || urlSource === "banka"
+        ? "bank"
+        : urlSource === "elektraweb" || urlSource === "elektra"
+          ? "elektraweb"
+          : "bank";
+
+    const authUserId = await resolveAuthUserIdForTransfer();
+
+    // URL company manipülasyonu: aktif firma yoksa veya URL ≠ aktif → render yok
+    if (urlCompany && activeCompanyId && urlCompany !== activeCompanyId) {
+      setHydrateEmptyMessage(
+        "Aktarım bağlantısı aktif firma ile eşleşmiyor. Doğru firmayı seçin."
+      );
+      applyNormalizedPayload(null);
+      setAnalysis({ rows: [], issues: [], summary: {} });
       processedKeysRef.current = new Set();
       return;
     }
 
-    const normalizedRows = ensureStandardLucaRowIds(
-      pending.rows.map((row) =>
-        finalizeStandardLucaRow({
-          ...row,
-          firmaId: row.firmaId || pending.firmaId || pending.companyId || "",
-          kaynakTipi: row.kaynakTipi || pending.kaynakTipi || "",
-          kaynakAdi:
-            row.kaynakAdi ||
-            pending.kaynakAdi ||
-            pending.selectedBank ||
-            "",
-        })
-      )
-    );
+    if (!activeCompanyId) {
+      setHydrateEmptyMessage("Fiş Kontrol için önce firma seçin.");
+      applyNormalizedPayload(null);
+      return;
+    }
 
-    setPayload(pending);
-    setRows(normalizedRows);
-    setEditingRowId(null);
-    setDraftRow(null);
-  }, [selectedCompanyId]);
+    if (!authUserId) {
+      setHydrateEmptyMessage(
+        "Oturum bulunamadı. Yeniden giriş yapıp Banka Parser’dan tekrar gönderin."
+      );
+      applyNormalizedPayload(null);
+      return;
+    }
+
+    if (urlSource || urlRunId || urlCompany) {
+      const transferred = await loadLucaTransferDataset({
+        source: transferSource,
+        companyId: activeCompanyId,
+        runId: urlRunId,
+        authUserId,
+        urlCompanyId: urlCompany || activeCompanyId,
+        strictBinding: true,
+        purgeOnReject: true,
+      });
+
+      if (!transferred) {
+        setHydrateEmptyMessage(
+          "Aktarım verisi geçersiz, süresi dolmuş veya yetkisiz. Banka Parser’dan yeniden gönderin."
+        );
+        applyNormalizedPayload(null);
+        setAnalysis({ rows: [], issues: [], summary: {} });
+        processedKeysRef.current = new Set();
+        hydratedRunKeyRef.current = "";
+        return;
+      }
+
+      const binding = assertLucaTransferHydrateBinding({
+        dataset: transferred,
+        activeCompanyId,
+        urlCompanyId: urlCompany || activeCompanyId,
+        urlRunId,
+        authUserId,
+        expectedSource: transferSource,
+      });
+      if (!binding.ok) {
+        if (binding.cleanup) {
+          await deleteLucaTransferDataset({
+            source: transferSource,
+            companyId: activeCompanyId,
+            runId: transferred.runId || transferred.datasetId || urlRunId,
+          });
+        }
+        setHydrateEmptyMessage(
+          "Aktarım doğrulanamadı. Hassas fiş satırları gösterilmedi."
+        );
+        applyNormalizedPayload(null);
+        setAnalysis({ rows: [], issues: [], summary: {} });
+        return;
+      }
+
+      const runKey = `${transferSource}:${binding.companyId}:${binding.runId}:${authUserId}`;
+      if (hydratedRunKeyRef.current === runKey) {
+        return;
+      }
+      hydratedRunKeyRef.current = runKey;
+      applyNormalizedPayload(normalizeIncomingPayload(transferred));
+      return;
+    }
+
+    // Legacy pending — yalnız aynı firma + oturum; aksi halde temizle
+    const pending = loadPendingLucaRows();
+    if (!pending?.rows?.length || !isStandardLucaPayload(pending)) {
+      applyNormalizedPayload(null);
+      setHydrateEmptyMessage(
+        "Aktarım verisi bulunamadı. Banka Parser’dan “Fiş Kontrol’e Git” ile gönderin."
+      );
+      return;
+    }
+
+    const pendingFirma = String(pending.firmaId || pending.companyId || "").trim();
+    if (!pendingFirma || pendingFirma !== activeCompanyId) {
+      clearPendingLucaRows();
+      setHydrateEmptyMessage(
+        "Önceki firmanın bekleyen fişleri temizlendi. Aktif firma için Banka Parser’dan yeniden gönderin."
+      );
+      applyNormalizedPayload(null);
+      processedKeysRef.current = new Set();
+      hydratedRunKeyRef.current = "";
+      return;
+    }
+
+    applyNormalizedPayload(normalizeIncomingPayload(pending));
+  }, [
+    selectedCompanyId,
+    urlCompanyId,
+    urlSource,
+    urlRunId,
+    applyNormalizedPayload,
+  ]);
+
+  // Logout / kullanıcı değişimi: satırları gizle, transfer cache temizle
+  useEffect(() => {
+    let cancelled = false;
+    let subscription = null;
+    (async () => {
+      try {
+        const { getSupabaseClient } = await import("@/src/lib/supabaseClient");
+        const supabase = getSupabaseClient();
+        if (!supabase?.auth?.onAuthStateChange) return;
+        const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+          if (cancelled) return;
+          if (event === "SIGNED_OUT" || !session?.user?.id) {
+            applyNormalizedPayload(null);
+            setAnalysis({ rows: [], issues: [], summary: {} });
+            hydratedRunKeyRef.current = "";
+            await clearAllLucaTransferDatasets();
+            setHydrateEmptyMessage(
+              "Oturum kapandı. Fiş aktarımı için yeniden giriş yapın."
+            );
+          }
+        });
+        subscription = data?.subscription;
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try {
+        subscription?.unsubscribe?.();
+      } catch {
+        // ignore
+      }
+    };
+  }, [applyNormalizedPayload]);
 
   useEffect(() => {
-    loadPendingData();
-    window.addEventListener("focus", loadPendingData);
-    return () => window.removeEventListener("focus", loadPendingData);
+    let cancelled = false;
+    (async () => {
+      if (!cancelled) await loadPendingData();
+    })();
+    const onFocus = () => {
+      loadPendingData();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+    };
   }, [loadPendingData]);
 
   useEffect(() => {
     processedKeysRef.current = new Set();
-    setPayload(null);
-    setRows([]);
-    setAnalysis({ rows: [], issues: [], summary: {} });
-    loadPendingData();
-  }, [selectedCompanyId]);
+    hydratedRunKeyRef.current = "";
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setPayload(null);
+      setRows([]);
+      setAnalysis({ rows: [], issues: [], summary: {} });
+      loadPendingData();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCompanyId, loadPendingData]);
 
   useEffect(() => {
-    if (!rows.length) {
-      setAnalysis({ rows: [], issues: [], summary: {} });
-      return;
-    }
-
-    const analyzeOpts = {
-      firmaId: selectedCompanyId || payload?.firmaId || payload?.companyId || "",
-      processedSourceKeys: processedKeysRef.current,
-    };
-
-    if (rows.length < FIS_KONTROL_WORKER_THRESHOLD) {
-      setAnalysis(analyzeStandardLucaRows(rows, analyzeOpts));
-      return;
-    }
-
     let cancelled = false;
-    setAnalysisLoading(true);
-    parserJob.begin({ stage: "Fiş kontrolü", detail: `${rows.length} satır analiz ediliyor` });
-
-    (async () => {
-      try {
-        let nextAnalysis;
-        try {
-          const workerResult = await runFisKontrolWorker({
-            workerUrl: PARSER_WORKER_URLS.fisKontrol,
-            payload: { rows, options: analyzeOpts },
-            onProgress: parserJob.onProgress,
-          });
-          nextAnalysis = workerResult.analysis;
-        } catch (workerError) {
-          nextAnalysis = analyzeStandardLucaRows(rows, analyzeOpts);
-        }
-        if (!cancelled) {
-          setAnalysis(nextAnalysis);
-          parserJob.markSuccess("Fiş kontrol analizi tamamlandı");
-        }
-      } catch (error) {
-        if (!cancelled) {
-          logParserJobError(error, {
-            module: "Fiş Kontrol Merkezi",
-            companyId: payload?.companyId || payload?.firmaId || "",
-            companyName: payload?.companyName || "",
-            errorType: SYSTEM_ERROR_TYPES.UNEXPECTED,
-            jobType: "fis-kontrol",
-          });
-          parserJob.markError(error);
-          setAnalysis(analyzeStandardLucaRows(rows, analyzeOpts));
-        }
-      } finally {
-        if (!cancelled) setAnalysisLoading(false);
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (!rows.length) {
+        setAnalysis({ rows: [], issues: [], summary: {} });
+        return;
       }
-    })();
+
+      const analyzeOpts = {
+        firmaId: selectedCompanyId || payload?.firmaId || payload?.companyId || "",
+        processedSourceKeys: processedKeysRef.current,
+      };
+
+      if (rows.length < FIS_KONTROL_WORKER_THRESHOLD) {
+        setAnalysis(analyzeStandardLucaRows(rows, analyzeOpts));
+        return;
+      }
+
+      setAnalysisLoading(true);
+      parserJob.begin({
+        stage: "Fiş kontrolü",
+        detail: `${rows.length} satır analiz ediliyor`,
+      });
+
+      (async () => {
+        try {
+          let nextAnalysis;
+          try {
+            const workerResult = await runFisKontrolWorker({
+              workerUrl: PARSER_WORKER_URLS.fisKontrol,
+              payload: { rows, options: analyzeOpts },
+              onProgress: parserJob.onProgress,
+            });
+            nextAnalysis = workerResult.analysis;
+          } catch {
+            nextAnalysis = analyzeStandardLucaRows(rows, analyzeOpts);
+          }
+          if (!cancelled) {
+            setAnalysis(nextAnalysis);
+            parserJob.markSuccess("Fiş kontrol analizi tamamlandı");
+          }
+        } catch (error) {
+          if (!cancelled) {
+            logParserJobError(error, {
+              module: "Fiş Kontrol Merkezi",
+              companyId: payload?.companyId || payload?.firmaId || "",
+              companyName: payload?.companyName || "",
+              errorType: SYSTEM_ERROR_TYPES.UNEXPECTED,
+              jobType: "fis-kontrol",
+            });
+            parserJob.markError(error);
+            setAnalysis(analyzeStandardLucaRows(rows, analyzeOpts));
+          }
+        } finally {
+          if (!cancelled) setAnalysisLoading(false);
+        }
+      })();
+    });
 
     return () => {
       cancelled = true;
@@ -642,9 +827,8 @@ export default function FisKontrolPage() {
         <div className="rounded-2xl border border-dashed border-gray-700 bg-gray-900/60 p-10 text-center">
           <h2 className="text-2xl font-semibold">Kontrol edilecek satır bulunamadı</h2>
           <p className="mx-auto mt-3 max-w-2xl text-gray-400">
-            Banka Parser, Elektraweb veya Luca Fiş Üretici ekranında ön izleme
-            oluşturduktan sonra veriyi aktarım kuyruğuna gönderin. Kontrol merkezi
-            yalnızca StandardLucaRows formatındaki bu kuyruk üzerinde çalışır.
+            {hydrateEmptyMessage ||
+              "Banka Parser, Elektraweb veya Luca Fiş Üretici ekranında ön izleme oluşturduktan sonra “Fiş Kontrol’e Git” ile aktarın. İkinci dosya seçimi veya yeniden analiz gerekmez."}
           </p>
         </div>
       ) : (
