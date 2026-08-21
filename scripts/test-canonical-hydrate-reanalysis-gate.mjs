@@ -541,12 +541,15 @@ await test("wiring: workbench gates hydrate arm; one-click shows archive title",
   assert.match(workbench, /buildLucaRowsFromMovementsAsync/);
   assert.match(workbench, /movementsHaveArchiveAccountingLegs/);
   assert.match(workbench, /evaluateArchiveLucaHandoffReadiness/);
+  assert.match(workbench, /LEGACY_ARCHIVE_NEEDS_PREPARE/);
+  assert.match(workbench, /handlePrepareLegacyArchiveAndGoToFisKontrol/);
   assert.match(workbench, /markHydrateReanalyzeConsumed/);
   assert.match(reuse, /lucaReadyHint/);
   assert.match(reuse, /materializedLucaRowCount/);
-  assert.match(reuse, /ACCOUNTING_LEGS_MISSING/);
+  assert.match(reuse, /legacyArchiveNeedsPrepare/);
   assert.match(oneClick, /result\.lucaRowCount/);
-  assert.match(oneClick, /archiveHandoffMessage/);
+  assert.match(oneClick, /onPrepareLegacyArchiveAndGoToFisKontrol/);
+  assert.match(oneClick, /Fişleri Hazırla ve Kontrol Et/);
   assert.doesNotMatch(workbench, /alert\("Önce ön izleme oluşturup Luca satırlarını hazırlayın\."\)/);
   assert.doesNotMatch(workbench, /84384297-270c-47cd-ac5a-d693ba80b84a/);
 });

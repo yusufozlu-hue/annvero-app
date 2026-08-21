@@ -32,6 +32,7 @@ import {
   saveLucaTransferDataset,
   buildLucaTransferContentFingerprint,
   buildFisKontrolTransferHref,
+  resolveAuthUserIdForTransfer,
   setCompanyAccountPlan,
 } from "@/src/utils/companyCenter";
 import { loadAccountingRulesFromStorage } from "@/src/utils/accountingRuleEngine";
@@ -146,6 +147,10 @@ import {
   movementsHaveArchiveAccountingLegs,
   shouldSkipHydratePipeline,
 } from "@/src/utils/canonicalHydrateReuse";
+import {
+  LEGACY_ARCHIVE_PREPARE_FAILED,
+  prepareLegacyArchiveVouchersForFisKontrol,
+} from "@/src/utils/archiveLegacyVoucherPrepare";
 import {
   BankPipelineErrorCard,
   BankPipelineProgressPanel,
@@ -1040,51 +1045,16 @@ export default function BankParserWorkbench() {
             let archiveHandoffMessage = "";
 
             if (!staleJobResult && hydrateDecision.bindArchivedResult) {
-              let hasLegs = movementsHaveArchiveAccountingLegs(
+              const hasLegs = movementsHaveArchiveAccountingLegs(
                 movementsRef.current
               );
-              // Eski snapshot’larda safeExtra bacak yoktu — PDF/network olmadan
-              // aynı accounting engine ile bellekte eşle (persist/job/Drive yok).
-              if (!hasLegs && movementsRef.current.length > 0) {
-                try {
-                  const {
-                    runAccountingAnalysisOnMovementsAsync,
-                  } = await ensureBankParserCore();
-                  if (cancelled) return;
-                  const bank =
-                    String(
-                      activeBankRef.current || selectedBank || ""
-                    ).trim() || undefined;
-                  const analyzed = await runAccountingAnalysisOnMovementsAsync({
-                    ...buildPipelineOptions(
-                      normalizedRef.current,
-                      undefined,
-                      bank
-                    ),
-                    movementRows: movementsRef.current,
-                    signal: null,
-                  });
-                  if (cancelled) return;
-                  const nextMovements = analyzed.movementRows || [];
-                  if (nextMovements.length) {
-                    movementsRef.current = nextMovements;
-                    applyMovementPreview(
-                      nextMovements,
-                      null,
-                      nextMovements.length
-                    );
-                    setAccountingAnalyzed(true);
-                    hasLegs =
-                      movementsHaveArchiveAccountingLegs(nextMovements);
-                  }
-                } catch {
-                  hasLegs = false;
-                }
-              }
+              // Sayfa açılışı: otomatik accounting YOK (plan/context race → preview FAIL).
+              // Modern snapshot bacak taşıyorsa yalnız ortak Luca generator.
+              // Legacy: kullanıcı “Fişleri Hazırla ve Kontrol Et” ile on-demand.
               if (!hasLegs) {
-                archiveHandoffCode = "ACCOUNTING_LEGS_MISSING";
+                archiveHandoffCode = "LEGACY_ARCHIVE_NEEDS_PREPARE";
                 archiveHandoffMessage =
-                  "Arşiv hareketlerinde muhasebe bacakları yok. Yeniden analiz gerekir; Fiş Kontrol satır uydurulmaz.";
+                  "Arşiv hareketleri hazır. Fiş Kontrol için muhasebe satırları tek tıkla hazırlanacak.";
                 lucaRef.current = [];
                 setLucaReady(false);
                 setTotalLucaCount(0);
@@ -1139,17 +1109,18 @@ export default function BankParserWorkbench() {
                       totalMovements: movementsRef.current.length,
                     }));
                   } else {
-                    archiveHandoffCode = readiness.code;
-                    archiveHandoffMessage = readiness.message;
+                    archiveHandoffCode = "LEGACY_ARCHIVE_NEEDS_PREPARE";
+                    archiveHandoffMessage =
+                      "Arşiv hareketleri hazır. Fiş Kontrol için muhasebe satırları tek tıkla hazırlanacak.";
                     lucaRef.current = [];
                     setLucaReady(false);
                     setTotalLucaCount(0);
                     setStandardLucaRows([]);
                   }
                 } catch {
-                  archiveHandoffCode = "LUCA_MATERIALIZE_FAILED";
+                  archiveHandoffCode = "LEGACY_ARCHIVE_NEEDS_PREPARE";
                   archiveHandoffMessage =
-                    "Arşiv Luca satırları hazırlanamadı. Yeniden analiz gerekir.";
+                    "Arşiv hareketleri hazır. Fiş Kontrol için muhasebe satırları tek tıkla hazırlanacak.";
                   lucaRef.current = [];
                   setLucaReady(false);
                   setTotalLucaCount(0);
@@ -3002,13 +2973,11 @@ export default function BankParserWorkbench() {
     try {
       const contentFp = buildLucaTransferContentFingerprint(lucaRef.current);
       const runId = `bank-fis-${selectedCompanyId.slice(0, 8)}-${contentFp}`;
-      const { resolveAuthUserIdForTransfer } = await import(
-        "@/src/utils/companyCenter"
-      );
       const authUserId = await resolveAuthUserIdForTransfer();
       if (!authUserId) {
-        alert(
-          "Fiş Kontrol aktarımı için oturum gerekli. Yeniden giriş yapıp tekrar deneyin."
+        showToast(
+          "Fiş Kontrol aktarımı için oturum gerekli. Yeniden giriş yapıp tekrar deneyin.",
+          "error"
         );
         return;
       }
@@ -3030,8 +2999,9 @@ export default function BankParserWorkbench() {
 
       const saved = await saveLucaTransferDataset(payload);
       if (!saved.ok) {
-        alert(
-          "Fiş Kontrol aktarımı kaydedilemedi. Banka Parser sonucunuz korunur; lütfen tekrar deneyin."
+        showToast(
+          "Fiş Kontrol aktarımı kaydedilemedi. Banka Parser sonucunuz korunur; lütfen tekrar deneyin.",
+          "error"
         );
         return;
       }
@@ -3042,6 +3012,189 @@ export default function BankParserWorkbench() {
         source: "bank",
       });
       router.push(href);
+    } finally {
+      fisKontrolNavLockRef.current = false;
+      setFisKontrolNavigating(false);
+    }
+  };
+
+  /**
+   * Legacy archive: sayfa açılışı accounting çalıştırmaz.
+   * Tek tık — güncel plan/firma context ile accounting+Luca+Fiş Kontrol+handoff.
+   * PDF / Drive / source / job / snapshot persist yok.
+   */
+  const handlePrepareLegacyArchiveAndGoToFisKontrol = async (event) => {
+    if (event?.preventDefault) event.preventDefault();
+    if (fisKontrolNavLockRef.current || fisKontrolNavigating) return;
+    if (!selectedCompanyId) {
+      showToast("Fiş hazırlamak için önce firma seçmelisin.", "error");
+      return;
+    }
+    if (!movementsRef.current.length) {
+      showToast("Arşiv hareketleri bulunamadı.", "error");
+      return;
+    }
+
+    fisKontrolNavLockRef.current = true;
+    setFisKontrolNavigating(true);
+    try {
+      // Click anında en güncel hesap planı — hydrate race’ini aş
+      try {
+        const { fetchFullActiveAccountPlan } = await import(
+          "@/src/utils/accountPlanApi"
+        );
+        const plan = await fetchFullActiveAccountPlan(selectedCompanyId);
+        if (Array.isArray(plan?.accounts) && plan.accounts.length) {
+          pipelinePlanOverrideRef.current = plan.accounts;
+        }
+      } catch {
+        // mevcut companyPlans / override ile devam
+      }
+
+      const {
+        runAccountingAnalysisOnMovementsAsync,
+        buildLucaRowsFromMovementsAsync,
+        LUCA_MOVEMENT_CHUNK_SIZE,
+      } = await ensureBankParserCore();
+      const bank =
+        String(activeBankRef.current || selectedBank || "").trim() || undefined;
+      const pipelineOptions = buildPipelineOptions(
+        normalizedRef.current,
+        undefined,
+        bank
+      );
+
+      const prepared = await prepareLegacyArchiveVouchersForFisKontrol({
+        movements: movementsRef.current,
+        pipelineOptions,
+        companyId: selectedCompanyId,
+        authUserId: await resolveAuthUserIdForTransfer(),
+        sourceId: String(canonicalSourceIdRef.current || "").trim(),
+        runAccounting: async (opts) => {
+          const analyzed = await runAccountingAnalysisOnMovementsAsync({
+            ...opts,
+            signal: null,
+          });
+          return analyzed;
+        },
+        buildLucaRows: async (movementRows, opts) =>
+          buildLucaRowsFromMovementsAsync(movementRows, opts, {
+            chunkSize: LUCA_MOVEMENT_CHUNK_SIZE,
+            signal: null,
+          }),
+        runFisKontrol: (lucaRows, options) =>
+          runVoucherControlStage(lucaRows, options),
+        saveDataset: async ({
+          companyId,
+          authUserId,
+          sourceId,
+          rows,
+          movementCount,
+        }) => {
+          const contentFp = buildLucaTransferContentFingerprint(rows);
+          const runId = `bank-fis-${String(companyId).slice(0, 8)}-${contentFp}`;
+          if (!authUserId) {
+            return { ok: false, error: "auth_required" };
+          }
+          const payload = buildStandardLucaTransferPayload({
+            firmaId: companyId,
+            companyName: getCompanyDisplayName(selectedCompany),
+            kaynakTipi: KAYNAK_TIPI.BANKA,
+            kaynakAdi: selectedBank,
+            source: "bank",
+            bankId: selectedBank,
+            bankName: selectedBank,
+            runId,
+            movementCount,
+            rows,
+          });
+          payload.authUserId = authUserId;
+          payload.contentFingerprint = contentFp;
+          payload.sourceId = sourceId;
+          return saveLucaTransferDataset(payload);
+        },
+        buildHref: ({ companyId, runId }) =>
+          buildFisKontrolTransferHref({
+            companyId,
+            runId,
+            source: "bank",
+          }),
+        navigate: (href) => {
+          router.push(href);
+        },
+      });
+
+      if (!prepared.ok) {
+        lucaRef.current = [];
+        setLucaReady(false);
+        setTotalLucaCount(0);
+        setStandardLucaRows([]);
+        setPipelineResult((prev) =>
+          prev
+            ? {
+                ...prev,
+                lucaRowCount: 0,
+                lucaReadyHint: false,
+                legacyArchiveNeedsPrepare: true,
+                archiveHandoffCode: "LEGACY_ARCHIVE_PREPARE_FAILED",
+                archiveHandoffMessage: LEGACY_ARCHIVE_PREPARE_FAILED,
+              }
+            : prev
+        );
+        showToast(prepared.message || LEGACY_ARCHIVE_PREPARE_FAILED, "error");
+        return;
+      }
+
+      movementsRef.current = prepared.movements || movementsRef.current;
+      lucaRef.current = prepared.lucaRows || [];
+      setAccountingAnalyzed(true);
+      setLucaReady(true);
+      setTotalLucaCount(lucaRef.current.length);
+      setStandardLucaRows(lucaRef.current.slice(0, PREVIEW_PAGE_SIZE));
+      syncLucaPage(0);
+      setPreviewSummary((prev) => ({
+        ...(prev || computeMovementPreviewSummary(movementsRef.current)),
+        lucaRows: lucaRef.current.length,
+        totalMovements: movementsRef.current.length,
+      }));
+      setCompletedSteps((prev) => ({
+        ...prev,
+        preview: true,
+        analysis: true,
+        luca: true,
+      }));
+      setPipelineResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              lucaRowCount: lucaRef.current.length,
+              lucaReadyHint: true,
+              legacyArchiveNeedsPrepare: false,
+              archiveHandoffCode: "",
+              archiveHandoffMessage: "",
+              movementCount: movementsRef.current.length,
+            }
+          : prev
+      );
+    } catch (error) {
+      lucaRef.current = [];
+      setLucaReady(false);
+      setPipelineResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              lucaRowCount: 0,
+              lucaReadyHint: false,
+              legacyArchiveNeedsPrepare: true,
+              archiveHandoffCode: "LEGACY_ARCHIVE_PREPARE_FAILED",
+              archiveHandoffMessage: LEGACY_ARCHIVE_PREPARE_FAILED,
+            }
+          : prev
+      );
+      showToast(
+        error?.message || LEGACY_ARCHIVE_PREPARE_FAILED,
+        "error"
+      );
     } finally {
       fisKontrolNavLockRef.current = false;
       setFisKontrolNavigating(false);
@@ -7793,6 +7946,9 @@ export default function BankParserWorkbench() {
               onPartialExport={handlePartialExportConfirm}
               onGoToLucaProducer={handleGoToLucaProducer}
               onGoToFisKontrol={handleGoToFisKontrol}
+              onPrepareLegacyArchiveAndGoToFisKontrol={
+                handlePrepareLegacyArchiveAndGoToFisKontrol
+              }
               isNavigatingToFisKontrol={fisKontrolNavigating}
               onReanalyzeWithNewPlan={handleReanalyzeWithNewPlan}
               onApplyBalanceResolution={handleApplyBalanceResolution}

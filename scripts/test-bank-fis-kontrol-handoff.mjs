@@ -590,9 +590,9 @@ await test("archive hydrate: meta-only lucaReady must not enable handoff", () =>
     "utf8"
   );
   assert.match(workbench, /materializedLucaRowCount/);
-  assert.match(workbench, /buildLucaRowsFromMovementsAsync/);
-  assert.match(workbench, /movementsHaveArchiveAccountingLegs/);
-  assert.match(workbench, /runAccountingAnalysisOnMovementsAsync/);
+  assert.match(workbench, /LEGACY_ARCHIVE_NEEDS_PREPARE/);
+  assert.match(workbench, /handlePrepareLegacyArchiveAndGoToFisKontrol/);
+  assert.match(workbench, /otomatik accounting YOK/);
   assert.doesNotMatch(
     workbench,
     /alert\("Önce ön izleme oluşturup Luca satırlarını hazırlayın\."\)/

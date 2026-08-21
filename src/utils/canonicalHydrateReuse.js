@@ -516,6 +516,15 @@ export function buildCanonicalHydrateBoundResult({
     lucaReadyHint,
     archiveHandoffCode: text(archiveHandoffCode),
     archiveHandoffMessage: text(archiveHandoffMessage),
+    legacyArchiveNeedsPrepare: Boolean(
+      !staleExistingJob &&
+        archivedHydrateResult &&
+        actualLuca === 0 &&
+        (text(archiveHandoffCode) === "LEGACY_ARCHIVE_NEEDS_PREPARE" ||
+          text(archiveHandoffCode) === "ACCOUNTING_LEGS_MISSING" ||
+          text(archiveHandoffCode) === "LEGACY_ARCHIVE_PREPARE_FAILED" ||
+          text(archiveHandoffCode) === "LUCA_MATERIALIZE_FAILED")
+    ),
     // UI BankPipelineResultCard balanceStats keys (preserve real 0).
     openingBalance: evidence ? evidence.openingBalance : null,
     statementClosingBalance: evidence ? evidence.closingBalance : null,

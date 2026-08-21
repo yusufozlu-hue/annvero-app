@@ -16,6 +16,9 @@ import {
   ARCHIVED_HYDRATE_RESULT_SUBTITLE,
   resolveCanonicalHydrateResultTitle,
 } from "@/src/utils/canonicalHydrateReuse";
+import {
+  resolveArchiveFisKontrolAction,
+} from "@/src/utils/archiveLegacyVoucherPrepare";
 
 function IconBase({ children, className = "h-5 w-5" }) {
   return (
@@ -282,6 +285,7 @@ export function BankPipelineResultCard({
   onPartialExport,
   onGoToLucaProducer,
   onGoToFisKontrol,
+  onPrepareLegacyArchiveAndGoToFisKontrol,
   onReanalyzeWithNewPlan,
   onApplyBalanceResolution,
   isReanalyzing = false,
@@ -316,6 +320,21 @@ export function BankPipelineResultCard({
     lucaReady:
       Boolean(lucaReady) && Math.max(0, Number(result.lucaRowCount) || 0) > 0,
   });
+  const archiveAction = resolveArchiveFisKontrolAction({
+    archivedHydrateResult: Boolean(result.archivedHydrateResult),
+    movementCount: result.movementCount,
+    lucaRowCount: result.lucaRowCount,
+    lucaReady,
+    hasAccountingLegs:
+      Boolean(lucaReady) && Math.max(0, Number(result.lucaRowCount) || 0) > 0,
+    archiveHandoffCode: result.archiveHandoffCode || "",
+    preparing: Boolean(isNavigatingToFisKontrol && result.legacyArchiveNeedsPrepare),
+  });
+  const showLegacyPrepare =
+    archiveAction.mode === "prepare_and_control" ||
+    archiveAction.mode === "preparing" ||
+    (Boolean(result.legacyArchiveNeedsPrepare) &&
+      typeof onPrepareLegacyArchiveAndGoToFisKontrol === "function");
   const compareRows = Array.isArray(result.revisionCompare?.rows)
     ? result.revisionCompare.rows
     : null;
@@ -637,7 +656,20 @@ export function BankPipelineResultCard({
             ElektraWeb İndir
           </button>
         ) : null}
-        {onGoToFisKontrol ? (
+        {showLegacyPrepare && onPrepareLegacyArchiveAndGoToFisKontrol ? (
+          <button
+            type="button"
+            onClick={onPrepareLegacyArchiveAndGoToFisKontrol}
+            disabled={Boolean(isNavigatingToFisKontrol)}
+            aria-busy={isNavigatingToFisKontrol ? "true" : "false"}
+            className={`rounded-xl bg-sky-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50 ${primaryBtnClass}`}
+            data-testid="bank-prepare-legacy-archive-fis-kontrol"
+          >
+            {isNavigatingToFisKontrol
+              ? "Fişler hazırlanıyor…"
+              : "Fişleri Hazırla ve Kontrol Et"}
+          </button>
+        ) : onGoToFisKontrol ? (
           <button
             type="button"
             onClick={onGoToFisKontrol}
@@ -696,7 +728,11 @@ export function BankPipelineResultCard({
             result.archiveHandoffCode || outputGate.code
           }
         >
-          {result.archiveHandoffMessage || outputGate.message}
+          {showLegacyPrepare
+            ? archiveAction.infoMessage ||
+              result.archiveHandoffMessage ||
+              outputGate.message
+            : result.archiveHandoffMessage || outputGate.message}
         </p>
       ) : null}
 
