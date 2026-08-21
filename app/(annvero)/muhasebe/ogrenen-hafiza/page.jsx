@@ -20,7 +20,7 @@ import {
 } from "@/src/utils/learningMemoryAdmin";
 import {
   createLearningMemoryRecordDetailed,
-  fetchAllLearningMemory,
+  fetchLearningMemoryForCompanyDetailed,
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
 import AnnveroDataTable from "@/src/components/AnnveroDataTable";
@@ -36,7 +36,7 @@ export default function OgrenenHafizaPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
-  const [companyFilter, setCompanyFilter] = useState("");
+  const companyFilter = String(selectedCompanyId || "").trim();
   const [kaynakTipiFilter, setKaynakTipiFilter] = useState("TUMU");
   const [accountCodeFilter, setAccountCodeFilter] = useState("");
   const [documentTypeFilter, setDocumentTypeFilter] = useState("TUMU");
@@ -48,9 +48,7 @@ export default function OgrenenHafizaPage() {
   const [createDraft, setCreateDraft] = useState(() => buildLearningMemoryCreateDraft());
   const [isSaving, setIsSaving] = useState(false);
   const [toast, setToast] = useState(null);
-
-  const companiesRef = useRef(companies);
-  companiesRef.current = companies;
+  const loadGenRef = useRef(0);
 
   const showToast = (message, type) => {
     setToast({ message, type });
@@ -65,7 +63,7 @@ export default function OgrenenHafizaPage() {
   const mapRecordsWithCompanyNames = useCallback(
     (rawRecords = []) => {
       const nameMap = new Map();
-      companiesRef.current.forEach((company) => {
+      companies.forEach((company) => {
         nameMap.set(company.id, getCompanyDisplayName(company));
       });
 
@@ -76,15 +74,30 @@ export default function OgrenenHafizaPage() {
         )
       );
     },
-    [getCompanyDisplayName]
+    [companies, getCompanyDisplayName]
   );
 
   const loadRecords = useCallback(async () => {
+    const companyId = companyFilter;
+    const gen = ++loadGenRef.current;
+
+    if (!companyId) {
+      setRecords([]);
+      setLoadError("");
+      setIsLoading(false);
+      return;
+    }
+
     setIsLoading(true);
     setLoadError("");
+    setRecords([]);
 
     try {
-      const { data, error } = await fetchAllLearningMemory({ includeInactive: true });
+      const { data, error } = await fetchLearningMemoryForCompanyDetailed(
+        companyId,
+        { includeInactive: true }
+      );
+      if (gen !== loadGenRef.current) return;
 
       if (error) {
         setLoadError(error);
@@ -92,23 +105,29 @@ export default function OgrenenHafizaPage() {
         return;
       }
 
-      setRecords(mapRecordsWithCompanyNames(data));
+      const scoped = (data || []).filter(
+        (row) => String(row.company_id || row.companyId || "") === companyId
+      );
+      setRecords(mapRecordsWithCompanyNames(scoped));
     } catch (error) {
+      if (gen !== loadGenRef.current) return;
       setLoadError(error?.message || "Kayıtlar yüklenemedi.");
       setRecords([]);
     } finally {
-      setIsLoading(false);
+      if (gen === loadGenRef.current) setIsLoading(false);
     }
-  }, [mapRecordsWithCompanyNames]);
+  }, [mapRecordsWithCompanyNames, companyFilter]);
 
   useEffect(() => {
-    loadRecords();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void loadRecords();
+    });
+    return () => {
+      cancelled = true;
+      loadGenRef.current += 1;
+    };
   }, [loadRecords]);
-
-  useEffect(() => {
-    if (!records.length || !companies.length) return;
-    setRecords(mapRecordsWithCompanyNames(records.map((row) => row.raw)));
-  }, [companies, mapRecordsWithCompanyNames]);
 
   const filteredRows = useMemo(
     () =>
@@ -370,14 +389,20 @@ export default function OgrenenHafizaPage() {
 
       <h1 className="mb-2 text-4xl font-bold">Öğrenen Hafıza</h1>
       <p className="mb-8 text-gray-400">
-        Ön izlemede kaydedilen firma bazlı düzeltmeleri yönetin. Pasif kayıtlar parser
-        sonrası uygulanmaz; silinen kayıtlar yönetim geçmişinde kalır.
+        Firma bazlı onaylanmış muhasebe kararlarını yönetin. Yetkili kayıtlar
+        sunucuda tutulur; pasif kayıtlar sonraki analizde uygulanmaz.
       </p>
 
       <AccountMemoryV2Panel
-        companies={companies}
         selectedCompanyId={selectedCompanyId}
         getCompanyDisplayName={getCompanyDisplayName}
+        companyLabel={
+          companies.find((c) => c.id === selectedCompanyId)
+            ? getCompanyDisplayName(
+                companies.find((c) => c.id === selectedCompanyId)
+              )
+            : selectedCompanyId || ""
+        }
       />
 
       <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
@@ -404,14 +429,21 @@ export default function OgrenenHafizaPage() {
         </label>
 
         <label className="block">
-          <span className="mb-1 block text-sm text-gray-400">Firma Filtresi</span>
+          <span className="mb-1 block text-sm text-gray-400">Firma</span>
           <select
             value={companyFilter}
-            onChange={(event) => setCompanyFilter(event.target.value)}
             className={inputClassName}
+            disabled
           >
-            <option value="">Tüm Firmalar</option>
-            <CompanySelectOptions companies={companies} />
+            <option value={companyFilter}>
+              {companyFilter
+                ? getCompanyDisplayName(
+                    companies.find((c) => c.id === companyFilter) || {
+                      id: companyFilter,
+                    }
+                  )
+                : "Aktif firma seçin"}
+            </option>
           </select>
         </label>
 
@@ -492,7 +524,6 @@ export default function OgrenenHafizaPage() {
             type="button"
             onClick={() => {
               setSearch("");
-              setCompanyFilter("");
               setAccountCodeFilter("");
               setDocumentTypeFilter("TUMU");
               setBankFilter("TUMU");

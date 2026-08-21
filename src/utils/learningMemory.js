@@ -1,5 +1,12 @@
 export async function fetchLearningMemoryForCompany(companyId, options = {}) {
-  if (!companyId) return [];
+  const result = await fetchLearningMemoryForCompanyDetailed(companyId, options);
+  return result.data || [];
+}
+
+export async function fetchLearningMemoryForCompanyDetailed(companyId, options = {}) {
+  if (!companyId) {
+    return { data: [], error: "Firma seçilmedi." };
+  }
 
   const params = new URLSearchParams({
     companyId,
@@ -10,18 +17,25 @@ export async function fetchLearningMemoryForCompany(companyId, options = {}) {
   }
 
   try {
-    const response = await fetch(`/api/learning-memory?${params.toString()}`);
+    const response = await fetch(`/api/learning-memory?${params.toString()}`, {
+      cache: "no-store",
+      credentials: "include",
+    });
 
     if (!response.ok) {
-      console.error("learning_memory fetch failed", await response.text());
-      return [];
+      const error = await readLearningMemoryError(response);
+      console.error("learning_memory fetch failed", error);
+      return { data: [], error };
     }
 
     const payload = await response.json();
-    return payload.data || [];
+    return { data: normalizeLearningMemoryList(payload), error: null };
   } catch (error) {
     console.error("learning_memory fetch failed", error);
-    return [];
+    return {
+      data: [],
+      error: error?.message || "Kayıtlar yüklenemedi.",
+    };
   }
 }
 
@@ -104,24 +118,35 @@ export async function createLearningMemoryRecordDetailed(record) {
 }
 
 export async function updateLearningMemoryRecord(id, fields) {
-  if (!id) return false;
+  const result = await updateLearningMemoryRecordDetailed(id, fields);
+  return Boolean(result.ok);
+}
+
+export async function updateLearningMemoryRecordDetailed(id, fields) {
+  if (!id) return { ok: false, error: "Kayıt ID gerekli." };
 
   try {
     const response = await fetch("/api/learning-memory", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ record: { id, ...fields } }),
     });
 
     if (!response.ok) {
-      console.error("learning_memory record update failed", await response.text());
-      return false;
+      const error = await readLearningMemoryError(response);
+      console.error("learning_memory record update failed", error);
+      return { ok: false, error };
     }
 
-    return true;
+    const payload = await response.json().catch(() => ({}));
+    return { ok: true, data: payload?.data || null, error: null };
   } catch (error) {
     console.error("learning_memory record update failed", error);
-    return false;
+    return {
+      ok: false,
+      error: error?.message || "Kayıt güncellenemedi.",
+    };
   }
 }
 

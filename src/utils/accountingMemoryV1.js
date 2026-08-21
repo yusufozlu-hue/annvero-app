@@ -980,3 +980,87 @@ export function consumeFirmAccountingMemory({
     matchedSignal: "exact_user_confirmed_signature",
   };
 }
+
+/**
+ * UI güvenli satır — PII / fingerprint / createdBy UUID yok.
+ */
+export function mapServerAccountingRowToUiSafe(row = {}) {
+  if (!isAccountingMemoryServerRow(row)) return null;
+  const companyId = String(row.company_id || row.companyId || "").trim();
+  const meta = parseUserCorrectionMeta(row);
+  const parsed = parseAccountingMemorySignature(
+    row.keyword || row.clean_description || ""
+  );
+  const statusRaw = String(row.status || meta.status || "active").toLowerCase();
+  let status = "active";
+  if (
+    row.is_active === false ||
+    row.deleted_at ||
+    statusRaw === "passive" ||
+    statusRaw === "disabled" ||
+    statusRaw === "deleted"
+  ) {
+    status = "disabled";
+  } else if (statusRaw === "superseded") {
+    status = "superseded";
+  }
+
+  return {
+    id: String(row.id || "").trim(),
+    companyId,
+    decisionSource: "Kullanıcı onaylı",
+    bankId: String(meta.bankId || parsed?.bankId || row.bank_name || "").trim(),
+    direction: String(meta.direction || parsed?.direction || "").trim(),
+    transactionType: String(
+      meta.transactionType || parsed?.transactionType || row.transaction_type || ""
+    ).trim(),
+    currency: String(meta.currency || parsed?.currency || "TRY")
+      .trim()
+      .toUpperCase()
+      .replace("TL", "TRY"),
+    accountCode: String(row.account_code || row.accountCode || "").trim(),
+    confidence: Number(meta.confidence) || 95,
+    status,
+    createdAt: row.learned_at || row.created_at || null,
+    lastUsedAt: row.last_used_at || row.last_matched_at || null,
+    usageCount: Number(row.usage_count || row.match_count || 0),
+    successCount: Number(row.usage_count || row.match_count || 0),
+    correctionCount: Number(meta.correctionCount || 0),
+  };
+}
+
+export function filterFirmAccountingMemoryUiRows(
+  rows = [],
+  { status = "TUMU", bankId = "", search = "" } = {}
+) {
+  const bank = String(bankId || "").trim().toUpperCase();
+  const q = String(search || "").trim().toUpperCase();
+  return (rows || []).filter((row) => {
+    if (!row?.id) return false;
+    if (status !== "TUMU" && row.status !== status) return false;
+    if (bank && String(row.bankId || "").toUpperCase() !== bank) return false;
+    if (q) {
+      const hay = `${row.accountCode} ${row.bankId} ${row.transactionType} ${row.direction}`
+        .toUpperCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+export function buildFirmAccountingMemoryStats(rows = []) {
+  const list = Array.isArray(rows) ? rows : [];
+  return {
+    total: list.length,
+    active: list.filter((r) => r.status === "active").length,
+    disabled: list.filter((r) => r.status === "disabled").length,
+    superseded: list.filter((r) => r.status === "superseded").length,
+  };
+}
+
+/** Preview FAIL metinleri — UI’da bulunmamalı */
+export const FORBIDDEN_LOCAL_MEMORY_UI_PHRASES = Object.freeze([
+  "Tarayıcı deposunda tutulur",
+  "Firma Karar Hafızası V2",
+  "Bu filtrede V2 kayıt yok",
+]);
