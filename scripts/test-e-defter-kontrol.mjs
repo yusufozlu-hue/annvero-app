@@ -38,6 +38,9 @@ const {
   E_DEFTER_SONUC_SEVIYE,
   E_DEFTER_REPORT_DISCLAIMER,
   E_DEFTER_FINDING_CODE,
+  E_DEFTER_ISSUE_CODE,
+  E_DEFTER_ISSUE_SEVERITY,
+  E_DEFTER_KONTROL_GRUP,
 } = await import("@/src/config/eDefterKontrolDefaults.js");
 
 const {
@@ -48,6 +51,11 @@ const {
   buildEDefterIntegrationHooks,
   canApproveEDefterExport,
   resolveOverallSonuc,
+  resolveEdefterUygun,
+  analyzeEDefterRows,
+  createEDefterIssue,
+  classifyEDefterIssues,
+  normalizeEDefterIssue,
 } = await import("@/src/utils/eDefterKontrolEngine.js");
 
 const {
@@ -676,6 +684,272 @@ function row(partial) {
     resolveOverallSonuc([{ sonucSeviye: E_DEFTER_SONUC_SEVIYE.BILGI, riskScore: 20 }]) ===
       E_DEFTER_SONUC_SEVIYE.BILGI,
     "overall bilgi"
+  );
+}
+
+// --- P0 fail-closed: yanlış HATASIZ/UYGUN regression ---
+{
+  const plan = new Set(["100.01", "320.01"]);
+
+  // Legacy FAIL shape (keyword miss) must NOT classify as HATASIZ anymore.
+  const legacyUnknown = classifyEDefterIssues(["Sentetik tanımsız motor bulgusu."]);
+  assert(legacyUnknown.issueDetails.length === 1, "P0 unknown issue exists");
+  assert(
+    legacyUnknown.primaryGroup !== E_DEFTER_KONTROL_GRUP.HATASIZ,
+    "P0 unknown never HATASIZ"
+  );
+  assert(legacyUnknown.riskScore > 0, "P0 unknown risk not wiped");
+  assert(
+    legacyUnknown.issueDetails[0].group === E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+    "P0 unknown → INCELEME_GEREKLI"
+  );
+
+  const accountMiss = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({
+        id: "p0-a1",
+        fisNo: "P0-1",
+        hesapKodu: "999.99",
+        borc: 50,
+        alacak: 0,
+        belgeNo: "P0A1",
+      }),
+      row({
+        id: "p0-a2",
+        fisNo: "P0-1",
+        hesapKodu: "100.01",
+        borc: 0,
+        alacak: 50,
+        belgeNo: "P0A2",
+      }),
+    ],
+    accountPlanCodes: plan,
+    companyId: "c-anon",
+    period: "2026/05",
+  });
+  const badAccount = accountMiss.rows.find((r) => r.hesapKodu === "999.99");
+  assert(badAccount?.issues?.some((m) => String(m).includes("hesap planında")), "P0 account issue msg");
+  assert(badAccount?.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ, "P0 account not HATASIZ");
+  assert((badAccount?.riskScore || 0) > 0, "P0 account risk kept");
+  assert(
+    badAccount?.issueDetails?.some((d) => d.code === E_DEFTER_ISSUE_CODE.ACCOUNT_NOT_IN_PLAN),
+    "P0 ACCOUNT_NOT_IN_PLAN code"
+  );
+  assert(accountMiss.summary.edefterUygun === false, "P0 account → edefterUygun false");
+  assert(accountMiss.overallSonuc !== E_DEFTER_SONUC_SEVIYE.UYGUN, "P0 account not UYGUN");
+
+  const periodMiss = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({
+        id: "p0-d1",
+        tarih: "15.04.2026",
+        fisNo: "P0-2",
+        borc: 10,
+        alacak: 0,
+        belgeNo: "P0D1",
+      }),
+      row({
+        id: "p0-d2",
+        tarih: "15.04.2026",
+        fisNo: "P0-2",
+        hesapKodu: "320.01",
+        borc: 0,
+        alacak: 10,
+        belgeNo: "P0D2",
+      }),
+    ],
+    accountPlanCodes: plan,
+    companyId: "c-anon",
+    period: "2026/05",
+  });
+  assert(
+    periodMiss.rows.some((r) => (r.issues || []).join(" ").includes("Dönem dışı")),
+    "P0 period issue msg"
+  );
+  assert(
+    periodMiss.rows.every(
+      (r) => !(Array.isArray(r.issues) && r.issues.length) || r.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ
+    ),
+    "P0 period rows with issues not HATASIZ"
+  );
+  assert(periodMiss.summary.edefterUygun === false, "P0 period → edefterUygun false");
+
+  const negative = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({
+        id: "p0-n1",
+        fisNo: "P0-3",
+        borc: -25,
+        alacak: 0,
+        belgeNo: "P0N1",
+      }),
+      row({
+        id: "p0-n2",
+        fisNo: "P0-3",
+        hesapKodu: "320.01",
+        borc: 0,
+        alacak: -25,
+        belgeNo: "P0N2",
+      }),
+    ],
+    accountPlanCodes: plan,
+    companyId: "c-anon",
+    period: "2026/05",
+  });
+  assert(
+    negative.rows.some((r) => (r.issues || []).join(" ").includes("Negatif tutar")),
+    "P0 negative issue msg"
+  );
+  assert(negative.summary.edefterUygun === false, "P0 negative → edefterUygun false");
+  assert(
+    negative.rows.some((r) =>
+      r.issueDetails?.some((d) => d.code === E_DEFTER_ISSUE_CODE.NEGATIVE_AMOUNT)
+    ),
+    "P0 NEGATIVE_AMOUNT code"
+  );
+
+  const unbalanced = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({ id: "p0-u1", fisNo: "P0-4", borc: 100, alacak: 0, belgeNo: "P0U1" }),
+      row({
+        id: "p0-u2",
+        fisNo: "P0-4",
+        hesapKodu: "320.01",
+        borc: 0,
+        alacak: 40,
+        belgeNo: "P0U2",
+      }),
+    ],
+    accountPlanCodes: plan,
+    companyId: "c-anon",
+    period: "2026/05",
+  });
+  assert(
+    unbalanced.overallSonuc === E_DEFTER_SONUC_SEVIYE.KRITIK || unbalanced.summary.kritikHata > 0,
+    "P0 unbalanced KRITIK"
+  );
+  assert(unbalanced.summary.edefterUygun === false, "P0 unbalanced not uygun");
+
+  const missingDesc = analyzeEDefterRows(
+    [
+      row({
+        id: "p0-m1",
+        fisNo: "P0-5",
+        aciklama: "",
+        borc: 12,
+        alacak: 0,
+        belgeNo: "P0M1",
+      }),
+      row({
+        id: "p0-m2",
+        fisNo: "P0-5",
+        hesapKodu: "320.01",
+        borc: 0,
+        alacak: 12,
+        belgeNo: "P0M2",
+      }),
+    ],
+    { accountPlanCodes: plan, expectedPeriod: "2026-05" }
+  );
+  const emptyDesc = missingDesc.find((r) => r.id === "p0-m1");
+  assert(emptyDesc?.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ, "P0 missing desc not HATASIZ");
+  assert(
+    emptyDesc?.issueDetails?.some((d) => d.code === E_DEFTER_ISSUE_CODE.MISSING_DESCRIPTION),
+    "P0 MISSING_DESCRIPTION"
+  );
+
+  const clean = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({
+        id: "p0-c1",
+        fisNo: "P0-6",
+        hesapKodu: "100.01",
+        borc: 75,
+        alacak: 0,
+        belgeNo: "P0C1",
+        aciklama: "Temiz borç",
+      }),
+      row({
+        id: "p0-c2",
+        fisNo: "P0-6",
+        hesapKodu: "320.01",
+        borc: 0,
+        alacak: 75,
+        belgeNo: "P0C2",
+        aciklama: "Temiz alacak",
+      }),
+    ],
+    accountPlanCodes: plan,
+    companyId: "c-anon",
+    period: "2026/05",
+  });
+  const cleanJournal = clean.rows.filter((r) => r.fisNo === "P0-6");
+  assert(cleanJournal.length === 2, "P0 clean two journal lines");
+  assert(
+    cleanJournal.every(
+      (r) =>
+        (!r.issues || r.issues.length === 0) &&
+        (!r.issueDetails || r.issueDetails.length === 0) &&
+        r.grup === E_DEFTER_KONTROL_GRUP.HATASIZ
+    ),
+    "P0 clean journal lines are HATASIZ"
+  );
+  // Dönem-sonu uyarıları (kapanış/amortisman) sentetik mini fişte overall’ı yükseltebilir;
+  // asıl sözleşme: temiz yevmiye satırları HATASIZ kalır ve issue üretmez.
+
+  const multi = classifyEDefterIssues([
+    createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.MISSING_DESCRIPTION,
+      message: "Açıklama boş.",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      group: E_DEFTER_KONTROL_GRUP.EKSIK_BILGI,
+      riskScore: 10,
+    }),
+    createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.NEGATIVE_AMOUNT,
+      message: "Negatif tutar satırı.",
+      severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+      group: E_DEFTER_KONTROL_GRUP.KRITIK,
+      blocking: true,
+      riskScore: 40,
+    }),
+  ]);
+  assert(multi.primaryGroup === E_DEFTER_KONTROL_GRUP.KRITIK, "P0 multi highest group");
+  assert(multi.maxSeverity === E_DEFTER_ISSUE_SEVERITY.KRITIK, "P0 multi highest severity");
+  assert(multi.riskScore >= 40, "P0 multi risk not wiped");
+
+  const infoOnly = classifyEDefterIssues([
+    createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message: "Şüpheli yuvarlama kaydı.",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 10,
+    }),
+  ]);
+  assert(infoOnly.primaryGroup !== E_DEFTER_KONTROL_GRUP.HATASIZ, "P0 info not HATASIZ");
+  assert(infoOnly.hasNonInfo === false, "P0 info hasNonInfo false");
+  assert(
+    resolveEdefterUygun(
+      [
+        {
+          grup: infoOnly.primaryGroup,
+          issueDetails: infoOnly.issueDetails,
+          issues: infoOnly.issues,
+          riskScore: infoOnly.riskScore,
+        },
+      ],
+      E_DEFTER_SONUC_SEVIYE.BILGI
+    ) === true,
+    "P0 info-only may remain uygun"
+  );
+
+  // Determinism
+  const d1 = classifyEDefterIssues(["Hesap kodu hesap planında yok."]);
+  const d2 = classifyEDefterIssues(["Hesap kodu hesap planında yok."]);
+  assert(
+    JSON.stringify(d1.issueDetails) === JSON.stringify(d2.issueDetails),
+    "P0 deterministic classify"
   );
 }
 
