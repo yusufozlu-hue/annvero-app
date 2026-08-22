@@ -76,11 +76,27 @@ function formatMoney(value) {
 
 function grupClass(grup) {
   if (grup === E_DEFTER_KONTROL_GRUP.HATASIZ) return "bg-emerald-900/50 text-emerald-200";
-  if ([E_DEFTER_KONTROL_GRUP.KRITIK, E_DEFTER_KONTROL_GRUP.TEKNIK, E_DEFTER_KONTROL_GRUP.CAPRAZ].includes(grup)) {
+  if (
+    [
+      E_DEFTER_KONTROL_GRUP.KRITIK,
+      E_DEFTER_KONTROL_GRUP.TEKNIK,
+      E_DEFTER_KONTROL_GRUP.CAPRAZ,
+    ].includes(grup)
+  ) {
     return "bg-red-900/50 text-red-200";
+  }
+  if (grup === E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI) {
+    return "bg-sky-900/50 text-sky-200";
   }
   if (grup === E_DEFTER_KONTROL_GRUP.VERGISEL) return "bg-purple-900/50 text-purple-200";
   return "bg-amber-900/50 text-amber-200";
+}
+
+function rowHasFindings(row) {
+  if (!row || row.disaridaBirak) return false;
+  if (Array.isArray(row.issueDetails) && row.issueDetails.length > 0) return true;
+  if (Array.isArray(row.issues) && row.issues.length > 0) return true;
+  return Boolean(row.grup && row.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ);
 }
 
 function companyTaxIdOf(company) {
@@ -300,9 +316,39 @@ export default function EDefterKontrolPage() {
         riskLevel: riskLevelFilter,
         hataTuru: hataTuruFilter,
         cozumDurumu: cozumFilter,
-      }).filter((row) => row.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ),
+      }).filter((row) => {
+        // Only truly clean rows may be hidden. Issues never hide behind HATASIZ.
+        if (rowHasFindings(row)) return true;
+        return row.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ;
+      }),
     [rows, activeGroup, search, riskLevelFilter, hataTuruFilter, cozumFilter]
   );
+
+  const findingStats = useMemo(() => {
+    let errorCount = 0;
+    let warningCount = 0;
+    let infoCount = 0;
+    for (const row of findingRows) {
+      const details = Array.isArray(row.issueDetails) ? row.issueDetails : [];
+      if (details.length) {
+        for (const issue of details) {
+          if (issue.severity === "KRITIK" || issue.blocking) errorCount += 1;
+          else if (issue.severity === "BILGI") infoCount += 1;
+          else warningCount += 1;
+        }
+      } else if (row.grup === E_DEFTER_KONTROL_GRUP.KRITIK) {
+        errorCount += 1;
+      } else {
+        warningCount += 1;
+      }
+    }
+    return {
+      total: findingRows.length,
+      errorCount,
+      warningCount,
+      infoCount,
+    };
+  }, [findingRows]);
 
   const displayedRows = useMemo(() => {
     if (showAllDetails) return findingRows;
@@ -762,6 +808,14 @@ export default function EDefterKontrolPage() {
         </div>
       ) : null}
 
+      {summary && summary.edefterUygun === false ? (
+        <p className="mb-4 rounded-xl border border-amber-500/40 bg-amber-950/40 px-4 py-3 text-sm text-amber-100">
+          Engelleyici veya çözülmemiş bulgu varken “E-Defter uygun” onayı verilmez. Görünen
+          bulgular: {findingStats.total} (hata {findingStats.errorCount}, uyarı{" "}
+          {findingStats.warningCount}, bilgi {findingStats.infoCount}).
+        </p>
+      ) : null}
+
       {summary?.overallSonuc === E_DEFTER_SONUC_SEVIYE.KRITIK ? (
         <p className="mb-4 rounded-xl border border-red-500/40 bg-red-950/40 px-4 py-3 text-sm text-red-100">
           Kritik hata varken “E-Defter uygun” onayı verilemez.
@@ -1134,7 +1188,23 @@ export default function EDefterKontrolPage() {
                       {row.fisNo ? ` · Fiş ${row.fisNo}` : ""}
                       {row.hesapKodu ? ` · ${row.hesapKodu}` : ""}
                     </p>
-                    <p className="mt-1 text-sm text-gray-300">{row.aciklama || (row.issues || []).join(" ")}</p>
+                    <p className="mt-1 text-sm text-gray-300">
+                      {row.aciklama || (row.issues || []).join(" ")}
+                    </p>
+                    {Array.isArray(row.issueDetails) && row.issueDetails.length > 0 ? (
+                      <ul className="mt-2 space-y-1 text-xs text-amber-100/90">
+                        {row.issueDetails.map((issue) => (
+                          <li key={`${row.id}-${issue.code}-${issue.message}`}>
+                            <span className="font-semibold">{issue.code}</span>
+                            {" · "}
+                            {issue.message}
+                            {issue.group === E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI
+                              ? " · İnceleme gerekli"
+                              : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
                     <p className="mt-2 text-sm text-indigo-200">{row.onerilenKontrol}</p>
                     {row.fisNo ? (
                       <a

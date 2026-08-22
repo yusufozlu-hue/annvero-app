@@ -5,6 +5,8 @@ import {
   E_DEFTER_FINDING_STATUS,
   E_DEFTER_FINGERPRINT_STORAGE_KEY,
   E_DEFTER_HATA_TURU,
+  E_DEFTER_ISSUE_CODE,
+  E_DEFTER_ISSUE_SEVERITY,
   E_DEFTER_KAYNAK,
   E_DEFTER_KONTROL_DURUM,
   E_DEFTER_KONTROL_GRUP,
@@ -474,57 +476,394 @@ function buildGlobalContext(rows = []) {
   };
 }
 
-function buildIssues(row, allRows = [], context = {}) {
-  const issues = [];
+const ISSUE_SEVERITY_RANK = {
+  [E_DEFTER_ISSUE_SEVERITY.BILGI]: 1,
+  [E_DEFTER_ISSUE_SEVERITY.UYARI]: 2,
+  [E_DEFTER_ISSUE_SEVERITY.KRITIK]: 3,
+};
+
+const GROUP_PRIORITY = {
+  [E_DEFTER_KONTROL_GRUP.KRITIK]: 100,
+  [E_DEFTER_KONTROL_GRUP.CAPRAZ]: 95,
+  [E_DEFTER_KONTROL_GRUP.MUKERRER]: 80,
+  [E_DEFTER_KONTROL_GRUP.TERS_BAKIYE]: 70,
+  [E_DEFTER_KONTROL_GRUP.EKSIK_BILGI]: 60,
+  [E_DEFTER_KONTROL_GRUP.DONEM_SONU]: 50,
+  [E_DEFTER_KONTROL_GRUP.KDV_KONTROL]: 45,
+  [E_DEFTER_KONTROL_GRUP.VERGISEL]: 40,
+  [E_DEFTER_KONTROL_GRUP.TEKNIK]: 35,
+  [E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI]: 30,
+  [E_DEFTER_KONTROL_GRUP.HATASIZ]: 0,
+};
+
+/** Structured issue factory — single contract for engine/UI/persist. */
+export function createEDefterIssue({
+  code = E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+  message = "",
+  severity = E_DEFTER_ISSUE_SEVERITY.UYARI,
+  group = E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+  blocking = false,
+  source = "engine",
+  riskScore = 0,
+} = {}) {
+  const safeMessage = String(message || "").trim() || "Tanımsız bulgu.";
+  const safeSeverity =
+    ISSUE_SEVERITY_RANK[severity] != null ? severity : E_DEFTER_ISSUE_SEVERITY.UYARI;
+  const safeBlocking =
+    Boolean(blocking) || safeSeverity === E_DEFTER_ISSUE_SEVERITY.KRITIK;
+  return {
+    code: String(code || E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE),
+    message: safeMessage,
+    severity: safeSeverity,
+    group: group || E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+    blocking: safeBlocking,
+    source: String(source || "engine"),
+    riskScore: Math.max(0, Number(riskScore) || 0),
+  };
+}
+
+/** Legacy string / unknown object → structured issue (fail-closed). */
+export function normalizeEDefterIssue(raw, source = "engine") {
+  if (raw && typeof raw === "object" && raw.message) {
+    return createEDefterIssue({
+      code: raw.code || E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: raw.message,
+      severity: raw.severity || E_DEFTER_ISSUE_SEVERITY.UYARI,
+      group: raw.group || E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      blocking: raw.blocking,
+      source: raw.source || source,
+      riskScore: raw.riskScore,
+    });
+  }
+  const message = String(raw || "").trim();
+  if (!message) return null;
+  const lower = message.toLocaleLowerCase("tr-TR");
+
+  // Keyword fallback — never returns HATASIZ when a message exists.
+  if (lower.includes("hesap planında yok")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.ACCOUNT_NOT_IN_PLAN,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+      group: E_DEFTER_KONTROL_GRUP.KRITIK,
+      blocking: true,
+      source,
+      riskScore: 35,
+    });
+  }
+  if (lower.includes("dönem dışı")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.DATE_OUT_OF_PERIOD,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+      group: E_DEFTER_KONTROL_GRUP.KRITIK,
+      blocking: true,
+      source,
+      riskScore: 30,
+    });
+  }
+  if (lower.includes("negatif tutar")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.NEGATIVE_AMOUNT,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+      group: E_DEFTER_KONTROL_GRUP.KRITIK,
+      blocking: true,
+      source,
+      riskScore: 40,
+    });
+  }
+  if (lower.includes("dengesi bozuk") || lower.includes("borç/alacak")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.DEBIT_CREDIT_MISMATCH,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+      group: E_DEFTER_KONTROL_GRUP.KRITIK,
+      blocking: true,
+      source,
+      riskScore: 45,
+    });
+  }
+  if (lower.includes("mükerrer") || lower.includes("mukerrer") || lower.includes("tekrar")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      group: E_DEFTER_KONTROL_GRUP.MUKERRER,
+      blocking: false,
+      source,
+      riskScore: 25,
+    });
+  }
+  if (lower.includes("açıklama boş")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.MISSING_DESCRIPTION,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      group: E_DEFTER_KONTROL_GRUP.EKSIK_BILGI,
+      blocking: false,
+      source,
+      riskScore: 10,
+    });
+  }
+  if (
+    lower.includes("hesap kodu boş") ||
+    lower.includes("belge türü boş") ||
+    lower.includes("yevmiye no eksik")
+  ) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.MISSING_DOCUMENT_INFO,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      group: E_DEFTER_KONTROL_GRUP.EKSIK_BILGI,
+      blocking: false,
+      source,
+      riskScore: 15,
+    });
+  }
+  if (lower.includes("atlama") || lower.includes("tarih sırası")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.JOURNAL_SEQUENCE_GAP,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+      group: E_DEFTER_KONTROL_GRUP.KRITIK,
+      blocking: true,
+      source,
+      riskScore: 50,
+    });
+  }
+  if (lower.includes("ters bakiye") || lower.includes("kasa hesab")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      group: E_DEFTER_KONTROL_GRUP.TERS_BAKIYE,
+      blocking: false,
+      source,
+      riskScore: 25,
+    });
+  }
+  if (lower.includes("kdv")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      group: E_DEFTER_KONTROL_GRUP.KDV_KONTROL,
+      blocking: false,
+      source,
+      riskScore: 20,
+    });
+  }
+  if (lower.includes("dönem sonu") || lower.includes("kapan") || lower.includes("amortisman")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      group: E_DEFTER_KONTROL_GRUP.DONEM_SONU,
+      blocking: false,
+      source,
+      riskScore: 20,
+    });
+  }
+  if (lower.includes("yuvarlama")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      blocking: false,
+      source,
+      riskScore: 10,
+    });
+  }
+
+  return createEDefterIssue({
+    code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+    message,
+    severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+    group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+    blocking: false,
+    source,
+    riskScore: 20,
+  });
+}
+
+export function classifyEDefterIssues(rawIssues = []) {
+  const issueDetails = [];
+  const seen = new Set();
+  for (const raw of rawIssues || []) {
+    const issue = normalizeEDefterIssue(raw);
+    if (!issue) continue;
+    const dedupeKey = `${issue.code}|${issue.message}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    issueDetails.push(issue);
+  }
+
+  if (!issueDetails.length) {
+    return {
+      issueDetails: [],
+      issues: [],
+      primaryGroup: E_DEFTER_KONTROL_GRUP.HATASIZ,
+      riskScore: 0,
+      maxSeverity: null,
+      hasBlocking: false,
+      hasNonInfo: false,
+    };
+  }
+
+  let primaryGroup = E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI;
+  let bestGroupRank = -1;
   let riskScore = 0;
+  let maxSeverity = E_DEFTER_ISSUE_SEVERITY.BILGI;
+  let hasBlocking = false;
+  let hasNonInfo = false;
+
+  for (const issue of issueDetails) {
+    riskScore += issue.riskScore || 0;
+    if (issue.blocking) hasBlocking = true;
+    if (issue.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI) hasNonInfo = true;
+    if ((ISSUE_SEVERITY_RANK[issue.severity] || 0) > (ISSUE_SEVERITY_RANK[maxSeverity] || 0)) {
+      maxSeverity = issue.severity;
+    }
+    const rank = GROUP_PRIORITY[issue.group] ?? GROUP_PRIORITY[E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI];
+    if (rank > bestGroupRank) {
+      bestGroupRank = rank;
+      primaryGroup = issue.group || E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI;
+    }
+  }
+
+  // Fail-closed: issues present ⇒ never HATASIZ.
+  if (primaryGroup === E_DEFTER_KONTROL_GRUP.HATASIZ) {
+    primaryGroup = E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI;
+  }
+
+  return {
+    issueDetails,
+    issues: issueDetails.map((item) => item.message),
+    primaryGroup,
+    riskScore: Math.max(1, Math.min(100, riskScore)),
+    maxSeverity,
+    hasBlocking,
+    hasNonInfo,
+  };
+}
+
+function buildIssues(row, _allRows = [], context = {}) {
+  const raw = [];
   const fisKey = compactText(row.fisNo);
   const hesapKey = compactText(row.hesapKodu);
 
   if (!row.hesapKodu) {
-    issues.push("Hesap kodu boş.");
-    riskScore += 20;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.MISSING_DOCUMENT_INFO,
+        message: "Hesap kodu boş.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.EKSIK_BILGI,
+        riskScore: 20,
+      })
+    );
   }
 
   if (!row.aciklama) {
-    issues.push("Açıklama boş.");
-    riskScore += 10;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.MISSING_DESCRIPTION,
+        message: "Açıklama boş.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.EKSIK_BILGI,
+        riskScore: 10,
+      })
+    );
   }
 
   if (!row.belgeTuru && row.kaynak !== E_DEFTER_KAYNAK.MIZAN) {
-    issues.push("Belge türü boş.");
-    riskScore += 10;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.MISSING_DOCUMENT_INFO,
+        message: "Belge türü boş.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.EKSIK_BILGI,
+        riskScore: 10,
+      })
+    );
   }
 
   if (!row.yevmiyeNo && row.kaynak !== E_DEFTER_KAYNAK.MIZAN) {
-    issues.push("Yevmiye no eksik.");
-    riskScore += 15;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.MISSING_DOCUMENT_INFO,
+        message: "Yevmiye no eksik.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.EKSIK_BILGI,
+        riskScore: 15,
+      })
+    );
   }
 
   if (context.unbalancedFis?.has(fisKey) && row.fisNo) {
-    issues.push("Fiş borç/alacak dengesi bozuk.");
-    riskScore += 45;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.DEBIT_CREDIT_MISMATCH,
+        message: "Fiş borç/alacak dengesi bozuk.",
+        severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+        group: E_DEFTER_KONTROL_GRUP.KRITIK,
+        blocking: true,
+        riskScore: 45,
+      })
+    );
   }
 
   if (context.outOfOrderFis?.has(fisKey) && row.fisNo) {
-    issues.push("Tarih sırası bozuk fiş.");
-    riskScore += 20;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.JOURNAL_SEQUENCE_GAP,
+        message: "Tarih sırası bozuk fiş.",
+        severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+        group: E_DEFTER_KONTROL_GRUP.KRITIK,
+        blocking: true,
+        riskScore: 20,
+      })
+    );
   }
 
   if (row.belgeTarihi && row.tarih && daysBetween(row.belgeTarihi, row.tarih) > BELGE_TARIH_FARK_GUN) {
-    issues.push("Belge tarihi ile fiş tarihi arasında anlamlı fark var.");
-    riskScore += 15;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.DOCUMENT_DATE_GAP,
+        message: "Belge tarihi ile fiş tarihi arasında anlamlı fark var.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 15,
+      })
+    );
   }
 
   const fisLineCount = context.fisLineCounts?.get(fisKey) || 0;
   if (fisLineCount > 5 && row.fisNo) {
-    issues.push("Fiş no yoğun tekrar / mükerrer riski.");
-    riskScore += 15;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY,
+        message: "Fiş no yoğun tekrar / mükerrer riski.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.MUKERRER,
+        riskScore: 15,
+      })
+    );
   }
 
   const belgeKey = compactText(row.belgeNo);
   if (row.belgeNo && (context.belgeCounts?.get(belgeKey) || 0) > 1) {
-    issues.push("Belge no mükerrer.");
-    riskScore += 30;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY,
+        message: "Belge no mükerrer.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.MUKERRER,
+        riskScore: 30,
+      })
+    );
   }
 
   if (row.tutar && row.cariUnvan && context.nearKeys) {
@@ -534,19 +873,41 @@ function buildIssues(row, allRows = [], context = {}) {
       (item) => item.id !== row.id && daysBetween(item.tarih, row.tarih) <= NEAR_DATE_DAYS
     );
     if (nearDup) {
-      issues.push("Aynı cari + tutar + yakın tarih mükerrer riski.");
-      riskScore += 25;
+      raw.push(
+        createEDefterIssue({
+          code: E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY,
+          message: "Aynı cari + tutar + yakın tarih mükerrer riski.",
+          severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+          group: E_DEFTER_KONTROL_GRUP.MUKERRER,
+          riskScore: 25,
+        })
+      );
     }
   }
 
   if (row.tutar > 0 && row.tutar % 1000 === 0 && row.tutar >= 10000) {
-    issues.push("Şüpheli yuvarlama kaydı.");
-    riskScore += 10;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+        message: "Şüpheli yuvarlama kaydı.",
+        severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 10,
+      })
+    );
   }
 
   if (Number(row.borc || 0) < 0 || Number(row.alacak || 0) < 0) {
-    issues.push("Negatif tutar satırı.");
-    riskScore += 40;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.NEGATIVE_AMOUNT,
+        message: "Negatif tutar satırı.",
+        severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+        group: E_DEFTER_KONTROL_GRUP.KRITIK,
+        blocking: true,
+        riskScore: 40,
+      })
+    );
   }
 
   if (
@@ -554,16 +915,31 @@ function buildIssues(row, allRows = [], context = {}) {
     Number(row.alacak || 0) === 0 &&
     row.kaynak !== E_DEFTER_KAYNAK.MIZAN
   ) {
-    issues.push("Sıfır tutarlı satır.");
-    riskScore += 15;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.ZERO_AMOUNT,
+        message: "Sıfır tutarlı satır.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 15,
+      })
+    );
   }
 
   if (context.accountPlanCodes instanceof Set && row.hesapKodu) {
     const code = String(row.hesapKodu).trim();
     const short = code.split(".")[0];
     if (!context.accountPlanCodes.has(code) && !context.accountPlanCodes.has(short)) {
-      issues.push("Hesap kodu hesap planında yok.");
-      riskScore += 35;
+      raw.push(
+        createEDefterIssue({
+          code: E_DEFTER_ISSUE_CODE.ACCOUNT_NOT_IN_PLAN,
+          message: "Hesap kodu hesap planında yok.",
+          severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+          group: E_DEFTER_KONTROL_GRUP.KRITIK,
+          blocking: true,
+          riskScore: 35,
+        })
+      );
     }
   }
 
@@ -572,59 +948,49 @@ function buildIssues(row, allRows = [], context = {}) {
     if (d) {
       const rowPeriod = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
       if (rowPeriod !== context.expectedPeriodKey) {
-        issues.push("Dönem dışı tarih.");
-        riskScore += 30;
+        raw.push(
+          createEDefterIssue({
+            code: E_DEFTER_ISSUE_CODE.DATE_OUT_OF_PERIOD,
+            message: "Dönem dışı tarih.",
+            severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+            group: E_DEFTER_KONTROL_GRUP.KRITIK,
+            blocking: true,
+            riskScore: 30,
+          })
+        );
       }
     }
   }
 
   const aciklamaKey = compactText(row.aciklama);
   if (row.aciklama && (context.aciklamaCounts?.get(aciklamaKey) || 0) > 3) {
-    issues.push("Mükerrer açıklama tekrarı.");
-    riskScore += 15;
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY,
+        message: "Mükerrer açıklama tekrarı.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.MUKERRER,
+        riskScore: 15,
+      })
+    );
   }
 
   const accountIssue = context.problematicAccounts?.get(hesapKey);
   if (accountIssue?.issues?.length) {
-    issues.push(...accountIssue.issues);
-    riskScore += accountIssue.riskScore;
+    for (const msg of accountIssue.issues) {
+      raw.push(normalizeEDefterIssue(msg, "account-balance"));
+    }
   }
 
-  return {
-    issues,
-    riskScore: Math.min(100, riskScore),
-  };
+  return classifyEDefterIssues(raw);
 }
 
 function resolvePrimaryGroup(issues = [], row = {}) {
-  const text = issues.join(" ").toLocaleLowerCase("tr-TR");
-
+  const classified = classifyEDefterIssues(issues);
+  if (classified.issueDetails.length > 0) return classified.primaryGroup;
   if (!row.hesapKodu || !row.aciklama || (!row.belgeTuru && row.kaynak !== E_DEFTER_KAYNAK.MIZAN)) {
     return E_DEFTER_KONTROL_GRUP.EKSIK_BILGI;
   }
-
-  if (text.includes("kdv")) return E_DEFTER_KONTROL_GRUP.KDV_KONTROL;
-  if (text.includes("ters bakiye") || text.includes("kasa hesab")) {
-    return E_DEFTER_KONTROL_GRUP.TERS_BAKIYE;
-  }
-  if (text.includes("mükerrer") || text.includes("mukerrer")) {
-    return E_DEFTER_KONTROL_GRUP.MUKERRER;
-  }
-  if (
-    text.includes("dengesi bozuk") ||
-    text.includes("kritik") ||
-    text.includes("fiş no atlama") ||
-    text.includes("tarih sırası")
-  ) {
-    return E_DEFTER_KONTROL_GRUP.KRITIK;
-  }
-  if (text.includes("boş") || text.includes("eksik")) {
-    return E_DEFTER_KONTROL_GRUP.EKSIK_BILGI;
-  }
-  if (text.includes("dönem sonu") || text.includes("kapan") || text.includes("amortisman")) {
-    return E_DEFTER_KONTROL_GRUP.DONEM_SONU;
-  }
-
   return E_DEFTER_KONTROL_GRUP.HATASIZ;
 }
 
@@ -639,9 +1005,10 @@ function resolveDurum(grup, row = {}) {
     [E_DEFTER_KONTROL_GRUP.EKSIK_BILGI]: E_DEFTER_KONTROL_DURUM.EKSIK_BILGI,
     [E_DEFTER_KONTROL_GRUP.DONEM_SONU]: E_DEFTER_KONTROL_DURUM.DONEM_SONU,
     [E_DEFTER_KONTROL_GRUP.KDV_KONTROL]: E_DEFTER_KONTROL_DURUM.KDV_KONTROL,
+    [E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI]: E_DEFTER_KONTROL_DURUM.INCELEME_GEREKLI,
   };
 
-  return map[grup] || E_DEFTER_KONTROL_DURUM.HATASIZ;
+  return map[grup] || E_DEFTER_KONTROL_DURUM.INCELEME_GEREKLI;
 }
 
 function buildPeriodEndWarnings(context = {}) {
@@ -770,13 +1137,24 @@ function buildPeriodEndWarnings(context = {}) {
   return warnings;
 }
 
+function severityToSonucSeviye(severity) {
+  if (severity === E_DEFTER_ISSUE_SEVERITY.KRITIK) return E_DEFTER_SONUC_SEVIYE.KRITIK;
+  if (severity === E_DEFTER_ISSUE_SEVERITY.UYARI) return E_DEFTER_SONUC_SEVIYE.UYARI;
+  if (severity === E_DEFTER_ISSUE_SEVERITY.BILGI) return E_DEFTER_SONUC_SEVIYE.BILGI;
+  return E_DEFTER_SONUC_SEVIYE.UYGUN;
+}
+
 export function analyzeEDefterRow(row, allRows = [], context = {}) {
   if (row.disaridaBirak) {
     return {
       ...row,
-      issues: ["Kontrol dışı bırakıldı."],
+      issues: [],
+      issueDetails: [],
       riskScore: 0,
       riskBand: riskBandFromScore(0),
+      riskLevel: riskLevelFromScore(0),
+      sonucSeviye: E_DEFTER_SONUC_SEVIYE.UYGUN,
+      hasBlockingIssue: false,
       grup: E_DEFTER_KONTROL_GRUP.HATASIZ,
       durum: row.kontrolDurumu || "Kontrol dışı",
     };
@@ -791,8 +1169,22 @@ export function analyzeEDefterRow(row, allRows = [], context = {}) {
   }
 
   const analysis = buildIssues(row, allRows, context);
-  const grup = resolvePrimaryGroup(analysis.issues, row);
+  const hasIssues = analysis.issueDetails.length > 0;
+  // Fail-closed: never trust HATASIZ when structured issues exist.
+  const grup = hasIssues
+    ? analysis.primaryGroup === E_DEFTER_KONTROL_GRUP.HATASIZ
+      ? E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI
+      : analysis.primaryGroup
+    : resolvePrimaryGroup(analysis.issues, row);
   const durum = resolveDurum(grup, row);
+  const riskScore = hasIssues
+    ? Math.max(1, analysis.riskScore || 0)
+    : grup === E_DEFTER_KONTROL_GRUP.HATASIZ
+      ? 0
+      : analysis.riskScore;
+  const sonucSeviye = hasIssues
+    ? severityToSonucSeviye(analysis.maxSeverity)
+    : sonucSeviyeFromScore(riskScore);
 
   return {
     ...row,
@@ -800,11 +1192,16 @@ export function analyzeEDefterRow(row, allRows = [], context = {}) {
     alacak: roundMoney(row.alacak),
     tutar: roundMoney(row.tutar || Math.max(row.borc, row.alacak)),
     issues: analysis.issues,
-    riskScore: grup === E_DEFTER_KONTROL_GRUP.HATASIZ ? 0 : analysis.riskScore,
-    riskBand: riskBandFromScore(grup === E_DEFTER_KONTROL_GRUP.HATASIZ ? 0 : analysis.riskScore),
-    riskLevel: riskLevelFromScore(grup === E_DEFTER_KONTROL_GRUP.HATASIZ ? 0 : analysis.riskScore),
+    issueDetails: analysis.issueDetails,
+    riskScore,
+    riskBand: riskBandFromScore(riskScore),
+    riskLevel: riskLevelFromScore(riskScore),
+    sonucSeviye,
+    hasBlockingIssue: Boolean(analysis.hasBlocking),
     hataTuru: row.hataTuru || E_DEFTER_HATA_TURU.MUHASEBESEL,
-    onerilenKontrol: row.onerilenKontrol || (analysis.issues[0] ? `${analysis.issues[0]} için belge ve fiş kontrolü yapın.` : ""),
+    onerilenKontrol:
+      row.onerilenKontrol ||
+      (analysis.issues[0] ? `${analysis.issues[0]} için belge ve fiş kontrolü yapın.` : ""),
     cozumDurumu: row.cozumDurumu || E_DEFTER_FINDING_STATUS.YENI,
     smartExplanation: row.smartExplanation || buildSmartEDefterExplanation(row, analysis.issues),
     grup,
@@ -981,13 +1378,36 @@ export function resolveOverallSonuc(rows = []) {
     [E_DEFTER_SONUC_SEVIYE.KRITIK]: 3,
   };
   for (const row of rows.filter((r) => !r.disaridaBirak)) {
-    const seviye =
+    const details = Array.isArray(row.issueDetails) ? row.issueDetails : [];
+    const unresolved = details.filter(
+      (issue) => row.cozumDurumu !== E_DEFTER_FINDING_STATUS.COZULDU
+    );
+    const hasBlocking = unresolved.some((issue) => issue.blocking);
+    const hasNonInfo = unresolved.some(
+      (issue) => issue.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI
+    );
+    const legacyIssues = Array.isArray(row.issues) ? row.issues : [];
+    const hasLegacyIssues =
+      unresolved.length === 0 &&
+      legacyIssues.length > 0 &&
+      row.cozumDurumu !== E_DEFTER_FINDING_STATUS.COZULDU;
+
+    let seviye =
       row.sonucSeviye ||
       mapLegacyLevelToSonuc(row.riskLevel) ||
       sonucSeviyeFromScore(row.riskScore || 0);
-    if (row.grup === E_DEFTER_KONTROL_GRUP.KRITIK || row.grup === E_DEFTER_KONTROL_GRUP.CAPRAZ) {
+
+    if (hasBlocking || row.grup === E_DEFTER_KONTROL_GRUP.KRITIK || row.grup === E_DEFTER_KONTROL_GRUP.CAPRAZ) {
       worst = E_DEFTER_SONUC_SEVIYE.KRITIK;
       break;
+    }
+    if (hasNonInfo || hasLegacyIssues) {
+      const fromIssues = unresolved.reduce((acc, issue) => {
+        const mapped = severityToSonucSeviye(issue.severity);
+        return (rank[mapped] || 0) > (rank[acc] || 0) ? mapped : acc;
+      }, E_DEFTER_SONUC_SEVIYE.UYARI);
+      if ((rank[fromIssues] || 0) > (rank[seviye] || 0)) seviye = fromIssues;
+      if (seviye === E_DEFTER_SONUC_SEVIYE.UYGUN) seviye = E_DEFTER_SONUC_SEVIYE.UYARI;
     }
     if ((rank[seviye] || 0) > (rank[worst] || 0)) worst = seviye;
     if (row.grup === E_DEFTER_KONTROL_GRUP.TEKNIK && (row.riskScore || 0) >= 70) {
@@ -995,6 +1415,44 @@ export function resolveOverallSonuc(rows = []) {
     }
   }
   return worst;
+}
+
+/** True only when no blocking / unresolved non-info findings remain. */
+export function resolveEdefterUygun(rows = [], overallSonuc = E_DEFTER_SONUC_SEVIYE.UYGUN) {
+  if (
+    overallSonuc === E_DEFTER_SONUC_SEVIYE.KRITIK ||
+    overallSonuc === E_DEFTER_SONUC_SEVIYE.UYARI
+  ) {
+    return false;
+  }
+  for (const row of rows.filter((r) => !r.disaridaBirak)) {
+    if (row.cozumDurumu === E_DEFTER_FINDING_STATUS.COZULDU) continue;
+    const details = Array.isArray(row.issueDetails) ? row.issueDetails : [];
+    if (details.some((issue) => issue.blocking || issue.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI)) {
+      return false;
+    }
+    if (
+      (!details.length && Array.isArray(row.issues) && row.issues.length > 0) ||
+      (row.grup &&
+        row.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ &&
+        row.grup !== E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI)
+    ) {
+      // Non-info structural groups (KRITIK/MUKERRER/...) block approval.
+      if (
+        row.grup === E_DEFTER_KONTROL_GRUP.KRITIK ||
+        row.grup === E_DEFTER_KONTROL_GRUP.CAPRAZ ||
+        row.grup === E_DEFTER_KONTROL_GRUP.MUKERRER ||
+        row.grup === E_DEFTER_KONTROL_GRUP.EKSIK_BILGI ||
+        row.grup === E_DEFTER_KONTROL_GRUP.TERS_BAKIYE
+      ) {
+        return false;
+      }
+    }
+  }
+  return (
+    overallSonuc === E_DEFTER_SONUC_SEVIYE.UYGUN ||
+    overallSonuc === E_DEFTER_SONUC_SEVIYE.BILGI
+  );
 }
 
 export function canApproveEDefterExport(overallSonuc) {
@@ -1271,7 +1729,14 @@ export function runEDefterKontrolPipeline({
     Number(Boolean(xmlRows.length));
   const overallSonuc = resolveOverallSonuc(combinedRows);
   summary.overallSonuc = overallSonuc;
-  summary.edefterUygun = overallSonuc === E_DEFTER_SONUC_SEVIYE.UYGUN;
+  summary.edefterUygun = resolveEdefterUygun(combinedRows, overallSonuc);
+  summary.findingCount = combinedRows.filter(
+    (row) =>
+      !row.disaridaBirak &&
+      ((Array.isArray(row.issueDetails) && row.issueDetails.length > 0) ||
+        (Array.isArray(row.issues) && row.issues.length > 0) ||
+        row.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ)
+  ).length;
   summary.canApproveExport = canApproveEDefterExport(overallSonuc);
   const groupCounts = groupEDefterCounts(combinedRows);
   const hooks = buildEDefterIntegrationHooks({

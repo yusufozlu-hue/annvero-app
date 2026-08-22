@@ -74,6 +74,7 @@ export const E_DEFTER_KONTROL_GRUP = {
   TEKNIK: "Teknik hatalar",
   VERGISEL: "Vergisel riskler",
   CAPRAZ: "Çapraz mutabakat",
+  INCELEME_GEREKLI: "İnceleme gerekli",
 };
 
 export const E_DEFTER_KONTROL_DURUM = {
@@ -85,6 +86,33 @@ export const E_DEFTER_KONTROL_DURUM = {
   DONEM_SONU: "Dönem sonu uyarı",
   KDV_KONTROL: "KDV kontrol uyarı",
   FIS_DENGESIZ: "Fiş dengesiz",
+  INCELEME_GEREKLI: "İnceleme gerekli",
+};
+
+/** Issue severity — structured contract */
+export const E_DEFTER_ISSUE_SEVERITY = {
+  BILGI: "BILGI",
+  UYARI: "UYARI",
+  KRITIK: "KRITIK",
+};
+
+/**
+ * Structured issue codes (engine ↔ UI ↔ persist).
+ * Turkish user messages stay on the issue.message field.
+ */
+export const E_DEFTER_ISSUE_CODE = {
+  ACCOUNT_NOT_IN_PLAN: "ACCOUNT_NOT_IN_PLAN",
+  DATE_OUT_OF_PERIOD: "DATE_OUT_OF_PERIOD",
+  NEGATIVE_AMOUNT: "NEGATIVE_AMOUNT",
+  DEBIT_CREDIT_MISMATCH: "DEBIT_CREDIT_MISMATCH",
+  DUPLICATE_ENTRY: "DUPLICATE_ENTRY",
+  MISSING_DESCRIPTION: "MISSING_DESCRIPTION",
+  MISSING_DOCUMENT_INFO: "MISSING_DOCUMENT_INFO",
+  JOURNAL_SEQUENCE_GAP: "JOURNAL_SEQUENCE_GAP",
+  ZERO_AMOUNT: "ZERO_AMOUNT",
+  SUSPICIOUS_ROUNDING: "SUSPICIOUS_ROUNDING",
+  DOCUMENT_DATE_GAP: "DOCUMENT_DATE_GAP",
+  UNKNOWN_ISSUE: "UNKNOWN_ISSUE",
 };
 
 export const E_DEFTER_FINDING_CODE = {
@@ -96,6 +124,7 @@ export const E_DEFTER_FINDING_CODE = {
   DONEM_DISI: "DONEM_DISI",
   NEGATIF_SIFIR: "NEGATIF_SIFIR",
   TOPLAM_BORC_ALACAK: "TOPLAM_BORC_ALACAK",
+  ...E_DEFTER_ISSUE_CODE,
 };
 
 export const E_DEFTER_REPORT_DISCLAIMER =
