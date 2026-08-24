@@ -30,10 +30,14 @@ import {
   parseMuavinSheet,
   parseYevmiyeSheet,
   recalculateEDefterRows,
-  runOneClickEDefterKontrol,
   saveEDefterFingerprintSession,
   saveEDefterKontrolRecords,
 } from "@/src/utils/eDefterKontrolEngine";
+import {
+  bumpAnalyzeGeneration,
+  isAnalyzeJobInFlight,
+  runEDefterAnalyzeJob,
+} from "@/src/utils/eDefterAnalyzeBridge";
 import {
   exportEDefterReportWorkbook,
   prepareEDefterPdfReport,
@@ -171,6 +175,7 @@ export default function EDefterKontrolPage() {
     fingerprintSessionRef.current = loadEDefterFingerprintSession();
   }
   const abortRef = useRef(null);
+  const analyzeLockRef = useRef(false);
   const prevCompanyRef = useRef(selectedCompanyId);
 
   const parserJob = useParserJob({
@@ -188,6 +193,10 @@ export default function EDefterKontrolPage() {
   );
 
   const clearAnalysisState = () => {
+    abortRef.current?.abort?.();
+    analyzeLockRef.current = false;
+    bumpAnalyzeGeneration("clear");
+    setAnalyzing(false);
     setMuavinRows([]);
     setYevmiyeRows([]);
     setMizanRows([]);
@@ -280,6 +289,14 @@ export default function EDefterKontrolPage() {
     clearAnalysisState();
     setToast("Firma değişti — kontrol durumu ve önbellek temizlendi.");
   }, [selectedCompanyId]);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort?.();
+      analyzeLockRef.current = false;
+      bumpAnalyzeGeneration("unmount");
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedCompanyId) return;
@@ -490,6 +507,9 @@ export default function EDefterKontrolPage() {
   };
 
   const handleAnalyze = async () => {
+    if (analyzeLockRef.current || analyzing || xmlParsing || persisting || isAnalyzeJobInFlight()) {
+      return;
+    }
     if (!selectedCompanyId) {
       setToast("Önce firma seçin.");
       return;
@@ -499,33 +519,54 @@ export default function EDefterKontrolPage() {
       return;
     }
 
+    analyzeLockRef.current = true;
     setAnalyzing(true);
     setPersistError("");
     setPersistRetryPayload(null);
     setLastPersistMeta(null);
     parserJob.begin({ stage: "e-Defter kontrolü", detail: "Tek tuş kontrol" });
     const startedAt = new Date().toISOString();
+    const generation = bumpAnalyzeGeneration("analyze-start");
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
-      const result = await runOneClickEDefterKontrol({
-        parsedUpload: pendingParsed || {
-          rows: xmlRows,
-          technicalFindings,
-          beratMeta: uploadMeta?.beratMeta || null,
-          packageMeta: uploadMeta?.packageMeta || {},
-          fingerprint: uploadMeta?.fingerprint || "",
-          duplicate: false,
+      const result = await runEDefterAnalyzeJob(
+        {
+          parsedUpload: pendingParsed || {
+            rows: xmlRows,
+            technicalFindings,
+            beratMeta: uploadMeta?.beratMeta || null,
+            packageMeta: uploadMeta?.packageMeta || {},
+            fingerprint: uploadMeta?.fingerprint || "",
+            duplicate: false,
+          },
+          muavinRows,
+          yevmiyeRows,
+          mizanRows,
+          edefterListeRows,
+          companyId: selectedCompanyId,
+          companyTaxId: companyTaxIdOf(selectedCompany),
+          period,
+          fingerprintSession: fingerprintSessionRef.current,
+          coreDecision: { decision_source: "CORE", source: "CORE" },
         },
-        muavinRows,
-        yevmiyeRows,
-        mizanRows,
-        edefterListeRows,
-        companyId: selectedCompanyId,
-        companyTaxId: companyTaxIdOf(selectedCompany),
-        period,
-        fingerprintSession: fingerprintSessionRef.current,
-        coreDecision: { decision_source: "CORE", source: "CORE" },
-      });
+        {
+          workerUrl: PARSER_WORKER_URLS.eDefterAnalyze,
+          preferWorker: true,
+          requireExclusive: true,
+          signal: controller.signal,
+          generation,
+          onProgress: (progress) => {
+            parserJob.update?.({
+              stage: progress?.stage || "e-Defter kontrolü",
+              detail: progress?.detail || "Analiz worker çalışıyor",
+              percent: progress?.percent,
+            });
+          },
+          timeoutMs: 180_000,
+        }
+      );
 
       if (result.duplicate) {
         setToast(result.duplicateMessage || DUPLICATE_EDEFTER_UI_MESSAGE);
@@ -617,6 +658,7 @@ export default function EDefterKontrolPage() {
       parserJob.markError(error);
       setToast(error?.message || "Analiz başarısız.");
     } finally {
+      analyzeLockRef.current = false;
       setAnalyzing(false);
     }
   };
@@ -714,6 +756,8 @@ export default function EDefterKontrolPage() {
 
   const handleCancel = () => {
     abortRef.current?.abort?.();
+    analyzeLockRef.current = false;
+    bumpAnalyzeGeneration("cancel");
     parserJob.cancel("user");
     setXmlParsing(false);
     setAnalyzing(false);
