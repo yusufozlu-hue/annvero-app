@@ -255,11 +255,31 @@ check(E_DEFTER_ENGINE_VERSION === DEFAULT_ENGINE, "engine version shared constan
     "utf8"
   );
   check(/requireAuthenticatedApi/.test(runsRoute), "runs API requireAuthenticatedApi");
-  check(/company_id/.test(runsRoute) && /source_fingerprint/.test(runsRoute), "runs idempotent lookup");
+  check(
+    /edefter_persist_control_run_atomic|callEdefterAtomicPersistRpc/.test(runsRoute),
+    "runs API uses atomic persist RPC"
+  );
+  check(/created:\s*false/.test(runsRoute), "runs API fail-closed created:false");
+  check(/status\",\s*\"completed\"|eq\(\"status\", \"completed\"\)/.test(runsRoute), "GET defaults to completed history");
   check(/requireAuthenticatedApi/.test(detailRoute), "detail API gated");
   check(/eq\("company_id", companyId\)/.test(detailRoute), "detail company scoped");
   check(/requireAuthenticatedApi/.test(findingRoute), "finding API gated");
   check(/eq\("company_id", companyId\)/.test(findingRoute), "finding company scoped");
+}
+
+{
+  const sql035 = fs.readFileSync(
+    path.join(root, "supabase/migrations/035_edefter_atomic_control_persist.sql"),
+    "utf8"
+  );
+  check(/edefter_persist_control_run_atomic/i.test(sql035), "035 atomic RPC defined");
+  check(/security definer/i.test(sql035), "035 SECURITY DEFINER");
+  check(/search_path\s*=\s*pg_catalog,\s*pg_temp/i.test(sql035), "035 fixed search_path");
+  check(/grant execute[\s\S]*service_role/i.test(sql035), "035 execute service_role");
+  check(/revoke all[\s\S]*from anon, authenticated/i.test(sql035), "035 revoke anon/authenticated");
+  check(!/^\s*drop table\b/im.test(sql035), "035 no drop table");
+  check(!/^\s*truncate\b/im.test(sql035), "035 no truncate");
+  check(!/^\s*delete from\b/im.test(sql035), "035 no delete from");
 }
 
 // --- UI: company clear + retry + no separate save button ---
