@@ -17,6 +17,14 @@ import {
   riskLevelBadgeClass,
 } from "@/src/config/eDefterKontrolDefaults";
 import { normalizeCompanyRecord } from "@/src/utils/companyCenter";
+import { extractCompanyVkn } from "@/src/utils/companyIdentity";
+import {
+  applyIdentityGateToSummary,
+  applyUserIdentityConfirmation,
+  buildIdentityConfirmationScope,
+  canOfferExcelIdentityConfirmation,
+  clearUserIdentityConfirmation,
+} from "@/src/utils/eDefterCompanyIdentityGate";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
   buildEDefterResultFingerprints,
@@ -103,16 +111,9 @@ function rowHasFindings(row) {
   return Boolean(row.grup && row.grup !== E_DEFTER_KONTROL_GRUP.HATASIZ);
 }
 
+/** Tek helper — sayfa içinde dağınık tax fallback yok. */
 function companyTaxIdOf(company) {
-  if (!company) return "";
-  return String(
-    company.vkn ||
-      company.taxId ||
-      company.vergiNo ||
-      company.tckn ||
-      company.taxNumber ||
-      ""
-  ).replace(/\D/g, "");
+  return extractCompanyVkn(company || null);
 }
 
 export default function EDefterKontrolPage() {
@@ -168,6 +169,10 @@ export default function EDefterKontrolPage() {
   const [persistRetryPayload, setPersistRetryPayload] = useState(null);
   const [persisting, setPersisting] = useState(false);
   const [lastPersistMeta, setLastPersistMeta] = useState(null);
+  const [identityInfo, setIdentityInfo] = useState(null);
+  const [identityUserConfirmed, setIdentityUserConfirmed] = useState(false);
+  const [excelFileToken, setExcelFileToken] = useState("");
+  const [identityPersistOnceKey, setIdentityPersistOnceKey] = useState("");
   const lastAnalysisRef = useRef(null);
 
   const fingerprintSessionRef = useRef(null);
@@ -187,6 +192,35 @@ export default function EDefterKontrolPage() {
   });
 
   const period = `${year}/${month}`;
+  const identityScopeKey = `${period}|${excelFileToken}|${String(uploadMeta?.fingerprint || "")}`;
+  const [trackedIdentityScopeKey, setTrackedIdentityScopeKey] = useState(identityScopeKey);
+  if (trackedIdentityScopeKey !== identityScopeKey) {
+    setTrackedIdentityScopeKey(identityScopeKey);
+    setIdentityUserConfirmed(false);
+    setIdentityPersistOnceKey("");
+    if (identityInfo && (identityInfo.userConfirmed || identityInfo.identityUserConfirmed)) {
+      setIdentityInfo(clearUserIdentityConfirmation(identityInfo));
+    }
+    if (summary?.identityUserConfirmed) {
+      setSummary((prev) => {
+        if (!prev?.identityUserConfirmed) return prev;
+        return applyIdentityGateToSummary(
+          prev,
+          clearUserIdentityConfirmation({
+            status: prev.identityStatus,
+            sourceKind: "excel",
+            reviewRequired: true,
+            userConfirmed: true,
+            verified: false,
+            allowExport: true,
+            allowPersist: true,
+            safeFingerprint: prev.identityFingerprint || "",
+          })
+        );
+      });
+    }
+  }
+
   const companyRecords = useMemo(
     () => records.filter((record) => !selectedCompanyId || record.companyId === selectedCompanyId),
     [records, selectedCompanyId]
@@ -220,9 +254,36 @@ export default function EDefterKontrolPage() {
     setPersistRetryPayload(null);
     setLastPersistMeta(null);
     lastAnalysisRef.current = null;
+    setIdentityInfo(null);
+    setIdentityUserConfirmed(false);
+    setExcelFileToken("");
+    setIdentityPersistOnceKey("");
     setRecords([]);
     clearEDefterUiCaches();
     fingerprintSessionRef.current = loadEDefterFingerprintSession();
+  };
+
+  const resetIdentityUserConfirmation = () => {
+    setIdentityUserConfirmed(false);
+    setIdentityPersistOnceKey("");
+    setIdentityInfo((prev) => {
+      if (!prev?.userConfirmed && !prev?.identityUserConfirmed) return prev;
+      return clearUserIdentityConfirmation(prev);
+    });
+    setSummary((prev) => {
+      if (!prev?.identityUserConfirmed) return prev;
+      const cleared = clearUserIdentityConfirmation({
+        status: prev.identityStatus,
+        sourceKind: "excel",
+        reviewRequired: true,
+        userConfirmed: true,
+        verified: false,
+        allowExport: true,
+        allowPersist: true,
+        safeFingerprint: prev.identityFingerprint || "",
+      });
+      return applyIdentityGateToSummary(prev, cleared);
+    });
   };
 
   const refreshHistory = async (companyId = selectedCompanyId) => {
@@ -470,6 +531,8 @@ export default function EDefterKontrolPage() {
     if (!file) return;
     try {
       setMuavinRows(parseMuavinSheet(await readExcelSheetWithWorker(file)));
+      setExcelFileToken(`muavin:${file.name}:${file.size}:${file.lastModified || 0}`);
+      resetIdentityUserConfirmation();
       setToast("Muavin Excel yüklendi.");
     } catch (error) {
       logExcelError(error.message || "Muavin Excel okunamadı.", { stack: error?.stack }, selectedCompanyId, {
@@ -486,6 +549,8 @@ export default function EDefterKontrolPage() {
     const file = event.target.files?.[0];
     if (!file) return;
     setYevmiyeRows(parseYevmiyeSheet(await readExcelSheetWithWorker(file)));
+    setExcelFileToken(`yevmiye:${file.name}:${file.size}:${file.lastModified || 0}`);
+    resetIdentityUserConfirmation();
     setToast("Yevmiye Excel yüklendi.");
     event.target.value = "";
   };
@@ -494,6 +559,8 @@ export default function EDefterKontrolPage() {
     const file = event.target.files?.[0];
     if (!file) return;
     setMizanRows(parseMizanSheet(await readExcelSheetWithWorker(file)));
+    setExcelFileToken(`mizan:${file.name}:${file.size}:${file.lastModified || 0}`);
+    resetIdentityUserConfirmation();
     setToast("Mizan Excel yüklendi.");
     event.target.value = "";
   };
@@ -502,6 +569,8 @@ export default function EDefterKontrolPage() {
     const file = event.target.files?.[0];
     if (!file) return;
     setEdefterListeRows(parseEDefterListeSheet(await readExcelSheetWithWorker(file)));
+    setExcelFileToken(`liste:${file.name}:${file.size}:${file.lastModified || 0}`);
+    resetIdentityUserConfirmation();
     setToast("E-defter liste Excel yüklendi.");
     event.target.value = "";
   };
@@ -524,6 +593,9 @@ export default function EDefterKontrolPage() {
     setPersistError("");
     setPersistRetryPayload(null);
     setLastPersistMeta(null);
+    setIdentityInfo(null);
+    setIdentityUserConfirmed(false);
+    setIdentityPersistOnceKey("");
     parserJob.begin({ stage: "e-Defter kontrolü", detail: "Tek tuş kontrol" });
     const startedAt = new Date().toISOString();
     const generation = bumpAnalyzeGeneration("analyze-start");
@@ -580,6 +652,7 @@ export default function EDefterKontrolPage() {
       setGroupCounts(result.groupCounts);
       setShowAllDetails(false);
       setDetailLimit(40);
+      setIdentityInfo(result.identity || null);
 
       const localRecord = buildEDefterUploadRecord({
         companyId: selectedCompanyId,
@@ -603,7 +676,11 @@ export default function EDefterKontrolPage() {
         [E_DEFTER_KAYNAK.KEBIR_XML, E_DEFTER_KAYNAK.MUAVIN].includes(row.kaynak)
       );
       const fingerprints = buildEDefterResultFingerprints({
-        sourceFingerprint: uploadMeta?.fingerprint || pendingParsed?.fingerprint || "",
+        sourceFingerprint:
+          uploadMeta?.fingerprint ||
+          pendingParsed?.fingerprint ||
+          excelFileToken ||
+          "",
         journalRows,
         ledgerRows,
         companyId: selectedCompanyId,
@@ -632,19 +709,31 @@ export default function EDefterKontrolPage() {
         completedAt: new Date().toISOString(),
       });
 
-      lastAnalysisRef.current = { result, payload };
+      lastAnalysisRef.current = { result, payload, fingerprints, documentTypes, startedAt };
 
       parserJob.markSuccess(`${result.rows.length} kayıt · ${result.overallSonuc}`);
 
-      try {
-        await persistAnalysisResult(payload);
+      const identityBlocksPersist =
+        result.identity && result.identity.allowPersist === false;
+
+      if (identityBlocksPersist) {
         setToast(
-          result.summary.edefterUygun
-            ? `Kontrol tamamlandı ve kaydedildi: ${result.overallSonuc}`
-            : `Kontrol tamamlandı ve kaydedildi: ${result.overallSonuc} (onaylı uygun değil)`
+          result.identity?.safeMessage ||
+            "Kimlik doğrulanmadan kayıt yapılmaz. Analiz ekranda kaldı."
         );
-      } catch {
-        // Analiz ekranda kalır; retry butonu gösterilir
+      } else {
+        try {
+          const persistKey = `${selectedCompanyId}|${payload.source_fingerprint}|${period}|${payload.engine_version}`;
+          setIdentityPersistOnceKey(persistKey);
+          await persistAnalysisResult(payload);
+          setToast(
+            result.summary.edefterUygun
+              ? `Kontrol tamamlandı ve kaydedildi: ${result.overallSonuc}`
+              : `Kontrol tamamlandı ve kaydedildi: ${result.overallSonuc} (onaylı uygun değil)`
+          );
+        } catch {
+          // Analiz ekranda kalır; retry butonu gösterilir
+        }
       }
     } catch (error) {
       logParserJobError(error, {
@@ -705,6 +794,91 @@ export default function EDefterKontrolPage() {
     }
   };
 
+  const identityConfirmScope = () =>
+    buildIdentityConfirmationScope({
+      companyId: selectedCompanyId,
+      fingerprint:
+        uploadMeta?.fingerprint ||
+        pendingParsed?.fingerprint ||
+        excelFileToken ||
+        lastAnalysisRef.current?.payload?.source_fingerprint ||
+        "",
+      period,
+    });
+
+  /**
+   * Excel kimlik onayı — ikinci analiz yok; yalnız mevcut sonuç + scope.
+   * Client onayı tenant yetkisi yerine geçmez; persist API membership korunur.
+   */
+  const handleIdentityConfirmChange = async (checked) => {
+    if (!canOfferExcelIdentityConfirmation(identityInfo)) {
+      setToast("Bu girdi için kullanıcı kimlik onayı kullanılamaz.");
+      return;
+    }
+    const scope = identityConfirmScope();
+    if (!checked) {
+      const cleared = clearUserIdentityConfirmation(identityInfo);
+      setIdentityUserConfirmed(false);
+      setIdentityPersistOnceKey("");
+      setIdentityInfo(cleared);
+      setSummary((prev) => applyIdentityGateToSummary(prev || {}, cleared));
+      setToast("Kimlik onayı kaldırıldı — kayıt/dışa aktarma kapalı.");
+      return;
+    }
+
+    const next = applyUserIdentityConfirmation(identityInfo, scope);
+    setIdentityUserConfirmed(true);
+    setIdentityInfo(next);
+    const base = lastAnalysisRef.current;
+    const updatedSummary = applyIdentityGateToSummary(
+      base?.result?.summary || summary || {},
+      next
+    );
+    setSummary(updatedSummary);
+
+    if (!base?.result || !next.allowPersist) {
+      setToast(next.safeMessage || "Firma kullanıcı tarafından doğrulandı");
+      return;
+    }
+
+    const payload = buildPersistPayloadFromAnalysis({
+      companyId: selectedCompanyId,
+      period,
+      engineVersion: E_DEFTER_ENGINE_VERSION,
+      fingerprints: base.fingerprints || {
+        source: base.payload?.source_fingerprint,
+        journal: base.payload?.journal_fingerprint,
+        ledger: base.payload?.ledger_fingerprint,
+      },
+      summary: updatedSummary,
+      rows: base.result.rows,
+      journalLedger: base.result.journalLedger,
+      documentTypes: base.documentTypes || [],
+      documentCount: updatedSummary.yuklenenDefterSayisi,
+      startedAt: base.startedAt,
+      completedAt: new Date().toISOString(),
+    });
+    lastAnalysisRef.current = {
+      ...base,
+      result: { ...base.result, summary: updatedSummary, identity: next },
+      payload,
+    };
+
+    const persistKey = `${scope.companyId}|${payload.source_fingerprint}|${scope.period}|${payload.engine_version}`;
+    if (identityPersistOnceKey === persistKey) {
+      setToast("Firma kullanıcı tarafından doğrulandı (kayıt zaten yapıldı).");
+      return;
+    }
+    setIdentityPersistOnceKey(persistKey);
+    try {
+      await persistAnalysisResult(payload);
+      setToast("Firma kullanıcı tarafından doğrulandı — sonuç kaydedildi.");
+    } catch {
+      /* toast already set; allow retry without re-analyze */
+      setIdentityPersistOnceKey("");
+    }
+  };
+
   const updateRow = (rowId, patch) => {
     setRows((current) => {
       const next = current.map((row) =>
@@ -727,6 +901,17 @@ export default function EDefterKontrolPage() {
       setToast("Önce kontrol çalıştırın.");
       return;
     }
+    if (identityInfo && identityInfo.allowExport === false) {
+      setToast(
+        identityInfo.safeMessage ||
+          "Kimlik doğrulanmadan veya engelleyici durumda Excel dışa aktarma kapalı."
+      );
+      return;
+    }
+    if (summary?.canApproveExport === false) {
+      setToast("Engelleyici durumda Excel dışa aktarma kapalı.");
+      return;
+    }
     const result = exportEDefterReportWorkbook({
       rows,
       summary: summary || {},
@@ -737,7 +922,7 @@ export default function EDefterKontrolPage() {
         appVersion: typeof window !== "undefined" ? window.__ANNVERO_BUILD__ || "web" : "web",
       },
       fileName: "e-defter-kontrol",
-      force: true,
+      force: false,
     });
     if (result.blocked) {
       setToast(result.message);
@@ -850,6 +1035,49 @@ export default function EDefterKontrolPage() {
           <StatCard label="Teknik Hata" value={summary.teknikHata} />
           <StatCard label="Vergisel Risk" value={summary.vergiselRisk} tone="purple" />
         </div>
+      ) : null}
+
+      {identityInfo ? (
+        <p
+          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${
+            identityInfo.verified || identityInfo.identityVerified
+              ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-100"
+              : identityInfo.userConfirmed || identityInfo.identityUserConfirmed
+                ? "border-sky-500/40 bg-sky-950/40 text-sky-100"
+                : "border-amber-500/40 bg-amber-950/40 text-amber-100"
+          }`}
+        >
+          Kimlik: {identityInfo.status}
+          {identityInfo.verified || identityInfo.identityVerified
+            ? " — otomatik doğrulandı"
+            : identityInfo.userConfirmed || identityInfo.identityUserConfirmed
+              ? " — Firma kullanıcı tarafından doğrulandı"
+              : " — doğrulanmadı"}
+          . {identityInfo.safeMessage}
+        </p>
+      ) : null}
+
+      {canOfferExcelIdentityConfirmation(identityInfo) ? (
+        <label className="mb-4 flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 bg-gray-900/60 px-4 py-3 text-sm text-white">
+          <input
+            type="checkbox"
+            className="mt-1 h-4 w-4 rounded border-white/20 bg-gray-950"
+            checked={Boolean(
+              identityUserConfirmed ||
+                identityInfo?.userConfirmed ||
+                identityInfo?.identityUserConfirmed
+            )}
+            onChange={(event) => handleIdentityConfirmChange(event.target.checked)}
+            disabled={analyzing || persisting}
+          />
+          <span>
+            Bu dosyanın seçili firmaya ait olduğunu onaylıyorum.
+            <span className="mt-1 block text-xs text-white/60">
+              Onay yalnız bu firma, dosya ve dönem için geçerlidir; yenilemede sıfırlanır.
+              Otomatik kimlik doğrulaması sayılmaz.
+            </span>
+          </span>
+        </label>
       ) : null}
 
       {summary && summary.edefterUygun === false ? (

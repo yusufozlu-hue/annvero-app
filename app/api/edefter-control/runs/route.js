@@ -6,6 +6,10 @@ import {
 } from "@/src/lib/auth/apiGuard";
 import { excludeSoftDeleted } from "@/src/lib/softDelete";
 import {
+  assertEdefterPersistIdentityGate,
+  normalizeIdentityConfirmationValue,
+} from "@/src/utils/eDefterCompanyIdentityGate";
+import {
   assertNoRawDocumentLeak,
   buildSafeEdefterMetadata,
   EDEFTER_AUDIT_EVENT_TYPES,
@@ -58,7 +62,26 @@ function sanitizeJson(value, depth = 0) {
   return out;
 }
 
+function sanitizeResultSummary(raw = {}) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const base = sanitizeJson(src);
+  const confirmation = normalizeIdentityConfirmationValue(src.identity_confirmation);
+  return {
+    ...base,
+    identity_status: sanitizeText(src.identity_status, 64),
+    identity_verified: Boolean(src.identity_verified),
+    identity_user_confirmed: Boolean(src.identity_user_confirmed),
+    // Unknown values preserved as raw string so assertEdefterPersistIdentityGate rejects
+    identity_confirmation:
+      confirmation === null
+        ? sanitizeText(src.identity_confirmation, 40)
+        : confirmation,
+    identity_fingerprint: sanitizeText(src.identity_fingerprint, 128),
+  };
+}
+
 function sanitizeIncomingRun(body = {}) {
+  // Client spoof strip — created_by / actor asla body'den gelmez
   const companyId = resolveCompanyId(body);
   const findings = Array.isArray(body.findings) ? body.findings : [];
   const run = {
@@ -89,7 +112,7 @@ function sanitizeIncomingRun(body = {}) {
       sanitizeText(body.reconciliation_status || "skipped", 32) || "skipped",
     reconciliation_summary: sanitizeJson(body.reconciliation_summary),
     severity_counts: sanitizeJson(body.severity_counts),
-    result_summary: sanitizeJson(body.result_summary),
+    result_summary: sanitizeResultSummary(body.result_summary),
     started_at: body.started_at || null,
     completed_at: body.completed_at || new Date().toISOString(),
   };
@@ -213,6 +236,18 @@ export async function POST(request) {
     );
   }
 
+  try {
+    assertEdefterPersistIdentityGate({
+      resultSummary: run.result_summary,
+      documentTypes: run.document_types,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error.message, code: error.code || "IDENTITY_PERSIST_DENIED", created: false },
+      { status: error.httpStatus || 403 }
+    );
+  }
+
   const ctx = await requireAuthenticatedApi("edefter-control-runs:post", RUNS_TABLE, {
     companyId: run.company_id,
   });
@@ -248,6 +283,8 @@ export async function POST(request) {
         period: run.period,
         idempotent: true,
         retry: Boolean(retry),
+        identity_status: run.result_summary?.identity_status,
+        identity_confirmation: run.result_summary?.identity_confirmation,
       },
     });
 
@@ -283,8 +320,12 @@ export async function POST(request) {
     ...run,
     revision,
     supersedes_run_id: previous?.id || null,
+    // Server session only — client created_by / createdBy / userId ignored
     created_by: String(ctx.user?.id || ctx.user?.email || ""),
   };
+  delete insertPayload.createdBy;
+  delete insertPayload.userId;
+  delete insertPayload.user_id;
 
   const { data: created, error: insertError } = await ctx.supabase
     .from(RUNS_TABLE)
@@ -315,7 +356,7 @@ export async function POST(request) {
         });
       }
     }
-    return NextResponse.json({ error: insertError.message }, { status: 500 });
+    return NextResponse.json({ error: insertError.message, created: false }, { status: 500 });
   }
 
   let createdFindings = [];
@@ -331,9 +372,36 @@ export async function POST(request) {
       .select("*");
     if (findingsError) {
       console.error("[edefter-findings]", findingsError.message);
-    } else {
-      createdFindings = insertedFindings || [];
+      await ctx.supabase
+        .from(RUNS_TABLE)
+        .update({
+          status: "failed",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", created.id)
+        .eq("company_id", run.company_id);
+      await writeEdefterAudit(ctx.supabase, {
+        runId: created.id,
+        companyId: run.company_id,
+        eventType: EDEFTER_AUDIT_EVENT_TYPES.RUN_CREATED,
+        actorId: ctx.user?.id || "",
+        metadata: {
+          engine_version: run.engine_version,
+          period: run.period,
+          status: "failed",
+          findings_error: true,
+        },
+      });
+      return NextResponse.json(
+        {
+          error: "Bulgular kaydedilemedi; run başarısız işaretlendi.",
+          code: "FINDINGS_PERSIST_FAILED",
+          created: false,
+        },
+        { status: 500 }
+      );
     }
+    createdFindings = insertedFindings || [];
   }
 
   if (previous?.id) {
@@ -356,6 +424,10 @@ export async function POST(request) {
     });
   }
 
+  const confirmation =
+    normalizeIdentityConfirmationValue(run.result_summary?.identity_confirmation) ||
+    "";
+
   await writeEdefterAudit(ctx.supabase, {
     runId: created.id,
     companyId: run.company_id,
@@ -371,6 +443,11 @@ export async function POST(request) {
       severity_counts: run.severity_counts,
       overall_sonuc: run.result_summary?.overall_sonuc,
       retry: Boolean(retry),
+      identity_status: run.result_summary?.identity_status,
+      identity_verified: Boolean(run.result_summary?.identity_verified),
+      identity_user_confirmed: Boolean(run.result_summary?.identity_user_confirmed),
+      identity_confirmation: confirmation,
+      identity_fingerprint: run.result_summary?.identity_fingerprint,
     },
   });
 

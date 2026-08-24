@@ -325,8 +325,11 @@ export function parseEDefterXmlText(xmlText = "", fileName = "", options = {}) {
     contentDetected: true,
   };
 
-  if (options.companyTaxId) {
-    assertCompanyTaxMatch(packageMeta.taxId, options.companyTaxId);
+  if (!options.deferIdentityAssert && options.companyTaxId !== undefined) {
+    assertCompanyTaxMatch(packageMeta.taxId, options.companyTaxId || "", {
+      companyId: options.companyId || "",
+      sourceKind: "xml",
+    });
   }
 
   return { rows, meta: beratMeta, defterType, packageMeta };
@@ -534,6 +537,8 @@ export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "", optio
       try {
         const parsed = parseEDefterXmlText(xmlText, entry.name, {
           companyTaxId: options.companyTaxId,
+          companyId: options.companyId,
+          deferIdentityAssert: true,
         });
         trackMeta(parsed.packageMeta);
         if (parsed.defterType === "berat") {
@@ -552,8 +557,13 @@ export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "", optio
       } catch (error) {
         if (
           error?.code === EDEFTER_ERROR_CODE.COMPANY_MISMATCH ||
+          error?.code === EDEFTER_ERROR_CODE.MIXED_COMPANY_OR_PERIOD ||
           error?.code === EDEFTER_ERROR_CODE.XXE_REJECTED ||
-          error?.code === EDEFTER_ERROR_CODE.MIXED_COMPANY_OR_PERIOD
+          error?.code === EDEFTER_ERROR_CODE.COMPANY_IDENTITY_MISSING ||
+          error?.code === EDEFTER_ERROR_CODE.DOCUMENT_IDENTITY_MISSING ||
+          error?.code === EDEFTER_ERROR_CODE.IDENTITY_INVALID ||
+          error?.code === EDEFTER_ERROR_CODE.IDENTITY_TYPE_CONFLICT ||
+          error?.code === EDEFTER_ERROR_CODE.IDENTITY_AMBIGUOUS
         ) {
           throw error;
         }
@@ -566,6 +576,14 @@ export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "", optio
 
     finalizeMixedCheck();
     assertRowLimit(allRows.length);
+
+    if (options.companyTaxId !== undefined) {
+      assertCompanyTaxMatch([...taxIds][0] || "", options.companyTaxId || "", {
+        companyId: options.companyId || "",
+        documentTaxIds: [...taxIds],
+        sourceKind: "zip",
+      });
+    }
 
     if (!beratMeta) {
       technicalFindings.push({
@@ -609,6 +627,7 @@ export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "", optio
   try {
     parsed = parseEDefterXmlText(xmlText, fileName, {
       companyTaxId: options.companyTaxId,
+      companyId: options.companyId,
     });
   } catch (error) {
     if (error?.code) throw error;

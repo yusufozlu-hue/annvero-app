@@ -2,6 +2,11 @@
  * E-Defter güvenlik limitleri ve fingerprint — içerik loglanmaz.
  */
 
+import {
+  evaluateEDefterCompanyIdentity,
+  identityStatusToErrorCode,
+} from "@/src/utils/eDefterCompanyIdentityGate";
+
 export const EDEFTER_MAX_BYTES = 40 * 1024 * 1024;
 export const EDEFTER_MAX_ZIP_ENTRIES = 80;
 export const EDEFTER_MAX_UNCOMPRESSED_BYTES = 120 * 1024 * 1024;
@@ -15,6 +20,11 @@ export const EDEFTER_ERROR_CODE = Object.freeze({
   MIXED_COMPANY_OR_PERIOD: "MIXED_COMPANY_OR_PERIOD",
   JOURNAL_LEDGER_MISMATCH: "JOURNAL_LEDGER_MISMATCH",
   EXTERNAL_VERIFICATION_REQUIRED: "EXTERNAL_VERIFICATION_REQUIRED",
+  COMPANY_IDENTITY_MISSING: "COMPANY_IDENTITY_MISSING",
+  DOCUMENT_IDENTITY_MISSING: "DOCUMENT_IDENTITY_MISSING",
+  IDENTITY_INVALID: "IDENTITY_INVALID",
+  IDENTITY_AMBIGUOUS: "IDENTITY_AMBIGUOUS",
+  IDENTITY_TYPE_CONFLICT: "IDENTITY_TYPE_CONFLICT",
   XML_BOZUK: "XML_BOZUK",
   XXE_REJECTED: "XXE_REJECTED",
   ZIP_BOMB: "ZIP_BOMB",
@@ -201,18 +211,27 @@ export function normalizeTaxId(value = "") {
 
 /**
  * Seçili firma VKN/TCKN ile dosya vergi kimliği karşılaştırır.
+ * Fail-closed: eksik kimlik artık {ok:true, skipped:true} ile geçilmez.
  */
-export function assertCompanyTaxMatch(fileTaxId = "", companyTaxId = "") {
-  const fileId = normalizeTaxId(fileTaxId);
-  const companyId = normalizeTaxId(companyTaxId);
-  if (!companyId || !fileId) return { ok: true, skipped: !companyId || !fileId };
-  if (fileId !== companyId) {
+export function assertCompanyTaxMatch(fileTaxId = "", companyTaxId = "", options = {}) {
+  const decision = evaluateEDefterCompanyIdentity({
+    companyTaxId,
+    documentTaxId: fileTaxId,
+    documentTaxIds: options.documentTaxIds,
+    companyId: options.companyId || "",
+    sourceKind: options.sourceKind || "xml",
+  });
+  if (decision.blocking || !decision.allowAnalyze) {
     throw makeEDefterError(
-      EDEFTER_ERROR_CODE.COMPANY_MISMATCH,
-      "Dosyadaki VKN/TCKN seçili firma ile uyuşmuyor. Analiz durduruldu."
+      identityStatusToErrorCode(decision.status) || EDEFTER_ERROR_CODE.COMPANY_MISMATCH,
+      decision.safeMessage
     );
   }
-  return { ok: true, skipped: false };
+  return {
+    ok: true,
+    skipped: false,
+    decision,
+  };
 }
 
 export function createParseAbortGuard({ signal, timeoutMs = EDEFTER_PARSE_TIMEOUT_MS } = {}) {

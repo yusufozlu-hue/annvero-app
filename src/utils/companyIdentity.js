@@ -3,21 +3,62 @@
  * Drive ID / token içermez.
  */
 
+/** Desteklenen vergi kimlik alanları — top-level ve nested `data` (uydurma yok). */
+export const COMPANY_TAX_IDENTITY_KEYS = Object.freeze([
+  "taxNumber",
+  "vkn",
+  "vergiNo",
+  "tax_number",
+  "taxId",
+  "tax_id",
+  "tckn",
+]);
+
 export function digitsOnly(value) {
   return String(value || "").replace(/\D/g, "");
 }
 
-/** 10 haneli vergi kimlik no (VKN). TCKN (11) burada zorunlu engel değil. */
-export function extractCompanyVkn(companyOrData) {
-  const data =
-    companyOrData?.data && typeof companyOrData.data === "object"
+/**
+ * Top-level + nested `data` içindeki tüm dolu vergi kimlik adaylarını (yalnız rakam) toplar.
+ * Farklı değerler → ambiguous (fail-closed); sessizce ilkini seçmez.
+ */
+export function collectCompanyTaxIdentityDigits(companyOrData) {
+  if (!companyOrData || typeof companyOrData !== "object") return [];
+  const nested =
+    companyOrData.data && typeof companyOrData.data === "object"
       ? companyOrData.data
-      : companyOrData && typeof companyOrData === "object"
-        ? companyOrData
-        : {};
-  return digitsOnly(
-    data.taxNumber || data.vkn || data.vergiNo || companyOrData?.taxNumber || ""
-  );
+      : null;
+  const unique = new Set();
+  for (const key of COMPANY_TAX_IDENTITY_KEYS) {
+    for (const source of [companyOrData, nested]) {
+      if (!source) continue;
+      const raw = source[key];
+      if (raw == null || String(raw).trim() === "") continue;
+      const d = digitsOnly(raw);
+      if (d) unique.add(d);
+    }
+  }
+  return [...unique];
+}
+
+/**
+ * Tek normalize helper. Ambiguous → boş (fail-closed).
+ * Olmayan alanı uydurmaz; yalnızca bilinen alias'ları okur.
+ */
+export function pickCompanyTaxIdentityRaw(companyOrData) {
+  const digits = collectCompanyTaxIdentityDigits(companyOrData);
+  if (digits.length === 0) return "";
+  if (digits.length > 1) return "";
+  return digits[0];
+}
+
+export function isCompanyTaxIdentityAmbiguous(companyOrData) {
+  return collectCompanyTaxIdentityDigits(companyOrData).length > 1;
+}
+
+/** 10/11 haneli vergi kimlik no (VKN/TCKN). Ambiguous → "". */
+export function extractCompanyVkn(companyOrData) {
+  return digitsOnly(pickCompanyTaxIdentityRaw(companyOrData));
 }
 
 export function extractCompanyMersis(companyOrData) {

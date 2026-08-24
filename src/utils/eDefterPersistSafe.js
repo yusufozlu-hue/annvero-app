@@ -4,6 +4,7 @@
  */
 
 import { E_DEFTER_ENGINE_VERSION as DEFAULT_ENGINE_VERSION } from "@/src/config/eDefterKontrolDefaults";
+import { normalizeIdentityConfirmationValue } from "@/src/utils/eDefterCompanyIdentityGate";
 
 export const E_DEFTER_ENGINE_VERSION = DEFAULT_ENGINE_VERSION;
 
@@ -53,6 +54,11 @@ export const EDEFTER_SAFE_METADATA_KEYS = Object.freeze([
   "finding_code",
   "resolution_status",
   "retry",
+  "identity_status",
+  "identity_verified",
+  "identity_user_confirmed",
+  "identity_confirmation",
+  "identity_fingerprint",
 ]);
 
 const FORBIDDEN_KEY_RE =
@@ -280,6 +286,13 @@ export function buildSafeEdefterPersistPayload({
       can_approve_export: Boolean(summary.canApproveExport),
       yuklenen_defter: sanitizeNumber(summary.yuklenenDefterSayisi),
       retry: Boolean(retry),
+      identity_status: sanitizeString(summary.identityStatus, 64),
+      identity_verified: Boolean(summary.identityVerified),
+      identity_user_confirmed: Boolean(summary.identityUserConfirmed),
+      identity_confirmation:
+        normalizeIdentityConfirmationValue(summary.identityConfirmation) ??
+        sanitizeString(summary.identityConfirmation, 40),
+      identity_fingerprint: sanitizeString(summary.identityFingerprint, 128),
     }),
     started_at: startedAt || null,
     completed_at: completedAt || new Date().toISOString(),
