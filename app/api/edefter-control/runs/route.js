@@ -10,16 +10,17 @@ import {
   normalizeIdentityConfirmationValue,
 } from "@/src/utils/eDefterCompanyIdentityGate";
 import {
+  callEdefterAtomicPersistRpc,
+  EDEFTER_ATOMIC_PERSIST_UI_ERROR,
+} from "@/src/utils/eDefterAtomicPersist";
+import {
   assertNoRawDocumentLeak,
-  buildSafeEdefterMetadata,
-  EDEFTER_AUDIT_EVENT_TYPES,
   publicEdefterFindingView,
   publicEdefterRunView,
 } from "@/src/utils/eDefterPersistSafe";
 
 const RUNS_TABLE = "edefter_control_runs";
 const FINDINGS_TABLE = "edefter_control_findings";
-const AUDIT_TABLE = "edefter_control_audit_events";
 
 const FORBIDDEN_KEY_RE =
   /xml|zip|iban|vkn|mersis|token|secret|password|raw|content|drive.?file|file.?id|payload|body|document.?text|satir|row.?data|belge.?metin/i;
@@ -132,27 +133,6 @@ function sanitizeIncomingRun(body = {}) {
   return { run, findings: safeFindings, retry: Boolean(body.retry) };
 }
 
-async function writeEdefterAudit(supabase, {
-  runId = null,
-  companyId = "",
-  eventType,
-  actorId = "",
-  metadata = {},
-}) {
-  const { error } = await supabase.from(AUDIT_TABLE).insert([
-    {
-      run_id: runId,
-      company_id: companyId,
-      event_type: eventType,
-      actor_id: String(actorId || ""),
-      safe_metadata: buildSafeEdefterMetadata(metadata),
-    },
-  ]);
-  if (error) {
-    console.error("[edefter-audit]", error.message);
-  }
-}
-
 export async function GET(request) {
   const companyId = resolveCompanyId({
     companyId: request.nextUrl.searchParams.get("companyId"),
@@ -183,7 +163,9 @@ export async function GET(request) {
   query = scoped;
 
   if (period) query = query.eq("period", period);
+  // History varsayılan: yalnız tamamlanmış atomik kayıtlar (failed/kısmi otomatik başarı sayılmaz)
   if (status) query = query.eq("status", status);
+  else query = query.eq("status", "completed");
 
   const { data, error } = await query;
   if (error) {
@@ -253,208 +235,84 @@ export async function POST(request) {
   });
   if (ctx.error) return ctx.error;
 
-  // Idempotent: aynı company + fingerprint + engine → mevcut run
-  const { data: existing, error: existingError } = await ctx.supabase
+  const actorId = String(ctx.user?.id || ctx.user?.email || "");
+
+  let atomic;
+  try {
+    atomic = await callEdefterAtomicPersistRpc(ctx.supabase, {
+      run,
+      findings,
+      actorId,
+      retry,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: EDEFTER_ATOMIC_PERSIST_UI_ERROR,
+        code: error.code || "ATOMIC_PERSIST_FAILED",
+        created: false,
+      },
+      { status: error.httpStatus || 500 }
+    );
+  }
+
+  if (!atomic?.runId) {
+    return NextResponse.json(
+      {
+        error: EDEFTER_ATOMIC_PERSIST_UI_ERROR,
+        code: "ATOMIC_PERSIST_EMPTY",
+        created: false,
+      },
+      { status: 500 }
+    );
+  }
+
+  const { data: persistedRun, error: loadError } = await ctx.supabase
     .from(RUNS_TABLE)
     .select("*")
+    .eq("id", atomic.runId)
     .eq("company_id", run.company_id)
-    .eq("source_fingerprint", run.source_fingerprint)
-    .eq("engine_version", run.engine_version)
-    .is("deleted_at", null)
-    .neq("status", "deleted")
-    .order("created_at", { ascending: false })
-    .limit(1)
     .maybeSingle();
 
-  if (existingError) {
-    return NextResponse.json({ error: existingError.message }, { status: 500 });
-  }
-
-  if (existing) {
-    await writeEdefterAudit(ctx.supabase, {
-      runId: existing.id,
-      companyId: run.company_id,
-      eventType: retry
-        ? EDEFTER_AUDIT_EVENT_TYPES.SAVE_RETRY
-        : EDEFTER_AUDIT_EVENT_TYPES.RUN_IDEMPOTENT_HIT,
-      actorId: ctx.user?.id || "",
-      metadata: {
-        engine_version: run.engine_version,
-        period: run.period,
-        idempotent: true,
-        retry: Boolean(retry),
-        identity_status: run.result_summary?.identity_status,
-        identity_confirmation: run.result_summary?.identity_confirmation,
+  if (loadError || !persistedRun) {
+    return NextResponse.json(
+      {
+        error: EDEFTER_ATOMIC_PERSIST_UI_ERROR,
+        code: "ATOMIC_PERSIST_LOAD_FAILED",
+        created: false,
       },
-    });
-
-    const { data: existingFindings } = await ctx.supabase
-      .from(FINDINGS_TABLE)
-      .select("*")
-      .eq("run_id", existing.id)
-      .eq("company_id", run.company_id)
-      .is("deleted_at", null);
-
-    return NextResponse.json({
-      data: publicEdefterRunView({ ...existing, idempotent: true }),
-      findings: (existingFindings || []).map(publicEdefterFindingView),
-      idempotent: true,
-      created: false,
-    });
+      { status: 500 }
+    );
   }
 
-  // Önceki motor sürümü varsa revision + supersedes bağla
-  const { data: previous } = await ctx.supabase
-    .from(RUNS_TABLE)
-    .select("id, revision, engine_version")
-    .eq("company_id", run.company_id)
-    .eq("source_fingerprint", run.source_fingerprint)
-    .is("deleted_at", null)
-    .neq("status", "deleted")
-    .order("revision", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // Kısmi/failed asla created:true dönmez
+  if (persistedRun.status !== "completed") {
+    return NextResponse.json(
+      {
+        error: EDEFTER_ATOMIC_PERSIST_UI_ERROR,
+        code: "ATOMIC_PERSIST_INCOMPLETE",
+        created: false,
+      },
+      { status: 500 }
+    );
+  }
 
-  const revision = previous ? Number(previous.revision || 1) + 1 : 1;
-  const insertPayload = {
-    ...run,
-    revision,
-    supersedes_run_id: previous?.id || null,
-    // Server session only — client created_by / createdBy / userId ignored
-    created_by: String(ctx.user?.id || ctx.user?.email || ""),
-  };
-  delete insertPayload.createdBy;
-  delete insertPayload.userId;
-  delete insertPayload.user_id;
-
-  const { data: created, error: insertError } = await ctx.supabase
-    .from(RUNS_TABLE)
-    .insert([insertPayload])
+  const { data: persistedFindings } = await ctx.supabase
+    .from(FINDINGS_TABLE)
     .select("*")
-    .maybeSingle();
-
-  if (insertError) {
-    // Unique race → mevcut kaydı dön
-    if (String(insertError.code || "") === "23505" || /duplicate|unique/i.test(insertError.message || "")) {
-      const { data: raced } = await ctx.supabase
-        .from(RUNS_TABLE)
-        .select("*")
-        .eq("company_id", run.company_id)
-        .eq("source_fingerprint", run.source_fingerprint)
-        .eq("engine_version", run.engine_version)
-        .is("deleted_at", null)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (raced) {
-        return NextResponse.json({
-          data: publicEdefterRunView({ ...raced, idempotent: true }),
-          findings: [],
-          idempotent: true,
-          created: false,
-        });
-      }
-    }
-    return NextResponse.json({ error: insertError.message, created: false }, { status: 500 });
-  }
-
-  let createdFindings = [];
-  if (findings.length) {
-    const findingRows = findings.map((item) => ({
-      ...item,
-      run_id: created.id,
-      company_id: run.company_id,
-    }));
-    const { data: insertedFindings, error: findingsError } = await ctx.supabase
-      .from(FINDINGS_TABLE)
-      .insert(findingRows)
-      .select("*");
-    if (findingsError) {
-      console.error("[edefter-findings]", findingsError.message);
-      await ctx.supabase
-        .from(RUNS_TABLE)
-        .update({
-          status: "failed",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", created.id)
-        .eq("company_id", run.company_id);
-      await writeEdefterAudit(ctx.supabase, {
-        runId: created.id,
-        companyId: run.company_id,
-        eventType: EDEFTER_AUDIT_EVENT_TYPES.RUN_CREATED,
-        actorId: ctx.user?.id || "",
-        metadata: {
-          engine_version: run.engine_version,
-          period: run.period,
-          status: "failed",
-          findings_error: true,
-        },
-      });
-      return NextResponse.json(
-        {
-          error: "Bulgular kaydedilemedi; run başarısız işaretlendi.",
-          code: "FINDINGS_PERSIST_FAILED",
-          created: false,
-        },
-        { status: 500 }
-      );
-    }
-    createdFindings = insertedFindings || [];
-  }
-
-  if (previous?.id) {
-    await ctx.supabase
-      .from(RUNS_TABLE)
-      .update({ status: "superseded", updated_at: new Date().toISOString() })
-      .eq("id", previous.id)
-      .eq("company_id", run.company_id);
-
-    await writeEdefterAudit(ctx.supabase, {
-      runId: created.id,
-      companyId: run.company_id,
-      eventType: EDEFTER_AUDIT_EVENT_TYPES.RUN_SUPERSEDED,
-      actorId: ctx.user?.id || "",
-      metadata: {
-        engine_version: run.engine_version,
-        superseded_run_id: previous.id,
-        revision,
-      },
-    });
-  }
-
-  const confirmation =
-    normalizeIdentityConfirmationValue(run.result_summary?.identity_confirmation) ||
-    "";
-
-  await writeEdefterAudit(ctx.supabase, {
-    runId: created.id,
-    companyId: run.company_id,
-    eventType: EDEFTER_AUDIT_EVENT_TYPES.RUN_CREATED,
-    actorId: ctx.user?.id || "",
-    metadata: {
-      engine_version: run.engine_version,
-      period: run.period,
-      revision,
-      document_count: run.document_count,
-      row_count: run.row_count,
-      reconciliation_status: run.reconciliation_status,
-      severity_counts: run.severity_counts,
-      overall_sonuc: run.result_summary?.overall_sonuc,
-      retry: Boolean(retry),
-      identity_status: run.result_summary?.identity_status,
-      identity_verified: Boolean(run.result_summary?.identity_verified),
-      identity_user_confirmed: Boolean(run.result_summary?.identity_user_confirmed),
-      identity_confirmation: confirmation,
-      identity_fingerprint: run.result_summary?.identity_fingerprint,
-    },
-  });
+    .eq("run_id", atomic.runId)
+    .eq("company_id", run.company_id)
+    .is("deleted_at", null);
 
   return NextResponse.json({
-    data: publicEdefterRunView(created),
-    findings: createdFindings.map(publicEdefterFindingView),
-    idempotent: false,
-    created: true,
+    data: publicEdefterRunView({
+      ...persistedRun,
+      idempotent: Boolean(atomic.idempotent),
+    }),
+    findings: (persistedFindings || []).map(publicEdefterFindingView),
+    idempotent: Boolean(atomic.idempotent),
+    reused: Boolean(atomic.reused || atomic.idempotent),
+    created: Boolean(atomic.created) && !atomic.idempotent,
+    finding_count: atomic.findingCount,
   });
 }

@@ -70,6 +70,7 @@ import {
   saveEDefterControlRun,
   updateEDefterFindingResolution,
 } from "@/src/utils/eDefterPersistClient";
+import { EDEFTER_ATOMIC_PERSIST_UI_ERROR } from "@/src/utils/eDefterAtomicPersist";
 import { EDEFTER_FINDING_RESOLUTION } from "@/src/utils/eDefterPersistSafe";
 import {
   logExcelError,
@@ -331,11 +332,11 @@ export default function EDefterKontrolPage() {
       }
       return result;
     } catch (error) {
-      setPersistError(error?.message || "Kayıt başarısız.");
+      setPersistError(EDEFTER_ATOMIC_PERSIST_UI_ERROR);
       setPersistRetryPayload(payload);
       if (!silent) {
         setToast(
-          `${error?.message || "Kayıt başarısız."} Analiz sonuçları ekranda duruyor — Kaydı yeniden deneyin.`
+          `${EDEFTER_ATOMIC_PERSIST_UI_ERROR} Analiz sonuçları ekranda duruyor.`
         );
       }
       throw error;
