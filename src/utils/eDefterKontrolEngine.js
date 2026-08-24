@@ -34,6 +34,11 @@ import {
   normalizePeriodKey,
   normalizeTaxId,
 } from "@/src/utils/eDefterSecurity";
+import {
+  applyIdentityGateToSummary,
+  evaluateEDefterCompanyIdentity,
+  identityStatusToErrorCode,
+} from "@/src/utils/eDefterCompanyIdentityGate";
 
 function compactText(value) {
   return normalizeParserText(value).replace(/\s+/g, "");
@@ -1814,9 +1819,29 @@ export async function runOneClickEDefterKontrol({
 
   const fileTax = parsedUpload?.packageMeta?.taxId || "";
   const filePeriod = parsedUpload?.packageMeta?.period || "";
-  if (companyTaxId && fileTax && normalizeTaxId(companyTaxId) !== normalizeTaxId(fileTax)) {
-    const err = new Error("Dosyadaki VKN/TCKN seçili firma ile uyuşmuyor. Analiz durduruldu.");
-    err.code = EDEFTER_ERROR_CODE.COMPANY_MISMATCH;
+  const hasXmlPackage = Boolean(parsedUpload && !parsedUpload.duplicate);
+  const hasExcelOnly =
+    !hasXmlPackage &&
+    Boolean(muavinRows.length || yevmiyeRows.length || mizanRows.length || edefterListeRows.length);
+  const sourceKind = hasXmlPackage ? "xml" : hasExcelOnly ? "excel" : "unknown";
+
+  const identity = evaluateEDefterCompanyIdentity({
+    companyTaxId,
+    documentTaxId: fileTax,
+    companyId,
+    sourceKind,
+  });
+
+  if (identity.blocking || !identity.allowAnalyze) {
+    const err = new Error(identity.safeMessage);
+    err.code = identityStatusToErrorCode(identity.status) || EDEFTER_ERROR_CODE.COMPANY_MISMATCH;
+    err.identity = {
+      status: identity.status,
+      verified: identity.verified,
+      matched: identity.matched,
+      safeMessage: identity.safeMessage,
+      safeFingerprint: identity.safeFingerprint,
+    };
     throw err;
   }
 
@@ -1837,7 +1862,7 @@ export async function runOneClickEDefterKontrol({
     fingerprintSession.add(parsedUpload.fingerprint);
   }
 
-  return runEDefterKontrolPipeline({
+  const result = runEDefterKontrolPipeline({
     muavinRows,
     yevmiyeRows,
     mizanRows,
@@ -1853,6 +1878,30 @@ export async function runOneClickEDefterKontrol({
     companyTaxId,
     coreDecision,
   });
+
+  result.summary = applyIdentityGateToSummary(result.summary, identity);
+  result.identity = {
+    status: identity.status,
+    verified: identity.verified,
+    identityVerified: Boolean(identity.verified),
+    matched: identity.matched,
+    userConfirmed: Boolean(identity.userConfirmed),
+    identityUserConfirmed: Boolean(identity.userConfirmed),
+    reviewRequired: identity.reviewRequired,
+    allowAnalyze: identity.allowAnalyze,
+    allowPersist: identity.allowPersist,
+    allowExport: identity.allowExport,
+    confirmation: identity.confirmation || "",
+    safeMessage: identity.safeMessage,
+    safeFingerprint: identity.safeFingerprint,
+    companyIdentityType: identity.companyIdentityType,
+    documentIdentityType: identity.documentIdentityType,
+    sourceKind: identity.sourceKind,
+  };
+  if (!identity.allowExport) {
+    result.summary.canApproveExport = false;
+  }
+  return result;
 }
 
 export function recalculateEDefterRows(rows = []) {
