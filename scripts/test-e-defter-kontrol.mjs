@@ -93,6 +93,7 @@ function journalXml({
     .join("");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <${root}>
+  <!-- schema example year must not win: 2000-09 -->
   <vkn>${vkn}</vkn>
   <periodCoveredStart>${period}-01</periodCoveredStart>
   <identifier>${vkn}</identifier>
@@ -273,6 +274,316 @@ function row(partial) {
   );
 }
 
+// --- Period: structured tag beats spurious full-text year (FAIL→PASS) ---
+{
+  const xml = journalXml({
+    period: "2024-01",
+    entries: [
+      { date: "2024-01-10", fisNo: "1", yevmiyeNo: "1", hesap: "100.01", amount: 50, dc: "D", belgeNo: "P1" },
+      { date: "2024-01-10", fisNo: "1", yevmiyeNo: "2", hesap: "320.01", amount: 50, dc: "C", belgeNo: "P1" },
+    ],
+  });
+  assert(xml.includes("2000-09"), "fixture embeds decoy year");
+  const parsed = parseEDefterXmlText(xml, "anon-journal.xml");
+  assert(parsed.packageMeta.period === "2024-01", "periodCoveredStart wins over decoy 2000-09");
+}
+
+// --- Period: entry majority overrides conflicting header month ---
+{
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<JournalEntries>
+  <vkn>1234567890</vkn>
+  <periodCoveredStart>2024-05-01</periodCoveredStart>
+  <entryDetail>
+    <enteredDate>2024-01-10</enteredDate>
+    <entryNumber>1</entryNumber>
+    <lineNumber>1</lineNumber>
+    <accountMainID>100.01</accountMainID>
+    <entryComment>a</entryComment>
+    <documentNumber>H1</documentNumber>
+    <amount>10</amount>
+    <debitCreditCode>D</debitCreditCode>
+  </entryDetail>
+  <entryDetail>
+    <enteredDate>2024-01-10</enteredDate>
+    <entryNumber>1</entryNumber>
+    <lineNumber>2</lineNumber>
+    <accountMainID>320.01</accountMainID>
+    <entryComment>b</entryComment>
+    <documentNumber>H1</documentNumber>
+    <amount>10</amount>
+    <debitCreditCode>C</debitCreditCode>
+  </entryDetail>
+</JournalEntries>`;
+  const parsed = parseEDefterXmlText(xml, "anon-header-mismatch.xml");
+  assert(parsed.packageMeta.period === "2024-01", "entry majority overrides conflicting header");
+  assert(parsed.packageMeta.periodHeaderMismatch === true, "periodHeaderMismatch flagged");
+}
+
+// --- Multi-line same belgeNo is NOT duplicate; exact line repeat IS ---
+{
+  const multiLine = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({ id: "m1", fisNo: "1", belgeNo: "BX", hesapKodu: "100.01", borc: 100, alacak: 0, aciklama: "a" }),
+      row({ id: "m2", fisNo: "1", belgeNo: "BX", hesapKodu: "320.01", borc: 0, alacak: 100, aciklama: "b" }),
+    ],
+    period: "2026/05",
+    companyId: "c1",
+  });
+  assert(
+    !multiLine.rows.some((r) =>
+      (Array.isArray(r.issues) ? r.issues : [r.issues]).join(" ").includes("Birebir aynı satır tekrarı")
+    ),
+    "shared belgeNo across lines is not exact-line duplicate"
+  );
+
+  const exactDup = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({ id: "d1", fisNo: "2", belgeNo: "BY", hesapKodu: "100.01", borc: 40, alacak: 0, tarih: "10.05.2026" }),
+      row({ id: "d2", fisNo: "2", belgeNo: "BY", hesapKodu: "100.01", borc: 40, alacak: 0, tarih: "10.05.2026" }),
+      row({ id: "d3", fisNo: "2", belgeNo: "BZ", hesapKodu: "320.01", borc: 0, alacak: 80, tarih: "10.05.2026" }),
+    ],
+    period: "2026/05",
+    companyId: "c1",
+  });
+  assert(
+    exactDup.rows.some((r) =>
+      (Array.isArray(r.issues) ? r.issues : [r.issues]).join(" ").includes("Birebir aynı satır tekrarı")
+    ),
+    "exact line fingerprint duplicate flagged"
+  );
+}
+
+// --- A–J: false-positive noise contract ---
+{
+  // A: same voucher debit/credit lines → no duplicate
+  const a = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({ id: "a1", fisNo: "10", yevmiyeNo: "1", belgeNo: "BA", hesapKodu: "100.01", borc: 50, alacak: 0, aciklama: "ortak" }),
+      row({ id: "a2", fisNo: "10", yevmiyeNo: "2", belgeNo: "BA", hesapKodu: "320.01", borc: 0, alacak: 50, aciklama: "ortak" }),
+    ],
+    period: "2026/05",
+    companyId: "c1",
+  });
+  assert(
+    !a.rows.some((r) => (Array.isArray(r.issues) ? r.issues : []).some((x) => String(x).includes("Birebir") || String(x?.message || "").includes("Birebir"))),
+    "A same-fis multi-line not exact duplicate"
+  );
+
+  // B: same explanation different fis → no duplicate
+  const b = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({ id: "b1", fisNo: "11", yevmiyeNo: "1", belgeNo: "B1", hesapKodu: "100.01", borc: 10, alacak: 0, aciklama: "aynı metin" }),
+      row({ id: "b2", fisNo: "11", yevmiyeNo: "2", belgeNo: "B1", hesapKodu: "320.01", borc: 0, alacak: 10, aciklama: "aynı metin" }),
+      row({ id: "b3", fisNo: "12", yevmiyeNo: "1", belgeNo: "B2", hesapKodu: "100.01", borc: 20, alacak: 0, aciklama: "aynı metin" }),
+      row({ id: "b4", fisNo: "12", yevmiyeNo: "2", belgeNo: "B2", hesapKodu: "320.01", borc: 0, alacak: 20, aciklama: "aynı metin" }),
+    ],
+    period: "2026/05",
+    companyId: "c1",
+  });
+  assert(
+    !b.rows.some((r) => String((r.issues || []).join(" ")).includes("Mükerrer açıklama")),
+    "B same-aciklama different fis not duplicate"
+  );
+
+  // C: same amount + near date + different fis → no blocking/UYARI duplicate from similarity
+  const c = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({
+        id: "c1",
+        fisNo: "21",
+        yevmiyeNo: "1",
+        belgeNo: "C1",
+        hesapKodu: "100.01",
+        borc: 77,
+        alacak: 0,
+        tarih: "10.05.2026",
+        aciklama: "x",
+        cariUnvan: "Cari Anonim A",
+      }),
+      row({
+        id: "c1b",
+        fisNo: "21",
+        yevmiyeNo: "2",
+        belgeNo: "C1",
+        hesapKodu: "320.01",
+        borc: 0,
+        alacak: 77,
+        tarih: "10.05.2026",
+        aciklama: "x",
+        cariUnvan: "Cari Anonim A",
+      }),
+      row({
+        id: "c2",
+        fisNo: "22",
+        yevmiyeNo: "1",
+        belgeNo: "C2",
+        hesapKodu: "100.01",
+        borc: 77,
+        alacak: 0,
+        tarih: "11.05.2026",
+        aciklama: "y",
+        cariUnvan: "Cari Anonim A",
+      }),
+      row({
+        id: "c2b",
+        fisNo: "22",
+        yevmiyeNo: "2",
+        belgeNo: "C2",
+        hesapKodu: "320.01",
+        borc: 0,
+        alacak: 77,
+        tarih: "11.05.2026",
+        aciklama: "y",
+        cariUnvan: "Cari Anonim A",
+      }),
+    ],
+    period: "2026/05",
+    companyId: "c1",
+  });
+  const cSim = c.rows.flatMap((r) => r.issueDetails || []).filter((i) => String(i.message || "").includes("Benzer cari"));
+  assert(
+    cSim.every((i) => i.severity === E_DEFTER_ISSUE_SEVERITY.BILGI && !i.blocking),
+    "C near-similarity is BILGI only when present"
+  );
+  assert(c.overallSonuc !== E_DEFTER_SONUC_SEVIYE.KRITIK, "C not critical from similarity");
+
+  // D: Yevmiye/Kebir same operation → no cross duplicate
+  const d = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({
+        id: "dy",
+        kaynak: E_DEFTER_KAYNAK.YEVMIYE_XML,
+        fisNo: "30",
+        yevmiyeNo: "1",
+        belgeNo: "D1",
+        hesapKodu: "100.01",
+        borc: 15,
+        alacak: 0,
+      }),
+      row({
+        id: "dk",
+        kaynak: E_DEFTER_KAYNAK.KEBIR_XML,
+        fisNo: "30",
+        yevmiyeNo: "1",
+        belgeNo: "D1",
+        hesapKodu: "100.01",
+        borc: 15,
+        alacak: 0,
+      }),
+      row({
+        id: "dy2",
+        kaynak: E_DEFTER_KAYNAK.YEVMIYE_XML,
+        fisNo: "30",
+        yevmiyeNo: "2",
+        belgeNo: "D1",
+        hesapKodu: "320.01",
+        borc: 0,
+        alacak: 15,
+      }),
+      row({
+        id: "dk2",
+        kaynak: E_DEFTER_KAYNAK.KEBIR_XML,
+        fisNo: "30",
+        yevmiyeNo: "2",
+        belgeNo: "D1",
+        hesapKodu: "320.01",
+        borc: 0,
+        alacak: 15,
+      }),
+    ],
+    period: "2026/05",
+    companyId: "c1",
+  });
+  assert(
+    !d.rows.some((r) => String((r.issues || []).join(" ")).includes("Birebir aynı satır")),
+    "D yev/kebir twin lines not exact duplicate"
+  );
+
+  // E: exact same line twice → duplicate
+  const e = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({ id: "e1", fisNo: "40", yevmiyeNo: "1", belgeNo: "E1", hesapKodu: "100.01", borc: 9, alacak: 0, tarih: "12.05.2026" }),
+      row({ id: "e2", fisNo: "40", yevmiyeNo: "1", belgeNo: "E1", hesapKodu: "100.01", borc: 9, alacak: 0, tarih: "12.05.2026" }),
+      row({ id: "e3", fisNo: "40", yevmiyeNo: "2", belgeNo: "E1", hesapKodu: "320.01", borc: 0, alacak: 18, tarih: "12.05.2026" }),
+    ],
+    period: "2026/05",
+    companyId: "c1",
+  });
+  assert(
+    e.rows.some((r) => String((r.issues || []).join(" ")).includes("Birebir aynı satır")),
+    "E exact line duplicate flagged"
+  );
+
+  // G: missing cariUnvan is not invented from aciklama (XML parse)
+  const gXml = journalXml({
+    period: "2026-05",
+    entries: [
+      { date: "2026-05-10", fisNo: "1", yevmiyeNo: "1", hesap: "100.01", amount: 5, dc: "D", belgeNo: "G1", aciklama: "sadece aciklama" },
+      { date: "2026-05-10", fisNo: "1", yevmiyeNo: "2", hesap: "320.01", amount: 5, dc: "C", belgeNo: "G1", aciklama: "sadece aciklama" },
+    ],
+  });
+  const gParsed = parseEDefterXmlText(gXml, "anon-g.xml");
+  assert(
+    gParsed.rows.every((r) => !r.cariUnvan || r.cariUnvan !== r.aciklama || r.cariUnvan === ""),
+    "G cariUnvan not copied from aciklama"
+  );
+  assert(gParsed.rows.every((r) => !r.cariUnvan), "G cariUnvan empty when absent in XML");
+
+  // H: real blocking → edefterUygun false
+  const h = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({ id: "h1", fisNo: "50", belgeNo: "H1", hesapKodu: "100.01", borc: 10, alacak: 0, tarih: "15.04.2026" }),
+      row({ id: "h2", fisNo: "50", belgeNo: "H2", hesapKodu: "320.01", borc: 0, alacak: 10, tarih: "15.04.2026" }),
+    ],
+    period: "2026/05",
+    companyId: "c1",
+  });
+  assert(h.summary.edefterUygun === false, "H blocking/period out → uygun false");
+
+  // I: info-only may remain uygun
+  const iOnly = classifyEDefterIssues([
+    createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message: "Şüpheli yuvarlama kaydı.",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 10,
+    }),
+  ]);
+  assert(
+    resolveEdefterUygun(
+      [{ grup: iOnly.primaryGroup, issueDetails: iOnly.issueDetails, issues: iOnly.issues, riskScore: iOnly.riskScore }],
+      E_DEFTER_SONUC_SEVIYE.BILGI
+    ) === true,
+    "I info-only may remain uygun"
+  );
+
+  // J: clean balanced layout → UYGUN
+  const j = runEDefterKontrolPipeline({
+    xmlRows: [
+      row({ id: "j1", fisNo: "60", yevmiyeNo: "1", belgeNo: "J1", hesapKodu: "100.01", borc: 100, alacak: 0, aciklama: "a", tarih: "10.05.2026" }),
+      row({ id: "j2", fisNo: "60", yevmiyeNo: "2", belgeNo: "J1", hesapKodu: "320.01", borc: 0, alacak: 100, aciklama: "b", tarih: "10.05.2026" }),
+    ],
+    period: "2026/05",
+    companyId: "c1",
+  });
+  // Period-end BILGI rows may exist; overall should not be UYARI/KRITIK from clean lines
+  const jLineIssues = j.rows
+    .filter((r) => r.fisNo === "60")
+    .flatMap((r) => r.issueDetails || [])
+    .filter((iss) => iss.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI);
+  assert(jLineIssues.length === 0, "J clean lines have no non-info issues");
+  assert(
+    j.overallSonuc === E_DEFTER_SONUC_SEVIYE.UYGUN || j.overallSonuc === E_DEFTER_SONUC_SEVIYE.BILGI,
+    "J clean layout overall UYGUN or BILGI"
+  );
+  assert(
+    j.summary.edefterUygun === true || j.overallSonuc === E_DEFTER_SONUC_SEVIYE.BILGI,
+    "J clean layout uygun when no non-info"
+  );
+}
+
 // --- Hesap planda yok ---
 {
   const result = runEDefterKontrolPipeline({
@@ -387,8 +698,8 @@ function row(partial) {
     journalXml({
       period: "2026-06",
       entries: [
-        { amount: 10, dc: "D", belgeNo: "M3" },
-        { amount: 10, dc: "C", belgeNo: "M4" },
+        { date: "2026-06-15", amount: 10, dc: "D", belgeNo: "M3" },
+        { date: "2026-06-15", amount: 10, dc: "C", belgeNo: "M4" },
       ],
     })
   );

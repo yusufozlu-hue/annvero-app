@@ -221,6 +221,18 @@ function mapEntryToRow(entryNode, index, kaynak) {
   const aciklama = textOf(entryNode, ["entryComment", "detailComment", "description", "aciklama"]);
   const belgeNo = textOf(entryNode, ["documentNumber", "documentReference", "belgeNo", "evrakNo"]);
   const belgeTuru = textOf(entryNode, ["documentType", "belgeTuru", "evrakTuru"]);
+  // Cari/party is a distinct field — never invent from explanation text.
+  const cariUnvan = textOf(entryNode, [
+    "payeeName",
+    "payerName",
+    "counterpartyName",
+    "partyName",
+    "cariUnvan",
+    "cariAdi",
+    "unvan",
+    "vendorName",
+    "customerName",
+  ]);
   const amountText = textOf(entryNode, ["amount", "tutar", "lineAmount"]);
   const debitCredit = textOf(entryNode, ["debitCreditCode", "debitCreditIndicator", "dc"]);
   const amount = parseMoneyTR(amountText);
@@ -242,7 +254,7 @@ function mapEntryToRow(entryNode, index, kaynak) {
     belgeTarihi: tarih,
     borc: isDebit ? amount : 0,
     alacak: isDebit ? 0 : amount,
-    cariUnvan: aciklama,
+    cariUnvan,
     tutar: amount,
     kontrolDurumu: "",
     not: "",
@@ -252,7 +264,34 @@ function mapEntryToRow(entryNode, index, kaynak) {
   };
 }
 
-function extractPackageMeta(xmlText = "", doc = null) {
+function majorityPeriodFromRows(rows = []) {
+  const buckets = new Map();
+  for (const row of rows) {
+    const raw = String(row?.tarih || row?.yevmiyeTarihi || row?.fisTarihi || "").trim();
+    if (!raw) continue;
+    // Accept YYYY-MM / YYYY/MM / DD.MM.YYYY / DD/MM/YYYY
+    let key = "";
+    const iso = raw.match(/(20\d{2})[-/.](0?[1-9]|1[0-2])/);
+    if (iso) key = `${iso[1]}-${String(iso[2]).padStart(2, "0")}`;
+    else {
+      const tr = raw.match(/(0?[1-9]|[12]\d|3[01])[./](0?[1-9]|1[0-2])[./](20\d{2})/);
+      if (tr) key = `${tr[3]}-${String(tr[2]).padStart(2, "0")}`;
+    }
+    if (!key) continue;
+    buckets.set(key, (buckets.get(key) || 0) + 1);
+  }
+  let best = "";
+  let bestN = 0;
+  for (const [k, n] of buckets) {
+    if (n > bestN) {
+      best = k;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+function extractPackageMeta(xmlText = "", doc = null, rows = []) {
   const taxId =
     extractTaxIdFromText(xmlText) ||
     (doc
@@ -265,20 +304,39 @@ function extractPackageMeta(xmlText = "", doc = null) {
           "taxpayerId",
         ])
       : "");
-  const periodRaw =
-    extractPeriodFromText(xmlText) ||
+  // Structured tags first — full-text scan often hits schema/example years (e.g. 2000-09).
+  const structuredRaw =
     (doc
       ? textOf(doc.documentElement, [
           "periodCoveredStart",
+          "periodCoveredEnd",
           "period",
           "donem",
           "fiscalYear",
           "accountingPeriod",
         ])
-      : "");
+      : "") || "";
+  const structured = normalizePeriodKey(structuredRaw);
+  const fromRows = majorityPeriodFromRows(rows);
+  const fromText = normalizePeriodKey(extractPeriodFromText(xmlText) || "");
+
+  let period = structured || fromRows || fromText || "";
+  let periodSource = structured ? "structured" : fromRows ? "entry_majority" : fromText ? "fulltext" : "none";
+  let periodHeaderMismatch = false;
+
+  // If header period conflicts with dominant entry month, prefer entries for control
+  // and surface a technical finding (header may be wrong / multi-month pack).
+  if (structured && fromRows && structured !== fromRows) {
+    period = fromRows;
+    periodSource = "entry_majority_override";
+    periodHeaderMismatch = true;
+  }
+
   return {
     taxId: normalizeTaxId(taxId),
-    period: normalizePeriodKey(periodRaw),
+    period,
+    periodSource,
+    periodHeaderMismatch,
   };
 }
 
@@ -313,7 +371,7 @@ export function parseEDefterXmlText(xmlText = "", fileName = "", options = {}) {
 
   assertRowLimit(rows.length);
 
-  const packageMeta = extractPackageMeta(xmlText, doc);
+  const packageMeta = extractPackageMeta(xmlText, doc, rows);
   const beratMeta = {
     readable: true,
     defterType,
@@ -488,9 +546,13 @@ export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "", optio
   const taxIds = new Set();
   const periods = new Set();
 
-  const trackMeta = (packageMeta = {}) => {
+  const trackMeta = (packageMeta = {}, defterType = "") => {
     if (packageMeta.taxId) taxIds.add(packageMeta.taxId);
-    if (packageMeta.period) periods.add(normalizePeriodKey(packageMeta.period));
+    // Berat metadata period often disagrees with entry majority; do not trip mixed-period gate.
+    const isLedger = defterType === "yevmiye" || defterType === "kebir";
+    if (isLedger && packageMeta.period) {
+      periods.add(normalizePeriodKey(packageMeta.period));
+    }
   };
 
   const finalizeMixedCheck = () => {
@@ -540,7 +602,7 @@ export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "", optio
           companyId: options.companyId,
           deferIdentityAssert: true,
         });
-        trackMeta(parsed.packageMeta);
+        trackMeta(parsed.packageMeta, parsed.defterType);
         if (parsed.defterType === "berat") {
           beratMeta = parsed.meta;
           technicalFindings.push({
@@ -551,6 +613,14 @@ export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "", optio
           });
         } else {
           allRows = [...allRows, ...parsed.rows];
+          if (parsed.packageMeta?.periodHeaderMismatch) {
+            technicalFindings.push({
+              code: "PERIOD_HEADER_MISMATCH",
+              message:
+                "Paket dönem başlığı ile satır tarihlerinin çoğunluğu uyuşmuyor; kontrol dönemi satır çoğunluğuna göre alındı (inceleme bilgisi).",
+              level: "Bilgi",
+            });
+          }
           technicalFindings.push(...analyzeEDefterXmlTechnical(parsed.rows, parsed.meta));
           primaryType = parsed.defterType === "kebir" ? "kebir" : primaryType === "ZIP" ? "yevmiye" : primaryType;
         }
@@ -588,8 +658,8 @@ export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "", optio
     if (!beratMeta) {
       technicalFindings.push({
         code: "BERAT_ESLESMEDI",
-        message: "ZIP içinde berat dosyası bulunamadı.",
-        level: "Uyarı",
+        message: "ZIP içinde berat dosyası bulunamadı (inceleme bilgisi).",
+        level: "Bilgi",
       });
     }
 
@@ -637,10 +707,18 @@ export async function parseEDefterUploadBuffer(arrayBuffer, fileName = "", optio
     );
   }
 
-  trackMeta(parsed.packageMeta);
+  trackMeta(parsed.packageMeta, parsed.defterType);
   finalizeMixedCheck();
 
   const technicalFindings = analyzeEDefterXmlTechnical(parsed.rows, parsed.meta);
+  if (parsed.packageMeta?.periodHeaderMismatch) {
+    technicalFindings.push({
+      code: "PERIOD_HEADER_MISMATCH",
+      message:
+        "Paket dönem başlığı ile satır tarihlerinin çoğunluğu uyuşmuyor; kontrol dönemi satır çoğunluğuna göre alındı (inceleme bilgisi).",
+      level: "Bilgi",
+    });
+  }
   if (parsed.defterType === "berat") {
     technicalFindings.push({
       code: EDEFTER_ERROR_CODE.EXTERNAL_VERIFICATION_REQUIRED,

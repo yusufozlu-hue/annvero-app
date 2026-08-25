@@ -109,6 +109,20 @@ function parseLedgerRow(row, headers, index, kaynak) {
 
   const borc = parseMoneyTR(getSheetCell(row, headers, ["BORÇ", "BORC"]));
   const alacak = parseMoneyTR(getSheetCell(row, headers, ["ALACAK"]));
+  const cariUnvan = String(
+    getSheetCell(row, headers, [
+      "CARİ UNVAN",
+      "CARI UNVAN",
+      "CARİ ADI",
+      "CARI ADI",
+      "UNVAN",
+      "MÜŞTERİ",
+      "MUSTERI",
+      "SATICI",
+      "PAYEE",
+      "PARTY",
+    ]) || ""
+  ).trim();
 
   if (!tarih && !fisNo && !hesapKodu && !borc && !alacak) return null;
 
@@ -126,7 +140,7 @@ function parseLedgerRow(row, headers, index, kaynak) {
     belgeTarihi: belgeTarihi ? formatDateTR(belgeTarihi) : "",
     borc,
     alacak,
-    cariUnvan: aciklama,
+    cariUnvan,
     tutar: roundMoney(Math.max(borc, alacak)),
     kontrolDurumu: "",
     not: "",
@@ -207,7 +221,7 @@ export function parseMizanSheet(sheetRows = []) {
         belgeTarihi: "",
         borc,
         alacak,
-        cariUnvan: hesapAdi,
+        cariUnvan: "",
         tutar: roundMoney(Math.max(borc, alacak, Math.abs(bakiye))),
         mizanBakiye: bakiye,
         kontrolDurumu: "",
@@ -293,66 +307,140 @@ function analyzeAccountBalanceIssues(hesapKodu, net) {
   const prefix = accountPrefix(hesapKodu);
 
   if (prefix.startsWith("100") && Math.abs(net) > KASA_BAKIYE_ESIK) {
-    issues.push(`Kasa hesabında olağan dışı yüksek bakiye: ${net.toLocaleString("tr-TR")} TL`);
-    riskScore += 35;
+    issues.push({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "Kasa hesabında olağan dışı yüksek bakiye (inceleme bilgisi).",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 10,
+    });
+    riskScore += 10;
   }
 
+  // Period e-defter packages usually lack opening balances; reverse-looking
+  // period nets are review signals, not automatic unsuitability.
   if (prefix.startsWith("120") && net < -BORC_ALACAK_TOLERANCE) {
-    issues.push("120 alıcı hesabında ters bakiye (alacak yönünde).");
-    riskScore += 40;
+    issues.push({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "120 alıcı hesabında dönem hareketi ters bakiye görünümü (inceleme bilgisi).",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 12,
+    });
+    riskScore += 12;
   }
 
   if (prefix.startsWith("320") && net > BORC_ALACAK_TOLERANCE) {
-    issues.push("320 satıcı hesabında ters bakiye (borç yönünde).");
-    riskScore += 40;
+    issues.push({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "320 satıcı hesabında dönem hareketi ters bakiye görünümü (inceleme bilgisi).",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 12,
+    });
+    riskScore += 12;
   }
 
   if (prefix.startsWith("191") && net < -BORC_ALACAK_TOLERANCE) {
-    issues.push("191 indirilecek KDV hesabında ters bakiye.");
-    riskScore += 45;
+    issues.push({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "191 indirilecek KDV hesabında dönem hareketi ters bakiye görünümü (inceleme bilgisi).",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 12,
+    });
+    riskScore += 12;
   }
 
   if (prefix.startsWith("391") && net > BORC_ALACAK_TOLERANCE) {
-    issues.push("391 hesaplanan KDV hesabında ters bakiye.");
-    riskScore += 45;
+    issues.push({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "391 hesaplanan KDV hesabında dönem hareketi ters bakiye görünümü (inceleme bilgisi).",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 12,
+    });
+    riskScore += 12;
   }
 
   if (prefix.startsWith("360") && Math.abs(net) > KASA_BAKIYE_ESIK) {
-    issues.push("360 ödenecek vergi hesabında olağandışı bakiye.");
-    riskScore += 35;
+    issues.push({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "360 ödenecek vergi hesabında olağandışı bakiye (inceleme bilgisi).",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 10,
+    });
+    riskScore += 10;
   }
 
   if (prefix.startsWith("361") && Math.abs(net) > KASA_BAKIYE_ESIK) {
-    issues.push("361 SGK/borç hesabında olağandışı bakiye.");
-    riskScore += 35;
+    issues.push({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "361 SGK/borç hesabında olağandışı bakiye (inceleme bilgisi).",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 10,
+    });
+    riskScore += 10;
   }
 
   if (prefix.startsWith("102") && net < -BORC_ALACAK_TOLERANCE) {
-    issues.push("102 banka hesabında ters bakiye riski.");
-    riskScore += 30;
+    issues.push({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "102 banka hesabında dönem hareketi ters bakiye görünümü (inceleme bilgisi).",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 10,
+    });
+    riskScore += 10;
   }
 
   if (prefix.startsWith("180") && Math.abs(net) > KASA_BAKIYE_ESIK) {
-    issues.push("180 gelecek aylara ait giderlerde olağandışı bakiye.");
-    riskScore += 25;
+    issues.push({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "180 gelecek aylara ait giderlerde olağandışı bakiye (inceleme bilgisi).",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 8,
+    });
+    riskScore += 8;
   }
 
   if (prefix.startsWith("280") && Math.abs(net) > KASA_BAKIYE_ESIK) {
-    issues.push("280 gelecek yıllara ait giderlerde olağandışı bakiye.");
-    riskScore += 25;
+    issues.push({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "280 gelecek yıllara ait giderlerde olağandışı bakiye (inceleme bilgisi).",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      riskScore: 8,
+    });
+    riskScore += 8;
   }
 
   if (prefix.startsWith("309") || prefix.startsWith("409")) {
     if (Math.abs(net) > KASA_BAKIYE_ESIK) {
-      issues.push(`${prefix.slice(0, 3)} alınan/verilen çeklerde olağandışı bakiye.`);
-      riskScore += 25;
+      issues.push({
+        code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+        message: `${prefix.slice(0, 3)} alınan/verilen çeklerde olağandışı bakiye (inceleme bilgisi).`,
+        severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 8,
+      });
+      riskScore += 8;
     }
   }
 
   if (prefix.startsWith("335") || prefix.startsWith("195") || prefix.startsWith("196")) {
     if (Math.abs(net) > BORC_ALACAK_TOLERANCE) {
-      issues.push(`${prefix.slice(0, 3)} personel/avans hesabında bakiye risk göstergesi.`);
-      riskScore += 20;
+      issues.push({
+        code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+        message: `${prefix.slice(0, 3)} personel/avans hesabında bakiye risk göstergesi (inceleme bilgisi).`,
+        severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 8,
+      });
+      riskScore += 8;
     }
   }
 
@@ -366,12 +454,24 @@ function analyzeAccountBalanceIssues(hesapKodu, net) {
   ) {
     const hesap = String(hesapKodu || "");
     if (hesap.startsWith("1") && net < -BORC_ALACAK_TOLERANCE) {
-      issues.push("Aktif hesapta ters bakiye riski.");
-      riskScore += 20;
+      issues.push({
+        code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+        message: "Aktif hesapta dönem hareketi ters bakiye görünümü (inceleme bilgisi).",
+        severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 8,
+      });
+      riskScore += 8;
     }
     if (hesap.startsWith("3") && net > BORC_ALACAK_TOLERANCE) {
-      issues.push("Pasif hesapta ters bakiye riski.");
-      riskScore += 20;
+      issues.push({
+        code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+        message: "Pasif hesapta dönem hareketi ters bakiye görünümü (inceleme bilgisi).",
+        severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 8,
+      });
+      riskScore += 8;
     }
   }
 
@@ -440,8 +540,7 @@ function buildGlobalContext(rows = []) {
     .join(" ");
 
   const fisLineCounts = new Map();
-  const belgeCounts = new Map();
-  const aciklamaCounts = new Map();
+  const exactLineCounts = new Map();
   const nearKeys = new Map();
 
   for (const row of ledgerRows) {
@@ -449,15 +548,23 @@ function buildGlobalContext(rows = []) {
       const fk = compactText(row.fisNo);
       fisLineCounts.set(fk, (fisLineCounts.get(fk) || 0) + 1);
     }
-    if (row.belgeNo) {
-      const bk = compactText(row.belgeNo);
-      belgeCounts.set(bk, (belgeCounts.get(bk) || 0) + 1);
+    // True duplicate = identical line fingerprint including fis/yevmiye identity.
+    // Shared belgeNo across multi-line entries is normal; Yevmiye≠Kebir (kaynak).
+    if (row.belgeNo || row.hesapKodu || row.fisNo) {
+      const ek = [
+        compactText(row.fisNo),
+        compactText(row.yevmiyeNo),
+        compactText(row.belgeNo),
+        compactText(row.hesapKodu),
+        roundMoney(row.borc),
+        roundMoney(row.alacak),
+        compactText(row.tarih),
+        compactText(row.kaynak),
+      ].join("|");
+      exactLineCounts.set(ek, (exactLineCounts.get(ek) || 0) + 1);
     }
-    if (row.aciklama) {
-      const ak = compactText(row.aciklama);
-      aciklamaCounts.set(ak, (aciklamaCounts.get(ak) || 0) + 1);
-    }
-    if (row.tutar && row.cariUnvan) {
+    // Only real party names participate in similarity signals (never explanation text).
+    if (row.tutar && row.cariUnvan && compactText(row.cariUnvan) !== compactText(row.aciklama)) {
       const nk = `${compactText(row.cariUnvan)}|${roundMoney(row.tutar)}`;
       const list = nearKeys.get(nk) || [];
       list.push(row);
@@ -472,8 +579,7 @@ function buildGlobalContext(rows = []) {
     fisNoGaps,
     outOfOrderFis,
     fisLineCounts,
-    belgeCounts,
-    aciklamaCounts,
+    exactLineCounts,
     nearKeys,
     hasKapanisFisi: /kapan[ıi]s|7\/a|7a|gelir tablosu kapan/.test(allText),
     hasAmortisman: /amortisman/.test(allText),
@@ -637,15 +743,42 @@ export function normalizeEDefterIssue(raw, source = "engine") {
       riskScore: 50,
     });
   }
-  if (lower.includes("ters bakiye") || lower.includes("kasa hesab")) {
+  if (
+    lower.includes("inceleme bilgisi") ||
+    lower.includes("olağandışı bakiye") ||
+    lower.includes("olagan disi bakiye") ||
+    lower.includes("olağan dışı yüksek bakiye")
+  ) {
     return createEDefterIssue({
       code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
       message,
-      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
-      group: E_DEFTER_KONTROL_GRUP.TERS_BAKIYE,
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
       blocking: false,
       source,
-      riskScore: 25,
+      riskScore: 8,
+    });
+  }
+  if (lower.includes("ters bakiye")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      blocking: false,
+      source,
+      riskScore: 10,
+    });
+  }
+  if (lower.includes("kasa hesab")) {
+    return createEDefterIssue({
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message,
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      blocking: false,
+      source,
+      riskScore: 10,
     });
   }
   if (lower.includes("kdv")) {
@@ -784,13 +917,14 @@ function buildIssues(row, _allRows = [], context = {}) {
   }
 
   if (!row.belgeTuru && row.kaynak !== E_DEFTER_KAYNAK.MIZAN) {
+    // XBRL e-defter satırlarında documentType sıkça yok; uygunluğu düşürmez.
     raw.push(
       createEDefterIssue({
         code: E_DEFTER_ISSUE_CODE.MISSING_DOCUMENT_INFO,
-        message: "Belge türü boş.",
-        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
-        group: E_DEFTER_KONTROL_GRUP.EKSIK_BILGI,
-        riskScore: 10,
+        message: "Belge türü boş (inceleme bilgisi).",
+        severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 5,
       })
     );
   }
@@ -845,25 +979,26 @@ function buildIssues(row, _allRows = [], context = {}) {
     );
   }
 
-  const fisLineCount = context.fisLineCounts?.get(fisKey) || 0;
-  if (fisLineCount > 5 && row.fisNo) {
-    raw.push(
-      createEDefterIssue({
-        code: E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY,
-        message: "Fiş no yoğun tekrar / mükerrer riski.",
-        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
-        group: E_DEFTER_KONTROL_GRUP.MUKERRER,
-        riskScore: 15,
-      })
-    );
-  }
+  // Multi-line fiş is normal in e-Defter; do not treat line density as duplicate.
 
-  const belgeKey = compactText(row.belgeNo);
-  if (row.belgeNo && (context.belgeCounts?.get(belgeKey) || 0) > 1) {
+  const exactLineKey = [
+    compactText(row.fisNo),
+    compactText(row.yevmiyeNo),
+    compactText(row.belgeNo),
+    compactText(row.hesapKodu),
+    roundMoney(row.borc),
+    roundMoney(row.alacak),
+    compactText(row.tarih),
+    compactText(row.kaynak),
+  ].join("|");
+  if (
+    (row.belgeNo || row.hesapKodu || row.fisNo) &&
+    (context.exactLineCounts?.get(exactLineKey) || 0) > 1
+  ) {
     raw.push(
       createEDefterIssue({
         code: E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY,
-        message: "Belge no mükerrer.",
+        message: "Birebir aynı satır tekrarı (fiş+yevmiye+belge+hesap+tutar+tarih).",
         severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
         group: E_DEFTER_KONTROL_GRUP.MUKERRER,
         riskScore: 30,
@@ -871,20 +1006,33 @@ function buildIssues(row, _allRows = [], context = {}) {
     );
   }
 
-  if (row.tutar && row.cariUnvan && context.nearKeys) {
+  // Similarity signal only — never auto-unsuitable. Requires real cari ≠ explanation.
+  if (
+    row.tutar &&
+    row.cariUnvan &&
+    compactText(row.cariUnvan) !== compactText(row.aciklama) &&
+    context.nearKeys
+  ) {
     const nk = `${compactText(row.cariUnvan)}|${roundMoney(row.tutar)}`;
     const peers = context.nearKeys.get(nk) || [];
-    const nearDup = peers.some(
-      (item) => item.id !== row.id && daysBetween(item.tarih, row.tarih) <= NEAR_DATE_DAYS
-    );
-    if (nearDup) {
+    const nearSimilar = peers.some((item) => {
+      if (item.id === row.id) return false;
+      if (compactText(item.fisNo) && compactText(row.fisNo) && compactText(item.fisNo) === compactText(row.fisNo)) {
+        return false; // same voucher multi-line is normal
+      }
+      if (compactText(item.kaynak) && compactText(row.kaynak) && compactText(item.kaynak) !== compactText(row.kaynak)) {
+        return false; // Yevmiye vs Kebir views of same event
+      }
+      return daysBetween(item.tarih, row.tarih) <= NEAR_DATE_DAYS;
+    });
+    if (nearSimilar) {
       raw.push(
         createEDefterIssue({
           code: E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY,
-          message: "Aynı cari + tutar + yakın tarih mükerrer riski.",
-          severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
-          group: E_DEFTER_KONTROL_GRUP.MUKERRER,
-          riskScore: 25,
+          message: "Benzer cari + tutar + yakın tarih (inceleme bilgisi).",
+          severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+          group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+          riskScore: 8,
         })
       );
     }
@@ -967,18 +1115,7 @@ function buildIssues(row, _allRows = [], context = {}) {
     }
   }
 
-  const aciklamaKey = compactText(row.aciklama);
-  if (row.aciklama && (context.aciklamaCounts?.get(aciklamaKey) || 0) > 3) {
-    raw.push(
-      createEDefterIssue({
-        code: E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY,
-        message: "Mükerrer açıklama tekrarı.",
-        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
-        group: E_DEFTER_KONTROL_GRUP.MUKERRER,
-        riskScore: 15,
-      })
-    );
-  }
+  // Repeated explanation text across vouchers is normal; do not mark duplicate.
 
   const accountIssue = context.problematicAccounts?.get(hesapKey);
   if (accountIssue?.issues?.length) {
@@ -1029,7 +1166,7 @@ function buildPeriodEndWarnings(context = {}) {
       hesapKodu: "",
       hesapAdi: "Dönem Sonu Kontrol",
       aciklama: "Kapanış fişi tespit edilemedi.",
-      belgeTuru: "Uyarı",
+      belgeTuru: "Bilgi",
       belgeNo: "",
       belgeTarihi: "",
       borc: 0,
@@ -1041,11 +1178,21 @@ function buildPeriodEndWarnings(context = {}) {
       duzeltildiMi: false,
       disaridaBirak: false,
       manuallyEdited: false,
-      issues: ["Kapanış fişi kaydı bulunamadı."],
-      riskScore: 55,
-      riskBand: riskBandFromScore(55),
+      issueDetails: [
+        createEDefterIssue({
+          code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+          message: "Kapanış fişi kaydı bulunamadı (inceleme bilgisi).",
+          severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+          group: E_DEFTER_KONTROL_GRUP.DONEM_SONU,
+          riskScore: 8,
+        }),
+      ],
+      issues: ["Kapanış fişi kaydı bulunamadı (inceleme bilgisi)."],
+      riskScore: 8,
+      riskBand: riskBandFromScore(8),
       grup: E_DEFTER_KONTROL_GRUP.DONEM_SONU,
       durum: E_DEFTER_KONTROL_DURUM.DONEM_SONU,
+      sonucSeviye: E_DEFTER_SONUC_SEVIYE.BILGI,
     });
   }
 
@@ -1059,7 +1206,7 @@ function buildPeriodEndWarnings(context = {}) {
       hesapKodu: "",
       hesapAdi: "Dönem Sonu Kontrol",
       aciklama: "Amortisman kaydı tespit edilemedi.",
-      belgeTuru: "Uyarı",
+      belgeTuru: "Bilgi",
       belgeNo: "",
       belgeTarihi: "",
       borc: 0,
@@ -1071,11 +1218,21 @@ function buildPeriodEndWarnings(context = {}) {
       duzeltildiMi: false,
       disaridaBirak: false,
       manuallyEdited: false,
-      issues: ["Amortisman gider kaydı bulunamadı."],
-      riskScore: 40,
-      riskBand: riskBandFromScore(40),
+      issueDetails: [
+        createEDefterIssue({
+          code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+          message: "Amortisman gider kaydı bulunamadı (inceleme bilgisi).",
+          severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+          group: E_DEFTER_KONTROL_GRUP.DONEM_SONU,
+          riskScore: 8,
+        }),
+      ],
+      issues: ["Amortisman gider kaydı bulunamadı (inceleme bilgisi)."],
+      riskScore: 8,
+      riskBand: riskBandFromScore(8),
       grup: E_DEFTER_KONTROL_GRUP.DONEM_SONU,
       durum: E_DEFTER_KONTROL_DURUM.DONEM_SONU,
+      sonucSeviye: E_DEFTER_SONUC_SEVIYE.BILGI,
     });
   }
 
@@ -1089,7 +1246,7 @@ function buildPeriodEndWarnings(context = {}) {
       hesapKodu: "",
       hesapAdi: "Dönem Sonu Kontrol",
       aciklama: "Kur değerleme kaydı tespit edilemedi.",
-      belgeTuru: "Uyarı",
+      belgeTuru: "Bilgi",
       belgeNo: "",
       belgeTarihi: "",
       borc: 0,
@@ -1101,11 +1258,21 @@ function buildPeriodEndWarnings(context = {}) {
       duzeltildiMi: false,
       disaridaBirak: false,
       manuallyEdited: false,
-      issues: ["Kur değerleme / kur farkı kaydı bulunamadı."],
-      riskScore: 35,
-      riskBand: riskBandFromScore(35),
+      issueDetails: [
+        createEDefterIssue({
+          code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+          message: "Kur değerleme / kur farkı kaydı bulunamadı (inceleme bilgisi).",
+          severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+          group: E_DEFTER_KONTROL_GRUP.DONEM_SONU,
+          riskScore: 8,
+        }),
+      ],
+      issues: ["Kur değerleme / kur farkı kaydı bulunamadı (inceleme bilgisi)."],
+      riskScore: 8,
+      riskBand: riskBandFromScore(8),
       grup: E_DEFTER_KONTROL_GRUP.DONEM_SONU,
       durum: E_DEFTER_KONTROL_DURUM.DONEM_SONU,
+      sonucSeviye: E_DEFTER_SONUC_SEVIYE.BILGI,
     });
   }
 
@@ -1336,8 +1503,8 @@ export function analyzeBeratMeta(beratMeta = null, packageMeta = {}, options = {
   if (!beratMeta) {
     findings.push({
       code: "BERAT_ESLESMEDI",
-      message: "Berat dosyası eksik veya okunamadı.",
-      level: E_DEFTER_SONUC_SEVIYE.UYARI,
+      message: "Berat dosyası eksik veya okunamadı (inceleme bilgisi).",
+      level: E_DEFTER_SONUC_SEVIYE.BILGI,
     });
     return findings;
   }
@@ -1385,7 +1552,7 @@ export function resolveOverallSonuc(rows = []) {
   for (const row of rows.filter((r) => !r.disaridaBirak)) {
     const details = Array.isArray(row.issueDetails) ? row.issueDetails : [];
     const unresolved = details.filter(
-      (issue) => row.cozumDurumu !== E_DEFTER_FINDING_STATUS.COZULDU
+      () => row.cozumDurumu !== E_DEFTER_FINDING_STATUS.COZULDU
     );
     const hasBlocking = unresolved.some((issue) => issue.blocking);
     const hasNonInfo = unresolved.some(
@@ -1406,13 +1573,22 @@ export function resolveOverallSonuc(rows = []) {
       worst = E_DEFTER_SONUC_SEVIYE.KRITIK;
       break;
     }
-    if (hasNonInfo || hasLegacyIssues) {
+    if (hasNonInfo) {
       const fromIssues = unresolved.reduce((acc, issue) => {
         const mapped = severityToSonucSeviye(issue.severity);
         return (rank[mapped] || 0) > (rank[acc] || 0) ? mapped : acc;
-      }, E_DEFTER_SONUC_SEVIYE.UYARI);
+      }, E_DEFTER_SONUC_SEVIYE.UYGUN);
       if ((rank[fromIssues] || 0) > (rank[seviye] || 0)) seviye = fromIssues;
       if (seviye === E_DEFTER_SONUC_SEVIYE.UYGUN) seviye = E_DEFTER_SONUC_SEVIYE.UYARI;
+    } else if (hasLegacyIssues) {
+      // Prefer explicit row level (e.g. missing-berat BILGI) over defaulting to UYARI.
+      const legacyLevel =
+        row.sonucSeviye ||
+        mapLegacyLevelToSonuc(row.riskLevel) ||
+        mapLegacyLevelToSonuc(legacyIssues[0]) ||
+        sonucSeviyeFromScore(row.riskScore || 0);
+      if ((rank[legacyLevel] || 0) > (rank[seviye] || 0)) seviye = legacyLevel;
+      if (seviye === E_DEFTER_SONUC_SEVIYE.UYGUN) seviye = E_DEFTER_SONUC_SEVIYE.BILGI;
     }
     if ((rank[seviye] || 0) > (rank[worst] || 0)) worst = seviye;
     if (row.grup === E_DEFTER_KONTROL_GRUP.TEKNIK && (row.riskScore || 0) >= 70) {
@@ -1974,7 +2150,28 @@ export function buildSmartEDefterExplanation(row = {}, issues = []) {
 
 export function buildTechnicalFindingRows(findings = [], context = {}) {
   return (findings || []).map((finding, index) => {
+    const sonucSeviye =
+      mapLegacyLevelToSonuc(finding.level) || E_DEFTER_SONUC_SEVIYE.BILGI;
     const riskScore = scoreFromLevel(finding.level);
+    const issue = normalizeEDefterIssue(
+      {
+        code: finding.code || E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+        message: finding.message,
+        severity:
+          sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK
+            ? E_DEFTER_ISSUE_SEVERITY.KRITIK
+            : sonucSeviye === E_DEFTER_SONUC_SEVIYE.UYARI
+              ? E_DEFTER_ISSUE_SEVERITY.UYARI
+              : E_DEFTER_ISSUE_SEVERITY.BILGI,
+        group:
+          sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK
+            ? E_DEFTER_KONTROL_GRUP.KRITIK
+            : E_DEFTER_KONTROL_GRUP.TEKNIK,
+        blocking: sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK,
+        riskScore,
+      },
+      "technical"
+    );
     const row = {
       id: `teknik-${finding.code || index}-${Date.now()}`,
       kaynak: E_DEFTER_KAYNAK.TEKNIK,
@@ -1997,14 +2194,24 @@ export function buildTechnicalFindingRows(findings = [], context = {}) {
       disaridaBirak: false,
       manuallyEdited: false,
       issues: [finding.message],
+      issueDetails: [issue],
       riskScore,
       riskBand: riskBandFromScore(riskScore),
       riskLevel: finding.level || riskLevelFromScore(riskScore),
+      sonucSeviye,
       hataTuru: E_DEFTER_HATA_TURU.TEKNIK,
       onerilenKontrol: "XML/ZIP dosyasını ve berat eşleşmesini yeniden kontrol edin.",
       cozumDurumu: E_DEFTER_FINDING_STATUS.YENI,
-      grup: E_DEFTER_KONTROL_GRUP.TEKNIK,
-      durum: E_DEFTER_KONTROL_DURUM.KRITIK,
+      grup:
+        sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK
+          ? E_DEFTER_KONTROL_GRUP.KRITIK
+          : sonucSeviye === E_DEFTER_SONUC_SEVIYE.UYARI
+            ? E_DEFTER_KONTROL_GRUP.TEKNIK
+            : E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      durum:
+        sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK
+          ? E_DEFTER_KONTROL_DURUM.KRITIK
+          : E_DEFTER_KONTROL_DURUM.INCELEME_GEREKLI,
       companyId: context.companyId || "",
       period: context.period || "",
     };
@@ -2021,16 +2228,30 @@ function sumAccountPrefix(rows = [], prefix) {
 
 export function buildVergiselFindingRows({ rows = [], declarationRecords = [], companyId = "", period = "" }) {
   const findings = [];
-  const kdv191 = sumAccountPrefix(rows, "191");
-  const kdv391 = sumAccountPrefix(rows, "391");
-  const kdv360 = sumAccountPrefix(rows, "360");
-  const sgk361 = sumAccountPrefix(rows, "361");
-  const devreden190 = sumAccountPrefix(rows, "190");
+  // Prefer journal (or non-kebir) movements so Yevmiye+Kebir twin packages are not double-counted.
+  const taxRows = rows.some(
+    (row) =>
+      row.kaynak === E_DEFTER_KAYNAK.YEVMIYE ||
+      row.kaynak === E_DEFTER_KAYNAK.YEVMIYE_XML
+  )
+    ? rows.filter(
+        (row) =>
+          row.kaynak === E_DEFTER_KAYNAK.YEVMIYE ||
+          row.kaynak === E_DEFTER_KAYNAK.YEVMIYE_XML
+      )
+    : rows.filter((row) => row.kaynak !== E_DEFTER_KAYNAK.KEBIR_XML);
 
+  const kdv191 = sumAccountPrefix(taxRows, "191");
+  const kdv391 = sumAccountPrefix(taxRows, "391");
+  const kdv360 = sumAccountPrefix(taxRows, "360");
+  const sgk361 = sumAccountPrefix(taxRows, "361");
+  const devreden190 = sumAccountPrefix(taxRows, "190");
+
+  // Period turnovers of 191 vs 391 rarely match in a single month; review-only.
   if (Math.abs(kdv191 - kdv391) > 1000 && (kdv191 || kdv391)) {
     findings.push({
-      message: `191/391 KDV uyumsuzluğu: 191=${kdv191.toLocaleString("tr-TR")} TL, 391=${kdv391.toLocaleString("tr-TR")} TL`,
-      level: E_DEFTER_RISK_LEVEL.YUKSEK,
+      message: `191/391 KDV dönem hareket farkı (inceleme bilgisi): 191=${kdv191.toLocaleString("tr-TR")} TL, 391=${kdv391.toLocaleString("tr-TR")} TL`,
+      level: E_DEFTER_RISK_LEVEL.ORTA,
       code: "KDV_191_391",
       action: "KDV listesi ve hesap hareketlerini karşılaştırın.",
     });
@@ -2038,7 +2259,7 @@ export function buildVergiselFindingRows({ rows = [], declarationRecords = [], c
 
   if (devreden190 > KASA_BAKIYE_ESIK) {
     findings.push({
-      message: `Devreden KDV süreklilik analizi: 190 hesabı ${devreden190.toLocaleString("tr-TR")} TL`,
+      message: `Devreden KDV süreklilik analizi (inceleme bilgisi): 190 hesabı ${devreden190.toLocaleString("tr-TR")} TL`,
       level: E_DEFTER_RISK_LEVEL.ORTA,
       code: "DEVREDEN_KDV",
       action: "KDV beyannamesi ve indirilecek KDV listesini inceleyin.",
@@ -2076,7 +2297,7 @@ export function buildVergiselFindingRows({ rows = [], declarationRecords = [], c
       .reduce((sum, record) => sum + Number(record.totalPayment || 0), 0);
     if (total > 0) {
       findings.push({
-        message: `${type} tahakkuk kaydı mevcut (${total.toLocaleString("tr-TR")} TL); muhasebe eşleşmesi kontrol edilmeli.`,
+        message: `${type} tahakkuk kaydı mevcut (${total.toLocaleString("tr-TR")} TL); muhasebe eşleşmesi kontrol edilmeli (inceleme bilgisi).`,
         level: E_DEFTER_RISK_LEVEL.ORTA,
         code: type.replace(/\s+/g, "_").toUpperCase(),
         action: `${type} beyanı ve ilgili hesap hareketlerini doğrulayın.`,
@@ -2084,32 +2305,32 @@ export function buildVergiselFindingRows({ rows = [], declarationRecords = [], c
     }
   });
 
-  const tevkifatRows = rows.filter((row) => /tevkifat|stopaj/i.test(String(row.aciklama || "")));
+  const tevkifatRows = taxRows.filter((row) => /tevkifat|stopaj/i.test(String(row.aciklama || "")));
   if (tevkifatRows.length) {
     findings.push({
-      message: `${tevkifatRows.length} tevkifat/stopaj kaydı tespit edildi; oran ve hesap eşleşmesi kontrol edilmeli.`,
+      message: `${tevkifatRows.length} tevkifat/stopaj kaydı tespit edildi; oran ve hesap eşleşmesi kontrol edilmeli (inceleme bilgisi).`,
       level: E_DEFTER_RISK_LEVEL.ORTA,
       code: "TEVKIFAT",
       action: "Tevkifat beyannamesi ve stopaj hesaplarını karşılaştırın.",
     });
   }
 
-  const sgdpRows = rows.filter((row) =>
+  const sgdpRows = taxRows.filter((row) =>
     /sgdp|sosyal g[uü]venlik destek/i.test(`${row.aciklama || ""} ${row.hesapAdi || ""}`)
   );
-  if (sgdpRows.length || (sgk361 > 0 && /sgdp/i.test(rows.map((r) => r.aciklama).join(" ")))) {
+  if (sgdpRows.length || (sgk361 > 0 && /sgdp/i.test(taxRows.map((r) => r.aciklama).join(" ")))) {
     findings.push({
-      message: "361/SGDP risk göstergesi: SGDP prim kaydı ile 361 hesabı birlikte kontrol edilmeli (kesin vergi hükmü değildir).",
+      message: "361/SGDP risk göstergesi: SGDP prim kaydı ile 361 hesabı birlikte kontrol edilmeli (inceleme bilgisi; kesin vergi hükmü değildir).",
       level: E_DEFTER_RISK_LEVEL.ORTA,
       code: "SGDP_361",
       action: "SGDP bordro/tahakkuk ile 361 hareketlerini karşılaştırın.",
     });
   }
 
-  const kasaBanka = sumAccountPrefix(rows, "100") + sumAccountPrefix(rows, "102");
+  const kasaBanka = sumAccountPrefix(taxRows, "100") + sumAccountPrefix(taxRows, "102");
   if (kasaBanka > KASA_BAKIYE_ESIK * 2) {
     findings.push({
-      message: "100/102 nakit-banka yüksek hareket risk göstergesi.",
+      message: "100/102 nakit-banka yüksek hareket risk göstergesi (inceleme bilgisi).",
       level: E_DEFTER_RISK_LEVEL.ORTA,
       code: "KASA_BANKA_100_102",
       action: "Kasa ve banka mutabakatını kontrol edin.",
@@ -2117,7 +2338,28 @@ export function buildVergiselFindingRows({ rows = [], declarationRecords = [], c
   }
 
   return findings.map((finding, index) => {
+    const sonucSeviye =
+      mapLegacyLevelToSonuc(finding.level) || E_DEFTER_SONUC_SEVIYE.BILGI;
     const riskScore = scoreFromLevel(finding.level);
+    const issue = normalizeEDefterIssue(
+      {
+        code: finding.code || E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+        message: finding.message,
+        severity:
+          sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK
+            ? E_DEFTER_ISSUE_SEVERITY.KRITIK
+            : sonucSeviye === E_DEFTER_SONUC_SEVIYE.UYARI
+              ? E_DEFTER_ISSUE_SEVERITY.UYARI
+              : E_DEFTER_ISSUE_SEVERITY.BILGI,
+        group:
+          sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK
+            ? E_DEFTER_KONTROL_GRUP.KRITIK
+            : E_DEFTER_KONTROL_GRUP.VERGISEL,
+        blocking: sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK,
+        riskScore,
+      },
+      "vergisel"
+    );
     const row = {
       id: `vergisel-${finding.code || index}`,
       kaynak: E_DEFTER_KAYNAK.VERGISEL,
@@ -2140,14 +2382,22 @@ export function buildVergiselFindingRows({ rows = [], declarationRecords = [], c
       disaridaBirak: false,
       manuallyEdited: false,
       issues: [finding.message],
+      issueDetails: [issue],
       riskScore,
       riskBand: riskBandFromScore(riskScore),
       riskLevel: finding.level,
+      sonucSeviye,
       hataTuru: E_DEFTER_HATA_TURU.VERGISEL,
       onerilenKontrol: finding.action,
       cozumDurumu: E_DEFTER_FINDING_STATUS.YENI,
-      grup: E_DEFTER_KONTROL_GRUP.VERGISEL,
-      durum: E_DEFTER_KONTROL_DURUM.KDV_KONTROL,
+      grup:
+        sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK
+          ? E_DEFTER_KONTROL_GRUP.KRITIK
+          : E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+      durum:
+        sonucSeviye === E_DEFTER_SONUC_SEVIYE.KRITIK
+          ? E_DEFTER_KONTROL_DURUM.KRITIK
+          : E_DEFTER_KONTROL_DURUM.INCELEME_GEREKLI,
       companyId,
       period,
     };
@@ -2258,6 +2508,22 @@ export function runEDefterKontrolScenario() {
       tutar: 5000,
     },
     {
+      id: "2b",
+      kaynak: E_DEFTER_KAYNAK.MUAVIN,
+      tarih: "15.05.2026",
+      fisNo: "102",
+      yevmiyeNo: "2b",
+      hesapKodu: "320.01.001",
+      hesapAdi: "Satıcılar",
+      aciklama: "Fatura",
+      belgeTuru: "FT",
+      belgeNo: "A-001",
+      belgeTarihi: "15.05.2026",
+      borc: 5000,
+      alacak: 0,
+      tutar: 5000,
+    },
+    {
       id: "3",
       kaynak: E_DEFTER_KAYNAK.MUAVIN,
       tarih: "20.05.2026",
@@ -2304,7 +2570,7 @@ export function runEDefterKontrolScenario() {
       String(row.issues || []).join(" ").includes("Kasa")
     ),
     duplicateBelgeDetected: result.rows.some((row) =>
-      String(row.issues || []).join(" ").includes("Belge no mükerrer")
+      String(row.issues || []).join(" ").includes("Birebir aynı satır tekrarı")
     ),
     kdv191391Detected: result.rows.some((row) => row.aciklama?.includes("191/391")),
     beyannameMismatchDetected: result.rows.some((row) => row.aciklama?.includes("Beyanname ile muhasebe")),
