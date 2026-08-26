@@ -26,6 +26,9 @@ function Stat({ label, value }) {
   );
 }
 
+const LEDGER_FILE_INPUT_CLASS =
+  "block w-full cursor-pointer rounded-lg border-2 border-teal-500 bg-teal-50/50 px-3 py-2 text-sm text-slate-800 shadow-sm transition hover:border-teal-600 hover:bg-teal-50 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500/50 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-teal-700 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-white hover:file:bg-teal-800 focus:file:ring-2 focus:file:ring-teal-600";
+
 function safeUserError(err) {
   const code = err?.code || "";
   if (code === "ANALYZE_IN_FLIGHT") return "Kontrol zaten çalışıyor.";
@@ -302,6 +305,7 @@ export default function GenelMuhasebeKontrolPage() {
             <input
               type="file"
               accept=".xlsx,.xls"
+              className={LEDGER_FILE_INPUT_CLASS}
               onChange={(e) => {
                 setMuavinFile(e.target.files?.[0] || null);
                 invalidateActive("gm-file-change");
@@ -313,6 +317,7 @@ export default function GenelMuhasebeKontrolPage() {
             <input
               type="file"
               accept=".xlsx,.xls"
+              className={LEDGER_FILE_INPUT_CLASS}
               onChange={(e) => {
                 setYevmiyeFile(e.target.files?.[0] || null);
                 invalidateActive("gm-file-change");
@@ -324,6 +329,7 @@ export default function GenelMuhasebeKontrolPage() {
             <input
               type="file"
               accept=".xlsx,.xls"
+              className={LEDGER_FILE_INPUT_CLASS}
               onChange={(e) => {
                 setMizanFile(e.target.files?.[0] || null);
                 invalidateActive("gm-file-change");
