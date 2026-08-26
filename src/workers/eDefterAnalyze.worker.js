@@ -1,13 +1,15 @@
 import {
+  EDEFTER_ANALYZE_JOB_KIND,
   EDEFTER_ANALYZE_PROTOCOL,
   executeEDefterAnalyzePayload,
+  resolveAnalyzeJobKind,
   sanitizeAnalyzeResult,
 } from "@/src/utils/eDefterAnalyzeContract";
 import { postProgress, WORKER_PARSE_STAGES, yieldToWorker } from "@/src/workers/workerUtils";
 
 /**
  * Bridge posts: { requestId, payload: CloneSafeAnalyzePayload, protocolVersion? }
- * (via flatten of nested { payload, protocolVersion })
+ * payload.jobKind: E_DEFTER_CONTROL (default) | GENERAL_LEDGER_CONTROL
  */
 self.onmessage = async (event) => {
   const data = event.data || {};
@@ -30,7 +32,13 @@ self.onmessage = async (event) => {
       });
     }
 
-    postProgress(WORKER_PARSE_STAGES.ANALYZING, "e-Defter kontrol kuralları çalışıyor", 20);
+    const jobKind = resolveAnalyzeJobKind(payload?.jobKind || payload?.jobType);
+    const analyzingLabel =
+      jobKind === EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL
+        ? "Genel muhasebe kontrol kuralları çalışıyor"
+        : "e-Defter kontrol kuralları çalışıyor";
+
+    postProgress(WORKER_PARSE_STAGES.ANALYZING, analyzingLabel, 20);
     await yieldToWorker();
 
     const startedAt = Date.now();
@@ -47,6 +55,8 @@ self.onmessage = async (event) => {
       execution: "worker",
       engineInvocations: 1,
       elapsedMs,
+      jobKind,
+      mainThreadAnalyze: 0,
     });
 
     self.postMessage({
@@ -59,7 +69,7 @@ self.onmessage = async (event) => {
     self.postMessage({
       type: "error",
       requestId,
-      error: error?.message || "e-Defter analizi başarısız.",
+      error: error?.message || "Analiz başarısız.",
       code: error?.code || "ANALYZE_WORKER_FAILED",
     });
   }

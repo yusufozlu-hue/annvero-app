@@ -101,7 +101,7 @@ function parseLedgerRow(row, headers, index, kaynak) {
   ).trim();
 
   const belgeNo = String(
-    getSheetCell(row, headers, ["BELGE NO", "EVRAK NO", "FATURA NO", "FIS NO"]) || ""
+    getSheetCell(row, headers, ["BELGE NO", "EVRAK NO", "FATURA NO"]) || ""
   ).trim();
 
   const belgeTarihi =
@@ -124,6 +124,18 @@ function parseLedgerRow(row, headers, index, kaynak) {
     ]) || ""
   ).trim();
 
+  const counterAccountCode = String(
+    getSheetCell(row, headers, [
+      "KARŞI HESAP",
+      "KARSI HESAP",
+      "KARŞI HESAP KODU",
+      "KARSI HESAP KODU",
+      "KARSİ HESAP",
+      "COUNTER ACCOUNT",
+      "COUNTERACCOUNT",
+    ]) || ""
+  ).trim();
+
   if (!tarih && !fisNo && !hesapKodu && !borc && !alacak) return null;
 
   return {
@@ -141,6 +153,8 @@ function parseLedgerRow(row, headers, index, kaynak) {
     borc,
     alacak,
     cariUnvan,
+    counterAccountCode,
+    karsiHesapKodu: counterAccountCode,
     tutar: roundMoney(Math.max(borc, alacak)),
     kontrolDurumu: "",
     not: "",
@@ -275,6 +289,210 @@ function buildAccountBalanceMap(rows = []) {
   }
 
   return result;
+}
+
+/**
+ * Resolve counterpart accounts only within the same voucher (fisNo) group.
+ * Never invents from description/amount/date. Same-side legs are not counterparts.
+ * Explicit Excel KARŞI HESAP is verified against opposite legs when available.
+ */
+export function resolveVoucherCounterparts(rows = []) {
+  const byFis = new Map();
+  const results = new Map();
+
+  for (const row of rows) {
+    if (!row || row.kaynak === E_DEFTER_KAYNAK.MIZAN) continue;
+    if (
+      row.kaynak === E_DEFTER_KAYNAK.TEKNIK ||
+      row.kaynak === E_DEFTER_KAYNAK.VERGISEL ||
+      row.kaynak === E_DEFTER_KAYNAK.CAPRAZ
+    ) {
+      continue;
+    }
+    const fisKey = compactText(row.fisNo);
+    if (!fisKey) {
+      results.set(row.id, {
+        status: "REVIEW",
+        code: E_DEFTER_ISSUE_CODE.COUNTERPART_REVIEW,
+        counterAccountCode: "",
+        candidates: [],
+        confidence: 0,
+        reason: "fis_missing",
+      });
+      continue;
+    }
+    const periodKey = compactText(row.period || row.donem || "");
+    const groupKey = `${fisKey}|${compactText(row.kaynak) || "ledger"}|${periodKey}`;
+    const list = byFis.get(groupKey) || [];
+    list.push(row);
+    byFis.set(groupKey, list);
+  }
+
+  for (const [, group] of byFis.entries()) {
+    const sides = new Map();
+    let totalBorc = 0;
+    let totalAlacak = 0;
+    const debitCodes = new Set();
+    const creditCodes = new Set();
+    let activeCount = 0;
+
+    for (const row of group) {
+      const borc = roundMoney(row.borc);
+      const alacak = roundMoney(row.alacak);
+      const zeroLeg =
+        Math.abs(borc) <= BORC_ALACAK_TOLERANCE && Math.abs(alacak) <= BORC_ALACAK_TOLERANCE;
+      if (zeroLeg) {
+        sides.set(row.id, { zero: true, isDebit: false, isCredit: false, code: "" });
+        continue;
+      }
+      const isDebit = borc > BORC_ALACAK_TOLERANCE && alacak <= BORC_ALACAK_TOLERANCE;
+      const isCredit = alacak > BORC_ALACAK_TOLERANCE && borc <= BORC_ALACAK_TOLERANCE;
+      const code = String(row.hesapKodu || "").trim();
+      sides.set(row.id, { zero: false, isDebit, isCredit, code });
+      activeCount += 1;
+      totalBorc += borc;
+      totalAlacak += alacak;
+      if (isDebit && code) debitCodes.add(code);
+      if (isCredit && code) creditCodes.add(code);
+    }
+
+    const balanced = Math.abs(roundMoney(totalBorc - totalAlacak)) <= BORC_ALACAK_TOLERANCE;
+
+    for (const row of group) {
+      const side = sides.get(row.id);
+      if (!side || side.zero) {
+        results.set(row.id, {
+          status: "SKIP",
+          code: "",
+          counterAccountCode: "",
+          candidates: [],
+          confidence: 0,
+          reason: "zero_amount",
+        });
+        continue;
+      }
+
+      const { isDebit, isCredit } = side;
+      const selfCode = compactText(row.hesapKodu);
+      const explicitRaw = String(row.counterAccountCode || row.karsiHesapKodu || "").trim();
+      const explicit = compactText(explicitRaw);
+
+      const oppositeCodes = [
+        ...(isDebit ? creditCodes : isCredit ? debitCodes : []),
+      ].filter((code) => compactText(code) !== selfCode);
+      const uniqueCodes = [...new Set(oppositeCodes)];
+
+      if (explicit) {
+        if (explicit === selfCode) {
+          results.set(row.id, {
+            status: "ISSUE",
+            code: E_DEFTER_ISSUE_CODE.COUNTERPART_SELF,
+            counterAccountCode: "",
+            candidates: [explicitRaw],
+            confidence: 0,
+            reason: "explicit_self",
+          });
+          continue;
+        }
+        if (uniqueCodes.length === 1 && compactText(uniqueCodes[0]) !== explicit) {
+          results.set(row.id, {
+            status: "ISSUE",
+            code: E_DEFTER_ISSUE_CODE.COUNTERPART_CONFLICT,
+            counterAccountCode: "",
+            candidates: [explicitRaw, uniqueCodes[0]],
+            confidence: 0,
+            reason: "explicit_vs_computed",
+            balanced,
+          });
+          continue;
+        }
+        if (uniqueCodes.length === 1 && compactText(uniqueCodes[0]) === explicit) {
+          results.set(row.id, {
+            status: "RESOLVED",
+            code: E_DEFTER_ISSUE_CODE.COUNTERPART_VERIFIED,
+            counterAccountCode: explicitRaw,
+            candidates: [explicitRaw],
+            confidence: 1,
+            reason: "explicit_verified",
+            balanced,
+          });
+          continue;
+        }
+        results.set(row.id, {
+          status: "RESOLVED",
+          code: "",
+          counterAccountCode: explicitRaw,
+          candidates: [explicitRaw],
+          confidence: uniqueCodes.length ? 0.7 : 0.85,
+          reason: uniqueCodes.length > 1 ? "explicit_with_multi_legs" : "explicit",
+          balanced,
+        });
+        continue;
+      }
+
+      if (!isDebit && !isCredit) {
+        results.set(row.id, {
+          status: "REVIEW",
+          code: E_DEFTER_ISSUE_CODE.COUNTERPART_REVIEW,
+          counterAccountCode: "",
+          candidates: [],
+          confidence: 0,
+          reason: "mixed_side_row",
+        });
+        continue;
+      }
+
+      if (!uniqueCodes.length) {
+        let hasSameSidePeer = false;
+        for (const other of group) {
+          if (other.id === row.id) continue;
+          const o = sides.get(other.id);
+          if (!o || o.zero) continue;
+          if ((isDebit && o.isDebit) || (isCredit && o.isCredit)) {
+            hasSameSidePeer = true;
+            break;
+          }
+        }
+        results.set(row.id, {
+          status: "ISSUE",
+          code: hasSameSidePeer
+            ? E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE
+            : E_DEFTER_ISSUE_CODE.MISSING_COUNTERPART,
+          counterAccountCode: "",
+          candidates: [],
+          confidence: 0,
+          reason: hasSameSidePeer ? "same_side_only" : "no_opposite",
+          balanced,
+        });
+        continue;
+      }
+
+      if (uniqueCodes.length === 1) {
+        results.set(row.id, {
+          status: "RESOLVED",
+          code: "",
+          counterAccountCode: uniqueCodes[0],
+          candidates: uniqueCodes,
+          confidence: balanced ? 0.95 : 0.6,
+          reason: activeCount === 2 ? "two_line_pair" : "single_opposite_code",
+          balanced,
+        });
+        continue;
+      }
+
+      results.set(row.id, {
+        status: "MULTI",
+        code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+        counterAccountCode: "",
+        candidates: uniqueCodes,
+        confidence: 0.4,
+        reason: "multi_opposite",
+        balanced,
+      });
+    }
+  }
+
+  return results;
 }
 
 function buildFisBalanceMap(rows = []) {
@@ -581,6 +799,7 @@ function buildGlobalContext(rows = []) {
     fisLineCounts,
     exactLineCounts,
     nearKeys,
+    counterpartByRowId: resolveVoucherCounterparts(ledgerRows),
     hasKapanisFisi: /kapan[ıi]s|7\/a|7a|gelir tablosu kapan/.test(allText),
     hasAmortisman: /amortisman/.test(allText),
     hasKurDegerleme: /kur de[ğg]erleme|kur fark[ıi]|de[ğg]erleme fark[ıi]/.test(allText),
@@ -954,6 +1173,81 @@ function buildIssues(row, _allRows = [], context = {}) {
     );
   }
 
+  const counterpart = context.counterpartByRowId?.get(row.id);
+  const isMuavinOnly =
+    row.kaynak === E_DEFTER_KAYNAK.MUAVIN ||
+    row.documentClass === "MUAVIN" ||
+    context.documentClass === "MUAVIN";
+  if (counterpart?.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) {
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+        message: `Birden fazla karşıt hesap adayı (${counterpart.candidates.length}) — otomatik tek karşıt uydurulmadı.`,
+        severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 12,
+      })
+    );
+  } else if (counterpart?.code === E_DEFTER_ISSUE_CODE.COUNTERPART_CONFLICT) {
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.COUNTERPART_CONFLICT,
+        message: "Excel karşı hesap ile fiş bacaklarından hesaplanan karşıt çelişiyor.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 32,
+      })
+    );
+  } else if (counterpart?.code === E_DEFTER_ISSUE_CODE.COUNTERPART_VERIFIED) {
+    // Verified explicit column — no issue noise.
+  } else if (counterpart?.code === E_DEFTER_ISSUE_CODE.MISSING_COUNTERPART) {
+    // Muavin is often a single-account extract; missing opposite leg is expected.
+    // Full journal (yevmiye) stays fail-closed review/uyarı.
+    if (!isMuavinOnly) {
+      raw.push(
+        createEDefterIssue({
+          code: E_DEFTER_ISSUE_CODE.MISSING_COUNTERPART,
+          message: "Aynı fişte karşıt hesap bacağı bulunamadı.",
+          severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+          group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+          riskScore: 25,
+        })
+      );
+    }
+  } else if (counterpart?.code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE) {
+    if (!isMuavinOnly) {
+      raw.push(
+        createEDefterIssue({
+          code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+          message: "Aynı fişte yalnız aynı yönlü satırlar var; karşıt hesap bağlanamaz.",
+          severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+          group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+          riskScore: 28,
+        })
+      );
+    }
+  } else if (counterpart?.code === E_DEFTER_ISSUE_CODE.COUNTERPART_SELF) {
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.COUNTERPART_SELF,
+        message: "Hesap kendisine karşıt olarak işaretlenmiş.",
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 30,
+      })
+    );
+  } else if (counterpart?.code === E_DEFTER_ISSUE_CODE.COUNTERPART_REVIEW) {
+    raw.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.COUNTERPART_REVIEW,
+        message: "Karşıt hesap güvenli çözülemedi (fiş kimliği eksik veya belirsiz) — inceleme gerekli.",
+        severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 10,
+      })
+    );
+  }
+
   if (context.outOfOrderFis?.has(fisKey) && row.fisNo) {
     raw.push(
       createEDefterIssue({
@@ -1082,7 +1376,12 @@ function buildIssues(row, _allRows = [], context = {}) {
   if (context.accountPlanCodes instanceof Set && row.hesapKodu) {
     const code = String(row.hesapKodu).trim();
     const short = code.split(".")[0];
-    if (!context.accountPlanCodes.has(code) && !context.accountPlanCodes.has(short)) {
+    const compactCode = compactText(code);
+    if (
+      !context.accountPlanCodes.has(code) &&
+      !context.accountPlanCodes.has(compactCode) &&
+      !context.accountPlanCodes.has(short)
+    ) {
       raw.push(
         createEDefterIssue({
           code: E_DEFTER_ISSUE_CODE.ACCOUNT_NOT_IN_PLAN,
@@ -1340,6 +1639,7 @@ export function analyzeEDefterRow(row, allRows = [], context = {}) {
     return row;
   }
 
+  const counterpartResolved = context.counterpartByRowId?.get(row.id) || null;
   const analysis = buildIssues(row, allRows, context);
   const hasIssues = analysis.issueDetails.length > 0;
   // Fail-closed: never trust HATASIZ when structured issues exist.
@@ -1358,11 +1658,22 @@ export function analyzeEDefterRow(row, allRows = [], context = {}) {
     ? severityToSonucSeviye(analysis.maxSeverity)
     : sonucSeviyeFromScore(riskScore);
 
+  const resolvedCounterpart =
+    counterpartResolved?.counterAccountCode ||
+    row.counterAccountCode ||
+    row.karsiHesapKodu ||
+    "";
+
   return {
     ...row,
     borc: roundMoney(row.borc),
     alacak: roundMoney(row.alacak),
     tutar: roundMoney(row.tutar || Math.max(row.borc, row.alacak)),
+    counterAccountCode: resolvedCounterpart,
+    karsiHesapKodu: resolvedCounterpart,
+    counterpartStatus: counterpartResolved?.status || "",
+    counterpartCandidates: counterpartResolved?.candidates || [],
+    counterpartConfidence: counterpartResolved?.confidence ?? null,
     issues: analysis.issues,
     issueDetails: analysis.issueDetails,
     riskScore,
@@ -1388,6 +1699,7 @@ export function analyzeEDefterRows(rows = [], options = {}) {
     expectedPeriodKey: options.expectedPeriod
       ? normalizePeriodKey(String(options.expectedPeriod).replace("/", "-"))
       : "",
+    documentClass: options.documentClass || "",
   };
   const analyzed = rows.map((row) => analyzeEDefterRow(row, rows, context));
   const warnings = buildPeriodEndWarnings(context);

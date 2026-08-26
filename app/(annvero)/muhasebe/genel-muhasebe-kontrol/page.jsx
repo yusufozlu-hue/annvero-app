@@ -1,0 +1,437 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import * as XLSX from "xlsx";
+import AnnveroModuleNav from "@/app/components/AnnveroModuleNav";
+import { useCompanyList } from "../hooks/useCompanyList";
+import CompanySelectOptions from "../components/CompanySelectOptions";
+import { fetchFullActiveAccountPlan } from "@/src/utils/accountPlanApi";
+import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
+import { cancelActiveParseJob, runExcelSheetWorker } from "@/src/utils/workerParserBridge";
+import {
+  bumpAnalyzeGeneration,
+  isAnalyzeJobInFlight,
+  runEDefterAnalyzeJob,
+} from "@/src/utils/eDefterAnalyzeBridge";
+import { EDEFTER_ANALYZE_JOB_KIND } from "@/src/utils/eDefterAnalyzeContract";
+import { createGenelMuhasebeAnalyzeGate } from "@/src/utils/genelMuhasebeKontrolEngine";
+
+function Stat({ label, value }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="text-sm font-semibold text-slate-900">{value}</div>
+    </div>
+  );
+}
+
+function safeUserError(err) {
+  const code = err?.code || "";
+  if (code === "ANALYZE_IN_FLIGHT") return "Kontrol zaten çalışıyor.";
+  if (code === "ANALYZE_CANCELLED" || code === "ANALYZE_STALE") {
+    return "Kontrol iptal edildi veya geçersiz kılındı.";
+  }
+  return "Kontrol çalıştırılamadı. Lütfen tekrar deneyin.";
+}
+
+async function readSheetRows(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  try {
+    const result = await runExcelSheetWorker({
+      workerUrl: PARSER_WORKER_URLS.excelSheet,
+      arrayBuffer,
+      mode: "rows",
+    });
+    if (Array.isArray(result?.rows)) return result.rows;
+  } catch {
+    // main-thread sheet fallback only (not analyze)
+  }
+  const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+}
+
+export default function GenelMuhasebeKontrolPage() {
+  const {
+    companies,
+    selectedCompanyId,
+    setSelectedCompanyId,
+    selectedCompany,
+  } = useCompanyList();
+
+  const [period, setPeriod] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [muavinFile, setMuavinFile] = useState(null);
+  const [yevmiyeFile, setYevmiyeFile] = useState(null);
+  const [mizanFile, setMizanFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [progressDetail, setProgressDetail] = useState("");
+  const [error, setError] = useState("");
+  const [perfWarning, setPerfWarning] = useState("");
+  const [result, setResult] = useState(null);
+  const [planStatus, setPlanStatus] = useState("unknown");
+  const [planAccounts, setPlanAccounts] = useState(null);
+  const gateRef = useRef(createGenelMuhasebeAnalyzeGate());
+  const runTokenRef = useRef(0);
+  const abortRef = useRef(null);
+
+  const invalidateActive = useCallback((reason) => {
+    runTokenRef.current += 1;
+    setResult(null);
+    setPerfWarning("");
+    setProgressDetail("");
+    bumpAnalyzeGeneration(reason);
+    try {
+      abortRef.current?.abort();
+    } catch {
+      /* ignore */
+    }
+    abortRef.current = null;
+  }, []);
+
+  const handleCompanyChange = useCallback(
+    (nextId) => {
+      setSelectedCompanyId(nextId);
+      setError("");
+      setPlanAccounts(null);
+      setPlanStatus("unknown");
+      invalidateActive("gm-company-change");
+    },
+    [setSelectedCompanyId, invalidateActive]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPlan() {
+      if (!selectedCompanyId) {
+        setPlanAccounts(null);
+        setPlanStatus("missing");
+        return;
+      }
+      try {
+        const plan = await fetchFullActiveAccountPlan(selectedCompanyId);
+        if (cancelled) return;
+        const accounts = Array.isArray(plan.accounts) ? plan.accounts : [];
+        setPlanAccounts(accounts);
+        setPlanStatus(accounts.length ? "loaded" : "missing");
+      } catch {
+        if (cancelled) return;
+        setPlanAccounts([]);
+        setPlanStatus("missing");
+      }
+    }
+    loadPlan();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCompanyId]);
+
+  useEffect(() => {
+    return () => {
+      invalidateActive("gm-unmount");
+      try {
+        cancelActiveParseJob("gm-unmount");
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [invalidateActive]);
+
+  const canStart = Boolean(
+    selectedCompanyId && (muavinFile || yevmiyeFile || mizanFile) && !busy
+  );
+
+  const handleAnalyze = useCallback(async () => {
+    if (busy || isAnalyzeJobInFlight()) return;
+    const gate = gateRef.current.begin();
+    if (!gate.accepted) return;
+
+    const token = ++runTokenRef.current;
+    const generation = bumpAnalyzeGeneration("gm-analyze-start");
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setBusy(true);
+    setError("");
+    setPerfWarning("");
+    setProgressDetail("Dosyalar okunuyor…");
+
+    try {
+      const [muavinSheetRows, yevmiyeSheetRows, mizanSheetRows] = await Promise.all([
+        muavinFile ? readSheetRows(muavinFile) : Promise.resolve(null),
+        yevmiyeFile ? readSheetRows(yevmiyeFile) : Promise.resolve(null),
+        mizanFile ? readSheetRows(mizanFile) : Promise.resolve(null),
+      ]);
+      if (token !== runTokenRef.current || controller.signal.aborted) return;
+
+      setProgressDetail("Kontrol ediliyor…");
+      const analysis = await runEDefterAnalyzeJob(
+        {
+          jobKind: EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL,
+          companyId: selectedCompanyId,
+          period,
+          muavinSheetRows,
+          yevmiyeSheetRows,
+          mizanSheetRows,
+          accountPlanAccounts: planAccounts,
+          accountPlanStatus: planStatus === "loaded" ? "loaded" : "missing",
+        },
+        {
+          workerUrl: PARSER_WORKER_URLS.eDefterAnalyze,
+          preferWorker: true,
+          requireExclusive: true,
+          signal: controller.signal,
+          generation,
+          timeoutMs: 300_000,
+          onProgress: (progress) => {
+            setProgressDetail(
+              progress?.detail || progress?.stage || "Kontrol ediliyor…"
+            );
+          },
+        }
+      );
+
+      if (token !== runTokenRef.current) return;
+      if (analysis?.diagnostics?.generation != null && analysis.diagnostics.generation !== generation) {
+        return;
+      }
+
+      setResult(analysis);
+      if (analysis?.diagnostics?.fallback === 1 || analysis?.diagnostics?.performanceWarning) {
+        setPerfWarning(
+          analysis.diagnostics.performanceWarning ||
+            "Analiz worker yedeğe düştü; büyük dosyada tarayıcı yavaşlayabilir."
+        );
+      }
+    } catch (err) {
+      if (token !== runTokenRef.current) return;
+      if (err?.code === "ANALYZE_STALE" || err?.code === "ANALYZE_CANCELLED") return;
+      setError(safeUserError(err));
+      setResult(null);
+    } finally {
+      gateRef.current.end();
+      if (abortRef.current === controller) abortRef.current = null;
+      setBusy(false);
+      setProgressDetail("");
+    }
+  }, [
+    busy,
+    muavinFile,
+    yevmiyeFile,
+    mizanFile,
+    selectedCompanyId,
+    period,
+    planAccounts,
+    planStatus,
+  ]);
+
+  const summary = result?.summary;
+  const findings = useMemo(() => {
+    if (!result) return [];
+    const fromRows = (result.rows || [])
+      .filter((row) => (row.issueDetails || []).length)
+      .slice(0, 80)
+      .flatMap((row) =>
+        (row.issueDetails || []).map((issue) => ({
+          fisNo: row.fisNo || "",
+          hesapKodu: row.hesapKodu || "",
+          severity: issue.severity,
+          code: issue.code,
+          message: issue.message,
+        }))
+      );
+    const extras = (result.findingExtras || []).map((issue) => ({
+      fisNo: "",
+      hesapKodu: "",
+      severity: issue.severity,
+      code: issue.code,
+      message: issue.message,
+    }));
+    return [...extras, ...fromRows];
+  }, [result]);
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <div className="mx-auto max-w-6xl px-4 py-6">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <Link href="/muhasebe" className="text-sm text-teal-700 hover:underline">
+              ← Muhasebe
+            </Link>
+            <h1 className="mt-1 text-2xl font-semibold">Genel Muhasebe Kontrol</h1>
+            <p className="text-sm text-slate-600">
+              Firma → dönem → Excel → tek analiz (worker). Karşıt hesap ortak motorla; yerel kontrol
+              (DB yazımı yok).
+            </p>
+          </div>
+          <AnnveroModuleNav />
+        </div>
+
+        <div className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-2">
+          <label className="block text-sm">
+            <span className="mb-1 block text-slate-600">Firma</span>
+            <select
+              className="w-full rounded-lg border border-slate-300 px-3 py-2"
+              value={selectedCompanyId}
+              onChange={(e) => handleCompanyChange(e.target.value)}
+            >
+              <option value="">Firma seçin</option>
+              <CompanySelectOptions companies={companies} />
+            </select>
+            {selectedCompany ? (
+              <span className="mt-1 block text-xs text-slate-500">Aktif firma seçildi</span>
+            ) : null}
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block text-slate-600">Dönem (YYYY/AA)</span>
+            <input
+              className="w-full rounded-lg border border-slate-300 px-3 py-2"
+              value={period}
+              onChange={(e) => {
+                setPeriod(e.target.value);
+                invalidateActive("gm-period-change");
+              }}
+              placeholder="2026/05"
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block text-slate-600">Muavin Excel</span>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(e) => {
+                setMuavinFile(e.target.files?.[0] || null);
+                invalidateActive("gm-file-change");
+              }}
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block text-slate-600">Yevmiye Excel</span>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(e) => {
+                setYevmiyeFile(e.target.files?.[0] || null);
+                invalidateActive("gm-file-change");
+              }}
+            />
+          </label>
+          <label className="block text-sm md:col-span-2">
+            <span className="mb-1 block text-slate-600">Mizan Excel</span>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={(e) => {
+                setMizanFile(e.target.files?.[0] || null);
+                invalidateActive("gm-file-change");
+              }}
+            />
+          </label>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={!canStart}
+            onClick={handleAnalyze}
+            className="rounded-xl bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            {busy ? "Kontrol ediliyor…" : "Kontrolü Başlat"}
+          </button>
+          <span className="text-xs text-slate-500">
+            Hesap planı: {planStatus === "loaded" ? "yüklü" : "eksik / inceleme"} · Persist: yerel
+            yok
+            {busy && progressDetail ? ` · ${progressDetail}` : ""}
+          </span>
+        </div>
+
+        {error ? (
+          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {error}
+          </div>
+        ) : null}
+
+        {perfWarning ? (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            {perfWarning}
+          </div>
+        ) : null}
+
+        {summary ? (
+          <div className="mt-6 space-y-4">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <Stat label="Sonuç" value={summary.overallSonuc} />
+              <Stat label="Toplam fiş" value={summary.toplamFis} />
+              <Stat label="Toplam satır" value={summary.toplamSatir} />
+              <Stat
+                label="Dengeli / Dengesiz"
+                value={`${summary.dengeliFis} / ${summary.dengesizFis}`}
+              />
+              <Stat label="Kesin karşıt" value={summary.kesinKarsit} />
+              <Stat label="Çoklu karşıt" value={summary.cokluKarsit} />
+              <Stat label="İnceleme" value={summary.incelemeGerekli} />
+              <Stat label="Hesap planda yok" value={summary.hesapPlandaYok} />
+              <Stat label="Dönem dışı" value={summary.donemDisi} />
+              <Stat label="Mükerrer" value={summary.mukerrer} />
+              <Stat
+                label="Borç / Alacak"
+                value={`${summary.borcToplam} / ${summary.alacakToplam}`}
+              />
+              <Stat label="Fark" value={summary.borcAlacakFark} />
+              <Stat label="Muavin↔Mizan" value={summary.mizanMuavin?.status || "—"} />
+              <Stat label="Plan kanıtı" value={summary.planEvidence} />
+            </div>
+
+            {summary.mizanMuavin?.message ? (
+              <p className="text-sm text-slate-600">{summary.mizanMuavin.message}</p>
+            ) : null}
+
+            <p className="text-xs text-slate-500">
+              Yerel kontrol ·{" "}
+              {result?.diagnostics?.execution === "worker"
+                ? "analyze worker"
+                : result?.diagnostics?.execution || "analiz"}{" "}
+              · persist yok
+            </p>
+
+            <div className="overflow-auto rounded-xl border border-slate-200 bg-white">
+              <table className="min-w-full text-left text-sm">
+                <thead className="bg-slate-100 text-xs uppercase text-slate-600">
+                  <tr>
+                    <th className="px-3 py-2">Fiş</th>
+                    <th className="px-3 py-2">Hesap</th>
+                    <th className="px-3 py-2">Seviye</th>
+                    <th className="px-3 py-2">Kod</th>
+                    <th className="px-3 py-2">Mesaj</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {findings.length === 0 ? (
+                    <tr>
+                      <td className="px-3 py-3 text-slate-500" colSpan={5}>
+                        Satır bulgusu yok (veya yalnız özet bulgular).
+                      </td>
+                    </tr>
+                  ) : (
+                    findings.map((f, idx) => (
+                      <tr key={`${f.code}-${idx}`} className="border-t border-slate-100">
+                        <td className="px-3 py-2">{f.fisNo || "—"}</td>
+                        <td className="px-3 py-2">{f.hesapKodu || "—"}</td>
+                        <td className="px-3 py-2">{f.severity}</td>
+                        <td className="px-3 py-2">{f.code}</td>
+                        <td className="px-3 py-2">{f.message}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}

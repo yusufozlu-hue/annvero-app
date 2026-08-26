@@ -1,13 +1,15 @@
 /**
- * Lazy e-Defter analyze bridge: worker-first, single controlled main-thread fallback.
- * Always uses runOneClickEDefterKontrol — no second engine.
+ * Lazy e-Defter / Genel Muhasebe analyze bridge: worker-first, single controlled fallback.
+ * Job kinds: E_DEFTER_CONTROL | GENERAL_LEDGER_CONTROL — shared engines only.
  */
 
 import {
   buildCloneSafeAnalyzePayload,
   executeEDefterAnalyzePayload,
+  resolveAnalyzeJobKind,
   resultsAreParityEqual,
   sanitizeAnalyzeResult,
+  EDEFTER_ANALYZE_JOB_KIND,
   EDEFTER_ANALYZE_PROTOCOL,
 } from "@/src/utils/eDefterAnalyzeContract";
 import {
@@ -79,12 +81,21 @@ function attachFingerprint(input, result) {
   return result;
 }
 
+function markPersistAllowed(jobKind) {
+  // Genel Muhasebe is local-control only — never open persist gate.
+  if (jobKind === EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL) return;
+  analyzeJobStats.persistAllowed += 1;
+}
+
 async function runMainThreadAnalyze(input, diagnostics = {}) {
   analyzeJobStats.engineInvocations += 1;
-  const raw = await executeEDefterAnalyzePayload(buildCloneSafeAnalyzePayload(input));
+  const safe = buildCloneSafeAnalyzePayload(input);
+  const jobKind = resolveAnalyzeJobKind(safe.jobKind);
+  const raw = await executeEDefterAnalyzePayload(safe);
   return sanitizeAnalyzeResult(raw, {
     execution: "main-thread",
     engineInvocations: 1,
+    jobKind,
     ...diagnostics,
   });
 }
@@ -137,6 +148,7 @@ export async function runEDefterAnalyzeJob(
   jobInFlight = true;
 
   const safePayload = buildCloneSafeAnalyzePayload(input);
+  const jobKind = resolveAnalyzeJobKind(safePayload.jobKind || input.jobKind || input.jobType);
 
   const assertNotStale = () => {
     if (signal?.aborted) {
@@ -192,7 +204,7 @@ export async function runEDefterAnalyzeJob(
         analyzeJobStats.workerSuccess += 1;
         // Engine ran once inside the worker; do not count a second main-thread run.
         analyzeJobStats.engineInvocations += 1;
-        analyzeJobStats.persistAllowed += 1;
+        markPersistAllowed(jobKind);
         return attachFingerprint(input, {
           ...result,
           diagnostics: {
@@ -200,8 +212,10 @@ export async function runEDefterAnalyzeJob(
             execution: "worker",
             requestId,
             generation: jobGeneration,
+            jobKind,
             engineInvocations: 1,
             fallback: 0,
+            mainThreadAnalyze: 0,
           },
         });
       } catch (error) {
@@ -216,10 +230,15 @@ export async function runEDefterAnalyzeJob(
           fallbackMessage: String(error?.message || "").slice(0, 200),
           requestId,
           generation: jobGeneration,
+          jobKind,
+          performanceWarning:
+            jobKind === EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL
+              ? "Analiz worker yedeğe düştü; büyük dosyada tarayıcı yavaşlayabilir."
+              : "",
         });
         assertNotStale();
         analyzeJobStats.fallbackSuccess += 1;
-        analyzeJobStats.persistAllowed += 1;
+        markPersistAllowed(jobKind);
         return attachFingerprint(input, {
           ...fallback,
           diagnostics: {
@@ -227,7 +246,9 @@ export async function runEDefterAnalyzeJob(
             execution: "main-thread-fallback",
             requestId,
             generation: jobGeneration,
+            jobKind,
             fallback: 1,
+            mainThreadAnalyze: 1,
           },
         });
       }
@@ -239,10 +260,15 @@ export async function runEDefterAnalyzeJob(
       requestId,
       reason: "worker-unavailable",
       generation: jobGeneration,
+      jobKind,
+      performanceWarning:
+        jobKind === EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL
+          ? "Analiz worker kullanılamadı; kontrol ana thread’de çalıştı."
+          : "",
     });
     assertNotStale();
     analyzeJobStats.fallbackSuccess += 1;
-    analyzeJobStats.persistAllowed += 1;
+    markPersistAllowed(jobKind);
     return attachFingerprint(input, {
       ...mainResult,
       diagnostics: {
@@ -250,7 +276,9 @@ export async function runEDefterAnalyzeJob(
         execution: "main-thread",
         requestId,
         generation: jobGeneration,
+        jobKind,
         fallback: 1,
+        mainThreadAnalyze: 1,
       },
     });
   } finally {
@@ -264,4 +292,5 @@ export {
   resultsAreParityEqual,
   buildCloneSafeAnalyzePayload,
   sanitizeAnalyzeResult,
+  EDEFTER_ANALYZE_JOB_KIND,
 };
