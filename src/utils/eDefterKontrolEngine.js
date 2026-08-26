@@ -181,7 +181,172 @@ function parseLedgerSheet(sheetRows = [], kaynak = E_DEFTER_KAYNAK.MUAVIN) {
     .filter(Boolean);
 }
 
+const LUCA_ACCOUNT_CODE_RE = /^(\d{3}(?:[./][A-Za-z0-9]{1,6})*)\s+(.+)$/;
+
+function preserveFisNo(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string") return value.trim();
+  return String(value);
+}
+
+function isLucaMuavinSkipLabel(rowText = "") {
+  const t = compactText(rowText);
+  if (!t) return true;
+  if (t.includes("NAKLIYEKUNHARIC")) return true;
+  if (t.includes("GENELTOPLAM")) return true;
+  return false;
+}
+
+function isLucaMuavinColumnHeaderRow(row = []) {
+  const cells = (row || []).map((cell) => normalizeParserText(cell));
+  const hasTarih = cells.some((c) => c === "TARIH" || c.includes("TARIH"));
+  const hasTip = cells.some((c) => c === "TIP" || c.includes("TIP"));
+  const hasFis = cells.some((c) => c.includes("FISNO") || c.includes("FIS NO"));
+  const hasBorc = cells.some((c) => c.includes("BORC"));
+  const hasAlacak = cells.some((c) => c.includes("ALACAK"));
+  const hasHesapCol = cells.some((c) => c.includes("HESAPKODU") || c.includes("HESAP KODU"));
+  return hasTarih && hasTip && hasFis && hasBorc && hasAlacak && !hasHesapCol;
+}
+
+function buildLucaColumnMap(headerRow = []) {
+  const headers = (headerRow || []).map((cell) => compactText(normalizeParserText(cell)));
+  const findIndex = (matchers) =>
+    headers.findIndex((header) =>
+      matchers.some((matcher) => {
+        const wanted = compactText(matcher);
+        return header === wanted || header.includes(wanted);
+      })
+    );
+
+  return {
+    tarih: findIndex(["TARİH", "TARIH"]),
+    tip: findIndex(["TİP", "TIP"]),
+    fisNo: findIndex(["FİŞ NO", "FIS NO", "FISNO"]),
+    aciklama: findIndex(["AÇIKLAMA", "ACIKLAMA"]),
+    borc: findIndex(["BORÇ", "BORC"]),
+    alacak: findIndex(["ALACAK"]),
+    bakiye: findIndex(["BAKİYE", "BAKIYE"]),
+    ba: findIndex(["B/A"]),
+  };
+}
+
+function lucaCell(row, index) {
+  if (index < 0 || !Array.isArray(row)) return "";
+  return row[index] ?? "";
+}
+
+export function parseLucaAccountHeaderCell(cell) {
+  const text = String(cell ?? "").trim();
+  if (!text) return null;
+  if (parseDateTR(text)) return null;
+
+  const match = text.match(LUCA_ACCOUNT_CODE_RE);
+  if (!match) return null;
+
+  const hesapKodu = match[1].trim();
+  const hesapAdi = match[2].trim();
+  if (!hesapAdi) return null;
+
+  const adiCompact = compactText(hesapAdi);
+  if (adiCompact.includes("TARIH") && adiCompact.includes("FIS")) return null;
+
+  return { hesapKodu, hesapAdi };
+}
+
+export function detectLucaMultiAccountMuavinLayout(sheetRows = []) {
+  if (!Array.isArray(sheetRows) || sheetRows.length < 4) return false;
+
+  let accountHeaders = 0;
+  let columnHeaders = 0;
+
+  for (const row of sheetRows) {
+    if (!Array.isArray(row) || !row.some((cell) => String(cell ?? "").trim())) continue;
+    if (parseLucaAccountHeaderCell(row[0])) accountHeaders += 1;
+    if (isLucaMuavinColumnHeaderRow(row)) columnHeaders += 1;
+  }
+
+  return accountHeaders >= 1 && columnHeaders >= 1;
+}
+
+export function parseLucaMultiAccountMuavinSheet(sheetRows = []) {
+  const rows = [];
+  let activeAccount = { hesapKodu: "", hesapAdi: "" };
+  let colMap = null;
+  let movementIndex = 0;
+
+  for (const row of sheetRows) {
+    if (!Array.isArray(row) || !row.some((cell) => String(cell ?? "").trim())) continue;
+
+    const rowText = row.map((cell) => String(cell ?? "")).join(" ");
+    if (isLucaMuavinSkipLabel(rowText)) continue;
+
+    const accountHeader = parseLucaAccountHeaderCell(row[0]);
+    if (accountHeader) {
+      const restHasDate = row.slice(1).some((cell) => parseDateTR(cell));
+      if (!restHasDate) {
+        activeAccount = accountHeader;
+        continue;
+      }
+    }
+
+    if (isLucaMuavinColumnHeaderRow(row)) {
+      colMap = buildLucaColumnMap(row);
+      continue;
+    }
+
+    if (!colMap || !activeAccount.hesapKodu) continue;
+
+    const tarihRaw = lucaCell(row, colMap.tarih);
+    if (!parseDateTR(tarihRaw)) continue;
+
+    const borc = parseMoneyTR(lucaCell(row, colMap.borc));
+    const alacak = parseMoneyTR(lucaCell(row, colMap.alacak));
+    if (!borc && !alacak) continue;
+
+    movementIndex += 1;
+    const aciklama = String(lucaCell(row, colMap.aciklama) ?? "").trim();
+    const tip = String(lucaCell(row, colMap.tip) ?? "").trim();
+
+    rows.push({
+      id: `${E_DEFTER_KAYNAK.MUAVIN}-luca-${movementIndex}`,
+      kaynak: E_DEFTER_KAYNAK.MUAVIN,
+      tarih: formatDateTR(tarihRaw),
+      fisNo: preserveFisNo(lucaCell(row, colMap.fisNo)),
+      yevmiyeNo: "",
+      hesapKodu: activeAccount.hesapKodu,
+      hesapAdi: activeAccount.hesapAdi,
+      aciklama: aciklama || tip,
+      belgeTuru: tip,
+      belgeNo: "",
+      belgeTarihi: "",
+      borc,
+      alacak,
+      cariUnvan: "",
+      counterAccountCode: "",
+      karsiHesapKodu: "",
+      tutar: roundMoney(Math.max(borc, alacak)),
+      kontrolDurumu: "",
+      not: "",
+      duzeltildiMi: false,
+      disaridaBirak: false,
+      manuallyEdited: false,
+    });
+  }
+
+  return rows;
+}
+
 export function parseMuavinSheet(sheetRows = []) {
+  if (!sheetRows?.length) return [];
+  if (detectLucaMultiAccountMuavinLayout(sheetRows)) {
+    const lucaRows = parseLucaMultiAccountMuavinSheet(sheetRows);
+    if (!lucaRows.length) {
+      throw Object.assign(new Error("Luca muavin bloğu ayrıştırılamadı."), {
+        code: "UNSUPPORTED_MUAVIN_LAYOUT",
+      });
+    }
+    return lucaRows;
+  }
   return parseLedgerSheet(sheetRows, E_DEFTER_KAYNAK.MUAVIN);
 }
 
@@ -1398,8 +1563,24 @@ function buildIssues(row, _allRows = [], context = {}) {
   if (context.expectedPeriodKey && row.tarih) {
     const d = parseDateTR(row.tarih);
     if (d) {
-      const rowPeriod = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      if (rowPeriod !== context.expectedPeriodKey) {
+      const isMuavinRow =
+        row.kaynak === E_DEFTER_KAYNAK.MUAVIN ||
+        row.documentClass === "MUAVIN" ||
+        context.documentClass === "MUAVIN";
+      const [yearStr, monthStr] = String(context.expectedPeriodKey).split("-");
+      const expectedYear = Number(yearStr);
+      const expectedMonth = Number(monthStr);
+      const rowYear = d.getFullYear();
+      const rowMonth = d.getMonth() + 1;
+      const outOfPeriod = isMuavinRow
+        ? !expectedYear ||
+          !expectedMonth ||
+          rowYear !== expectedYear ||
+          rowMonth < 1 ||
+          rowMonth > expectedMonth
+        : `${rowYear}-${String(rowMonth).padStart(2, "0")}` !== context.expectedPeriodKey;
+
+      if (outOfPeriod) {
         raw.push(
           createEDefterIssue({
             code: E_DEFTER_ISSUE_CODE.DATE_OUT_OF_PERIOD,

@@ -35,6 +35,13 @@ function safeUserError(err) {
   if (code === "ANALYZE_CANCELLED" || code === "ANALYZE_STALE") {
     return "Kontrol iptal edildi veya geçersiz kılındı.";
   }
+  if (typeof console !== "undefined" && code) {
+    console.debug("[genel-muhasebe-kontrol]", code, err?.message || "");
+  }
+  if (code === "EXCEL_READ_FAILED") return "Excel dosyası okunamadı.";
+  if (code === "UNSUPPORTED_MUAVIN_LAYOUT") return "Desteklenmeyen muavin düzeni.";
+  if (code === "ANALYZE_WORKER_FAILED") return "Analiz worker başarısız oldu.";
+  if (code === "ANALYZE_TIMEOUT") return "Analiz zaman aşımına uğradı.";
   return "Kontrol çalıştırılamadı. Lütfen tekrar deneyin.";
 }
 
@@ -50,9 +57,16 @@ async function readSheetRows(file) {
   } catch {
     // main-thread sheet fallback only (not analyze)
   }
-  const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  try {
+    const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  } catch (err) {
+    throw Object.assign(new Error("Excel okunamadı."), {
+      code: "EXCEL_READ_FAILED",
+      cause: err,
+    });
+  }
 }
 
 export default function GenelMuhasebeKontrolPage() {

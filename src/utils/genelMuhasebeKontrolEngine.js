@@ -12,6 +12,7 @@ import {
 } from "@/src/config/eDefterKontrolDefaults";
 import {
   createEDefterIssue,
+  detectLucaMultiAccountMuavinLayout,
   parseMizanSheet,
   parseMuavinSheet,
   parseYevmiyeSheet,
@@ -59,6 +60,9 @@ function sampleAccountCodes(sheetRows = [], limit = 40) {
 /** Content-based document classification — never trust file name alone. */
 export function classifyLedgerDocumentType(sheetRows = [], hints = {}) {
   if (hints.forceXml || hints.isXml) return GENEL_MUHASEBE_DOC_CLASS.E_DEFTER_XML;
+  if (detectLucaMultiAccountMuavinLayout(sheetRows)) {
+    return GENEL_MUHASEBE_DOC_CLASS.MUAVIN;
+  }
   const head = headerCorpus(sheetRows);
   const has = (s) => head.includes(s);
 
