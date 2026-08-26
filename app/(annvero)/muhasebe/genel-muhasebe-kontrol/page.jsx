@@ -2,13 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import * as XLSX from "xlsx";
 import AnnveroModuleNav from "@/app/components/AnnveroModuleNav";
 import { useCompanyList } from "../hooks/useCompanyList";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { fetchFullActiveAccountPlan } from "@/src/utils/accountPlanApi";
 import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
-import { cancelActiveParseJob, runExcelSheetWorker } from "@/src/utils/workerParserBridge";
+import { cancelActiveParseJob } from "@/src/utils/workerParserBridge";
+import {
+  EXCEL_READ_STAGE,
+  readExcelSheetRowsFromFile,
+} from "@/src/utils/readExcelSheetWithWorkerFallback";
 import {
   bumpAnalyzeGeneration,
   isAnalyzeJobInFlight,
@@ -38,7 +41,14 @@ function safeUserError(err) {
   if (typeof console !== "undefined" && code) {
     console.debug("[genel-muhasebe-kontrol]", code, err?.message || "");
   }
-  if (code === "EXCEL_READ_FAILED") return "Excel dosyası okunamadı.";
+  if (
+    code === "EXCEL_READ_FAILED" ||
+    code === EXCEL_READ_STAGE.WORKER_LOAD ||
+    code === EXCEL_READ_STAGE.WORKER_PARSE ||
+    code === EXCEL_READ_STAGE.FALLBACK_PARSE
+  ) {
+    return "Excel dosyası okunamadı.";
+  }
   if (code === "UNSUPPORTED_MUAVIN_LAYOUT") return "Desteklenmeyen muavin düzeni.";
   if (code === "ANALYZE_WORKER_FAILED") return "Analiz worker başarısız oldu.";
   if (code === "ANALYZE_TIMEOUT") return "Analiz zaman aşımına uğradı.";
@@ -46,27 +56,10 @@ function safeUserError(err) {
 }
 
 async function readSheetRows(file) {
-  const arrayBuffer = await file.arrayBuffer();
-  try {
-    const result = await runExcelSheetWorker({
-      workerUrl: PARSER_WORKER_URLS.excelSheet,
-      arrayBuffer,
-      mode: "rows",
-    });
-    if (Array.isArray(result?.rows)) return result.rows;
-  } catch {
-    // main-thread sheet fallback only (not analyze)
-  }
-  try {
-    const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-  } catch (err) {
-    throw Object.assign(new Error("Excel okunamadı."), {
-      code: "EXCEL_READ_FAILED",
-      cause: err,
-    });
-  }
+  return readExcelSheetRowsFromFile(file, {
+    workerUrl: PARSER_WORKER_URLS.excelSheet,
+    mode: "rows",
+  });
 }
 
 export default function GenelMuhasebeKontrolPage() {
