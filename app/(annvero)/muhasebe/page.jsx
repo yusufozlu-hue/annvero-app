@@ -318,6 +318,11 @@ const categories = [
         href: "/muhasebe/e-defter-kontrol",
       },
       {
+        title: "Genel Muhasebe Kontrol",
+        desc: "Muavin/yevmiye/mizan Excel ile karşıt hesap, denge ve mutabakat tek tuş kontrolü.",
+        href: "/muhasebe/genel-muhasebe-kontrol",
+      },
+      {
         title: "KURGAN / Risk Denetim Merkezi",
         desc: "Mizan, muavin, banka ve beyanname verilerinden vergisel risk tespiti.",
         href: "/muhasebe/risk-denetim-merkezi",

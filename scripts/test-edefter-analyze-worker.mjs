@@ -22,6 +22,7 @@ import {
   executeEDefterAnalyzePayload,
   resultsAreParityEqual,
   sanitizeAnalyzeResult,
+  EDEFTER_ANALYZE_JOB_KIND,
   EDEFTER_ANALYZE_PROTOCOL,
 } from "@/src/utils/eDefterAnalyzeContract.js";
 import {
@@ -30,6 +31,7 @@ import {
   resetAnalyzeJobStats,
   runEDefterAnalyzeJob,
 } from "@/src/utils/eDefterAnalyzeBridge.js";
+import { runGenelMuhasebeKontrol } from "@/src/utils/genelMuhasebeKontrolEngine.js";
 import {
   parserWorkerRuntimeStats,
   resetParserWorkerRuntimeStats,
@@ -634,4 +636,145 @@ console.log("9) fallback reference (NOT worker perf): main-thread 100k");
   });
 }
 
+console.log("10) GENERAL_LEDGER_CONTROL parity + counters + persist=0");
+{
+  function glSheet(nPairs) {
+    const headers = [
+      "TARİH",
+      "FİŞ NO",
+      "YEVMİYE NO",
+      "HESAP KODU",
+      "AÇIKLAMA",
+      "BELGE TÜRÜ",
+      "BELGE NO",
+      "BORÇ",
+      "ALACAK",
+    ];
+    const body = [];
+    for (let i = 0; i < nPairs; i += 1) {
+      const fis = String(i + 1);
+      body.push(["10.05.2026", fis, fis, "100.01", "anon", "FT", `B${fis}`, "10", "0"]);
+      body.push(["10.05.2026", fis, fis, "320.01", "anon", "FT", `B${fis}`, "0", "10"]);
+    }
+    return [headers, ...body];
+  }
+
+  resetAll("success");
+  const sheet = glSheet(20);
+  const glInput = {
+    jobKind: EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL,
+    companyId: "gl-co",
+    period: "2026/05",
+    yevmiyeSheetRows: sheet,
+    accountPlanAccounts: [{ account_code: "100.01" }, { account_code: "320.01" }],
+    accountPlanStatus: "loaded",
+  };
+
+  const reference = runGenelMuhasebeKontrol(glInput);
+  const generation = bumpAnalyzeGeneration("gl-parity");
+  const workerResult = await runEDefterAnalyzeJob(glInput, {
+    preferWorker: true,
+    WorkerImpl: MockAnalyzeWorker,
+    generation,
+    requireExclusive: true,
+  });
+
+  assert.equal(workerResult.diagnostics?.execution, "worker");
+  assert.equal(workerResult.diagnostics?.jobKind, EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL);
+  assert.equal(workerResult.diagnostics?.fallback, 0);
+  assert.equal(workerResult.diagnostics?.mainThreadAnalyze, 0);
+  assert.equal(analyzeJobStats.engineInvocations, 1);
+  assert.equal(analyzeJobStats.fallbackAttempts, 0);
+  assert.equal(analyzeJobStats.persistAllowed, 0);
+  assert.equal(harness.constructs, 1);
+  assert.ok(resultsAreParityEqual(reference, workerResult), "GL worker parity vs main reference");
+  assert.equal(workerResult.summary?.kesinKarsit, reference.summary?.kesinKarsit);
+  assert.equal(workerResult.summary?.toplamFis, reference.summary?.toplamFis);
+  console.log("PASS GENERAL_LEDGER_CONTROL parity", {
+    constructs: harness.constructs,
+    engine: analyzeJobStats.engineInvocations,
+    fallback: analyzeJobStats.fallbackAttempts,
+    persistAllowed: analyzeJobStats.persistAllowed,
+    kesinKarsit: workerResult.summary?.kesinKarsit,
+  });
+}
+
+console.log("11) GENERAL_LEDGER_CONTROL 1k/10k/100k worker_threads heartbeat");
+{
+  function glSheet(nPairs) {
+    const headers = [
+      "TARİH",
+      "FİŞ NO",
+      "YEVMİYE NO",
+      "HESAP KODU",
+      "AÇIKLAMA",
+      "BELGE TÜRÜ",
+      "BELGE NO",
+      "BORÇ",
+      "ALACAK",
+    ];
+    const body = [];
+    for (let i = 0; i < nPairs; i += 1) {
+      const fis = String(i + 1);
+      body.push(["10.05.2026", fis, fis, "100.01", "anon", "FT", `B${fis}`, "10", "0"]);
+      body.push(["10.05.2026", fis, fis, "320.01", "anon", "FT", `B${fis}`, "0", "10"]);
+    }
+    return [headers, ...body];
+  }
+
+  async function runGlScale(label, pairs) {
+    resetAll("success");
+    const input = {
+      jobKind: EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL,
+      companyId: "gl-perf",
+      period: "2026/05",
+      yevmiyeSheetRows: glSheet(pairs),
+      accountPlanAccounts: [{ account_code: "100.01" }, { account_code: "320.01" }],
+      accountPlanStatus: "loaded",
+    };
+    const hb = startHeartbeat(8);
+    const generation = bumpAnalyzeGeneration(`gl-${label}`);
+    const t0 = performance.now();
+    const result = await runEDefterAnalyzeJob(input, {
+      preferWorker: true,
+      workerUrl: "thread://eDefterAnalyze.worker.js",
+      WorkerImpl: ThreadAnalyzeWorker,
+      generation,
+      timeoutMs: 600_000,
+    });
+    const totalMs = Math.round(performance.now() - t0);
+    hb.stop();
+    assert.equal(result.diagnostics?.execution, "worker");
+    assert.equal(analyzeJobStats.engineInvocations, 1);
+    assert.equal(analyzeJobStats.fallbackAttempts, 0);
+    assert.equal(analyzeJobStats.persistAllowed, 0);
+    assert.equal(harness.constructs, 1);
+    assert.ok(hb.state.ticks > 0, `${label} heartbeat ticks`);
+    const ids = (result.rows || []).map((r) => r.id).filter(Boolean);
+    const dup = ids.length - new Set(ids).size;
+    assert.equal(dup, 0, `${label} no duplicate ids`);
+    return {
+      label,
+      rows: result.summary?.toplamSatir,
+      totalMs,
+      cloneMs: Math.round(harness.lastPostCloneMs || 0),
+      payloadBytes: harness.lastPostJsonBytes || 0,
+      heartbeatTicks: hb.state.ticks,
+      heartbeatMaxGapMs: Math.round(hb.state.maxGapMs),
+      engine: analyzeJobStats.engineInvocations,
+      fallback: analyzeJobStats.fallbackAttempts,
+      constructs: harness.constructs,
+      duplicateOutput: dup,
+      timing: result.timing || null,
+    };
+  }
+
+  const s1k = await runGlScale("1k", 500);
+  const s10k = await runGlScale("10k", 5000);
+  const s100k = await runGlScale("100k", 50000);
+  console.log("PASS GENERAL_LEDGER_CONTROL scales", { s1k, s10k, s100k });
+}
+
 console.log("\nAll edefter analyze worker real-path evidence checks passed.");
+
+
