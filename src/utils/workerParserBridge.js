@@ -573,12 +573,19 @@ export function runExcelSheetWorker({
   mode = "rows",
   onProgress,
   timeoutMs = 90_000,
+  /** false = structured clone copy; ana thread buffer detach olmaz (fallback güvenli). */
+  transferArrayBuffer = false,
 }) {
+  const resolvedWorkerUrl =
+    workerUrl && typeof workerUrl === "object" && typeof workerUrl.href === "string"
+      ? workerUrl.href
+      : String(workerUrl || "");
+
   return runParserWorker({
-    workerUrl,
+    workerUrl: resolvedWorkerUrl,
     jobType: PARSER_JOB_TYPES.EXCEL_SHEET,
     payload: { arrayBuffer, mode },
-    transferables: arrayBuffer ? [arrayBuffer] : [],
+    transferables: transferArrayBuffer && arrayBuffer ? [arrayBuffer] : [],
     onProgress,
     timeoutMs,
   });

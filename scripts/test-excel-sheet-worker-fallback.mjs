@@ -43,7 +43,7 @@ function makeXlsxFile(rows, name = "fixture.xlsx") {
   };
 }
 
-// 1) Worker load failure → fallback uses intact primary buffer (no re-read)
+// 1) Worker load failure → fallback re-reads file and parses
 {
   const rows = [
     ["Tarih", "Fiş", "Hesap", "Borç", "Alacak"],
@@ -52,7 +52,8 @@ function makeXlsxFile(rows, name = "fixture.xlsx") {
   const file = makeXlsxFile(rows, "worker-load-fail.xlsx");
   const parsed = await readExcelSheetRowsFromFile(file, {
     workerUrl: "https://example.invalid/excelSheet.worker.js",
-    runWorker: async ({ arrayBuffer }) => {
+    runWorker: async ({ arrayBuffer, transferArrayBuffer }) => {
+      assert(transferArrayBuffer === false, "worker path disables buffer transfer");
       arrayBuffer.transfer?.();
       throw Object.assign(new Error("Worker modülü yüklenemedi."), {
         code: "WORKER_ONERROR",
@@ -60,7 +61,7 @@ function makeXlsxFile(rows, name = "fixture.xlsx") {
     },
   });
   assert(Array.isArray(parsed) && parsed.length === 2, "worker load fail → fallback rows");
-  assert(file.arrayBufferCalls === 1, "primary buffer intact → file.arrayBuffer once");
+  assert(file.arrayBufferCalls === 2, "worker fail → fresh file read on fallback");
 }
 
 // 2) Worker parse failure after transfer → fallback succeeds

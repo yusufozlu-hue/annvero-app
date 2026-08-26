@@ -12,6 +12,7 @@ const WORKER_LOAD_CODES = new Set([
   "WORKER_CONSTRUCT_FAILED",
   "WORKER_UNAVAILABLE",
   "WORKER_MESSAGE_ERROR",
+  "WORKER_POSTMESSAGE_FAILED",
 ]);
 
 function classifyWorkerFailure(error) {
@@ -19,6 +20,14 @@ function classifyWorkerFailure(error) {
     return EXCEL_READ_STAGE.WORKER_LOAD;
   }
   return EXCEL_READ_STAGE.WORKER_PARSE;
+}
+
+function resolveWorkerUrl(workerUrl) {
+  if (!workerUrl) return "";
+  if (typeof workerUrl === "object" && typeof workerUrl.href === "string") {
+    return workerUrl.href;
+  }
+  return String(workerUrl);
 }
 
 function isArrayBufferReadable(buffer) {
@@ -29,22 +38,26 @@ function isArrayBufferReadable(buffer) {
   }
 }
 
-async function resolveFallbackBuffer(file, primaryBuffer) {
-  if (isArrayBufferReadable(primaryBuffer)) {
-    return primaryBuffer;
+async function readFreshFileBuffer(file) {
+  if (!file || typeof file.arrayBuffer !== "function") {
+    throw Object.assign(new Error("Geçersiz Excel dosyası."), {
+      code: EXCEL_READ_STAGE.FALLBACK_PARSE,
+      stage: EXCEL_READ_STAGE.FALLBACK_PARSE,
+    });
   }
-  if (file && typeof file.arrayBuffer === "function") {
-    return file.arrayBuffer();
+  const buffer = await file.arrayBuffer();
+  if (!isArrayBufferReadable(buffer)) {
+    throw Object.assign(new Error("Excel dosyası boş veya okunamadı."), {
+      code: EXCEL_READ_STAGE.FALLBACK_PARSE,
+      stage: EXCEL_READ_STAGE.FALLBACK_PARSE,
+    });
   }
-  throw Object.assign(new Error("Excel buffer yeniden okunamadı."), {
-    code: EXCEL_READ_STAGE.FALLBACK_PARSE,
-    stage: EXCEL_READ_STAGE.FALLBACK_PARSE,
-  });
+  return buffer;
 }
 
 /**
  * Excel sheet rows: worker-first with main-thread fallback.
- * Worker transfer uses a cloned buffer so the original stays readable on fallback.
+ * Worker uses structured-clone copy (no transfer) so fallback can always re-read File.
  */
 export async function readExcelSheetRowsFromFile(
   file,
@@ -56,43 +69,20 @@ export async function readExcelSheetRowsFromFile(
     runWorker = runExcelSheetWorker,
   } = {}
 ) {
-  if (!file || typeof file.arrayBuffer !== "function") {
-    throw Object.assign(new Error("Geçersiz Excel dosyası."), {
-      code: EXCEL_READ_STAGE.FALLBACK_PARSE,
-      stage: EXCEL_READ_STAGE.FALLBACK_PARSE,
-    });
-  }
-
-  let primaryBuffer = await file.arrayBuffer();
-  if (!isArrayBufferReadable(primaryBuffer)) {
-    primaryBuffer = await resolveFallbackBuffer(file, primaryBuffer);
-  }
-  if (!isArrayBufferReadable(primaryBuffer)) {
-    throw Object.assign(new Error("Excel dosyası boş veya okunamadı."), {
-      code: EXCEL_READ_STAGE.FALLBACK_PARSE,
-      stage: EXCEL_READ_STAGE.FALLBACK_PARSE,
-    });
-  }
+  const resolvedWorkerUrl = resolveWorkerUrl(workerUrl);
   let workerStage = null;
   let workerMessage = "";
 
-  if (workerUrl) {
-    let workerBuffer;
+  if (resolvedWorkerUrl) {
     try {
-      workerBuffer = isArrayBufferReadable(primaryBuffer)
-        ? primaryBuffer.slice(0)
-        : await file.arrayBuffer();
-    } catch {
-      workerBuffer = await file.arrayBuffer();
-    }
-
-    try {
+      const workerBuffer = await readFreshFileBuffer(file);
       const result = await runWorker({
-        workerUrl,
+        workerUrl: resolvedWorkerUrl,
         arrayBuffer: workerBuffer,
         mode,
         onProgress,
         timeoutMs,
+        transferArrayBuffer: false,
       });
       if (Array.isArray(result?.rows)) {
         return result.rows;
@@ -108,24 +98,12 @@ export async function readExcelSheetRowsFromFile(
     }
   }
 
-  let fallbackBuffer;
   try {
-    fallbackBuffer = await resolveFallbackBuffer(file, primaryBuffer);
-  } catch (error) {
-    throw Object.assign(new Error(error?.message || "Excel buffer yeniden okunamadı."), {
-      code: EXCEL_READ_STAGE.FALLBACK_PARSE,
-      stage: EXCEL_READ_STAGE.FALLBACK_PARSE,
-      workerStage,
-      workerMessage,
-      cause: error,
-    });
-  }
-
-  try {
+    const fallbackBuffer = await readFreshFileBuffer(file);
     return readSheetRowsFromArrayBuffer(fallbackBuffer);
   } catch (error) {
     throw Object.assign(new Error(error?.message || "Excel okunamadı."), {
-      code: EXCEL_READ_STAGE.FALLBACK_PARSE,
+      code: error?.code || EXCEL_READ_STAGE.FALLBACK_PARSE,
       stage: EXCEL_READ_STAGE.FALLBACK_PARSE,
       workerStage,
       workerMessage,
