@@ -270,7 +270,7 @@ export default function GenelMuhasebeKontrolPage() {
               (DB yazımı yok).
             </p>
           </div>
-          <AnnveroModuleNav />
+          <AnnveroModuleNav tone="light" />
         </div>
 
         <div className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-2">
