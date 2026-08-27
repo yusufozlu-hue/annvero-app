@@ -151,10 +151,20 @@ export function parseLedgerByDocumentClass(sheetRows = [], documentClass = "") {
   };
 }
 
+export function accountCodeFromPlanRow(account) {
+  return String(
+    account?.account_code ||
+      account?.accountCode ||
+      account?.hesapKodu ||
+      account?.code ||
+      ""
+  ).trim();
+}
+
 export function buildAccountPlanCodeSet(accounts = []) {
   const set = new Set();
   for (const account of accounts || []) {
-    const code = String(account.account_code || account.hesapKodu || account.code || "").trim();
+    const code = accountCodeFromPlanRow(account);
     if (!code) continue;
     set.add(code);
     set.add(compact(code));
@@ -162,6 +172,19 @@ export function buildAccountPlanCodeSet(accounts = []) {
     if (short) set.add(short);
   }
   return set;
+}
+
+/** Period-end / technical / cross rows mixed into pipeline — not ledger movements. */
+export function isSyntheticSystemFindingRow(row = {}) {
+  const id = String(row?.id || "");
+  return (
+    id.startsWith("donem-sonu") ||
+    id.startsWith("fis-gap") ||
+    id.startsWith("teknik-") ||
+    id.startsWith("vergisel-") ||
+    id.startsWith("capraz-") ||
+    id.startsWith("cross-")
+  );
 }
 
 /** Account-level mizan ↔ muavin reconcile. Never treats mizan as voucher lines. */
@@ -327,9 +350,16 @@ export function runGenelMuhasebeKontrol({
   parsed.mizan = stamp(parsed.mizan);
 
   const planLoaded = Array.isArray(accountPlanAccounts);
-  const planEmpty = planLoaded && accountPlanAccounts.length === 0;
-  const accountPlanCodes =
-    planLoaded && !planEmpty ? buildAccountPlanCodeSet(accountPlanAccounts) : null;
+  const planCodeCount = planLoaded
+    ? accountPlanAccounts.filter((account) => accountCodeFromPlanRow(account)).length
+    : 0;
+  const planEmpty = planLoaded && planCodeCount === 0;
+  // PRESENT only when clone-safe payload actually carries at least one plan code.
+  const planEvidencePresent =
+    planLoaded && !planEmpty && accountPlanStatus !== "missing";
+  const accountPlanCodes = planEvidencePresent
+    ? buildAccountPlanCodeSet(accountPlanAccounts)
+    : null;
 
   counters.analysisInvocations += 1;
   const tAcc0 = performance.now();
@@ -340,6 +370,7 @@ export function runGenelMuhasebeKontrol({
     companyId,
     period,
     accountPlanCodes,
+    yevmiyeEvidencePresent: parsed.yevmiye.length > 0,
   });
   timing.accountingMs += performance.now() - tAcc0;
 
@@ -353,10 +384,12 @@ export function runGenelMuhasebeKontrol({
 
   const ledgerRows = pipeline.rows.filter(
     (row) =>
-      row.kaynak === E_DEFTER_KAYNAK.MUAVIN ||
-      row.kaynak === E_DEFTER_KAYNAK.YEVMIYE ||
-      row.kaynak === E_DEFTER_KAYNAK.YEVMIYE_XML
+      !isSyntheticSystemFindingRow(row) &&
+      (row.kaynak === E_DEFTER_KAYNAK.MUAVIN ||
+        row.kaynak === E_DEFTER_KAYNAK.YEVMIYE ||
+        row.kaynak === E_DEFTER_KAYNAK.YEVMIYE_XML)
   );
+  const systemFindingRows = pipeline.rows.filter((row) => isSyntheticSystemFindingRow(row));
 
   // Reuse pipeline counterpart outcomes — do not re-run resolver (idempotent / perf).
   let resolved = 0;
@@ -381,11 +414,11 @@ export function runGenelMuhasebeKontrol({
   timing.groupingMs = 0;
 
   const extraFindings = [];
-  if (!planLoaded || accountPlanStatus === "missing" || planEmpty) {
+  if (!planEvidencePresent) {
     extraFindings.push(
       createEDefterIssue({
         code: E_DEFTER_ISSUE_CODE.PLAN_EVIDENCE_MISSING,
-        message: "Aktif hesap planı yok veya yüklenemedi; ‘hesap planda yok’ kararı verilmedi.",
+        message: "Hesap planı yüklenemedi; ‘hesap planda yok’ kararı verilmedi.",
         severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
         group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
         riskScore: 8,
@@ -393,10 +426,13 @@ export function runGenelMuhasebeKontrol({
     );
   }
   if (reconcile.status === "EVIDENCE_MISSING") {
+    const mizanMissingOnly = parsed.muavin.length > 0 && parsed.mizan.length === 0;
     extraFindings.push(
       createEDefterIssue({
         code: reconcile.code,
-        message: reconcile.message,
+        message: mizanMissingOnly
+          ? "Mizan yüklenmedi"
+          : reconcile.message,
         severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
         group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
         riskScore: 8,
@@ -475,6 +511,25 @@ export function runGenelMuhasebeKontrol({
   counters.persistInvocations = 0;
   timing.totalMs = performance.now() - tTotal0;
 
+  const nonInfoExtras = extraFindings.filter(
+    (f) => f.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI
+  );
+  const mizanMuavinSummary = {
+    ...reconcile,
+    userLabel:
+      reconcile.status === "EVIDENCE_MISSING" &&
+      parsed.muavin.length > 0 &&
+      parsed.mizan.length === 0
+        ? "Mizan yüklenmedi"
+        : reconcile.status === "EVIDENCE_MISSING"
+          ? reconcile.message
+          : reconcile.status === "MATCHED" || reconcile.matched
+            ? "Mutabık"
+            : reconcile.status === "MISMATCH"
+              ? "Fark var"
+              : reconcile.status || "—",
+  };
+
   return {
     mode: "local-control",
     companyId,
@@ -496,26 +551,30 @@ export function runGenelMuhasebeKontrol({
       totalMs: Math.round(timing.totalMs),
     },
     summary: {
+      // Movement totals only — synthetic system findings excluded from hareket/fiş/BA.
       toplamSatir: ledgerRows.length,
+      hareketSatir: ledgerRows.length,
+      sistemBilgisi: systemFindingRows.length,
       toplamFis: fisKeys.size,
       dengeliFis: Math.max(0, fisKeys.size - unbalanced.size),
       dengesizFis: unbalanced.size,
       kesinKarsit: resolved,
       cokluKarsit: multi,
-      incelemeGerekli: review + extraFindings.length,
+      // BİLGİ extras (mizan/plan) must not inflate inceleme counter.
+      incelemeGerekli: review + nonInfoExtras.length,
       hesapPlandaYok: countCode(E_DEFTER_ISSUE_CODE.ACCOUNT_NOT_IN_PLAN),
       donemDisi: countCode(E_DEFTER_ISSUE_CODE.DATE_OUT_OF_PERIOD),
       mukerrer: countCode(E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY),
       borcToplam: totals.borc,
       alacakToplam: totals.alacak,
       borcAlacakFark: roundMoney(totals.borc - totals.alacak),
-      mizanMuavin: reconcile,
-      planEvidence:
-        !planLoaded || planEmpty || accountPlanStatus === "missing"
-          ? "MISSING"
-          : "LOADED",
+      mizanMuavin: mizanMuavinSummary,
+      planEvidence: planEvidencePresent ? "PRESENT" : "MISSING",
+      planStatus: planEvidencePresent ? "loaded" : "missing",
       overallSonuc,
-      edefterUygun: overallSonuc === E_DEFTER_SONUC_SEVIYE.UYGUN || overallSonuc === E_DEFTER_SONUC_SEVIYE.BILGI,
+      edefterUygun:
+        overallSonuc === E_DEFTER_SONUC_SEVIYE.UYGUN ||
+        overallSonuc === E_DEFTER_SONUC_SEVIYE.BILGI,
       localOnly: true,
     },
     counters: { ...counters },

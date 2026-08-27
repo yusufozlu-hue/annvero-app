@@ -74,14 +74,25 @@ export function sanitizeSheetRows(rows) {
   });
 }
 
+/** Normalize plan row codes from API (`accountCode`) or engine (`account_code`) shapes. */
+export function accountCodeFromPlanRow(account) {
+  return String(
+    account?.account_code ||
+      account?.accountCode ||
+      account?.hesapKodu ||
+      account?.code ||
+      ""
+  )
+    .trim()
+    .slice(0, 32);
+}
+
 function sanitizeAccountPlanAccounts(accounts) {
   if (!Array.isArray(accounts)) return null;
   return accounts
     .slice(0, 50_000)
     .map((account) => ({
-      account_code: String(
-        account?.account_code || account?.hesapKodu || account?.code || ""
-      ).slice(0, 32),
+      account_code: accountCodeFromPlanRow(account),
     }))
     .filter((account) => account.account_code);
 }
