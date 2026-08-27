@@ -23,8 +23,12 @@ export function parseTurkishAmount(value) {
   return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
+/** Display-only TR money (2 decimals). No currency symbol. Invalid → "—". */
 export function formatTurkishMoney(value) {
-  return Number(value || 0).toLocaleString("tr-TR", {
+  if (value === null || value === undefined) return "—";
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return number.toLocaleString("tr-TR", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });

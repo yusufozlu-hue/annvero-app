@@ -22,6 +22,7 @@ import {
   EDEFTER_ANALYZE_JOB_KIND,
 } from "@/src/utils/eDefterAnalyzeContract";
 import { createGenelMuhasebeAnalyzeGate } from "@/src/utils/genelMuhasebeKontrolEngine";
+import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 
 function Stat({ label, value }) {
   return (
@@ -428,9 +429,9 @@ export default function GenelMuhasebeKontrolPage() {
               <Stat label="Mükerrer" value={summary.mukerrer} />
               <Stat
                 label="Borç / Alacak"
-                value={`${summary.borcToplam} / ${summary.alacakToplam}`}
+                value={`${formatTurkishMoney(summary.borcToplam)} / ${formatTurkishMoney(summary.alacakToplam)}`}
               />
-              <Stat label="Fark" value={summary.borcAlacakFark} />
+              <Stat label="Fark" value={formatTurkishMoney(summary.borcAlacakFark)} />
               <Stat label="Muavin↔Mizan" value={mizanMuavinLabel(summary)} />
               <Stat label="Plan kanıtı" value={planEvidenceLabel(summary)} />
             </div>
