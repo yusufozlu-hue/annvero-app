@@ -56,8 +56,14 @@ async function readFreshFileBuffer(file) {
 }
 
 /**
- * Excel sheet rows: worker-first with main-thread fallback.
- * Worker uses structured-clone copy (no transfer) so fallback can always re-read File.
+ * Excel sheet rows — main-thread XLSX by default (reliable on Vercel/Turbopack).
+ *
+ * Optional worker (preferWorker=true): structured-clone only (no transfer). On
+ * worker failure, File is re-read for main-thread parse.
+ *
+ * Why default off: excelSheet.worker.js imports @/ modules; Turbopack media copy
+ * does not bundle those imports → WORKER_ONERROR on preview (same class as the
+ * pre-classic bankParser.worker failure mode).
  */
 export async function readExcelSheetRowsFromFile(
   file,
@@ -67,34 +73,46 @@ export async function readExcelSheetRowsFromFile(
     onProgress,
     timeoutMs = 90_000,
     runWorker = runExcelSheetWorker,
+    preferWorker = false,
   } = {}
 ) {
   const resolvedWorkerUrl = resolveWorkerUrl(workerUrl);
   let workerStage = null;
   let workerMessage = "";
 
-  if (resolvedWorkerUrl) {
+  if (!preferWorker || !resolvedWorkerUrl) {
     try {
-      const workerBuffer = await readFreshFileBuffer(file);
-      const result = await runWorker({
-        workerUrl: resolvedWorkerUrl,
-        arrayBuffer: workerBuffer,
-        mode,
-        onProgress,
-        timeoutMs,
-        transferArrayBuffer: false,
-      });
-      if (Array.isArray(result?.rows)) {
-        return result.rows;
-      }
-      workerStage = EXCEL_READ_STAGE.WORKER_PARSE;
-      workerMessage = "Worker sonucu satır içermiyor.";
+      const buffer = await readFreshFileBuffer(file);
+      return readSheetRowsFromArrayBuffer(buffer);
     } catch (error) {
-      workerStage = classifyWorkerFailure(error);
-      workerMessage = error?.message || String(error);
-      if (typeof console !== "undefined") {
-        console.debug("[excel-sheet-read]", workerStage, workerMessage);
-      }
+      throw Object.assign(new Error(error?.message || "Excel okunamadı."), {
+        code: error?.code || EXCEL_READ_STAGE.FALLBACK_PARSE,
+        stage: EXCEL_READ_STAGE.FALLBACK_PARSE,
+        cause: error,
+      });
+    }
+  }
+
+  try {
+    const workerBuffer = await readFreshFileBuffer(file);
+    const result = await runWorker({
+      workerUrl: resolvedWorkerUrl,
+      arrayBuffer: workerBuffer,
+      mode,
+      onProgress,
+      timeoutMs,
+      transferArrayBuffer: false,
+    });
+    if (Array.isArray(result?.rows)) {
+      return result.rows;
+    }
+    workerStage = EXCEL_READ_STAGE.WORKER_PARSE;
+    workerMessage = "Worker sonucu satır içermiyor.";
+  } catch (error) {
+    workerStage = classifyWorkerFailure(error);
+    workerMessage = error?.message || String(error);
+    if (typeof console !== "undefined") {
+      console.debug("[excel-sheet-read]", workerStage, workerMessage);
     }
   }
 

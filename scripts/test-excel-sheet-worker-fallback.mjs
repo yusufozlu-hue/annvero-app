@@ -51,6 +51,7 @@ function makeXlsxFile(rows, name = "fixture.xlsx") {
   ];
   const file = makeXlsxFile(rows, "worker-load-fail.xlsx");
   const parsed = await readExcelSheetRowsFromFile(file, {
+    preferWorker: true,
     workerUrl: "https://example.invalid/excelSheet.worker.js",
     runWorker: async ({ arrayBuffer, transferArrayBuffer }) => {
       assert(transferArrayBuffer === false, "worker path disables buffer transfer");
@@ -64,6 +65,26 @@ function makeXlsxFile(rows, name = "fixture.xlsx") {
   assert(file.arrayBufferCalls === 2, "worker fail → fresh file read on fallback");
 }
 
+// 1b) Default preferWorker=false → main thread only (no worker call)
+{
+  const rows = [
+    ["Tarih", "Fiş"],
+    ["01.01.2026", "1"],
+  ];
+  const file = makeXlsxFile(rows, "main-thread-default.xlsx");
+  let workerCalled = false;
+  const parsed = await readExcelSheetRowsFromFile(file, {
+    workerUrl: "https://example.invalid/should-not-run.js",
+    runWorker: async () => {
+      workerCalled = true;
+      throw new Error("worker should not run");
+    },
+  });
+  assert(workerCalled === false, "default path skips worker");
+  assert(parsed.length === 2, "default main-thread rows");
+  assert(file.arrayBufferCalls === 1, "default path single file read");
+}
+
 // 2) Worker parse failure after transfer → fallback succeeds
 {
   const rows = [
@@ -73,6 +94,7 @@ function makeXlsxFile(rows, name = "fixture.xlsx") {
   ];
   const file = makeXlsxFile(rows, "worker-parse-fail.xlsx");
   const parsed = await readExcelSheetRowsFromFile(file, {
+    preferWorker: true,
     workerUrl: "mock://excel-sheet",
     runWorker: async ({ arrayBuffer }) => {
       assert(arrayBuffer.byteLength > 0, "worker receives cloned buffer");
@@ -106,6 +128,7 @@ function makeXlsxFile(rows, name = "fixture.xlsx") {
   };
 
   const parsed = await readExcelSheetRowsFromFile(file, {
+    preferWorker: true,
     workerUrl: "mock://excel-sheet",
     runWorker: async () => {
       throw Object.assign(new Error("Worker crashed."), { code: "WORKER_ONERROR" });

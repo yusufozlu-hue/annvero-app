@@ -56,8 +56,10 @@ function safeUserError(err) {
 }
 
 async function readSheetRows(file) {
+  // Vercel/Turbopack preview: excelSheet.worker is media-copied without bundling
+  // its @/ imports → WORKER_ONERROR. Prefer main-thread XLSX (same as bank Excel).
   return readExcelSheetRowsFromFile(file, {
-    workerUrl: PARSER_WORKER_URLS.excelSheet,
+    workerUrl: null,
     mode: "rows",
   });
 }
