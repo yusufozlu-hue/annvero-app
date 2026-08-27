@@ -27,12 +27,15 @@ import {
 } from "@/src/utils/genelMuhasebeKontrolEngine.js";
 import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils.js";
 import {
+  buildLucaMultiAccountMuavinFixture,
+  buildLucaTurkishAccountMuavinFixture,
+  buildLucaTurkishAccountYevmiyeFixture,
+} from "./fixtures/luca-multi-account-muavin.mjs";
+import {
   buildLucaBlockYevmiyeFixture,
   LUCA_BLOCK_YEVMIYE_ROWS,
 } from "./fixtures/luca-block-yevmiye.mjs";
-import {
-  buildLucaMultiAccountMuavinFixture,
-} from "./fixtures/luca-multi-account-muavin.mjs";
+import { normalizeParserText } from "@/src/utils/textNormalize.js";
 
 let failed = 0;
 function assert(cond, msg) {
@@ -294,31 +297,73 @@ const fixture = buildLucaBlockYevmiyeFixture();
   assert(result.counters.persistInvocations === 0, "10c persist=0");
 }
 
-// 10d — amount soft-diff classified once (no double only-side)
+// 10e — B0027 and PDİ01 match separately; B0021/Ç0005 never cross-candidate
+{
+  const muavinSheet = buildLucaTurkishAccountMuavinFixture();
+  const yevSheet = buildLucaTurkishAccountYevmiyeFixture();
+  const mRows = parseMuavinSheet(muavinSheet);
+  const yRows = parseYevmiyeSheet(yevSheet);
+  const compact = (v) => normalizeParserText(v).replace(/\s+/g, "");
+  const money = (v) => Number(Number(v || 0).toFixed(2));
+  const fp = (r) =>
+    [
+      String(r.tarih || "").trim(),
+      compact(r.fisNo),
+      compact(r.hesapKodu),
+      money(r.borc).toFixed(2),
+      money(r.alacak).toFixed(2),
+    ].join("|");
+
+  const mB = mRows.find((r) => r.hesapKodu === "120.01.B0027");
+  const yB = yRows.find((r) => r.hesapKodu === "120.01.B0027");
+  const mP = mRows.find((r) => r.hesapKodu === "120.01.PDİ01");
+  const yP = yRows.find((r) => r.hesapKodu === "120.01.PDİ01");
+  assert(mB && yB && fp(mB) === fp(yB), "10e B0027 identical fingerprints");
+  assert(mP && yP && fp(mP) === fp(yP), "10e PDİ01 identical fingerprints");
+  assert(fp(mB) !== fp(mP), "10e B0027 ≠ PDİ01 fingerprints");
+
+  const rec = reconcileMuavinYevmiye({ muavinRows: mRows, yevmiyeRows: yRows });
+  assert(rec.matched === true && rec.matchedCount === 4, "10e full match 4/4");
+  assert(
+    !rec.differences.some(
+      (d) =>
+        (d.muavin?.hesapKodu === "320.10.B0021" && d.yevmiye?.hesapKodu === "320.10.Ç0005") ||
+        (d.muavin?.hesapKodu === "320.10.Ç0005" && d.yevmiye?.hesapKodu === "320.10.B0021")
+    ),
+    "10e B0021 never paired with Ç0005"
+  );
+
+  const engine = runGenelMuhasebeKontrol({
+    companyId: "anon",
+    period: "2026/03",
+    muavinSheetRows: muavinSheet,
+    yevmiyeSheetRows: yevSheet,
+  });
+  assert(engine.summary.muavinYevmiye.userLabel === "Tam eşleşti (4/4)", "10e UI full match label");
+  assert(
+    !(engine.findingExtras || []).some(
+      (f) => f.code === E_DEFTER_ISSUE_CODE.MUAVIN_YEVMIYE_MISMATCH
+    ),
+    "10e no mismatch findings on full match"
+  );
+}
+
+// 10f — different accounts with same fis+tarih+amount stay alone (no cross-account soft match)
 {
   const muavinRows = [
-    {
-      fisNo: "00001",
-      tarih: "01.01.2026",
-      hesapKodu: "100.01",
-      borc: 100,
-      alacak: 0,
-    },
+    { fisNo: "00001", tarih: "01.01.2026", hesapKodu: "120.01.B0027", borc: 100, alacak: 0 },
   ];
   const yevmiyeRows = [
-    {
-      fisNo: "00001",
-      tarih: "01.01.2026",
-      hesapKodu: "100.01",
-      borc: 120,
-      alacak: 0,
-    },
+    { fisNo: "00001", tarih: "01.01.2026", hesapKodu: "120.01.PDİ01", borc: 100, alacak: 0 },
   ];
   const rec = reconcileMuavinYevmiye({ muavinRows, yevmiyeRows });
-  assert(rec.counts.amountDiff === 1, "10d amountDiff=1");
-  assert(rec.counts.onlyMuavin === 0 && rec.counts.onlyYevmiye === 0, "10d not double-counted alone");
-  assert(rec.differences.length === 1, "10d single difference");
-  assert(rec.differences[0].statusLabel === "Tutar farklı", "10d label");
+  assert(rec.matchedCount === 0, "10f no cross-account match");
+  assert(rec.counts.onlyMuavin === 1 && rec.counts.onlyYevmiye === 1, "10f both alone");
+  assert(rec.counts.amountDiff === 0, "10f not amount-diff soft pair");
+  assert(
+    rec.differences.every((d) => !d.muavin || !d.yevmiye || d.muavin.hesapKodu === d.yevmiye.hesapKodu),
+    "10f paired diffs share hesap when both sides present"
+  );
 }
 
 // 11 — muavin-only regression preserved
@@ -408,22 +453,48 @@ const fixture = buildLucaBlockYevmiyeFixture();
         accountPlanStatus: "missing",
       });
       const my = combo.summary.muavinYevmiye;
-      assert(my.matchedCount === 517, "real smoke matched 517");
+      assert(my.matched === true, "real smoke full match");
+      assert(my.matchedCount === 545, "real smoke matched 545");
       assert(my.denominator === 545, "real smoke denom 545");
-      assert(my.userLabel === "517/545 eşleşti", "real smoke userLabel");
-      assert(my.counts.onlyMuavin === 28, "real smoke onlyMuavin 28");
-      assert(my.counts.onlyYevmiye === 28, "real smoke onlyYevmiye 28");
+      assert(my.userLabel === "Tam eşleşti (545/545)", "real smoke userLabel");
+      assert(my.counts.onlyMuavin === 0, "real smoke onlyMuavin 0");
+      assert(my.counts.onlyYevmiye === 0, "real smoke onlyYevmiye 0");
       assert(my.counts.amountDiff === 0, "real smoke amountDiff 0");
       assert(my.counts.dateDiff === 0, "real smoke dateDiff 0");
       assert(my.counts.fisDiff === 0, "real smoke fisDiff 0");
-      assert(my.differences.length === 56, "real smoke 56 alone-side diffs");
+      assert(my.differences.length === 0, "real smoke no differences");
       assert(
-        (combo.findingExtras || []).some(
+        !(combo.findingExtras || []).some(
           (f) => f.code === E_DEFTER_ISSUE_CODE.MUAVIN_YEVMIYE_MISMATCH
         ),
-        "real smoke MUAVIN_YEVMIYE_MISMATCH findings"
+        "real smoke no MUAVIN_YEVMIYE_MISMATCH"
       );
       assert(combo.counters.persistInvocations === 0, "real smoke persist=0");
+
+      // Trace B0027 / PDİ01 ham→normalize→fingerprint
+      const mRows = parseMuavinSheet(mSheet);
+      const yRows = parseYevmiyeSheet(sheet);
+      const compact = (v) => normalizeParserText(v).replace(/\s+/g, "");
+      const money = (v) => Number(Number(v || 0).toFixed(2));
+      const fp = (r) =>
+        [
+          String(r.tarih || "").trim(),
+          compact(r.fisNo),
+          compact(r.hesapKodu),
+          money(r.borc).toFixed(2),
+          money(r.alacak).toFixed(2),
+        ].join("|");
+      const mB = mRows.find((r) => r.hesapKodu === "120.01.B0027" && money(r.borc) === 79685.24);
+      const yB = yRows.find((r) => r.hesapKodu === "120.01.B0027" && money(r.borc) === 79685.24);
+      const mP = mRows.find((r) => r.hesapKodu === "120.01.PDİ01" && money(r.borc) === 89415.37);
+      const yP = yRows.find((r) => r.hesapKodu === "120.01.PDİ01" && money(r.borc) === 89415.37);
+      assert(mB && yB && fp(mB) === fp(yB), "real B0027 fingerprint match");
+      assert(mP && yP && fp(mP) === fp(yP), "real PDİ01 fingerprint match");
+      assert(
+        mRows.some((r) => r.hesapKodu === "320.10.Ç0005") &&
+          yRows.some((r) => r.hesapKodu === "320.10.Ç0005"),
+        "real Ç0005 present on both sides"
+      );
     }
   }
 }
