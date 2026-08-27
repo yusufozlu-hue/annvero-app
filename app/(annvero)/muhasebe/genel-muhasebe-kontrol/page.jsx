@@ -51,8 +51,14 @@ function muavinYevmiyeLabel(summary) {
   const my = summary?.muavinYevmiye;
   if (!my) return "—";
   if (my.userLabel) return my.userLabel;
-  if (my.matched) return "Mutabık";
-  if (my.status === "MISMATCH") return "Fark raporlandı";
+  if (my.status === "EVIDENCE_MISSING") return "Karşılaştırılamadı";
+  if (my.matched) {
+    const n = my.denominator || my.yevmiyeMovements || 0;
+    return `Tam eşleşti (${n}/${n})`;
+  }
+  if (my.status === "MISMATCH") {
+    return `${my.matchedCount || 0}/${my.denominator || 0} eşleşti`;
+  }
   return "—";
 }
 
@@ -91,6 +97,9 @@ function safeUserError(err) {
   if (code === "UNSUPPORTED_MUAVIN_LAYOUT") return "Desteklenmeyen muavin düzeni.";
   if (code === "UNSUPPORTED_YEVMIYE_LAYOUT") return "Desteklenmeyen yevmiye düzeni.";
   if (code === "EMPTY_YEVMIYE_PARSE") return "Yevmiye dosyasından hareket okunamadı.";
+  if (code === "MUAVIN_YEVMIYE_RECONCILE_FAILED") {
+    return "Muavin↔yevmiye farkı üretilemedi; kontrol güvenli şekilde durdu.";
+  }
   if (code === "ANALYZE_WORKER_FAILED") return "Analiz worker başarısız oldu.";
   if (code === "ANALYZE_TIMEOUT") return "Analiz zaman aşımına uğradı.";
   return "Kontrol çalıştırılamadı. Lütfen tekrar deneyin.";
@@ -124,6 +133,7 @@ export default function GenelMuhasebeKontrolPage() {
   const [progressDetail, setProgressDetail] = useState("");
   const [error, setError] = useState("");
   const [perfWarning, setPerfWarning] = useState("");
+  const [showMuavinYevmiyeDiffs, setShowMuavinYevmiyeDiffs] = useState(false);
   const [result, setResult] = useState(null);
   const [planStatus, setPlanStatus] = useState("unknown");
   const [planAccounts, setPlanAccounts] = useState(null);
@@ -298,6 +308,7 @@ export default function GenelMuhasebeKontrolPage() {
       .flatMap((row) =>
         (row.issueDetails || []).map((issue) => ({
           fisNo: row.fisNo || "",
+          tarih: row.tarih || "",
           hesapKodu: row.hesapKodu || "",
           severity: issue.severity,
           code: issue.code,
@@ -305,14 +316,19 @@ export default function GenelMuhasebeKontrolPage() {
         }))
       );
     const extras = (result.findingExtras || []).map((issue) => ({
-      fisNo: "",
-      hesapKodu: "",
+      fisNo: issue.fisNo || "",
+      tarih: issue.tarih || "",
+      hesapKodu: issue.hesapKodu || "",
       severity: issue.severity,
       code: issue.code,
       message: issue.message,
+      statusLabel: issue.statusLabel || "",
     }));
     return [...extras, ...fromRows];
   }, [result]);
+
+  const muavinYevmiyeDiffs = summary?.muavinYevmiye?.differences || [];
+  const muavinYevmiyeDiffPreview = muavinYevmiyeDiffs.slice(0, 50);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -466,6 +482,73 @@ export default function GenelMuhasebeKontrolPage() {
               ) : null}
             </div>
 
+            {summary.muavinHareketSatir > 0 && summary.yevmiyeEvidence === "PRESENT" ? (
+              <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+                <div className="font-medium text-slate-900">Muavin↔Yevmiye özeti</div>
+                <div className="mt-2 grid gap-1 sm:grid-cols-3">
+                  <div>
+                    Eşleşen: {summary.muavinYevmiye?.matchedCount ?? 0} /{" "}
+                    {summary.muavinYevmiye?.denominator ?? 0}
+                  </div>
+                  <div>Yalnız muavinde: {summary.muavinYevmiye?.counts?.onlyMuavin ?? 0}</div>
+                  <div>Yalnız yevmiyede: {summary.muavinYevmiye?.counts?.onlyYevmiye ?? 0}</div>
+                </div>
+                {muavinYevmiyeDiffs.length ? (
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      className="text-teal-700 hover:underline"
+                      onClick={() => setShowMuavinYevmiyeDiffs((v) => !v)}
+                    >
+                      {showMuavinYevmiyeDiffs ? "Farkları gizle" : "Farkları göster"}
+                      {` (${muavinYevmiyeDiffs.length})`}
+                    </button>
+                    {showMuavinYevmiyeDiffs ? (
+                      <div className="mt-2 overflow-auto rounded-lg border border-slate-200">
+                        <table className="min-w-full text-left text-xs">
+                          <thead className="bg-slate-50 text-slate-600">
+                            <tr>
+                              <th className="px-2 py-1">Durum</th>
+                              <th className="px-2 py-1">Fiş</th>
+                              <th className="px-2 py-1">Tarih</th>
+                              <th className="px-2 py-1">Hesap</th>
+                              <th className="px-2 py-1">Muavin B/A</th>
+                              <th className="px-2 py-1">Yevmiye B/A</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {muavinYevmiyeDiffPreview.map((diff, idx) => (
+                              <tr key={`my-diff-${idx}`} className="border-t border-slate-100">
+                                <td className="px-2 py-1">{diff.statusLabel}</td>
+                                <td className="px-2 py-1">{diff.fisNo || "—"}</td>
+                                <td className="px-2 py-1">{diff.tarih || "—"}</td>
+                                <td className="px-2 py-1">{diff.hesapKodu || "—"}</td>
+                                <td className="px-2 py-1">
+                                  {diff.muavin
+                                    ? `${formatTurkishMoney(diff.muavin.borc)} / ${formatTurkishMoney(diff.muavin.alacak)}`
+                                    : "—"}
+                                </td>
+                                <td className="px-2 py-1">
+                                  {diff.yevmiye
+                                    ? `${formatTurkishMoney(diff.yevmiye.borc)} / ${formatTurkishMoney(diff.yevmiye.alacak)}`
+                                    : "—"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {muavinYevmiyeDiffs.length > 50 ? (
+                          <p className="px-2 py-2 text-slate-500">
+                            İlk 50 fark gösteriliyor · toplam {muavinYevmiyeDiffs.length}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {summary.mizanMuavin?.message ? (
               <p className="text-sm text-slate-600">{summary.mizanMuavin.message}</p>
             ) : null}
@@ -483,16 +566,17 @@ export default function GenelMuhasebeKontrolPage() {
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
                   <tr>
                     <th className="px-3 py-2">Fiş</th>
+                    <th className="px-3 py-2">Tarih</th>
                     <th className="px-3 py-2">Hesap</th>
                     <th className="px-3 py-2">Seviye</th>
+                    <th className="px-3 py-2">Durum / Mesaj</th>
                     <th className="px-3 py-2">Kod</th>
-                    <th className="px-3 py-2">Mesaj</th>
                   </tr>
                 </thead>
                 <tbody>
                   {findings.length === 0 ? (
                     <tr>
-                      <td className="px-3 py-3 text-slate-500" colSpan={5}>
+                      <td className="px-3 py-3 text-slate-500" colSpan={6}>
                         Satır bulgusu yok (veya yalnız özet bulgular).
                       </td>
                     </tr>
@@ -500,10 +584,13 @@ export default function GenelMuhasebeKontrolPage() {
                     findings.map((f, idx) => (
                       <tr key={`${f.code}-${idx}`} className="border-t border-slate-100">
                         <td className="px-3 py-2">{f.fisNo || "—"}</td>
+                        <td className="px-3 py-2">{f.tarih || "—"}</td>
                         <td className="px-3 py-2">{f.hesapKodu || "—"}</td>
                         <td className="px-3 py-2">{f.severity}</td>
-                        <td className="px-3 py-2">{f.code}</td>
-                        <td className="px-3 py-2">{f.message}</td>
+                        <td className="px-3 py-2">
+                          {f.statusLabel ? `${f.statusLabel} — ${f.message}` : f.message}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-slate-500">{f.code}</td>
                       </tr>
                     ))
                   )}

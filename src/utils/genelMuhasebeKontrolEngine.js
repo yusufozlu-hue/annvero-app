@@ -299,6 +299,22 @@ function moneyKey(value) {
   return roundMoney(value).toFixed(2);
 }
 
+export const MUAVIN_YEVMIYE_DIFF_STATUS = {
+  ONLY_MUAVIN: "ONLY_MUAVIN",
+  ONLY_YEVMIYE: "ONLY_YEVMIYE",
+  AMOUNT_DIFF: "AMOUNT_DIFF",
+  DATE_DIFF: "DATE_DIFF",
+  FIS_DIFF: "FIS_DIFF",
+};
+
+export const MUAVIN_YEVMIYE_DIFF_LABEL = {
+  ONLY_MUAVIN: "Yalnız muavinde",
+  ONLY_YEVMIYE: "Yalnız yevmiyede",
+  AMOUNT_DIFF: "Tutar farklı",
+  DATE_DIFF: "Tarih farklı",
+  FIS_DIFF: "Fiş numarası farklı",
+};
+
 function muavinYevmiyeMatchKey(row = {}) {
   return [
     compact(row.fisNo),
@@ -309,9 +325,65 @@ function muavinYevmiyeMatchKey(row = {}) {
   ].join("|");
 }
 
+function pushMultiset(map, key, row) {
+  const list = map.get(key) || [];
+  list.push(row);
+  map.set(key, list);
+}
+
+function takeMultiset(map, key) {
+  const list = map.get(key);
+  if (!list?.length) return null;
+  const row = list.shift();
+  if (!list.length) map.delete(key);
+  else map.set(key, list);
+  return row;
+}
+
+function flattenMultiset(map) {
+  const rows = [];
+  for (const list of map.values()) rows.push(...list);
+  return rows;
+}
+
+function sideSnapshot(row = {}) {
+  return {
+    fisNo: row.fisNo || "",
+    tarih: row.tarih || "",
+    hesapKodu: row.hesapKodu || "",
+    borc: roundMoney(row.borc),
+    alacak: roundMoney(row.alacak),
+  };
+}
+
+function buildMuavinYevmiyeDiff({
+  status,
+  muavin = null,
+  yevmiye = null,
+} = {}) {
+  const primary = muavin || yevmiye || {};
+  return {
+    status,
+    statusLabel: MUAVIN_YEVMIYE_DIFF_LABEL[status] || status,
+    fisNo: primary.fisNo || muavin?.fisNo || yevmiye?.fisNo || "",
+    tarih: primary.tarih || muavin?.tarih || yevmiye?.tarih || "",
+    hesapKodu: primary.hesapKodu || muavin?.hesapKodu || yevmiye?.hesapKodu || "",
+    muavin: muavin ? sideSnapshot(muavin) : null,
+    yevmiye: yevmiye ? sideSnapshot(yevmiye) : null,
+  };
+}
+
+function findSoftPeer(map, predicate) {
+  for (const [key, list] of map.entries()) {
+    if (!list?.length) continue;
+    if (predicate(list[0], key)) return key;
+  }
+  return null;
+}
+
 /**
- * Controlled muavin↔yevmiye match on fis+tarih+hesap+amount.
- * Raw movement count gaps are reported — not auto-counted as errors.
+ * Controlled muavin↔yevmiye match on fis+tarih+hesap+amount (multiset).
+ * Soft residual classes: amount/date/fis diffs; leftovers stay alone.
  */
 export function reconcileMuavinYevmiye({
   muavinRows = [],
@@ -320,24 +392,33 @@ export function reconcileMuavinYevmiye({
 } = {}) {
   const hasMuavin = (muavinRows || []).length > 0;
   const hasYevmiye = (yevmiyeRows || []).length > 0;
-  if (!hasMuavin || !hasYevmiye) {
-    return {
-      status: "EVIDENCE_MISSING",
-      matched: false,
-      message: !hasMuavin && !hasYevmiye
-        ? "Muavin ve yevmiye yüklenmedi; mutabakat yapılamadı."
-        : !hasMuavin
-          ? "Muavin yok; yevmiye ile eşleştirme yapılamadı."
-          : "Yevmiye yok; muavin ile eşleştirme yapılamadı.",
-      matchedCount: 0,
-      onlyMuavin: [],
-      onlyYevmiye: [],
-      amountMismatches: [],
-      muavinMovements: muavinRows?.length || 0,
-      yevmiyeMovements: yevmiyeRows?.length || 0,
-      yevmiyeVouchers: 0,
-    };
-  }
+  const empty = {
+    status: "EVIDENCE_MISSING",
+    matched: false,
+    message: !hasMuavin && !hasYevmiye
+      ? "Muavin ve yevmiye yüklenmedi; mutabakat yapılamadı."
+      : !hasMuavin
+        ? "Muavin yok; yevmiye ile eşleştirme yapılamadı."
+        : "Yevmiye yok; muavin ile eşleştirme yapılamadı.",
+    matchedCount: 0,
+    denominator: Math.max(muavinRows?.length || 0, yevmiyeRows?.length || 0),
+    onlyMuavin: [],
+    onlyYevmiye: [],
+    amountMismatches: [],
+    differences: [],
+    counts: {
+      onlyMuavin: 0,
+      onlyYevmiye: 0,
+      amountDiff: 0,
+      dateDiff: 0,
+      fisDiff: 0,
+      total: 0,
+    },
+    muavinMovements: muavinRows?.length || 0,
+    yevmiyeMovements: yevmiyeRows?.length || 0,
+    yevmiyeVouchers: 0,
+  };
+  if (!hasMuavin || !hasYevmiye) return empty;
 
   const yevmiyeVouchers = new Set(
     (yevmiyeRows || []).map((row) => compact(row.fisNo)).filter(Boolean)
@@ -345,101 +426,150 @@ export function reconcileMuavinYevmiye({
 
   const muavinMap = new Map();
   for (const row of muavinRows) {
-    const key = muavinYevmiyeMatchKey(row);
     if (!compact(row.hesapKodu)) continue;
-    const list = muavinMap.get(key) || [];
-    list.push(row);
-    muavinMap.set(key, list);
+    pushMultiset(muavinMap, muavinYevmiyeMatchKey(row), row);
   }
 
-  const onlyYevmiye = [];
-  const amountMismatches = [];
   let matchedCount = 0;
-
+  const residualYevmiye = [];
   for (const row of yevmiyeRows) {
-    const key = muavinYevmiyeMatchKey(row);
-    const bucket = muavinMap.get(key);
-    if (bucket?.length) {
-      bucket.shift();
+    if (!compact(row.hesapKodu)) continue;
+    const taken = takeMultiset(muavinMap, muavinYevmiyeMatchKey(row));
+    if (taken) {
       matchedCount += 1;
-      if (!bucket.length) muavinMap.delete(key);
       continue;
     }
+    residualYevmiye.push(row);
+  }
 
-    const soft = [...muavinMap.entries()].find(([k]) => {
-      const [fis, tarih, hesap] = k.split("|");
-      return (
-        fis === compact(row.fisNo) &&
-        tarih === String(row.tarih || "").trim() &&
-        hesap === compact(row.hesapKodu)
-      );
-    });
-    if (soft) {
-      const [softKey, softBucket] = soft;
-      const peer = softBucket[0];
-      const borcGap = Math.abs(roundMoney(peer.borc) - roundMoney(row.borc));
-      const alacakGap = Math.abs(roundMoney(peer.alacak) - roundMoney(row.alacak));
-      if (borcGap <= tolerance && alacakGap <= tolerance) {
-        softBucket.shift();
-        matchedCount += 1;
-        if (!softBucket.length) muavinMap.delete(softKey);
+  const residualMuavinMap = muavinMap;
+  const residualYevmiyeMap = new Map();
+  for (const row of residualYevmiye) {
+    pushMultiset(residualYevmiyeMap, muavinYevmiyeMatchKey(row), row);
+  }
+
+  const differences = [];
+
+  const softPairOnce = (status, predicate) => {
+    for (const yRow of flattenMultiset(residualYevmiyeMap)) {
+      const yKey = muavinYevmiyeMatchKey(yRow);
+      if (!residualYevmiyeMap.get(yKey)?.length) continue;
+      const softKey = findSoftPeer(residualMuavinMap, (m) => predicate(m, yRow));
+      if (!softKey) continue;
+      const mRow = takeMultiset(residualMuavinMap, softKey);
+      const takenY = takeMultiset(residualYevmiyeMap, yKey);
+      if (!mRow || !takenY) {
+        if (mRow) pushMultiset(residualMuavinMap, softKey, mRow);
+        if (takenY) pushMultiset(residualYevmiyeMap, yKey, takenY);
         continue;
       }
-      amountMismatches.push({
-        source: "BOTH",
-        reason: "Tutar farkı",
-        fisNo: row.fisNo,
-        tarih: row.tarih,
-        hesapKodu: row.hesapKodu,
-        muavin: { borc: peer.borc, alacak: peer.alacak },
-        yevmiye: { borc: row.borc, alacak: row.alacak },
-      });
-      softBucket.shift();
-      if (!softBucket.length) muavinMap.delete(softKey);
-      continue;
+      if (status === MUAVIN_YEVMIYE_DIFF_STATUS.AMOUNT_DIFF) {
+        const borcGap = Math.abs(roundMoney(mRow.borc) - roundMoney(takenY.borc));
+        const alacakGap = Math.abs(roundMoney(mRow.alacak) - roundMoney(takenY.alacak));
+        if (borcGap <= tolerance && alacakGap <= tolerance) {
+          matchedCount += 1;
+          return true;
+        }
+      }
+      differences.push(
+        buildMuavinYevmiyeDiff({
+          status,
+          muavin: mRow,
+          yevmiye: takenY,
+        })
+      );
+      return true;
     }
+    return false;
+  };
 
-    onlyYevmiye.push({
-      source: "YEVMIYE",
-      reason: "Muavinde eşleşen hareket yok",
-      fisNo: row.fisNo,
-      tarih: row.tarih,
-      hesapKodu: row.hesapKodu,
-      borc: row.borc,
-      alacak: row.alacak,
-    });
+  while (
+    softPairOnce(
+      MUAVIN_YEVMIYE_DIFF_STATUS.AMOUNT_DIFF,
+      (m, y) =>
+        compact(m.fisNo) === compact(y.fisNo) &&
+        String(m.tarih || "").trim() === String(y.tarih || "").trim() &&
+        compact(m.hesapKodu) === compact(y.hesapKodu)
+    )
+  ) {
+    /* consume amount soft pairs */
+  }
+
+  while (
+    softPairOnce(
+      MUAVIN_YEVMIYE_DIFF_STATUS.DATE_DIFF,
+      (m, y) =>
+        compact(m.fisNo) === compact(y.fisNo) &&
+        compact(m.hesapKodu) === compact(y.hesapKodu) &&
+        moneyKey(m.borc) === moneyKey(y.borc) &&
+        moneyKey(m.alacak) === moneyKey(y.alacak)
+    )
+  ) {
+    /* consume date soft pairs */
+  }
+
+  while (
+    softPairOnce(
+      MUAVIN_YEVMIYE_DIFF_STATUS.FIS_DIFF,
+      (m, y) =>
+        String(m.tarih || "").trim() === String(y.tarih || "").trim() &&
+        compact(m.hesapKodu) === compact(y.hesapKodu) &&
+        moneyKey(m.borc) === moneyKey(y.borc) &&
+        moneyKey(m.alacak) === moneyKey(y.alacak)
+    )
+  ) {
+    /* consume fis soft pairs */
   }
 
   const onlyMuavin = [];
-  for (const [, bucket] of muavinMap.entries()) {
-    for (const row of bucket) {
-      onlyMuavin.push({
-        source: "MUAVIN",
-        reason: "Yevmiyede eşleşen hareket yok",
-        fisNo: row.fisNo,
-        tarih: row.tarih,
-        hesapKodu: row.hesapKodu,
-        borc: row.borc,
-        alacak: row.alacak,
-      });
-    }
+  for (const row of flattenMultiset(residualMuavinMap)) {
+    const diff = buildMuavinYevmiyeDiff({
+      status: MUAVIN_YEVMIYE_DIFF_STATUS.ONLY_MUAVIN,
+      muavin: row,
+    });
+    onlyMuavin.push(diff);
+    differences.push(diff);
+  }
+  const onlyYevmiye = [];
+  for (const row of flattenMultiset(residualYevmiyeMap)) {
+    const diff = buildMuavinYevmiyeDiff({
+      status: MUAVIN_YEVMIYE_DIFF_STATUS.ONLY_YEVMIYE,
+      yevmiye: row,
+    });
+    onlyYevmiye.push(diff);
+    differences.push(diff);
   }
 
-  const matched =
-    onlyMuavin.length === 0 &&
-    onlyYevmiye.length === 0 &&
-    amountMismatches.length === 0;
+  const amountMismatches = differences.filter(
+    (d) => d.status === MUAVIN_YEVMIYE_DIFF_STATUS.AMOUNT_DIFF
+  );
+  const counts = {
+    onlyMuavin: onlyMuavin.length,
+    onlyYevmiye: onlyYevmiye.length,
+    amountDiff: amountMismatches.length,
+    dateDiff: differences.filter((d) => d.status === MUAVIN_YEVMIYE_DIFF_STATUS.DATE_DIFF)
+      .length,
+    fisDiff: differences.filter((d) => d.status === MUAVIN_YEVMIYE_DIFF_STATUS.FIS_DIFF)
+      .length,
+    total: differences.length,
+  };
+
+  const denominator = Math.max(muavinRows.length, yevmiyeRows.length);
+  const matched = counts.total === 0;
 
   return {
     status: matched ? "MATCHED" : "MISMATCH",
     matched,
     message: matched
-      ? "Muavin ve yevmiye hareketleri eşleşti."
-      : `Muavin↔yevmiye farkı: eşleşen=${matchedCount}, yalnızMuavin=${onlyMuavin.length}, yalnızYevmiye=${onlyYevmiye.length}, tutarFarkı=${amountMismatches.length}`,
+      ? `Tam eşleşti (${denominator}/${denominator})`
+      : `${matchedCount}/${denominator} eşleşti`,
     matchedCount,
+    denominator,
     onlyMuavin,
     onlyYevmiye,
     amountMismatches,
+    differences,
+    counts,
     muavinMovements: muavinRows.length,
     yevmiyeMovements: yevmiyeRows.length,
     yevmiyeVouchers,
@@ -630,6 +760,49 @@ export function runGenelMuhasebeKontrol({
     );
   }
 
+  if (muavinYevmiye.status === "MISMATCH") {
+    if (!muavinYevmiye.differences?.length) {
+      throw Object.assign(
+        new Error("Muavin↔yevmiye farkı tespit edildi fakat ayrıntı üretilemedi."),
+        { code: E_DEFTER_ISSUE_CODE.MUAVIN_YEVMIYE_RECONCILE_FAILED }
+      );
+    }
+    extraFindings.push(
+      createEDefterIssue({
+        code: E_DEFTER_ISSUE_CODE.MUAVIN_YEVMIYE_MISMATCH,
+        message: `${muavinYevmiye.message} (yalnız muavin=${muavinYevmiye.counts.onlyMuavin}, yalnız yevmiye=${muavinYevmiye.counts.onlyYevmiye}, tutar=${muavinYevmiye.counts.amountDiff}, tarih=${muavinYevmiye.counts.dateDiff}, fiş=${muavinYevmiye.counts.fisDiff})`,
+        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+        group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+        riskScore: 22,
+      })
+    );
+    for (const diff of muavinYevmiye.differences) {
+      const m = diff.muavin;
+      const y = diff.yevmiye;
+      const moneyPart = [
+        m ? `Muavin ${roundMoney(m.borc)}/${roundMoney(m.alacak)}` : null,
+        y ? `Yevmiye ${roundMoney(y.borc)}/${roundMoney(y.alacak)}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      extraFindings.push({
+        ...createEDefterIssue({
+          code: E_DEFTER_ISSUE_CODE.MUAVIN_YEVMIYE_MISMATCH,
+          message: `${diff.statusLabel}${moneyPart ? ` — ${moneyPart}` : ""}`,
+          severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+          group: E_DEFTER_KONTROL_GRUP.INCELEME_GEREKLI,
+          riskScore: 8,
+        }),
+        fisNo: diff.fisNo || "",
+        tarih: diff.tarih || "",
+        hesapKodu: diff.hesapKodu || "",
+        statusLabel: diff.statusLabel,
+        muavin: m,
+        yevmiye: y,
+      });
+    }
+  }
+
   // Vadeli↔vadeli virman heuristic (review only; no invent).
   for (const row of ledgerRows) {
     const code = String(row.hesapKodu || "");
@@ -716,16 +889,10 @@ export function runGenelMuhasebeKontrol({
     ...muavinYevmiye,
     userLabel:
       muavinYevmiye.status === "EVIDENCE_MISSING"
-        ? parsed.yevmiye.length
-          ? "Muavin yüklenmedi"
-          : parsed.muavin.length
-            ? "Yevmiye yüklenmedi"
-            : "—"
+        ? "Karşılaştırılamadı"
         : muavinYevmiye.matched
-          ? "Mutabık"
-          : muavinYevmiye.amountMismatches?.length
-            ? "Tutar farkı var"
-            : "Fark raporlandı",
+          ? `Tam eşleşti (${muavinYevmiye.denominator}/${muavinYevmiye.denominator})`
+          : `${muavinYevmiye.matchedCount}/${muavinYevmiye.denominator} eşleşti`,
   };
 
   return {

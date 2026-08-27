@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   E_DEFTER_ISSUE_CODE,
+  E_DEFTER_ISSUE_SEVERITY,
   E_DEFTER_KAYNAK,
 } from "@/src/config/eDefterKontrolDefaults.js";
 import {
@@ -204,6 +205,7 @@ const fixture = buildLucaBlockYevmiyeFixture();
   assert(rec.muavinMovements === 5, "reconcile muavin movement count");
   assert(rec.yevmiyeMovements === 4, "reconcile yevmiye movement count");
   assert(rec.status === "MISMATCH" || rec.status === "MATCHED", "reconcile status emitted");
+  assert(Array.isArray(rec.differences), "differences array present");
   const combo = runGenelMuhasebeKontrol({
     companyId: "anon",
     period: "2026/03",
@@ -213,6 +215,110 @@ const fixture = buildLucaBlockYevmiyeFixture();
   assert(combo.summary.muavinHareketSatir === 5, "muavin still parsed alongside yevmiye");
   assert(combo.summary.yevmiyeHareketSatir === 4, "yevmiye parsed alongside muavin");
   assert(combo.summary.muavinYevmiye?.status !== undefined, "muavin↔yevmiye summary emitted");
+  assert(
+    combo.summary.muavinYevmiye.userLabel.includes("eşleşti") ||
+      combo.summary.muavinYevmiye.userLabel.includes("Karşılaştırılamadı"),
+    "userLabel readable"
+  );
+}
+
+// 10b — full match UI label + no MUAVIN_YEVMIYE warning
+{
+  const yev = parseYevmiyeSheet(fixture);
+  const twin = yev.map((row) => ({
+    ...row,
+    id: `muavin-twin-${row.id}`,
+    kaynak: E_DEFTER_KAYNAK.MUAVIN,
+  }));
+  const rec = reconcileMuavinYevmiye({ muavinRows: twin, yevmiyeRows: yev });
+  assert(rec.matched === true, "full match");
+  assert(rec.matchedCount === 4 && rec.denominator === 4, "545-style 4/4 counts");
+  assert(rec.userLabel == null, "raw reconcile has message not userLabel");
+  assert(rec.message === "Tam eşleşti (4/4)", "full match message");
+  assert(rec.differences.length === 0, "no diffs on full match");
+
+  // Engine path with identical sides via sheet: build matching muavin from yev rows is hard;
+  // assert finding code presence only on mismatch path below.
+}
+
+// 10c — mismatch findings searchable as MUAVIN_YEVMIYE_MISMATCH, no double-count
+{
+  const muavinSheet = [
+    ["102.01.001 ANON BANKA"],
+    ["TARİH", "TİP", "FİŞ NO", "AÇIKLAMA", "BORÇ", "ALACAK", "BAKİYE", "B/A"],
+    ["01.01.2026", "AÇ", "00001", "Açılış", 1000, 0, 1000, "B"],
+    ["15.01.2026", "FT", "00002", "Hareket", 0, 250, 750, "B"],
+  ];
+  const yevSheet = [
+    ["00001-----00001-----AÇILIŞ-----01/01/2026"],
+    ["HESAP KODU", "HESAP ADI", "AÇIKLAMA", "DETAY", "BORÇ", "ALACAK"],
+    ["100", "KASA", "", "", "1000", "0"],
+    [" 100.01", "Kasa TL", "Açılış", "1000", "", ""],
+    ["500", "SERMAYE", "", "", "0", "1000"],
+    [" 500.01", "Sermaye", "Açılış", "1000", "", ""],
+    ["00002-----00002-----MAHSUP-----15/01/2026"],
+    ["HESAP KODU", "HESAP ADI", "AÇIKLAMA", "DETAY", "BORÇ", "ALACAK"],
+    ["320", "ALACAKLAR", "", "", "500", "0"],
+    [" 320.01", "Cari", "Satış", "500", "", ""],
+    ["600", "GELİR", "", "", "0", "500"],
+    [" 600.01", "Gelir", "Satış", "500", "", ""],
+  ];
+  const result = runGenelMuhasebeKontrol({
+    companyId: "anon",
+    period: "2026/03",
+    muavinSheetRows: muavinSheet,
+    yevmiyeSheetRows: yevSheet,
+  });
+  const my = result.summary.muavinYevmiye;
+  assert(my.status === "MISMATCH", "10c mismatch status");
+  assert(typeof my.matchedCount === "number" && my.denominator === 4, "10c denominator from yev");
+  assert(my.userLabel === `${my.matchedCount}/${my.denominator} eşleşti`, "10c userLabel pattern");
+  assert(my.differences.length === my.counts.total, "10c counts.total == differences");
+  const fingerprint = new Set(
+    my.differences.map(
+      (d) =>
+        `${d.status}|${d.fisNo}|${d.tarih}|${d.hesapKodu}|${d.muavin?.borc}|${d.muavin?.alacak}|${d.yevmiye?.borc}|${d.yevmiye?.alacak}`
+    )
+  );
+  assert(fingerprint.size === my.differences.length, "10c no duplicate diff fingerprints");
+  const mismatchFindings = (result.findingExtras || []).filter(
+    (f) => f.code === E_DEFTER_ISSUE_CODE.MUAVIN_YEVMIYE_MISMATCH
+  );
+  assert(mismatchFindings.length >= 1 + my.differences.length, "10c findings include details");
+  assert(
+    mismatchFindings.some((f) => f.severity === E_DEFTER_ISSUE_SEVERITY.UYARI),
+    "10c summary uyarı present"
+  );
+  // Opaque warning without details must not happen
+  assert(my.differences.length > 0, "10c no bare warning without details");
+  assert(result.counters.persistInvocations === 0, "10c persist=0");
+}
+
+// 10d — amount soft-diff classified once (no double only-side)
+{
+  const muavinRows = [
+    {
+      fisNo: "00001",
+      tarih: "01.01.2026",
+      hesapKodu: "100.01",
+      borc: 100,
+      alacak: 0,
+    },
+  ];
+  const yevmiyeRows = [
+    {
+      fisNo: "00001",
+      tarih: "01.01.2026",
+      hesapKodu: "100.01",
+      borc: 120,
+      alacak: 0,
+    },
+  ];
+  const rec = reconcileMuavinYevmiye({ muavinRows, yevmiyeRows });
+  assert(rec.counts.amountDiff === 1, "10d amountDiff=1");
+  assert(rec.counts.onlyMuavin === 0 && rec.counts.onlyYevmiye === 0, "10d not double-counted alone");
+  assert(rec.differences.length === 1, "10d single difference");
+  assert(rec.differences[0].statusLabel === "Tutar farklı", "10d label");
 }
 
 // 11 — muavin-only regression preserved
@@ -283,6 +389,42 @@ const fixture = buildLucaBlockYevmiyeFixture();
     assert(leak === 0, "real smoke header/total leak");
     assert(oop === 0, "real smoke dönem dışı");
     assert(dup === 0, "real smoke duplicate");
+
+    const muavinPath = path.join(
+      process.env.USERPROFILE || "",
+      "Desktop",
+      "muavin_mare.xlsx"
+    );
+    if (fs.existsSync(muavinPath)) {
+      const mBuf = fs.readFileSync(muavinPath);
+      const mAb = mBuf.buffer.slice(mBuf.byteOffset, mBuf.byteOffset + mBuf.byteLength);
+      const mSheet = readSheetRowsFromArrayBuffer(mAb);
+      const combo = runGenelMuhasebeKontrol({
+        companyId: "mare",
+        period: "2026/03",
+        muavinSheetRows: mSheet,
+        yevmiyeSheetRows: sheet,
+        accountPlanAccounts: [],
+        accountPlanStatus: "missing",
+      });
+      const my = combo.summary.muavinYevmiye;
+      assert(my.matchedCount === 517, "real smoke matched 517");
+      assert(my.denominator === 545, "real smoke denom 545");
+      assert(my.userLabel === "517/545 eşleşti", "real smoke userLabel");
+      assert(my.counts.onlyMuavin === 28, "real smoke onlyMuavin 28");
+      assert(my.counts.onlyYevmiye === 28, "real smoke onlyYevmiye 28");
+      assert(my.counts.amountDiff === 0, "real smoke amountDiff 0");
+      assert(my.counts.dateDiff === 0, "real smoke dateDiff 0");
+      assert(my.counts.fisDiff === 0, "real smoke fisDiff 0");
+      assert(my.differences.length === 56, "real smoke 56 alone-side diffs");
+      assert(
+        (combo.findingExtras || []).some(
+          (f) => f.code === E_DEFTER_ISSUE_CODE.MUAVIN_YEVMIYE_MISMATCH
+        ),
+        "real smoke MUAVIN_YEVMIYE_MISMATCH findings"
+      );
+      assert(combo.counters.persistInvocations === 0, "real smoke persist=0");
+    }
   }
 }
 
