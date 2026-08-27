@@ -4,7 +4,9 @@
  */
 import {
   E_DEFTER_ISSUE_CODE,
+  E_DEFTER_ISSUE_SEVERITY,
   E_DEFTER_KAYNAK,
+  E_DEFTER_SONUC_SEVIYE,
 } from "@/src/config/eDefterKontrolDefaults.js";
 import { resolveVoucherCounterparts } from "@/src/utils/eDefterKontrolEngine.js";
 import {
@@ -15,6 +17,12 @@ import {
   runGenelMuhasebeKontrol,
   GENEL_MUHASEBE_DOC_CLASS,
 } from "@/src/utils/genelMuhasebeKontrolEngine.js";
+import {
+  accountCodeFromPlanRow,
+  buildCloneSafeAnalyzePayload,
+  executeEDefterAnalyzePayload,
+} from "@/src/utils/eDefterAnalyzeContract.js";
+import { LUCA_MULTI_ACCOUNT_MUAVIN_ROWS } from "./fixtures/luca-multi-account-muavin.mjs";
 
 let failed = 0;
 function assert(cond, msg) {
@@ -433,6 +441,279 @@ const MUAVIN_HEADERS = [
     "refine never demotes yevmiye"
   );
 }
+
+// ——— Evidence / warning cleanup regressions (a–m) ———
+
+function hasIssueMessage(rows, extras, needle) {
+  const fromRows = (rows || []).some((row) =>
+    (row.issueDetails || []).some((i) => String(i.message || "").includes(needle))
+  );
+  const fromExtras = (extras || []).some((i) => String(i.message || "").includes(needle));
+  return fromRows || fromExtras;
+}
+
+function hasIssueCode(rows, extras, code) {
+  const fromRows = (rows || []).some((row) =>
+    (row.issueDetails || []).some((i) => i.code === code)
+  );
+  const fromExtras = (extras || []).some((i) => i.code === code);
+  return fromRows || fromExtras;
+}
+
+// a) API camelCase accountCode → PRESENT, no PLAN_EVIDENCE_MISSING
+{
+  const rawAccounts = [
+    { accountCode: "100.01", accountName: "Kasa" },
+    { accountCode: "320.01", accountName: "Satıcı" },
+  ];
+  const payload = buildCloneSafeAnalyzePayload({
+    jobKind: "GENERAL_LEDGER_CONTROL",
+    companyId: "c1",
+    period: "2026/05",
+    muavinSheetRows: null,
+    yevmiyeSheetRows: sheet(YEVMIYE_HEADERS, [
+      ["10.05.2026", "A1", "1", "100.01", "Kasa", "anon", "FT", "B1", "10", "0", ""],
+      ["10.05.2026", "A1", "2", "320.01", "S", "anon", "FT", "B1", "0", "10", ""],
+    ]),
+    accountPlanAccounts: rawAccounts,
+    accountPlanStatus: "loaded",
+  });
+  assert(
+    Array.isArray(payload.accountPlanAccounts) && payload.accountPlanAccounts.length === 2,
+    "a sanitize keeps accountCode"
+  );
+  assert(
+    payload.accountPlanAccounts.every((a) => a.account_code),
+    "a normalized account_code"
+  );
+  const r = runGenelMuhasebeKontrol({
+    companyId: "c1",
+    period: "2026/05",
+    yevmiyeSheetRows: sheet(YEVMIYE_HEADERS, [
+      ["10.05.2026", "A1", "1", "100.01", "Kasa", "anon", "FT", "B1", "10", "0", ""],
+      ["10.05.2026", "A1", "2", "320.01", "S", "anon", "FT", "B1", "0", "10", ""],
+    ]),
+    accountPlanAccounts: payload.accountPlanAccounts,
+    accountPlanStatus: payload.accountPlanStatus,
+  });
+  assert(r.summary.planEvidence === "PRESENT", "a planEvidence PRESENT");
+  assert(
+    !hasIssueCode(r.rows, r.findingExtras, E_DEFTER_ISSUE_CODE.PLAN_EVIDENCE_MISSING),
+    "a no PLAN_EVIDENCE_MISSING"
+  );
+}
+
+// b) Plan gerçekten yok → PLAN_EVIDENCE_MISSING, hesap planda yok kararı yok
+{
+  const r = runGenelMuhasebeKontrol({
+    companyId: "c1",
+    period: "2026/05",
+    yevmiyeSheetRows: sheet(YEVMIYE_HEADERS, [
+      ["10.05.2026", "B1", "1", "100.01", "Kasa", "anon", "FT", "B1", "10", "0", ""],
+      ["10.05.2026", "B1", "2", "320.01", "S", "anon", "FT", "B1", "0", "10", ""],
+    ]),
+    accountPlanAccounts: [],
+    accountPlanStatus: "missing",
+  });
+  assert(r.summary.planEvidence === "MISSING", "b plan MISSING");
+  assert(r.summary.hesapPlandaYok === 0, "b no ACCOUNT_NOT_IN_PLAN decision");
+  assert(
+    hasIssueCode(r.rows, r.findingExtras, E_DEFTER_ISSUE_CODE.PLAN_EVIDENCE_MISSING),
+    "b PLAN_EVIDENCE_MISSING present"
+  );
+}
+
+// c) Worker payload vs main-thread plan parity
+{
+  const input = {
+    jobKind: "GENERAL_LEDGER_CONTROL",
+    companyId: "c1",
+    period: "2026/05",
+    yevmiyeSheetRows: sheet(YEVMIYE_HEADERS, [
+      ["10.05.2026", "C1", "1", "100.01", "Kasa", "anon", "FT", "B1", "10", "0", ""],
+      ["10.05.2026", "C1", "2", "320.01", "S", "anon", "FT", "B1", "0", "10", ""],
+    ]),
+    accountPlanAccounts: [{ accountCode: "100.01" }, { accountCode: "320.01" }],
+    accountPlanStatus: "loaded",
+  };
+  const payload = buildCloneSafeAnalyzePayload(input);
+  const viaPayload = await executeEDefterAnalyzePayload(payload);
+  const direct = runGenelMuhasebeKontrol({
+    companyId: input.companyId,
+    period: input.period,
+    yevmiyeSheetRows: input.yevmiyeSheetRows,
+    accountPlanAccounts: payload.accountPlanAccounts,
+    accountPlanStatus: payload.accountPlanStatus,
+  });
+  assert(viaPayload.summary.planEvidence === "PRESENT", "c worker path PRESENT");
+  assert(direct.summary.planEvidence === "PRESENT", "c main path PRESENT");
+  assert(
+    viaPayload.summary.planEvidence === direct.summary.planEvidence,
+    "c plan evidence parity"
+  );
+  assert(
+    !hasIssueCode(viaPayload.rows, viaPayload.findingExtras, E_DEFTER_ISSUE_CODE.PLAN_EVIDENCE_MISSING) &&
+      !hasIssueCode(direct.rows, direct.findingExtras, E_DEFTER_ISSUE_CODE.PLAN_EVIDENCE_MISSING),
+    "c neither emits PLAN_EVIDENCE_MISSING"
+  );
+}
+
+// d–e) Muavin-only: fisNo korunur, Yevmiye no eksik üretilmez
+{
+  const r = runGenelMuhasebeKontrol({
+    companyId: "c1",
+    period: "2026/01",
+    muavinSheetRows: LUCA_MULTI_ACCOUNT_MUAVIN_ROWS,
+    accountPlanAccounts: [
+      { account_code: "102.01.012" },
+      { account_code: "320.01.001" },
+    ],
+    accountPlanStatus: "loaded",
+  });
+  const opening = (r.rows || []).find((row) => row.fisNo === "00001");
+  assert(Boolean(opening), "d fisNo=00001 preserved");
+  assert(opening.yevmiyeNo === "", "d yevmiyeNo not copied from fisNo");
+  assert(!hasIssueMessage(r.rows, r.findingExtras, "Yevmiye no eksik"), "e no yevmiye missing on muavin-only");
+}
+
+// f) Yevmiye kaynağında yevmiye numarası zorunluluğu
+{
+  const r = runGenelMuhasebeKontrol({
+    companyId: "c1",
+    period: "2026/05",
+    yevmiyeSheetRows: sheet(YEVMIYE_HEADERS, [
+      ["10.05.2026", "F1", "", "100.01", "Kasa", "anon", "FT", "B1", "10", "0", ""],
+      ["10.05.2026", "F1", "", "320.01", "S", "anon", "FT", "B1", "0", "10", ""],
+    ]),
+    accountPlanAccounts: [{ account_code: "100.01" }, { account_code: "320.01" }],
+    accountPlanStatus: "loaded",
+  });
+  assert(hasIssueMessage(r.rows, r.findingExtras, "Yevmiye no eksik"), "f yevmiye requires yevmiyeNo");
+}
+
+// g) Muavin-only belge türü boşluğu genel sonucu Uyarı yapmaz
+{
+  const r = runGenelMuhasebeKontrol({
+    companyId: "c1",
+    period: "2026/05",
+    muavinSheetRows: sheet(MUAVIN_HEADERS, [
+      ["MUAVİN", "10.05.2026", "00001", "100.01", "Kasa", "anon", "10", "0"],
+      ["MUAVİN", "10.05.2026", "00001", "100.01", "Kasa", "anon2", "0", "10"],
+    ]),
+    accountPlanAccounts: [{ account_code: "100.01" }],
+    accountPlanStatus: "loaded",
+  });
+  assert((r.documentClasses?.MUAVIN || 0) >= 1, "g classified MUAVIN");
+  const belgeInfo = (r.rows || []).flatMap((row) => row.issueDetails || []).filter(
+    (i) => String(i.message || "").includes("Belge türü boş")
+  );
+  assert(belgeInfo.length > 0, "g belge boşluğu BİLGİ olarak görünür");
+  assert(
+    belgeInfo.every((i) => i.severity === E_DEFTER_ISSUE_SEVERITY.BILGI),
+    "g belge severity BILGI"
+  );
+  assert(r.summary.overallSonuc !== E_DEFTER_SONUC_SEVIYE.UYARI, "g not Uyarı from empty belge");
+  assert(
+    r.summary.overallSonuc === E_DEFTER_SONUC_SEVIYE.BILGI ||
+      r.summary.overallSonuc === E_DEFTER_SONUC_SEVIYE.UYGUN,
+    "g Bilgi or Uygun"
+  );
+}
+
+// h) MULTI_COUNTERPART BİLGİ; tek başına Uyarı değil
+{
+  const r = runGenelMuhasebeKontrol({
+    companyId: "c1",
+    period: "2026/05",
+    yevmiyeSheetRows: sheet(YEVMIYE_HEADERS, [
+      ["10.05.2026", "H1", "1", "100.01", "Kasa", "anon", "FT", "B1", "10", "0", ""],
+      ["10.05.2026", "H1", "2", "120.01", "A", "anon", "FT", "B1", "5", "0", ""],
+      ["10.05.2026", "H1", "3", "320.01", "S", "anon", "FT", "B1", "0", "8", ""],
+      ["10.05.2026", "H1", "4", "321.01", "S2", "anon", "FT", "B1", "0", "7", ""],
+    ]),
+    accountPlanAccounts: [
+      { account_code: "100.01" },
+      { account_code: "120.01" },
+      { account_code: "320.01" },
+      { account_code: "321.01" },
+    ],
+    accountPlanStatus: "loaded",
+  });
+  const multi = (r.rows || []).flatMap((row) => row.issueDetails || []).filter(
+    (i) => i.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART
+  );
+  assert(multi.length > 0, "h MULTI_COUNTERPART present");
+  assert(
+    multi.every((i) => i.severity === E_DEFTER_ISSUE_SEVERITY.BILGI),
+    "h MULTI is BILGI"
+  );
+  const nonInfo = (r.rows || []).flatMap((row) => row.issueDetails || []).filter(
+    (i) => i.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI
+  );
+  const nonInfoExtras = (r.findingExtras || []).filter(
+    (i) => i.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI
+  );
+  if (!nonInfo.length && !nonInfoExtras.length) {
+    assert(r.summary.overallSonuc !== E_DEFTER_SONUC_SEVIYE.UYARI, "h MULTI alone not Uyarı");
+  }
+}
+
+// i–j) Hareket vs sistem bilgisi; sistem BA/fiş/duplicate'a girmez
+{
+  const r = runGenelMuhasebeKontrol({
+    companyId: "c1",
+    period: "2026/05",
+    yevmiyeSheetRows: sheet(YEVMIYE_HEADERS, [
+      ["10.05.2026", "I1", "1", "100.01", "Kasa", "anon", "FT", "B1", "10", "0", ""],
+      ["10.05.2026", "I1", "2", "320.01", "S", "anon", "FT", "B1", "0", "10", ""],
+    ]),
+    accountPlanAccounts: [{ account_code: "100.01" }, { account_code: "320.01" }],
+    accountPlanStatus: "loaded",
+  });
+  assert(r.summary.hareketSatir === 2, "i hareket=2");
+  assert(r.summary.sistemBilgisi >= 1, "i sistem bilgisi counted");
+  assert(r.summary.toplamSatir === r.summary.hareketSatir, "i toplamSatir=hareket");
+  assert(r.summary.toplamFis === 1, "j fis excludes system");
+  assert(r.summary.borcToplam === 10 && r.summary.alacakToplam === 10, "j BA excludes system");
+  assert(r.summary.mukerrer === 0, "j mukerrer excludes system");
+}
+
+// k) Mizan yokluğu güvenli kullanıcı metni
+{
+  const r = runGenelMuhasebeKontrol({
+    companyId: "c1",
+    period: "2026/05",
+    muavinSheetRows: sheet(MUAVIN_HEADERS, [
+      ["MUAVİN", "10.05.2026", "1", "100.01", "Kasa", "anon", "10", "0"],
+    ]),
+    accountPlanAccounts: [{ account_code: "100.01" }],
+    accountPlanStatus: "loaded",
+  });
+  assert(r.summary.mizanMuavin?.userLabel === "Mizan yüklenmedi", "k userLabel");
+  assert(
+    (r.findingExtras || []).some((f) => f.message === "Mizan yüklenmedi"),
+    "k safe finding message"
+  );
+}
+
+// l) Persist 0
+{
+  const spies = { parseInvocations: 0, analysisInvocations: 0, persistInvocations: 9 };
+  const r = runGenelMuhasebeKontrol({
+    companyId: "c1",
+    period: "2026/05",
+    yevmiyeSheetRows: sheet(YEVMIYE_HEADERS, [
+      ["10.05.2026", "L2", "1", "100.01", "Kasa", "anon", "FT", "B1", "10", "0", ""],
+      ["10.05.2026", "L2", "2", "320.01", "S", "anon", "FT", "B1", "0", "10", ""],
+    ]),
+    accountPlanAccounts: [{ account_code: "100.01" }, { account_code: "320.01" }],
+    accountPlanStatus: "loaded",
+    spies,
+  });
+  assert(r.counters.persistInvocations === 0, "l persist stays 0");
+}
+
+assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountCode helper");
 
 if (failed) {
   console.error(`${failed} FAIL(s)`);

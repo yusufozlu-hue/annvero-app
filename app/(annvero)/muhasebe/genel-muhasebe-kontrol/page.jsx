@@ -17,8 +17,12 @@ import {
   isAnalyzeJobInFlight,
   runEDefterAnalyzeJob,
 } from "@/src/utils/eDefterAnalyzeBridge";
-import { EDEFTER_ANALYZE_JOB_KIND } from "@/src/utils/eDefterAnalyzeContract";
+import {
+  accountCodeFromPlanRow,
+  EDEFTER_ANALYZE_JOB_KIND,
+} from "@/src/utils/eDefterAnalyzeContract";
 import { createGenelMuhasebeAnalyzeGate } from "@/src/utils/genelMuhasebeKontrolEngine";
+import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 
 function Stat({ label, value }) {
   return (
@@ -27,6 +31,26 @@ function Stat({ label, value }) {
       <div className="text-sm font-semibold text-slate-900">{value}</div>
     </div>
   );
+}
+
+function planEvidenceLabel(summary) {
+  if (!summary) return "—";
+  if (summary.planEvidence === "PRESENT" || summary.planStatus === "loaded") {
+    return "Yüklü";
+  }
+  return "Hesap planı yüklenemedi";
+}
+
+function mizanMuavinLabel(summary) {
+  const mm = summary?.mizanMuavin;
+  if (!mm) return "—";
+  if (mm.userLabel) return mm.userLabel;
+  if (mm.status === "EVIDENCE_MISSING") {
+    return "Mizan yüklenmedi";
+  }
+  if (mm.matched) return "Mutabık";
+  if (mm.status === "MISMATCH") return "Fark var";
+  return "—";
 }
 
 const LEDGER_FILE_INPUT_CLASS =
@@ -127,8 +151,10 @@ export default function GenelMuhasebeKontrolPage() {
         const plan = await fetchFullActiveAccountPlan(selectedCompanyId);
         if (cancelled) return;
         const accounts = Array.isArray(plan.accounts) ? plan.accounts : [];
-        setPlanAccounts(accounts);
-        setPlanStatus(accounts.length ? "loaded" : "missing");
+        // Payload kanıtı: yalnız normalize edilebilir hesap kodu varsa “yüklü”.
+        const withCodes = accounts.filter((account) => accountCodeFromPlanRow(account));
+        setPlanAccounts(withCodes);
+        setPlanStatus(withCodes.length ? "loaded" : "missing");
       } catch {
         if (cancelled) return;
         setPlanAccounts([]);
@@ -241,6 +267,12 @@ export default function GenelMuhasebeKontrolPage() {
   ]);
 
   const summary = result?.summary;
+  const displayPlanStatus =
+    summary?.planEvidence === "PRESENT" || summary?.planStatus === "loaded"
+      ? "loaded"
+      : summary
+        ? "missing"
+        : planStatus;
   const findings = useMemo(() => {
     if (!result) return [];
     const fromRows = (result.rows || [])
@@ -357,8 +389,8 @@ export default function GenelMuhasebeKontrolPage() {
             {busy ? "Kontrol ediliyor…" : "Kontrolü Başlat"}
           </button>
           <span className="text-xs text-slate-500">
-            Hesap planı: {planStatus === "loaded" ? "yüklü" : "eksik / inceleme"} · Persist: yerel
-            yok
+            Hesap planı: {displayPlanStatus === "loaded" ? "yüklü" : "eksik / inceleme"} · Persist:
+            yerel yok
             {busy && progressDetail ? ` · ${progressDetail}` : ""}
           </span>
         </div>
@@ -380,7 +412,11 @@ export default function GenelMuhasebeKontrolPage() {
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <Stat label="Sonuç" value={summary.overallSonuc} />
               <Stat label="Toplam fiş" value={summary.toplamFis} />
-              <Stat label="Toplam satır" value={summary.toplamSatir} />
+              <Stat
+                label="Hareket"
+                value={summary.hareketSatir ?? summary.toplamSatir}
+              />
+              <Stat label="Sistem bilgisi" value={summary.sistemBilgisi ?? 0} />
               <Stat
                 label="Dengeli / Dengesiz"
                 value={`${summary.dengeliFis} / ${summary.dengesizFis}`}
@@ -393,11 +429,11 @@ export default function GenelMuhasebeKontrolPage() {
               <Stat label="Mükerrer" value={summary.mukerrer} />
               <Stat
                 label="Borç / Alacak"
-                value={`${summary.borcToplam} / ${summary.alacakToplam}`}
+                value={`${formatTurkishMoney(summary.borcToplam)} / ${formatTurkishMoney(summary.alacakToplam)}`}
               />
-              <Stat label="Fark" value={summary.borcAlacakFark} />
-              <Stat label="Muavin↔Mizan" value={summary.mizanMuavin?.status || "—"} />
-              <Stat label="Plan kanıtı" value={summary.planEvidence} />
+              <Stat label="Fark" value={formatTurkishMoney(summary.borcAlacakFark)} />
+              <Stat label="Muavin↔Mizan" value={mizanMuavinLabel(summary)} />
+              <Stat label="Plan kanıtı" value={planEvidenceLabel(summary)} />
             </div>
 
             {summary.mizanMuavin?.message ? (

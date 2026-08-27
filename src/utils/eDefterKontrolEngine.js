@@ -1302,6 +1302,7 @@ function buildIssues(row, _allRows = [], context = {}) {
 
   if (!row.belgeTuru && row.kaynak !== E_DEFTER_KAYNAK.MIZAN) {
     // XBRL e-defter satırlarında documentType sıkça yok; uygunluğu düşürmez.
+    // Muavin-only: belge türü boşluğu BİLGİ kalır; genel sonucu Uyarı yapmaz.
     raw.push(
       createEDefterIssue({
         code: E_DEFTER_ISSUE_CODE.MISSING_DOCUMENT_INFO,
@@ -1313,7 +1314,16 @@ function buildIssues(row, _allRows = [], context = {}) {
     );
   }
 
-  if (!row.yevmiyeNo && row.kaynak !== E_DEFTER_KAYNAK.MIZAN) {
+  const isMuavinRow =
+    row.kaynak === E_DEFTER_KAYNAK.MUAVIN ||
+    row.documentClass === "MUAVIN" ||
+    context.documentClass === "MUAVIN";
+  const yevmiyeEvidencePresent = Boolean(context.yevmiyeEvidencePresent);
+  // Muavin FİŞ NO ≠ yevmiye no. Ayrı yevmiye dosyası yoksa bu alan doğal kapsam dışı.
+  const requireYevmiyeNo =
+    row.kaynak !== E_DEFTER_KAYNAK.MIZAN &&
+    !(isMuavinRow && !yevmiyeEvidencePresent);
+  if (!row.yevmiyeNo && requireYevmiyeNo) {
     raw.push(
       createEDefterIssue({
         code: E_DEFTER_ISSUE_CODE.MISSING_DOCUMENT_INFO,
@@ -1339,10 +1349,7 @@ function buildIssues(row, _allRows = [], context = {}) {
   }
 
   const counterpart = context.counterpartByRowId?.get(row.id);
-  const isMuavinOnly =
-    row.kaynak === E_DEFTER_KAYNAK.MUAVIN ||
-    row.documentClass === "MUAVIN" ||
-    context.documentClass === "MUAVIN";
+  const isMuavinOnly = isMuavinRow;
   if (counterpart?.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) {
     raw.push(
       createEDefterIssue({
@@ -1874,6 +1881,11 @@ export function analyzeEDefterRow(row, allRows = [], context = {}) {
 }
 
 export function analyzeEDefterRows(rows = [], options = {}) {
+  const hasYevmiyeRows = (rows || []).some(
+    (row) =>
+      row.kaynak === E_DEFTER_KAYNAK.YEVMIYE ||
+      row.kaynak === E_DEFTER_KAYNAK.YEVMIYE_XML
+  );
   const context = {
     ...buildGlobalContext(rows),
     accountPlanCodes: options.accountPlanCodes || null,
@@ -1881,6 +1893,9 @@ export function analyzeEDefterRows(rows = [], options = {}) {
       ? normalizePeriodKey(String(options.expectedPeriod).replace("/", "-"))
       : "",
     documentClass: options.documentClass || "",
+    yevmiyeEvidencePresent:
+      options.yevmiyeEvidencePresent === true ||
+      (options.yevmiyeEvidencePresent !== false && hasYevmiyeRows),
   };
   const analyzed = rows.map((row) => analyzeEDefterRow(row, rows, context));
   const warnings = buildPeriodEndWarnings(context);
@@ -2325,6 +2340,7 @@ export function runEDefterKontrolPipeline({
   companyTaxId = "",
   coreDecision = null,
   retryToken = "",
+  yevmiyeEvidencePresent,
 }) {
   const mergedRows = [
     ...muavinRows,
@@ -2344,6 +2360,9 @@ export function runEDefterKontrolPipeline({
   const analyzedRows = analyzeEDefterRows(mergedRows, {
     accountPlanCodes,
     expectedPeriod: period,
+    yevmiyeEvidencePresent:
+      yevmiyeEvidencePresent === true ||
+      (yevmiyeEvidencePresent !== false && yevmiyeOnly.length > 0),
   });
 
   const journalLedger = reconcileJournalLedger(
