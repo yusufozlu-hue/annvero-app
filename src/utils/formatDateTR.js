@@ -20,6 +20,54 @@ function excelSerialToDate(serial) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function isUtcMidnight(date) {
+  return (
+    date.getUTCHours() === 0 &&
+    date.getUTCMinutes() === 0 &&
+    date.getUTCSeconds() === 0 &&
+    date.getUTCMilliseconds() === 0
+  );
+}
+
+/** Calendar day from Excel Date — avoids TR export TZ day-shift (2025-12-31T21:00Z → 01.01.2026). */
+export function calendarPartsFromExcelDate(value) {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    return null;
+  }
+
+  if (isUtcMidnight(value)) {
+    return {
+      year: value.getFullYear(),
+      month: value.getMonth() + 1,
+      day: value.getDate(),
+    };
+  }
+
+  // Typical Luca/XLSX export lands at 21:00Z (= next local midnight in UTC+3).
+  if (value.getUTCHours() === 21 && value.getUTCMinutes() === 0) {
+    const shifted = new Date(value.getTime() + 3 * 3600 * 1000);
+    return {
+      year: shifted.getUTCFullYear(),
+      month: shifted.getUTCMonth() + 1,
+      day: shifted.getUTCDate(),
+    };
+  }
+
+  // Noon-UTC anchor for other non-midnight instants.
+  const noonUtc = new Date(
+    Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate(), 12, 0, 0)
+  );
+  return {
+    year: noonUtc.getUTCFullYear(),
+    month: noonUtc.getUTCMonth() + 1,
+    day: noonUtc.getUTCDate(),
+  };
+}
+
+function dateFromCalendarParts(parts) {
+  return new Date(parts.year, parts.month - 1, parts.day);
+}
+
 function parseSlashDate(parts) {
   if (parts.length < 3) {
     return null;
@@ -57,7 +105,8 @@ export function parseDateTR(value) {
   }
 
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value;
+    const parts = calendarPartsFromExcelDate(value);
+    return parts ? dateFromCalendarParts(parts) : value;
   }
 
   if (typeof value === "number") {
@@ -123,10 +172,16 @@ export function formatDateTR(value) {
     }
   }
 
-  const date =
-    value instanceof Date && !Number.isNaN(value.getTime())
-      ? value
-      : parseDateTR(value);
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const parts = calendarPartsFromExcelDate(value);
+    if (parts) {
+      const day = String(parts.day).padStart(2, "0");
+      const month = String(parts.month).padStart(2, "0");
+      return `${day}.${month}.${parts.year}`;
+    }
+  }
+
+  const date = parseDateTR(value);
 
   if (!date || Number.isNaN(date.getTime())) {
     return String(value).trim();
