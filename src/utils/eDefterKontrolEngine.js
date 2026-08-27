@@ -350,7 +350,213 @@ export function parseMuavinSheet(sheetRows = []) {
   return parseLedgerSheet(sheetRows, E_DEFTER_KAYNAK.MUAVIN);
 }
 
+/** Structural yevmiye layouts — never decide by vendor/file name. */
+export const YEVMIYE_LAYOUT = {
+  STANDARD_COLUMN: "STANDARD_COLUMN",
+  REPEATED_JOURNAL_BLOCK: "REPEATED_JOURNAL_BLOCK",
+  UNKNOWN: "UNKNOWN",
+};
+
+const YEVMIYE_BLOCK_HEADER_RE =
+  /^(\d+)\s*-{3,}\s*(\d+)\s*-{3,}\s*(.+?)\s*-{3,}\s*(.+)$/;
+
+/** Luca block headers use DD/MM/YYYY with slashes — never MM/DD. */
+export function formatLucaBlockHeaderDateTR(value) {
+  const text = String(value ?? "").trim();
+  const slash = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slash) {
+    const day = Number(slash[1]);
+    const month = Number(slash[2]);
+    const year = Number(slash[3]);
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 1900) {
+      return `${String(day).padStart(2, "0")}.${String(month).padStart(2, "0")}.${year}`;
+    }
+  }
+  return formatDateTR(text);
+}
+
+export function parseYevmiyeBlockHeaderCell(value) {
+  const text = String(value ?? "").trim();
+  if (!text || !text.includes("---")) return null;
+  const match = text.match(YEVMIYE_BLOCK_HEADER_RE);
+  if (!match) return null;
+  const tarihRaw = match[4].trim();
+  const tarih = formatLucaBlockHeaderDateTR(tarihRaw);
+  if (!tarih || !parseDateTR(tarih)) return null;
+  return {
+    fisNo: preserveFisNo(match[1]),
+    yevmiyeNo: preserveFisNo(match[2]),
+    fisTuru: String(match[3] || "").trim(),
+    tarihRaw,
+    tarih,
+  };
+}
+
+function isYevmiyeBlockColumnHeaderRow(row = []) {
+  const corpus = (row || [])
+    .map((cell) => compactText(cell))
+    .join(" ");
+  return (
+    corpus.includes("HESAPKODU") &&
+    corpus.includes("HESAPADI") &&
+    (corpus.includes("BORC") || corpus.includes("ALACAK"))
+  );
+}
+
+function isYevmiyeBlockSkipRow(codeCell = "") {
+  const text = String(codeCell || "").trim();
+  if (!text) return true;
+  const compact = compactText(text);
+  return (
+    compact.startsWith("TOPLAM") ||
+    compact.startsWith("FISACIKLAMA") ||
+    compact === "YEVMIYEDEFTERI" ||
+    compact.startsWith("DONEM") ||
+    compact.startsWith("TARIHARALIGI")
+  );
+}
+
+/**
+ * Detect yevmiye sheet structure from content only.
+ * REPEATED_JOURNAL_BLOCK: `fisNo-----yevmiyeNo-----tür-----tarih` + column headers.
+ */
+export function detectYevmiyeLayout(sheetRows = []) {
+  if (!Array.isArray(sheetRows) || sheetRows.length < 3) return YEVMIYE_LAYOUT.UNKNOWN;
+
+  let blockHeaders = 0;
+  let columnHeaders = 0;
+  let standardDateHits = 0;
+  let standardFisHits = 0;
+
+  for (const row of sheetRows.slice(0, 400)) {
+    if (!Array.isArray(row) || !row.some((cell) => String(cell ?? "").trim())) continue;
+    if (parseYevmiyeBlockHeaderCell(row[0])) blockHeaders += 1;
+    if (isYevmiyeBlockColumnHeaderRow(row)) columnHeaders += 1;
+
+    const corpus = (row || []).map((cell) => compactText(cell)).join(" ");
+    if (corpus.includes("TARIH") && (corpus.includes("FISNO") || corpus.includes("YEVMIYENO"))) {
+      standardFisHits += 1;
+    }
+    if (row.some((cell) => parseDateTR(cell)) && row.length >= 5) {
+      standardDateHits += 1;
+    }
+  }
+
+  if (blockHeaders >= 1 && columnHeaders >= 1) {
+    return YEVMIYE_LAYOUT.REPEATED_JOURNAL_BLOCK;
+  }
+
+  // Classic flat export: header with tarih+fiş and dated data rows.
+  if (standardFisHits >= 1 && standardDateHits >= 2 && blockHeaders === 0) {
+    return YEVMIYE_LAYOUT.STANDARD_COLUMN;
+  }
+
+  return YEVMIYE_LAYOUT.UNKNOWN;
+}
+
+/**
+ * Luca YEVMİYE DEFTERİ repeated voucher blocks.
+ * Leaf movements: leading whitespace on hesap kodu; amount in DETAY (col3),
+ * side inherited from nearest ancestor that posted to BORÇ (col4) or ALACAK (col5).
+ */
+export function parseLucaRepeatedJournalBlockYevmiyeSheet(sheetRows = []) {
+  const rows = [];
+  let block = null;
+  let side = null; // "B" | "A"
+  let movementIndex = 0;
+
+  for (const row of sheetRows) {
+    if (!Array.isArray(row) || !row.some((cell) => String(cell ?? "").trim())) continue;
+
+    const header = parseYevmiyeBlockHeaderCell(row[0]);
+    if (header) {
+      block = {
+        fisNo: header.fisNo,
+        yevmiyeNo: header.yevmiyeNo,
+        fisTuru: header.fisTuru,
+        tarih: header.tarih || formatLucaBlockHeaderDateTR(header.tarihRaw),
+      };
+      side = null;
+      continue;
+    }
+
+    if (!block) continue;
+    if (isYevmiyeBlockColumnHeaderRow(row)) continue;
+
+    const codeCell = String(row[0] ?? "");
+    if (isYevmiyeBlockSkipRow(codeCell)) continue;
+
+    const leading = (codeCell.match(/^(\s*)/) || ["", ""])[1].length;
+    const hesapKodu = codeCell.trim();
+    if (!hesapKodu) continue;
+
+    const detayAmt = parseMoneyTR(row[3]);
+    const borcCol = parseMoneyTR(row[4]);
+    const alacakCol = parseMoneyTR(row[5]);
+
+    if (leading === 0) {
+      // Hierarchy / rollup — establish side from BORÇ/ALACAK columns; never count as movement.
+      if (borcCol > 0 && alacakCol <= 0) side = "B";
+      else if (alacakCol > 0 && borcCol <= 0) side = "A";
+      continue;
+    }
+
+    // Leaf detail line (indented hesap kodu).
+    let borc = 0;
+    let alacak = 0;
+    if (detayAmt > 0) {
+      if (side === "B") borc = detayAmt;
+      else if (side === "A") alacak = detayAmt;
+      else continue;
+    } else if (borcCol > 0 && alacakCol <= 0) {
+      borc = borcCol;
+    } else if (alacakCol > 0 && borcCol <= 0) {
+      alacak = alacakCol;
+    } else {
+      continue;
+    }
+
+    movementIndex += 1;
+    const hesapAdi = String(row[1] ?? "").trim();
+    const aciklama = String(row[2] ?? "").trim();
+
+    rows.push({
+      id: `${E_DEFTER_KAYNAK.YEVMIYE}-luca-block-${movementIndex}`,
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      documentClass: "YEVMIYE",
+      tarih: block.tarih,
+      fisNo: block.fisNo,
+      yevmiyeNo: block.yevmiyeNo,
+      fisTuru: block.fisTuru,
+      hesapKodu,
+      hesapAdi,
+      aciklama,
+      belgeTuru: block.fisTuru,
+      belgeNo: "",
+      belgeTarihi: "",
+      borc: roundMoney(borc),
+      alacak: roundMoney(alacak),
+      cariUnvan: "",
+      counterAccountCode: "",
+      karsiHesapKodu: "",
+      tutar: roundMoney(Math.max(borc, alacak)),
+      kontrolDurumu: "",
+      not: "",
+      duzeltildiMi: false,
+      disaridaBirak: false,
+      manuallyEdited: false,
+    });
+  }
+
+  return rows;
+}
+
 export function parseYevmiyeSheet(sheetRows = []) {
+  if (!sheetRows?.length) return [];
+  const layout = detectYevmiyeLayout(sheetRows);
+  if (layout === YEVMIYE_LAYOUT.REPEATED_JOURNAL_BLOCK) {
+    return parseLucaRepeatedJournalBlockYevmiyeSheet(sheetRows);
+  }
   return parseLedgerSheet(sheetRows, E_DEFTER_KAYNAK.YEVMIYE);
 }
 
@@ -1574,12 +1780,16 @@ function buildIssues(row, _allRows = [], context = {}) {
         row.kaynak === E_DEFTER_KAYNAK.MUAVIN ||
         row.documentClass === "MUAVIN" ||
         context.documentClass === "MUAVIN";
+      const isCumulativeYevmiyeRow =
+        context.cumulativePeriod === true &&
+        (row.kaynak === E_DEFTER_KAYNAK.YEVMIYE || row.documentClass === "YEVMIYE");
       const [yearStr, monthStr] = String(context.expectedPeriodKey).split("-");
       const expectedYear = Number(yearStr);
       const expectedMonth = Number(monthStr);
       const rowYear = d.getFullYear();
       const rowMonth = d.getMonth() + 1;
-      const outOfPeriod = isMuavinRow
+      const useCumulativePeriod = isMuavinRow || isCumulativeYevmiyeRow;
+      const outOfPeriod = useCumulativePeriod
         ? !expectedYear ||
           !expectedMonth ||
           rowYear !== expectedYear ||
@@ -1896,6 +2106,7 @@ export function analyzeEDefterRows(rows = [], options = {}) {
     yevmiyeEvidencePresent:
       options.yevmiyeEvidencePresent === true ||
       (options.yevmiyeEvidencePresent !== false && hasYevmiyeRows),
+    cumulativePeriod: options.cumulativePeriod === true,
   };
   const analyzed = rows.map((row) => analyzeEDefterRow(row, rows, context));
   const warnings = buildPeriodEndWarnings(context);
@@ -2341,6 +2552,7 @@ export function runEDefterKontrolPipeline({
   coreDecision = null,
   retryToken = "",
   yevmiyeEvidencePresent,
+  cumulativePeriod = false,
 }) {
   const mergedRows = [
     ...muavinRows,
@@ -2363,6 +2575,7 @@ export function runEDefterKontrolPipeline({
     yevmiyeEvidencePresent:
       yevmiyeEvidencePresent === true ||
       (yevmiyeEvidencePresent !== false && yevmiyeOnly.length > 0),
+    cumulativePeriod,
   });
 
   const journalLedger = reconcileJournalLedger(

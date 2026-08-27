@@ -13,12 +13,15 @@ import {
 import {
   createEDefterIssue,
   detectLucaMultiAccountMuavinLayout,
+  detectYevmiyeLayout,
   parseMizanSheet,
   parseMuavinSheet,
   parseYevmiyeSheet,
   runEDefterKontrolPipeline,
+  YEVMIYE_LAYOUT,
 } from "@/src/utils/eDefterKontrolEngine";
 import { normalizeParserText } from "@/src/utils/textNormalize";
+import { parseDateTR } from "@/src/utils/formatDateTR";
 
 export const GENEL_MUHASEBE_DOC_CLASS = {
   MUAVIN: "MUAVIN",
@@ -62,6 +65,9 @@ export function classifyLedgerDocumentType(sheetRows = [], hints = {}) {
   if (hints.forceXml || hints.isXml) return GENEL_MUHASEBE_DOC_CLASS.E_DEFTER_XML;
   if (detectLucaMultiAccountMuavinLayout(sheetRows)) {
     return GENEL_MUHASEBE_DOC_CLASS.MUAVIN;
+  }
+  if (detectYevmiyeLayout(sheetRows) === YEVMIYE_LAYOUT.REPEATED_JOURNAL_BLOCK) {
+    return GENEL_MUHASEBE_DOC_CLASS.YEVMIYE;
   }
   const head = headerCorpus(sheetRows);
   const has = (s) => head.includes(s);
@@ -117,6 +123,10 @@ export function refineDocumentClass(contentClass, preferredHint = "", sheetRows 
   }
   // Fail-closed: ambiguous → YEVMIYE (missing opposite stays visible).
   return GENEL_MUHASEBE_DOC_CLASS.YEVMIYE;
+}
+
+function isValidYevmiyeMovementRow(row = {}) {
+  return Boolean(String(row.hesapKodu || "").trim() && parseDateTR(row.tarih));
 }
 
 export function parseLedgerByDocumentClass(sheetRows = [], documentClass = "") {
@@ -285,6 +295,157 @@ export function reconcileMizanMuavin({ muavinRows = [], mizanRows = [], toleranc
   };
 }
 
+function moneyKey(value) {
+  return roundMoney(value).toFixed(2);
+}
+
+function muavinYevmiyeMatchKey(row = {}) {
+  return [
+    compact(row.fisNo),
+    String(row.tarih || "").trim(),
+    compact(row.hesapKodu),
+    moneyKey(row.borc),
+    moneyKey(row.alacak),
+  ].join("|");
+}
+
+/**
+ * Controlled muavin↔yevmiye match on fis+tarih+hesap+amount.
+ * Raw movement count gaps are reported — not auto-counted as errors.
+ */
+export function reconcileMuavinYevmiye({
+  muavinRows = [],
+  yevmiyeRows = [],
+  tolerance = BORC_ALACAK_TOLERANCE,
+} = {}) {
+  const hasMuavin = (muavinRows || []).length > 0;
+  const hasYevmiye = (yevmiyeRows || []).length > 0;
+  if (!hasMuavin || !hasYevmiye) {
+    return {
+      status: "EVIDENCE_MISSING",
+      matched: false,
+      message: !hasMuavin && !hasYevmiye
+        ? "Muavin ve yevmiye yüklenmedi; mutabakat yapılamadı."
+        : !hasMuavin
+          ? "Muavin yok; yevmiye ile eşleştirme yapılamadı."
+          : "Yevmiye yok; muavin ile eşleştirme yapılamadı.",
+      matchedCount: 0,
+      onlyMuavin: [],
+      onlyYevmiye: [],
+      amountMismatches: [],
+      muavinMovements: muavinRows?.length || 0,
+      yevmiyeMovements: yevmiyeRows?.length || 0,
+      yevmiyeVouchers: 0,
+    };
+  }
+
+  const yevmiyeVouchers = new Set(
+    (yevmiyeRows || []).map((row) => compact(row.fisNo)).filter(Boolean)
+  ).size;
+
+  const muavinMap = new Map();
+  for (const row of muavinRows) {
+    const key = muavinYevmiyeMatchKey(row);
+    if (!compact(row.hesapKodu)) continue;
+    const list = muavinMap.get(key) || [];
+    list.push(row);
+    muavinMap.set(key, list);
+  }
+
+  const onlyYevmiye = [];
+  const amountMismatches = [];
+  let matchedCount = 0;
+
+  for (const row of yevmiyeRows) {
+    const key = muavinYevmiyeMatchKey(row);
+    const bucket = muavinMap.get(key);
+    if (bucket?.length) {
+      bucket.shift();
+      matchedCount += 1;
+      if (!bucket.length) muavinMap.delete(key);
+      continue;
+    }
+
+    const soft = [...muavinMap.entries()].find(([k]) => {
+      const [fis, tarih, hesap] = k.split("|");
+      return (
+        fis === compact(row.fisNo) &&
+        tarih === String(row.tarih || "").trim() &&
+        hesap === compact(row.hesapKodu)
+      );
+    });
+    if (soft) {
+      const [softKey, softBucket] = soft;
+      const peer = softBucket[0];
+      const borcGap = Math.abs(roundMoney(peer.borc) - roundMoney(row.borc));
+      const alacakGap = Math.abs(roundMoney(peer.alacak) - roundMoney(row.alacak));
+      if (borcGap <= tolerance && alacakGap <= tolerance) {
+        softBucket.shift();
+        matchedCount += 1;
+        if (!softBucket.length) muavinMap.delete(softKey);
+        continue;
+      }
+      amountMismatches.push({
+        source: "BOTH",
+        reason: "Tutar farkı",
+        fisNo: row.fisNo,
+        tarih: row.tarih,
+        hesapKodu: row.hesapKodu,
+        muavin: { borc: peer.borc, alacak: peer.alacak },
+        yevmiye: { borc: row.borc, alacak: row.alacak },
+      });
+      softBucket.shift();
+      if (!softBucket.length) muavinMap.delete(softKey);
+      continue;
+    }
+
+    onlyYevmiye.push({
+      source: "YEVMIYE",
+      reason: "Muavinde eşleşen hareket yok",
+      fisNo: row.fisNo,
+      tarih: row.tarih,
+      hesapKodu: row.hesapKodu,
+      borc: row.borc,
+      alacak: row.alacak,
+    });
+  }
+
+  const onlyMuavin = [];
+  for (const [, bucket] of muavinMap.entries()) {
+    for (const row of bucket) {
+      onlyMuavin.push({
+        source: "MUAVIN",
+        reason: "Yevmiyede eşleşen hareket yok",
+        fisNo: row.fisNo,
+        tarih: row.tarih,
+        hesapKodu: row.hesapKodu,
+        borc: row.borc,
+        alacak: row.alacak,
+      });
+    }
+  }
+
+  const matched =
+    onlyMuavin.length === 0 &&
+    onlyYevmiye.length === 0 &&
+    amountMismatches.length === 0;
+
+  return {
+    status: matched ? "MATCHED" : "MISMATCH",
+    matched,
+    message: matched
+      ? "Muavin ve yevmiye hareketleri eşleşti."
+      : `Muavin↔yevmiye farkı: eşleşen=${matchedCount}, yalnızMuavin=${onlyMuavin.length}, yalnızYevmiye=${onlyYevmiye.length}, tutarFarkı=${amountMismatches.length}`,
+    matchedCount,
+    onlyMuavin,
+    onlyYevmiye,
+    amountMismatches,
+    muavinMovements: muavinRows.length,
+    yevmiyeMovements: yevmiyeRows.length,
+    yevmiyeVouchers,
+  };
+}
+
 function emptyCounters() {
   return {
     parseInvocations: 0,
@@ -334,7 +495,21 @@ export function runGenelMuhasebeKontrol({
 
   // Prefer content class even when UI slots files into buckets.
   if (muavinSheetRows) ingest(muavinSheetRows, GENEL_MUHASEBE_DOC_CLASS.MUAVIN);
-  if (yevmiyeSheetRows) ingest(yevmiyeSheetRows, GENEL_MUHASEBE_DOC_CLASS.YEVMIYE);
+  if (yevmiyeSheetRows) {
+    ingest(yevmiyeSheetRows, GENEL_MUHASEBE_DOC_CLASS.YEVMIYE);
+    parsed.yevmiye = parsed.yevmiye.filter(isValidYevmiyeMovementRow);
+    if (!parsed.yevmiye.length) {
+      const layout = detectYevmiyeLayout(yevmiyeSheetRows);
+      if (layout === YEVMIYE_LAYOUT.UNKNOWN) {
+        throw Object.assign(new Error("Desteklenmeyen yevmiye düzeni."), {
+          code: "UNSUPPORTED_YEVMIYE_LAYOUT",
+        });
+      }
+      throw Object.assign(new Error("Yevmiye dosyasından hareket okunamadı."), {
+        code: "EMPTY_YEVMIYE_PARSE",
+      });
+    }
+  }
   if (mizanSheetRows) ingest(mizanSheetRows, GENEL_MUHASEBE_DOC_CLASS.MIZAN);
 
   // Stamp period for counterpart group isolation.
@@ -363,22 +538,27 @@ export function runGenelMuhasebeKontrol({
 
   counters.analysisInvocations += 1;
   const tAcc0 = performance.now();
+  const yevmiyeEvidencePresent = parsed.yevmiye.length > 0;
   const pipeline = runEDefterKontrolPipeline({
-    muavinRows: parsed.muavin,
-    yevmiyeRows: parsed.yevmiye,
+    muavinRows: yevmiyeEvidencePresent ? [] : parsed.muavin,
+    yevmiyeRows: yevmiyeEvidencePresent ? parsed.yevmiye : [],
     mizanRows: parsed.mizan,
     companyId,
     period,
     accountPlanCodes,
-    yevmiyeEvidencePresent: parsed.yevmiye.length > 0,
+    yevmiyeEvidencePresent,
+    cumulativePeriod: true,
   });
   timing.accountingMs += performance.now() - tAcc0;
 
-  // Only true MUAVIN vs MIZAN — never treat yevmiye as muavin substitute for "mutabık".
   const tRec0 = performance.now();
   const reconcile = reconcileMizanMuavin({
     muavinRows: parsed.muavin,
     mizanRows: parsed.mizan,
+  });
+  const muavinYevmiye = reconcileMuavinYevmiye({
+    muavinRows: parsed.muavin,
+    yevmiyeRows: parsed.yevmiye,
   });
   timing.reconcileMs += performance.now() - tRec0;
 
@@ -529,6 +709,24 @@ export function runGenelMuhasebeKontrol({
               ? "Fark var"
               : reconcile.status || "—",
   };
+  const yevmiyeFisKeys = new Set(
+    parsed.yevmiye.map((row) => compact(row.fisNo)).filter(Boolean)
+  );
+  const muavinYevmiyeSummary = {
+    ...muavinYevmiye,
+    userLabel:
+      muavinYevmiye.status === "EVIDENCE_MISSING"
+        ? parsed.yevmiye.length
+          ? "Muavin yüklenmedi"
+          : parsed.muavin.length
+            ? "Yevmiye yüklenmedi"
+            : "—"
+        : muavinYevmiye.matched
+          ? "Mutabık"
+          : muavinYevmiye.amountMismatches?.length
+            ? "Tutar farkı var"
+            : "Fark raporlandı",
+  };
 
   return {
     mode: "local-control",
@@ -569,6 +767,11 @@ export function runGenelMuhasebeKontrol({
       alacakToplam: totals.alacak,
       borcAlacakFark: roundMoney(totals.borc - totals.alacak),
       mizanMuavin: mizanMuavinSummary,
+      muavinYevmiye: muavinYevmiyeSummary,
+      muavinHareketSatir: parsed.muavin.length,
+      yevmiyeHareketSatir: parsed.yevmiye.length,
+      yevmiyeFis: yevmiyeFisKeys.size,
+      yevmiyeEvidence: yevmiyeEvidencePresent ? "PRESENT" : "MISSING",
       planEvidence: planEvidencePresent ? "PRESENT" : "MISSING",
       planStatus: planEvidencePresent ? "loaded" : "missing",
       overallSonuc,

@@ -41,6 +41,21 @@ function planEvidenceLabel(summary) {
   return "Hesap planı yüklenemedi";
 }
 
+function yevmiyeEvidenceLabel(summary) {
+  if (!summary) return "—";
+  if (summary.yevmiyeEvidence === "PRESENT") return "Yüklü";
+  return "Yüklenmedi";
+}
+
+function muavinYevmiyeLabel(summary) {
+  const my = summary?.muavinYevmiye;
+  if (!my) return "—";
+  if (my.userLabel) return my.userLabel;
+  if (my.matched) return "Mutabık";
+  if (my.status === "MISMATCH") return "Fark raporlandı";
+  return "—";
+}
+
 function mizanMuavinLabel(summary) {
   const mm = summary?.mizanMuavin;
   if (!mm) return "—";
@@ -74,6 +89,8 @@ function safeUserError(err) {
     return "Excel dosyası okunamadı.";
   }
   if (code === "UNSUPPORTED_MUAVIN_LAYOUT") return "Desteklenmeyen muavin düzeni.";
+  if (code === "UNSUPPORTED_YEVMIYE_LAYOUT") return "Desteklenmeyen yevmiye düzeni.";
+  if (code === "EMPTY_YEVMIYE_PARSE") return "Yevmiye dosyasından hareket okunamadı.";
   if (code === "ANALYZE_WORKER_FAILED") return "Analiz worker başarısız oldu.";
   if (code === "ANALYZE_TIMEOUT") return "Analiz zaman aşımına uğradı.";
   return "Kontrol çalıştırılamadı. Lütfen tekrar deneyin.";
@@ -434,6 +451,19 @@ export default function GenelMuhasebeKontrolPage() {
               <Stat label="Fark" value={formatTurkishMoney(summary.borcAlacakFark)} />
               <Stat label="Muavin↔Mizan" value={mizanMuavinLabel(summary)} />
               <Stat label="Plan kanıtı" value={planEvidenceLabel(summary)} />
+              {summary.yevmiyeEvidence === "PRESENT" ? (
+                <>
+                  <Stat
+                    label="Yevmiye hareketi"
+                    value={summary.yevmiyeHareketSatir ?? 0}
+                  />
+                  <Stat label="Yevmiye fişi" value={summary.yevmiyeFis ?? 0} />
+                  <Stat label="Yevmiye kanıtı" value={yevmiyeEvidenceLabel(summary)} />
+                </>
+              ) : null}
+              {summary.muavinHareketSatir > 0 && summary.yevmiyeEvidence === "PRESENT" ? (
+                <Stat label="Muavin↔Yevmiye" value={muavinYevmiyeLabel(summary)} />
+              ) : null}
             </div>
 
             {summary.mizanMuavin?.message ? (
