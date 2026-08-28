@@ -22,6 +22,7 @@ import {
   EDEFTER_ANALYZE_JOB_KIND,
 } from "@/src/utils/eDefterAnalyzeContract";
 import { createGenelMuhasebeAnalyzeGate } from "@/src/utils/genelMuhasebeKontrolEngine";
+import { buildGenelMuhasebeFindingsPresentation } from "@/src/utils/genelMuhasebeFindingsView";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 
 function Stat({ label, value }) {
@@ -134,6 +135,8 @@ export default function GenelMuhasebeKontrolPage() {
   const [error, setError] = useState("");
   const [perfWarning, setPerfWarning] = useState("");
   const [showMuavinYevmiyeDiffs, setShowMuavinYevmiyeDiffs] = useState(false);
+  const [fisFilter, setFisFilter] = useState("");
+  const [expandedFindingGroups, setExpandedFindingGroups] = useState(() => new Set());
   const [result, setResult] = useState(null);
   const [planStatus, setPlanStatus] = useState("unknown");
   const [planAccounts, setPlanAccounts] = useState(null);
@@ -301,31 +304,21 @@ export default function GenelMuhasebeKontrolPage() {
         ? "missing"
         : planStatus;
   const findings = useMemo(() => {
-    if (!result) return [];
-    const fromRows = (result.rows || [])
-      .filter((row) => (row.issueDetails || []).length)
-      .slice(0, 80)
-      .flatMap((row) =>
-        (row.issueDetails || []).map((issue) => ({
-          fisNo: row.fisNo || "",
-          tarih: row.tarih || "",
-          hesapKodu: row.hesapKodu || "",
-          severity: issue.severity,
-          code: issue.code,
-          message: issue.message,
-        }))
-      );
-    const extras = (result.findingExtras || []).map((issue) => ({
-      fisNo: issue.fisNo || "",
-      tarih: issue.tarih || "",
-      hesapKodu: issue.hesapKodu || "",
-      severity: issue.severity,
-      code: issue.code,
-      message: issue.message,
-      statusLabel: issue.statusLabel || "",
-    }));
-    return [...extras, ...fromRows];
-  }, [result]);
+    if (!result?.findingsCatalog) return [];
+    return buildGenelMuhasebeFindingsPresentation(result.findingsCatalog, { fisFilter });
+  }, [result, fisFilter]);
+
+  const findingsCatalogSize = result?.findingsCatalog?.length || 0;
+  const groupedMultiCount = findings.filter((item) => item.kind === "group").length;
+
+  const toggleFindingGroup = useCallback((groupId) => {
+    setExpandedFindingGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }, []);
 
   const muavinYevmiyeDiffs = summary?.muavinYevmiye?.differences || [];
   const muavinYevmiyeDiffPreview = muavinYevmiyeDiffs.slice(0, 50);
@@ -562,6 +555,24 @@ export default function GenelMuhasebeKontrolPage() {
             </p>
 
             <div className="overflow-auto rounded-xl border border-slate-200 bg-white">
+              <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-3">
+                <div className="text-sm text-slate-700">
+                  <span className="font-medium text-slate-900">Sonuç tablosu</span>
+                  <span className="ml-2 text-slate-500">
+                    {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu ·{" "}
+                    {groupedMultiCount} gruplu MULTI özet
+                  </span>
+                </div>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-xs text-slate-500">Fiş no filtre</span>
+                  <input
+                    className="w-40 rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
+                    value={fisFilter}
+                    onChange={(e) => setFisFilter(e.target.value)}
+                    placeholder="00049"
+                  />
+                </label>
+              </div>
               <table className="min-w-full text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
                   <tr>
@@ -581,18 +592,60 @@ export default function GenelMuhasebeKontrolPage() {
                       </td>
                     </tr>
                   ) : (
-                    findings.map((f, idx) => (
-                      <tr key={`${f.code}-${idx}`} className="border-t border-slate-100">
-                        <td className="px-3 py-2">{f.fisNo || "—"}</td>
-                        <td className="px-3 py-2">{f.tarih || "—"}</td>
-                        <td className="px-3 py-2">{f.hesapKodu || "—"}</td>
-                        <td className="px-3 py-2">{f.severity}</td>
-                        <td className="px-3 py-2">
-                          {f.statusLabel ? `${f.statusLabel} — ${f.message}` : f.message}
-                        </td>
-                        <td className="px-3 py-2 text-xs text-slate-500">{f.code}</td>
-                      </tr>
-                    ))
+                    findings.flatMap((item) => {
+                      if (item.kind === "group") {
+                        const open = expandedFindingGroups.has(item.id);
+                        const rows = [
+                          <tr key={item.id} className="border-t border-slate-100 bg-slate-50/60">
+                            <td className="px-3 py-2">{item.fisNo || "—"}</td>
+                            <td className="px-3 py-2">{item.tarih || "—"}</td>
+                            <td className="px-3 py-2">—</td>
+                            <td className="px-3 py-2">{item.severity}</td>
+                            <td className="px-3 py-2">
+                              <button
+                                type="button"
+                                className="text-left text-teal-700 hover:underline"
+                                onClick={() => toggleFindingGroup(item.id)}
+                              >
+                                {item.message}
+                                {open ? " (gizle)" : " (ayrıntı)"}
+                              </button>
+                            </td>
+                            <td className="px-3 py-2 text-xs text-slate-500">{item.code}</td>
+                          </tr>,
+                        ];
+                        if (open) {
+                          for (const detail of item.details || []) {
+                            rows.push(
+                              <tr
+                                key={`${item.id}|${detail.hesapKodu}|${detail.message}`}
+                                className="border-t border-slate-100 bg-white"
+                              >
+                                <td className="px-3 py-2 pl-6 text-slate-500">{detail.fisNo || "—"}</td>
+                                <td className="px-3 py-2">{detail.tarih || "—"}</td>
+                                <td className="px-3 py-2">{detail.hesapKodu || "—"}</td>
+                                <td className="px-3 py-2">{detail.severity}</td>
+                                <td className="px-3 py-2">{detail.message}</td>
+                                <td className="px-3 py-2 text-xs text-slate-500">{detail.code}</td>
+                              </tr>
+                            );
+                          }
+                        }
+                        return rows;
+                      }
+                      return [
+                        <tr key={`${item.code}-${item.fisNo}-${item.hesapKodu}-${item.message}`} className="border-t border-slate-100">
+                          <td className="px-3 py-2">{item.fisNo || "—"}</td>
+                          <td className="px-3 py-2">{item.tarih || "—"}</td>
+                          <td className="px-3 py-2">{item.hesapKodu || "—"}</td>
+                          <td className="px-3 py-2">{item.severity}</td>
+                          <td className="px-3 py-2">
+                            {item.statusLabel ? `${item.statusLabel} — ${item.message}` : item.message}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-500">{item.code}</td>
+                        </tr>,
+                      ];
+                    })
                   )}
                 </tbody>
               </table>

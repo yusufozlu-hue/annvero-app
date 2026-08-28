@@ -24,6 +24,10 @@ import {
   normalizeAccountCodeForComparison,
   normalizeParserText,
 } from "@/src/utils/textNormalize";
+import {
+  buildGenelMuhasebeFindingsCatalog,
+  summarizeGenelMuhasebeFindingsCatalog,
+} from "@/src/utils/genelMuhasebeFindingsView";
 import { parseDateTR } from "@/src/utils/formatDateTR";
 
 export const GENEL_MUHASEBE_DOC_CLASS = {
@@ -864,21 +868,17 @@ export function runGenelMuhasebeKontrol({
   }
 
   let overallSonuc = pipeline.overallSonuc || E_DEFTER_SONUC_SEVIYE.UYGUN;
-  if (extraFindings.some((f) => f.severity === E_DEFTER_ISSUE_SEVERITY.UYARI)) {
-    if (overallSonuc === E_DEFTER_SONUC_SEVIYE.UYGUN || overallSonuc === E_DEFTER_SONUC_SEVIYE.BILGI) {
-      overallSonuc = E_DEFTER_SONUC_SEVIYE.UYARI;
-    }
-  } else if (extraFindings.length && overallSonuc === E_DEFTER_SONUC_SEVIYE.UYGUN) {
-    overallSonuc = E_DEFTER_SONUC_SEVIYE.BILGI;
-  }
+  const findingsCatalog = buildGenelMuhasebeFindingsCatalog({
+    rows: pipeline.rows,
+    findingExtras: extraFindings,
+  });
+  const findingsSummary = summarizeGenelMuhasebeFindingsCatalog(findingsCatalog);
+  overallSonuc = findingsSummary.overallSonuc;
 
   // Local-only: never persist here.
   counters.persistInvocations = 0;
   timing.totalMs = performance.now() - tTotal0;
 
-  const nonInfoExtras = extraFindings.filter(
-    (f) => f.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI
-  );
   const mizanMuavinSummary = {
     ...reconcile,
     userLabel:
@@ -913,6 +913,8 @@ export function runGenelMuhasebeKontrol({
     period,
     rows: pipeline.rows,
     findingExtras: extraFindings,
+    findingsCatalog,
+    findingsSummary,
     documentClasses: parsed.classes,
     parsedCounts: {
       muavin: parsed.muavin.length,
@@ -938,7 +940,7 @@ export function runGenelMuhasebeKontrol({
       kesinKarsit: resolved,
       cokluKarsit: multi,
       // BİLGİ extras (mizan/plan) must not inflate inceleme counter.
-      incelemeGerekli: review + nonInfoExtras.length,
+      incelemeGerekli: findingsSummary.incelemeGerekli,
       hesapPlandaYok: countCode(E_DEFTER_ISSUE_CODE.ACCOUNT_NOT_IN_PLAN),
       donemDisi: countCode(E_DEFTER_ISSUE_CODE.DATE_OUT_OF_PERIOD),
       mukerrer: countCode(E_DEFTER_ISSUE_CODE.DUPLICATE_ENTRY),

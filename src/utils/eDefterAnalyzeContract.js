@@ -274,6 +274,8 @@ export function sanitizeAnalyzeResult(result = {}, diagnostics = {}) {
     disclaimer: result.disclaimer ? String(result.disclaimer).slice(0, 500) : "",
     journalLedger: cloneJson(result.journalLedger || null),
     findingExtras: cloneJson(result.findingExtras || []),
+    findingsCatalog: cloneJson(result.findingsCatalog || []),
+    findingsSummary: cloneJson(result.findingsSummary || {}),
     documentClasses: cloneJson(result.documentClasses || {}),
     parsedCounts: cloneJson(result.parsedCounts || {}),
     timing: cloneJson(result.timing || {}),

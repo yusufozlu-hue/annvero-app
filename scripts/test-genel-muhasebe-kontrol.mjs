@@ -21,8 +21,13 @@ import {
   accountCodeFromPlanRow,
   buildCloneSafeAnalyzePayload,
   executeEDefterAnalyzePayload,
+  resultsAreParityEqual,
 } from "@/src/utils/eDefterAnalyzeContract.js";
+import { buildGenelMuhasebeFindingsPresentation } from "@/src/utils/genelMuhasebeFindingsView.js";
 import { LUCA_MULTI_ACCOUNT_MUAVIN_ROWS } from "./fixtures/luca-multi-account-muavin.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils.js";
 
 let failed = 0;
 function assert(cond, msg) {
@@ -684,9 +689,10 @@ function hasIssueCode(rows, extras, code) {
     companyId: "c1",
     period: "2026/05",
     muavinSheetRows: sheet(MUAVIN_HEADERS, [
-      ["MUAVİN", "10.05.2026", "1", "100.01", "Kasa", "anon", "10", "0"],
+      ["MUAVİN", "10.05.2026", "00001", "100.01", "Kasa", "anon", "10", "0"],
+      ["MUAVİN", "10.05.2026", "00001", "320.01", "Satıcı", "anon", "0", "10"],
     ]),
-    accountPlanAccounts: [{ account_code: "100.01" }],
+    accountPlanAccounts: [{ account_code: "100.01" }, { account_code: "320.01" }],
     accountPlanStatus: "loaded",
   });
   assert(r.summary.mizanMuavin?.userLabel === "Mizan yüklenmedi", "k userLabel");
@@ -694,6 +700,7 @@ function hasIssueCode(rows, extras, code) {
     (r.findingExtras || []).some((f) => f.message === "Mizan yüklenmedi"),
     "k safe finding message"
   );
+  assert(r.summary.incelemeGerekli === 0, "k mizan missing does not increment inceleme");
 }
 
 // l) Persist 0
@@ -711,6 +718,162 @@ function hasIssueCode(rows, extras, code) {
     spies,
   });
   assert(r.counters.persistInvocations === 0, "l persist stays 0");
+}
+
+// m) bilgi-only extras + MULTI → Sonuç Bilgi, İnceleme 0, summary/table parity
+{
+  const r = runGenelMuhasebeKontrol({
+    companyId: "c1",
+    period: "2026/05",
+    muavinSheetRows: sheet(MUAVIN_HEADERS, [
+      ["MUAVİN", "10.05.2026", "00001", "100.01", "Kasa", "anon", "10", "0"],
+      ["MUAVİN", "10.05.2026", "00001", "320.01", "Satıcı", "anon", "0", "10"],
+    ]),
+    yevmiyeSheetRows: sheet(YEVMIYE_HEADERS, [
+      ["10.05.2026", "M1", "1", "100.01", "Kasa", "anon", "FT", "B1", "10", "0", ""],
+      ["10.05.2026", "M1", "2", "120.01", "A", "anon", "FT", "B1", "5", "0", ""],
+      ["10.05.2026", "M1", "3", "320.01", "S", "anon", "FT", "B1", "0", "8", ""],
+      ["10.05.2026", "M1", "4", "321.01", "S2", "anon", "FT", "B1", "0", "7", ""],
+    ]),
+    accountPlanAccounts: [
+      { account_code: "100.01" },
+      { account_code: "120.01" },
+      { account_code: "320.01" },
+      { account_code: "321.01" },
+    ],
+    accountPlanStatus: "loaded",
+  });
+  const nonInfo = (r.findingsCatalog || []).filter(
+    (item) => item.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI
+  );
+  if (!nonInfo.length) {
+    assert(
+      r.summary.overallSonuc === E_DEFTER_SONUC_SEVIYE.BILGI ||
+        r.summary.overallSonuc === E_DEFTER_SONUC_SEVIYE.UYGUN,
+      "m bilgi-only overall not Uyarı"
+    );
+    assert(r.summary.incelemeGerekli === 0, "m bilgi-only inceleme 0");
+  }
+  assert(
+    r.summary.overallSonuc === r.findingsSummary?.overallSonuc,
+    "m summary/table overall parity"
+  );
+  assert(
+    r.summary.incelemeGerekli === r.findingsSummary?.incelemeGerekli,
+    "m summary/table inceleme parity"
+  );
+}
+
+// n) MULTI grouped in presentation; UYARI stays above grouped BILGI
+{
+  const multiRows = Array.from({ length: 55 }, (_, idx) => ({
+    fisNo: "00001",
+    tarih: "01.01.2026",
+    hesapKodu: `120.01.B${String(idx).padStart(4, "0")}`,
+    severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+    code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+    message: `multi ${idx}`,
+  }));
+  const catalog = [
+    {
+      fisNo: "00049",
+      tarih: "01.01.2026",
+      hesapKodu: "320.10.Y0010",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "Aynı fişte yalnız aynı yönlü satırlar var; karşıt hesap bağlanamaz.",
+    },
+    ...multiRows,
+  ];
+  const presentation = buildGenelMuhasebeFindingsPresentation(catalog);
+  assert(presentation[0]?.severity === E_DEFTER_ISSUE_SEVERITY.UYARI, "n UYARI first");
+  assert(
+    presentation.some((item) => item.kind === "group" && item.fisNo === "00001"),
+    "n MULTI grouped summary row"
+  );
+  assert(
+    presentation.find((item) => item.kind === "group" && item.fisNo === "00001")?.count === 55,
+    "n grouped count preserved"
+  );
+}
+
+// o) worker/main payload parity includes findings summary
+{
+  const input = {
+    companyId: "c1",
+    period: "2026/05",
+    yevmiyeSheetRows: sheet(YEVMIYE_HEADERS, [
+      ["10.05.2026", "O1", "1", "100.01", "Kasa", "anon", "FT", "B1", "10", "0", ""],
+      ["10.05.2026", "O1", "2", "320.01", "S", "anon", "FT", "B1", "0", "10", ""],
+    ]),
+    accountPlanAccounts: [{ account_code: "100.01" }, { account_code: "320.01" }],
+    accountPlanStatus: "loaded",
+  };
+  const direct = runGenelMuhasebeKontrol(input);
+  const again = runGenelMuhasebeKontrol(input);
+  assert(resultsAreParityEqual(direct, again), "o worker/main parity");
+  assert(direct.findingsSummary?.overallSonuc, "o findingsSummary present");
+  assert(
+    direct.summary.overallSonuc === direct.findingsSummary.overallSonuc,
+    "o summary uses catalog overall"
+  );
+}
+
+// p) optional real-file smoke: severity/code distribution + hidden UYARI visibility
+{
+  const muavinPath = path.join(process.env.USERPROFILE || "", "Desktop", "muavin_mare.xlsx");
+  const yevPath = path.join(
+    process.env.USERPROFILE || "",
+    "Desktop",
+    "yevmiye_defteri_mare.xlsx"
+  );
+  if (!fs.existsSync(muavinPath) || !fs.existsSync(yevPath)) {
+    console.log("SKIP  p real-file findings smoke (mare xlsx not on Desktop)");
+  } else {
+    const read = (p) => {
+      const buf = fs.readFileSync(p);
+      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      return readSheetRowsFromArrayBuffer(ab);
+    };
+    const r = runGenelMuhasebeKontrol({
+      companyId: "mare",
+      period: "2026/03",
+      muavinSheetRows: read(muavinPath),
+      yevmiyeSheetRows: read(yevPath),
+      accountPlanAccounts: [],
+      accountPlanStatus: "missing",
+    });
+    const presentation = buildGenelMuhasebeFindingsPresentation(r.findingsCatalog || []);
+    const nonInfo = (r.findingsCatalog || []).filter(
+      (item) => item.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI
+    );
+    console.log("REAL severity", r.findingsSummary?.severityCounts);
+    console.log("REAL codes", r.findingsSummary?.codeCounts);
+    console.log("REAL overall", r.summary.overallSonuc, "inceleme", r.summary.incelemeGerekli);
+    if (nonInfo.length === 1) {
+      const only = nonInfo[0];
+      console.log(
+        "REAL sole non-info",
+        only.code,
+        only.severity,
+        only.fisNo,
+        only.hesapKodu,
+        only.message
+      );
+      assert(only.code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE, "p sole warning code");
+      assert(only.fisNo === "00049", "p sole warning fis");
+      assert(r.summary.overallSonuc === E_DEFTER_SONUC_SEVIYE.UYARI, "p overall Uyarı");
+      assert(r.summary.incelemeGerekli === 1, "p inceleme 1");
+      assert(
+        presentation[0]?.code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+        "p warning visible at top of presentation"
+      );
+    }
+    assert(r.summary.muavinYevmiye?.matchedCount === 545, "p 545/545 preserved");
+    assert(r.summary.muavinYevmiye?.counts?.onlyMuavin === 0, "p onlyMuavin 0");
+    assert(r.summary.muavinYevmiye?.counts?.onlyYevmiye === 0, "p onlyYevmiye 0");
+    assert(r.counters.persistInvocations === 0, "p persist 0");
+  }
 }
 
 assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountCode helper");
