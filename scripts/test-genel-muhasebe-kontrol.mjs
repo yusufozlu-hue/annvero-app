@@ -30,6 +30,12 @@ import {
   normalizeFisNoForFilter,
   pruneExpandedPresentationGroups,
 } from "@/src/utils/genelMuhasebeFindingsView.js";
+import {
+  GENEL_MUHASEBE_FINDING_TITLE_TR,
+  genelMuhasebeFindingMessageTr,
+  genelMuhasebeFindingTitleTr,
+  userVisibleTextHasTechnicalCode,
+} from "@/src/utils/genelMuhasebeFindingsLabels.js";
 import { LUCA_MULTI_ACCOUNT_MUAVIN_ROWS } from "./fixtures/luca-multi-account-muavin.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -801,6 +807,30 @@ function hasIssueCode(rows, extras, code) {
     presentation.find((item) => item.kind === "group" && item.fisNo === "00001")?.count === 55,
     "n grouped count preserved"
   );
+  assert(
+    presentation[0]?.displayTitle ===
+      GENEL_MUHASEBE_FINDING_TITLE_TR[E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE],
+    "n UYARI Turkish title"
+  );
+  assert(
+    !userVisibleTextHasTechnicalCode(presentation[0]?.displayMessage || ""),
+    "n UYARI user message has no English code"
+  );
+  const multiGroup = presentation.find((item) => item.kind === "group" && item.fisNo === "00001");
+  assert(
+    multiGroup?.displayTitle ===
+      GENEL_MUHASEBE_FINDING_TITLE_TR[E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART],
+    "n MULTI Turkish title"
+  );
+  assert(
+    !userVisibleTextHasTechnicalCode(multiGroup?.displayMessage || ""),
+    "n MULTI user message has no English code"
+  );
+  assert(multiGroup?.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART, "n MULTI technical code preserved");
+  assert(
+    presentation[0]?.code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+    "n UYARI technical code preserved"
+  );
 }
 
 // o) worker/main payload parity includes findings summary
@@ -882,6 +912,15 @@ function hasIssueCode(rows, extras, code) {
       assert(
         presentation[0]?.code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
         "p warning visible at top of presentation"
+      );
+      assert(
+        presentation[0]?.displayTitle ===
+          GENEL_MUHASEBE_FINDING_TITLE_TR[E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE],
+        "p warning Turkish title"
+      );
+      assert(
+        !userVisibleTextHasTechnicalCode(presentation[0]?.displayMessage || ""),
+        "p warning user message no EN code"
       );
     }
     assert(r.summary.muavinYevmiye?.matchedCount === 545, "p 545/545 preserved");
@@ -1025,6 +1064,77 @@ function hasIssueCode(rows, extras, code) {
 }
 
 assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountCode helper");
+
+// s) Türkçe UI sunumu — teknik kod korunur, kullanıcı metninde İngilizce yok
+{
+  assert(
+    genelMuhasebeFindingTitleTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) ===
+      "Birden fazla karşıt hesap",
+    "s MULTI title TR"
+  );
+  assert(
+    genelMuhasebeFindingTitleTr(E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE) === "Aynı yönlü kayıt",
+    "s SAME_SIDE title TR"
+  );
+  assert(
+    genelMuhasebeFindingTitleTr(E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING) ===
+      "Şüpheli yuvarlama kaydı",
+    "s ROUNDING title TR"
+  );
+  assert(
+    genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART).includes(
+      "birden fazla karşıt hesap"
+    ),
+    "s MULTI message TR"
+  );
+  assert(
+    genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE).includes(
+      "aynı yönlü"
+    ),
+    "s SAME_SIDE message TR"
+  );
+  assert(
+    genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING).includes("yuvarlama"),
+    "s ROUNDING message TR"
+  );
+
+  const catalog = [
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "engine message kept",
+    },
+    {
+      fisNo: "00001",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "engine multi",
+    },
+    {
+      fisNo: "00002",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message: "engine round",
+    },
+    {
+      fisNo: "",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "engine unknown",
+    },
+  ];
+  const presentation = buildGenelMuhasebeFindingsPresentation(catalog);
+  for (const row of presentation) {
+    assert(row.code, "s technical code on presentation");
+    assert(!userVisibleTextHasTechnicalCode(row.displayTitle || ""), "s title no EN code");
+    assert(!userVisibleTextHasTechnicalCode(row.displayMessage || ""), "s message no EN code");
+  }
+  assert(
+    catalog[0].code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+    "s catalog technical code unchanged"
+  );
+}
 
 if (failed) {
   console.error(`${failed} FAIL(s)`);

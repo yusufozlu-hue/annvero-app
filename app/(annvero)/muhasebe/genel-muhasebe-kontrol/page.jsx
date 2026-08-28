@@ -141,6 +141,7 @@ export default function GenelMuhasebeKontrolPage() {
   const [showMuavinYevmiyeDiffs, setShowMuavinYevmiyeDiffs] = useState(false);
   const [fisFilter, setFisFilter] = useState("");
   const [expandedFindingGroups, setExpandedFindingGroups] = useState(() => new Set());
+  const [expandedTechnicalIds, setExpandedTechnicalIds] = useState(() => new Set());
   const [result, setResult] = useState(null);
   const [planStatus, setPlanStatus] = useState("unknown");
   const [planAccounts, setPlanAccounts] = useState(null);
@@ -152,6 +153,7 @@ export default function GenelMuhasebeKontrolPage() {
     runTokenRef.current += 1;
     setResult(null);
     setExpandedFindingGroups(new Set());
+    setExpandedTechnicalIds(new Set());
     setPerfWarning("");
     setProgressDetail("");
     bumpAnalyzeGeneration(reason);
@@ -320,6 +322,7 @@ export default function GenelMuhasebeKontrolPage() {
 
   useEffect(() => {
     setExpandedFindingGroups(new Set());
+    setExpandedTechnicalIds(new Set());
   }, [trimmedFisFilter, findingsCatalog]);
 
   const openFindingGroupIds = useMemo(
@@ -342,6 +345,36 @@ export default function GenelMuhasebeKontrolPage() {
       return next;
     });
   }, []);
+
+  const toggleTechnicalDetails = useCallback((rowId) => {
+    setExpandedTechnicalIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  }, []);
+
+  const renderTechnicalDetails = (row, rowKey) => {
+    const open = expandedTechnicalIds.has(rowKey);
+    if (!row?.code) return null;
+    return (
+      <div className="mt-1">
+        <button
+          type="button"
+          className="text-xs text-slate-500 hover:underline"
+          onClick={() => toggleTechnicalDetails(rowKey)}
+        >
+          {open ? "Teknik ayrıntıları gizle" : "Teknik ayrıntılar"}
+        </button>
+        {open ? (
+          <div className="mt-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[11px] text-slate-600">
+            Kod: {row.code}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   const muavinYevmiyeDiffs = summary?.muavinYevmiye?.differences || [];
   const muavinYevmiyeDiffPreview = muavinYevmiyeDiffs.slice(0, 50);
@@ -583,7 +616,7 @@ export default function GenelMuhasebeKontrolPage() {
                   <span className="font-medium text-slate-900">Sonuç tablosu</span>
                   <span className="ml-2 text-slate-500">
                     {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu ·{" "}
-                    {groupedMultiCount} gruplu MULTI özet
+                    {groupedMultiCount} gruplu karşıt hesap özeti
                     {trimmedFisFilter
                       ? ` · ${visibleFindingsRowCount} sonuç gösteriliyor`
                       : ""}
@@ -606,8 +639,8 @@ export default function GenelMuhasebeKontrolPage() {
                     <th className="px-3 py-2">Tarih</th>
                     <th className="px-3 py-2">Hesap</th>
                     <th className="px-3 py-2">Seviye</th>
-                    <th className="px-3 py-2">Durum / Mesaj</th>
-                    <th className="px-3 py-2">Kod</th>
+                    <th className="px-3 py-2">Durum</th>
+                    <th className="px-3 py-2">Açıklama</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -629,48 +662,61 @@ export default function GenelMuhasebeKontrolPage() {
                             <td className="px-3 py-2">{item.tarih || "—"}</td>
                             <td className="px-3 py-2">—</td>
                             <td className="px-3 py-2">{item.severity}</td>
+                            <td className="px-3 py-2 font-medium text-slate-900">
+                              {item.displayTitle || item.titleTr}
+                            </td>
                             <td className="px-3 py-2">
                               <button
                                 type="button"
                                 className="text-left text-teal-700 hover:underline"
                                 onClick={() => toggleFindingGroup(item.id)}
                               >
-                                {item.message}
+                                {item.displayMessage || item.messageTr || item.message}
                                 {open ? " (gizle)" : " (ayrıntı)"}
                               </button>
+                              {renderTechnicalDetails(item, item.id)}
                             </td>
-                            <td className="px-3 py-2 text-xs text-slate-500">{item.code}</td>
                           </tr>,
                         ];
                         if (open) {
                           for (const detail of item.details || []) {
+                            const detailKey = `${item.id}|${detail.hesapKodu}|${detail.code}`;
                             rows.push(
                               <tr
-                                key={`${item.id}|${detail.hesapKodu}|${detail.message}`}
+                                key={detailKey}
                                 className="border-t border-slate-100 bg-white"
                               >
                                 <td className="px-3 py-2 pl-6 text-slate-500">{detail.fisNo || "—"}</td>
                                 <td className="px-3 py-2">{detail.tarih || "—"}</td>
                                 <td className="px-3 py-2">{detail.hesapKodu || "—"}</td>
                                 <td className="px-3 py-2">{detail.severity}</td>
-                                <td className="px-3 py-2">{detail.message}</td>
-                                <td className="px-3 py-2 text-xs text-slate-500">{detail.code}</td>
+                                <td className="px-3 py-2 font-medium text-slate-900">
+                                  {detail.displayTitle || detail.titleTr}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {detail.displayMessage || detail.messageTr || detail.message}
+                                  {renderTechnicalDetails(detail, detailKey)}
+                                </td>
                               </tr>
                             );
                           }
                         }
                         return rows;
                       }
+                      const rowKey = `${item.code}-${item.fisNo}-${item.hesapKodu}-${item.message}`;
                       return [
-                        <tr key={`${item.code}-${item.fisNo}-${item.hesapKodu}-${item.message}`} className="border-t border-slate-100">
+                        <tr key={rowKey} className="border-t border-slate-100">
                           <td className="px-3 py-2">{item.fisNo || "—"}</td>
                           <td className="px-3 py-2">{item.tarih || "—"}</td>
                           <td className="px-3 py-2">{item.hesapKodu || "—"}</td>
                           <td className="px-3 py-2">{item.severity}</td>
-                          <td className="px-3 py-2">
-                            {item.statusLabel ? `${item.statusLabel} — ${item.message}` : item.message}
+                          <td className="px-3 py-2 font-medium text-slate-900">
+                            {item.displayTitle || item.titleTr}
                           </td>
-                          <td className="px-3 py-2 text-xs text-slate-500">{item.code}</td>
+                          <td className="px-3 py-2">
+                            {item.displayMessage || item.messageTr || item.message}
+                            {renderTechnicalDetails(item, rowKey)}
+                          </td>
                         </tr>,
                       ];
                     })

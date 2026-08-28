@@ -3,6 +3,10 @@ import {
   E_DEFTER_ISSUE_SEVERITY,
   E_DEFTER_SONUC_SEVIYE,
 } from "@/src/config/eDefterKontrolDefaults";
+import {
+  enrichFindingForUserPresentation,
+  genelMuhasebeMultiGroupMessageTr,
+} from "@/src/utils/genelMuhasebeFindingsLabels";
 
 function isSyntheticSystemFindingRow(row = {}) {
   const id = String(row?.id || "");
@@ -188,19 +192,23 @@ export function filterGenelMuhasebePresentationRows(rows = [], fisFilter = "") {
       const details = row.details.filter((detail) =>
         presentationRowMatchesFisFilter(detail, needle)
       );
-      return {
+      const count = details.length;
+      const messageTr = genelMuhasebeMultiGroupMessageTr(row.fisNo, count);
+      return enrichFindingForUserPresentation({
         ...row,
         details,
-        count: details.length,
-        message: `Fiş ${row.fisNo || "—"} — ${details.length} hesap satırı — çoklu karşıt hesap; otomatik tek karşıt atanmadı.`,
-      };
+        count,
+        message: messageTr,
+        messageTr,
+      });
     });
 }
 
 function buildMultiCounterpartGroup(items = []) {
   const fisNo = items[0]?.fisNo || "";
   const count = items.length;
-  return {
+  const messageTr = genelMuhasebeMultiGroupMessageTr(fisNo, count);
+  return enrichFindingForUserPresentation({
     kind: "group",
     id: `multi|${fisNo}|${E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART}`,
     fisNo,
@@ -208,11 +216,11 @@ function buildMultiCounterpartGroup(items = []) {
     hesapKodu: "",
     severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
     code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
-    message: `Fiş ${fisNo || "—"} — ${count} hesap satırı — çoklu karşıt hesap; otomatik tek karşıt atanmadı.`,
+    message: messageTr,
     statusLabel: "",
     count,
-    details: items,
-  };
+    details: items.map((item) => enrichFindingForUserPresentation(item)),
+  });
 }
 
 /**
@@ -230,7 +238,7 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
 
   for (const item of sorted) {
     if (item.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI) {
-      priority.push({ kind: "single", ...item });
+      priority.push(enrichFindingForUserPresentation({ kind: "single", ...item }));
       continue;
     }
     if (item.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) {
@@ -240,7 +248,7 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
       multiByFis.set(key, list);
       continue;
     }
-    otherInfo.push({ kind: "single", ...item });
+    otherInfo.push(enrichFindingForUserPresentation({ kind: "single", ...item }));
   }
 
   const groupedMulti = [...multiByFis.entries()]
