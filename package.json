@@ -32,6 +32,7 @@
     "test:e-defter-kontrol": "node --import ./scripts/_alias-loader.mjs ./scripts/test-e-defter-kontrol.mjs",
     "test:karsit-hesap": "node --import ./scripts/_alias-loader.mjs ./scripts/test-karsit-hesap-kontrol.mjs",
     "test:genel-muhasebe-kontrol": "node --import ./scripts/_alias-loader.mjs ./scripts/test-genel-muhasebe-kontrol.mjs",
+    "test:correction-voucher-v1": "node --import ./scripts/_alias-loader.mjs ./scripts/test-correction-voucher-v1.mjs",
     "test:luca-muavin-parser": "node --import ./scripts/_alias-loader.mjs ./scripts/test-luca-muavin-parser.mjs",
     "test:luca-block-yevmiye-parser": "node --import ./scripts/_alias-loader.mjs ./scripts/test-luca-block-yevmiye-parser.mjs",
     "test:luca-mizan-parser": "node --import ./scripts/_alias-loader.mjs ./scripts/test-luca-mizan-parser.mjs",
