@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import AnnveroDateInput from "@/src/components/AnnveroDateInput";
 import { accountCodeFromPlanRow } from "@/src/utils/genelMuhasebeKontrolEngine";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
@@ -8,8 +8,6 @@ import {
   CORRECTION_DATE_SOURCE,
   CORRECTION_EXPORT_MODE,
   buildCorrectionDraft,
-  buildSourceVoucherFromLedgerRows,
-  detectCorrectionRecipe,
   exportCorrectionDraft,
   prepareCorrectionFromFinding,
   validateCorrectionDraft,
@@ -24,6 +22,20 @@ function accountLabel(account) {
     account?.name ||
     "";
   return name ? `${code} — ${name}` : code;
+}
+
+function accountNameFromPlan(planAccounts = [], code = "") {
+  const account = planAccounts.find(
+    (entry) => accountCodeFromPlanRow(entry) === code
+  );
+  if (!account) return "";
+  return (
+    account?.account_name ||
+    account?.accountName ||
+    account?.hesapAdi ||
+    account?.name ||
+    ""
+  );
 }
 
 export default function CorrectionVoucherPanel({
@@ -42,9 +54,25 @@ export default function CorrectionVoucherPanel({
   const [correctionDateSource, setCorrectionDateSource] = useState("");
   const [accountQuery, setAccountQuery] = useState("");
   const [selectedAccountCode, setSelectedAccountCode] = useState("");
+  const [selectedAccountName, setSelectedAccountName] = useState("");
+  const [highlightedAccountCode, setHighlightedAccountCode] = useState("");
   const [approved, setApproved] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
   const [exportError, setExportError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setClosedPeriodInput("");
+    setCorrectionDateOverride("");
+    setCorrectionDateSource("");
+    setAccountQuery("");
+    setSelectedAccountCode("");
+    setSelectedAccountName("");
+    setHighlightedAccountCode("");
+    setApproved(false);
+    setExportMessage("");
+    setExportError("");
+  }, [open, finding?.fisNo, finding?.code]);
 
   const prep = useMemo(() => {
     if (!open || !finding) return null;
@@ -65,12 +93,25 @@ export default function CorrectionVoucherPanel({
   const effectiveCorrectionDate = correctionDateOverride || defaultCorrectionDate;
   const effectiveDateSource = correctionDateSource || defaultDateSource;
 
-  const selectedAccount = useMemo(
-    () =>
-      planAccounts.find(
-        (account) => accountCodeFromPlanRow(account) === selectedAccountCode
-      ) || null,
-    [planAccounts, selectedAccountCode]
+  const sourceMetaBlocked = Boolean(sourceVoucher && !sourceVoucher.metaComplete);
+  const sourceMetaMessage =
+    sourceVoucher?.metaIssues?.[0]?.message ||
+    "Kaynak fiş tarih/belge bilgisi eksik veya belirsiz; düzeltme fişi üretilmez.";
+
+  const selectAccount = useCallback(
+    (code, name = "") => {
+      const trimmedCode = String(code || "").trim();
+      if (!trimmedCode) return;
+      const resolvedName =
+        name || accountNameFromPlan(planAccounts, trimmedCode) || selectedAccountName;
+      setSelectedAccountCode(trimmedCode);
+      setSelectedAccountName(resolvedName);
+      setHighlightedAccountCode(trimmedCode);
+      setApproved(false);
+      setExportMessage("");
+      setExportError("");
+    },
+    [planAccounts, selectedAccountName]
   );
 
   const filteredAccounts = useMemo(() => {
@@ -89,14 +130,11 @@ export default function CorrectionVoucherPanel({
   }, [planAccounts, accountQuery]);
 
   const draft = useMemo(() => {
-    if (!recipe?.ok || !selectedAccountCode || !selectedAccount) return null;
+    if (!recipe?.ok || !selectedAccountCode || sourceMetaBlocked) return null;
     return buildCorrectionDraft(recipe, {
       correctDebitAccountCode: selectedAccountCode,
       correctDebitAccountName:
-        selectedAccount?.account_name ||
-        selectedAccount?.accountName ||
-        selectedAccount?.name ||
-        "",
+        selectedAccountName || accountNameFromPlan(planAccounts, selectedAccountCode),
       companyAccountingRules,
       userSelectedClosedPeriod: closedPeriodInput,
       userCorrectionDate: effectiveCorrectionDate,
@@ -108,7 +146,9 @@ export default function CorrectionVoucherPanel({
   }, [
     recipe,
     selectedAccountCode,
-    selectedAccount,
+    selectedAccountName,
+    sourceMetaBlocked,
+    planAccounts,
     companyAccountingRules,
     closedPeriodInput,
     effectiveCorrectionDate,
@@ -132,6 +172,21 @@ export default function CorrectionVoucherPanel({
     setApproved(false);
     setExportMessage("");
   }, []);
+
+  const handleAccountSearchKeyDown = useCallback(
+    (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      const first = filteredAccounts[0];
+      if (!first) return;
+      const code = accountCodeFromPlanRow(first);
+      selectAccount(
+        code,
+        first?.account_name || first?.accountName || first?.name || ""
+      );
+    },
+    [filteredAccounts, selectAccount]
+  );
 
   const handleExport = useCallback(() => {
     setExportError("");
@@ -161,8 +216,6 @@ export default function CorrectionVoucherPanel({
   }, [draft, approved, accountPlanCodes, prep?.closedReliability, companySlug]);
 
   if (!open || !finding) return null;
-
-  const sourceMetaIssues = sourceVoucher?.metaIssues || [];
 
   return (
     <div
@@ -199,9 +252,9 @@ export default function CorrectionVoucherPanel({
 
           {recipe?.ok ? (
             <>
-              {sourceMetaIssues.length ? (
+              {sourceMetaBlocked ? (
                 <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800">
-                  {sourceMetaIssues.map((issue) => issue.message).join(" ")}
+                  {sourceMetaMessage}
                 </div>
               ) : null}
 
@@ -214,7 +267,7 @@ export default function CorrectionVoucherPanel({
                   </div>
                   <div>
                     <dt className="text-slate-500">Tarih</dt>
-                    <dd>{sourceVoucher?.tarih || "—"}</dd>
+                    <dd>{sourceVoucher?.tarih || finding?.tarih || "—"}</dd>
                   </div>
                   <div>
                     <dt className="text-slate-500">Belge</dt>
@@ -281,43 +334,78 @@ export default function CorrectionVoucherPanel({
                 </div>
               </div>
 
-              <label className="block">
+              <div className="block">
                 <span className="mb-1 block font-medium text-slate-800">
                   Doğru borç hesabı (aktif plan)
                 </span>
+                {selectedAccountCode ? (
+                  <div className="mb-2 flex items-center gap-2 rounded-lg border border-teal-300 bg-teal-50 px-3 py-2 text-teal-900">
+                    <span aria-hidden className="text-teal-700">
+                      ✓
+                    </span>
+                    <span>
+                      <span className="font-semibold">Seçildi:</span>{" "}
+                      {selectedAccountCode}
+                      {selectedAccountName ? ` — ${selectedAccountName}` : ""}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="mb-2 text-xs text-slate-500">
+                    Listeden tıklayın veya arayıp Enter ile seçin.
+                  </p>
+                )}
                 <input
                   className="w-full rounded-lg border border-slate-300 px-3 py-2"
                   value={accountQuery}
                   onChange={(e) => setAccountQuery(e.target.value)}
+                  onKeyDown={handleAccountSearchKeyDown}
                   placeholder="Kod veya ad ara…"
+                  aria-label="Hesap planında ara"
                 />
-                <div className="mt-2 max-h-36 overflow-auto rounded-lg border border-slate-200">
+                <div
+                  className="mt-2 max-h-36 overflow-auto rounded-lg border border-slate-200"
+                  role="listbox"
+                  aria-label="Hesap arama sonuçları"
+                >
                   {filteredAccounts.length === 0 ? (
                     <p className="px-3 py-2 text-slate-500">Sonuç yok</p>
                   ) : (
                     filteredAccounts.map((account) => {
                       const code = accountCodeFromPlanRow(account);
-                      const active = selectedAccountCode === code;
+                      const name =
+                        account?.account_name ||
+                        account?.accountName ||
+                        account?.name ||
+                        "";
+                      const selected = selectedAccountCode === code;
+                      const highlighted = highlightedAccountCode === code;
                       return (
                         <button
                           key={code}
                           type="button"
-                          className={`block w-full px-3 py-2 text-left hover:bg-teal-50 ${
-                            active ? "bg-teal-100 font-medium" : ""
+                          role="option"
+                          aria-selected={selected}
+                          className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-teal-50 ${
+                            selected
+                              ? "bg-teal-100 font-semibold text-teal-900 ring-1 ring-inset ring-teal-400"
+                              : highlighted
+                                ? "bg-teal-50"
+                                : ""
                           }`}
-                          onClick={() => {
-                            setSelectedAccountCode(code);
-                            setApproved(false);
-                            setExportMessage("");
-                          }}
+                          onClick={() => selectAccount(code, name)}
                         >
-                          {accountLabel(account)}
+                          <span>{accountLabel(account)}</span>
+                          {selected ? (
+                            <span className="shrink-0 text-xs font-semibold uppercase text-teal-700">
+                              Seçildi
+                            </span>
+                          ) : null}
                         </button>
                       );
                     })
                   )}
                 </div>
-              </label>
+              </div>
 
               {draft?.ok ? (
                 <>
@@ -360,7 +448,7 @@ export default function CorrectionVoucherPanel({
                     </p>
                   </div>
                 </>
-              ) : draft && !draft.ok ? (
+              ) : draft && !draft.ok && !sourceMetaBlocked ? (
                 <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800">
                   {draft.message}
                 </div>
@@ -423,12 +511,4 @@ export default function CorrectionVoucherPanel({
       </div>
     </div>
   );
-}
-
-/** Bulgu satırı düzeltmeye uygun mu? */
-export function isCorrectionEligibleFinding(finding, ledgerRows) {
-  if (!finding || finding.severity !== "UYARI") return false;
-  const sourceVoucher = buildSourceVoucherFromLedgerRows(ledgerRows, finding.fisNo);
-  if (!sourceVoucher) return false;
-  return detectCorrectionRecipe(finding, sourceVoucher).ok;
 }

@@ -10,14 +10,34 @@ export {
 } from "@/src/utils/correctionVoucher/correctionDatePolicy";
 
 export {
+  CORRECTION_DRAFT_STATUS,
   CORRECTION_EXPORT_MODE,
   CORRECTION_RECIPE,
+  IMPLEMENTED_CORRECTION_RECIPES,
+  PLANNED_CORRECTION_RECIPES,
+} from "@/src/utils/correctionVoucher/correctionRecipeTypes";
+
+export {
+  detectCorrectionRecipe,
+  listCorrectionRecipeTypes,
+  plannedRecipeMessage,
+  resolveCorrectionCandidate,
+} from "@/src/utils/correctionVoucher/correctionRecipeRegistry";
+
+export {
   buildCorrectionDescription,
-  buildCorrectionDraft,
   buildCorrectionReference,
   buildSourceVoucherFromLedgerRows,
-  detectCorrectionRecipe,
+  canonicalLedgerDateTR,
+  resolveSourceVoucherDate,
+} from "@/src/utils/correctionVoucher/correctionVoucherCore";
+
+export {
+  buildCorrectionDraft,
   exportCorrectionDraft,
+  isCorrectionEligibleFinding,
   prepareCorrectionFromFinding,
   validateCorrectionDraft,
 } from "@/src/utils/correctionVoucher/correctionVoucherEngine";
+
+export { normalizeCorrectionDraft } from "@/src/utils/correctionVoucher/correctionDraftBuilders";

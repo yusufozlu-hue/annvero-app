@@ -1,25 +1,35 @@
 /**
- * Düzeltme fişi V1 — recipe, tarih politikası, taslak, validasyon, export sözleşmesi.
+ * Düzeltme fişi V1 — recipe registry, taslak, validasyon, export sözleşmesi.
  * Run: npm run test:correction-voucher-v1
  */
 import fs from "node:fs";
 import path from "node:path";
 import {
   CORRECTION_DATE_SOURCE,
+  CORRECTION_DRAFT_STATUS,
   CORRECTION_RECIPE,
+  PLANNED_CORRECTION_RECIPES,
   buildCorrectionDraft,
   buildSourceVoucherFromLedgerRows,
   detectCorrectionRecipe,
   exportCorrectionDraft,
   firstOpenDateAfterClosedPeriod,
+  isCorrectionEligibleFinding,
+  listCorrectionRecipeTypes,
+  normalizeCorrectionDraft,
+  plannedRecipeMessage,
   prepareCorrectionFromFinding,
+  resolveCorrectionCandidate,
   resolveCorrectionDateContext,
   resolveLastClosedLedgerPeriod,
   validateCorrectionDate,
   validateCorrectionDraft,
+  resolveSourceVoucherDate,
+  canonicalLedgerDateTR,
 } from "@/src/utils/correctionVoucher/index.js";
+import { sanitizeAnalyzeResult } from "@/src/utils/eDefterAnalyzeContract.js";
 import { buildAccountPlanCodeSet } from "@/src/utils/genelMuhasebeKontrolEngine.js";
-import { CORRECTION_VOUCHER_00049 } from "./fixtures/correction-voucher-00049.mjs";
+import { CORRECTION_VOUCHER_SAME_ACCOUNT_WRONG_DEBIT } from "./fixtures/correction-voucher-same-account-wrong-debit.mjs";
 import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils.js";
 import { runGenelMuhasebeKontrol } from "@/src/utils/genelMuhasebeKontrolEngine.js";
 
@@ -31,20 +41,165 @@ function assert(cond, msg) {
   } else console.log(`PASS  ${msg}`);
 }
 
-const fx = CORRECTION_VOUCHER_00049;
-const sourceVoucher = buildSourceVoucherFromLedgerRows(fx.ledgerRows, fx.finding.fisNo);
+const fx = CORRECTION_VOUCHER_SAME_ACCOUNT_WRONG_DEBIT;
+const sourceVoucher = buildSourceVoucherFromLedgerRows(fx.ledgerRows, fx.finding.fisNo, {
+  finding: fx.finding,
+});
 const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
 
-// 1 — recipe algılama (hardcode yok)
+function pickAlternativeDebitAccount(plan = [], wrongCode = "") {
+  const wrong = String(wrongCode || "").trim();
+  const row = plan.find((entry) => {
+    const code = String(entry.account_code || "").trim();
+    return code && code !== wrong && !code.startsWith("191");
+  });
+  if (!row) return null;
+  return {
+    code: row.account_code,
+    name: row.account_name || "",
+  };
+}
+
+function findFirstEligibleFinding(findings = [], ledgerRows = []) {
+  return (findings || []).find((finding) =>
+    isCorrectionEligibleFinding(finding, ledgerRows)
+  );
+}
+
+// Registry — recipe mimarisi
+{
+  const types = listCorrectionRecipeTypes();
+  assert(
+    types.implemented.includes(CORRECTION_RECIPE.SAME_ACCOUNT_WRONG_DEBIT),
+    "registry SAME_ACCOUNT_WRONG_DEBIT implemented"
+  );
+  assert(
+    PLANNED_CORRECTION_RECIPES.includes(CORRECTION_RECIPE.WRONG_ACCOUNT_TRANSFER),
+    "registry WRONG_ACCOUNT_TRANSFER planned"
+  );
+  for (const planned of PLANNED_CORRECTION_RECIPES) {
+    assert(
+      plannedRecipeMessage(planned).includes("manuel"),
+      `planned recipe ${planned} fail-closed message`
+    );
+  }
+}
+
+// Worker/main — sanitize tarih alanını düşürmez (preview kök neden)
+{
+  const raw = {
+    rows: [
+      {
+        id: "w1",
+        fisNo: "00049",
+        tarih: "16.02.2026",
+        hesapKodu: "320.10.Y0010",
+        borc: 135000,
+        alacak: 0,
+        belgeNo: "YEF2026000000003",
+      },
+    ],
+    summary: {},
+  };
+  const sanitized = sanitizeAnalyzeResult(raw, { jobKind: "GENERAL_LEDGER_CONTROL" });
+  assert(sanitized.rows[0]?.tarih === "16.02.2026", "sanitize preserves tarih");
+  const voucher = buildSourceVoucherFromLedgerRows(sanitized.rows, "00049", {
+    finding: { fisNo: "00049", tarih: "16.02.2026", severity: "UYARI" },
+  });
+  assert(voucher?.tarih === "16.02.2026", "sanitized rows → source date 16.02.2026");
+  assert(voucher?.metaComplete, "sanitized rows meta complete");
+}
+
+// Tarih satırlarda yok — bulgu tarihi fallback (gerçek preview senaryosu)
+{
+  const rowsNoDate = fx.ledgerRows.map((row) => ({ ...row, tarih: "" }));
+  const voucher = buildSourceVoucherFromLedgerRows(rowsNoDate, fx.finding.fisNo, {
+    finding: fx.finding,
+  });
+  assert(voucher?.tarih === "16.02.2026", "finding tarih fallback 16.02.2026");
+  assert(voucher?.metaComplete, "finding tarih fallback meta complete");
+}
+
+// Luca block header DD/MM/YYYY — 16/02/2026 → 16.02.2026 (MM/DD yorumlanmaz)
+{
+  assert(canonicalLedgerDateTR("16/02/2026") === "16.02.2026", "16/02/2026 DD/MM safe");
+  const rows = [
+    {
+      fisNo: "00049",
+      hesapKodu: "320.10.Y0010",
+      borc: 135000,
+      alacak: 0,
+      aciklama: "00049-----00049-----MAHSUP-----16/02/2026",
+      belgeNo: "YEF2026000000003",
+    },
+    {
+      fisNo: "00049",
+      hesapKodu: "320.10.Y0010",
+      borc: 0,
+      alacak: 135000,
+      aciklama: "00049-----00049-----MAHSUP-----16/02/2026",
+      belgeNo: "YEF2026000000003",
+    },
+  ];
+  const resolved = resolveSourceVoucherDate({ fisRows: rows, allRows: rows, fisNo: "00049" });
+  assert(resolved.ok && resolved.value === "16.02.2026", "block header date 16.02.2026");
+}
+
+// Çelişkili tarihler fail-closed
+{
+  const rows = [
+    { fisNo: "C1", tarih: "01.02.2026", hesapKodu: "100", borc: 10, alacak: 0 },
+    { fisNo: "C1", tarih: "02.02.2026", hesapKodu: "100", borc: 0, alacak: 10 },
+  ];
+  const resolved = resolveSourceVoucherDate({ fisRows: rows, allRows: rows, fisNo: "C1" });
+  assert(!resolved.ok && resolved.reason === "AMBIGUOUS_DATE", "conflicting dates fail-closed");
+}
+
+// Kullanıcı hesap seçimi korunur — 740.03.044 stale olmaz
+{
+  const recipe = detectCorrectionRecipe(fx.finding, sourceVoucher);
+  const draft = buildCorrectionDraft(recipe, {
+    correctDebitAccountCode: "740.03.044",
+    correctDebitAccountName: "DİĞER DANIŞMANLIK GİDERLERİ",
+    companyAccountingRules: fx.companyAccountingRules,
+    userCorrectionDate: "2026-04-01",
+    accountPlanCodes: null,
+  });
+  assert(draft.lines[0].hesapKodu === "740.03.044", "user pick 740.03.044 debit line");
+  assert(draft.description.includes("740.03.044"), "user pick 740.03.044 description");
+  assert(!draft.description.includes("740.30.038"), "no stale 740.30.038");
+}
+
+// 1 — recipe algılama (00049 yalnız fixture)
 {
   const recipe = detectCorrectionRecipe(fx.finding, sourceVoucher);
   assert(recipe.ok, "1 recipe detected");
-  assert(recipe.recipeType === CORRECTION_RECIPE.SAME_ACCOUNT_WRONG_DEBIT, "1 SAME_ACCOUNT_WRONG_DEBIT");
+  assert(
+    recipe.recipeType === CORRECTION_RECIPE.SAME_ACCOUNT_WRONG_DEBIT,
+    "1 SAME_ACCOUNT_WRONG_DEBIT"
+  );
   assert(recipe.wrongAccountCode === "320.10.Y0010", "1 wrong account from voucher");
   assert(recipe.wrongDebitAmount === 135000, "1 wrong amount");
+  assert(
+    resolveCorrectionCandidate(fx.finding, sourceVoucher).ok,
+    "1 resolveCorrectionCandidate alias"
+  );
 }
 
-// 2 — farklı fiş verisiyle generic (MARE/00049 hardcode yok)
+// Generic minimal voucher — fiş/firma bağımsız
+{
+  const rows = [
+    { fisNo: "GEN-1", tarih: "01.03.2026", belgeNo: "DOC001", hesapKodu: "600.01", borc: 100, alacak: 0 },
+    { fisNo: "GEN-1", tarih: "01.03.2026", belgeNo: "DOC001", hesapKodu: "600.01", borc: 0, alacak: 100 },
+  ];
+  const finding = { fisNo: "GEN-1", severity: "UYARI", code: "COUNTERPART_SAME_SIDE" };
+  const voucher = buildSourceVoucherFromLedgerRows(rows, "GEN-1");
+  const recipe = detectCorrectionRecipe(finding, voucher);
+  assert(recipe.ok, "generic voucher recipe ok");
+  assert(recipe.wrongDebitAmount === 100, "generic voucher amount");
+}
+
+// 2 — belirsiz çoklu borç fail-closed
 {
   const rows = [
     { fisNo: "X99", hesapKodu: "400.01", borc: 50, alacak: 0 },
@@ -70,6 +225,9 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
   assert(draft.ok, "3 draft ok");
   assert(draft.lines.length === 2, "3 two lines");
   assert(draft.kdvLineCount === 0, "5 no KDV in draft");
+  assert(draft.status === CORRECTION_DRAFT_STATUS.READY, "3 draft status READY");
+  assert(draft.totalDebit === 135000 && draft.totalCredit === 135000, "3 normalized totals");
+  assert(draft.sourceFindingCode === "COUNTERPART_SAME_SIDE", "3 sourceFindingCode");
   const val = validateCorrectionDraft(draft, {
     accountPlanCodes: planCodes,
     lastClosedReliability: "COMPANY_PROFILE",
@@ -89,8 +247,11 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
     accountPlanCodes: planCodes,
   });
   assert(draft.correctionPeriod === "2026/04", "6 correction period 2026/04");
-  assert(draft.reference.sourceDate.includes("02") || draft.reference.sourceDate === "16.02.2026", "7 source date preserved");
-  assert(draft.reference.sourceDocumentNo === "YEF2026000000003", "7 source document");
+  assert(
+    draft.sourceDate.includes("02") || draft.sourceDate === "16.02.2026",
+    "7 source date preserved"
+  );
+  assert(draft.sourceDocumentNo === "YEF2026000000003", "7 source document");
 }
 
 // Tarih politikası — 2026/03 kapalı → varsayılan 01.04.2026
@@ -184,9 +345,10 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
 
 // 10 — dengesiz taslak export edilemez
 {
-  const badDraft = {
+  const badDraft = normalizeCorrectionDraft({
     ok: true,
     persist: 0,
+    status: CORRECTION_DRAFT_STATUS.READY,
     correctionDate: "2026-04-01",
     lastClosedLedgerPeriod: "2026/03",
     lines: [
@@ -199,9 +361,12 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
       sourceDate: "16.02.2026",
       sourceDocumentNo: "YEF2026000000003",
     },
+    sourceFisNo: "00049",
+    sourceDate: "16.02.2026",
+    sourceDocumentNo: "YEF2026000000003",
     description: "test",
     correctionPeriod: "2026/04",
-  };
+  });
   const exp = exportCorrectionDraft(badDraft, {
     userApproved: true,
     lastClosedReliability: "COMPANY_PROFILE",
@@ -255,11 +420,11 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
   assert(ctx.correctionDate === "2026-04-01", "auto default iso stable");
 }
 
-// Luca block: belge açıklamadan çözülür
+// Luca block: belge açıklamadan çözülür (generic fisNo)
 {
   const rows = [
     {
-      fisNo: "00049",
+      fisNo: "LUCA-1",
       tarih: "16.02.2026",
       hesapKodu: "191.01.020.108",
       borc: 27000,
@@ -267,7 +432,7 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
       aciklama: "YEF2026000000003 KDV",
     },
     {
-      fisNo: "00049",
+      fisNo: "LUCA-1",
       tarih: "16.02.2026",
       hesapKodu: "320.10.Y0010",
       borc: 135000,
@@ -275,7 +440,7 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
       aciklama: "YEF2026000000003",
     },
     {
-      fisNo: "00049",
+      fisNo: "LUCA-1",
       tarih: "16.02.2026",
       hesapKodu: "320.10.Y0010",
       borc: 0,
@@ -283,7 +448,7 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
       aciklama: "YEF2026000000003",
     },
   ];
-  const voucher = buildSourceVoucherFromLedgerRows(rows, "00049");
+  const voucher = buildSourceVoucherFromLedgerRows(rows, "LUCA-1");
   assert(voucher?.metaComplete, "luca block meta from aciklama");
   assert(voucher?.belgeNo === "YEF2026000000003", "luca block document token");
 }
@@ -297,13 +462,18 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
   const voucher = buildSourceVoucherFromLedgerRows(rows, "X1");
   assert(!voucher?.metaComplete, "ambiguous date blocks meta");
   const recipe = detectCorrectionRecipe({ fisNo: "X1", severity: "UYARI" }, voucher);
-  assert(!recipe?.ok || !buildCorrectionDraft(recipe, {
-    correctDebitAccountCode: "740.30.038",
-    correctDebitAccountName: "GIDER",
-    companyAccountingRules: { lastClosedEdefterPeriod: "2026/03" },
-    userCorrectionDate: "2026-04-01",
-    accountPlanCodes: planCodes,
-  }).ok, "ambiguous source meta blocks draft");
+  const alt = pickAlternativeDebitAccount(fx.accountPlan, "320.01");
+  assert(
+    !recipe?.ok ||
+      !buildCorrectionDraft(recipe, {
+        correctDebitAccountCode: alt?.code || "740.30.038",
+        correctDebitAccountName: alt?.name || "GIDER",
+        companyAccountingRules: { lastClosedEdefterPeriod: "2026/03" },
+        userCorrectionDate: "2026-04-01",
+        accountPlanCodes: planCodes,
+      }).ok,
+    "ambiguous source meta blocks draft"
+  );
 }
 
 // Hesap seçimi taslak/açıklama/export'ta tutarlı
@@ -340,7 +510,7 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
   assert(prep.dateContext?.correctionDate === "2026-04-01", "prepare default date");
 }
 
-// Real Excel readonly smoke (optional)
+// Real Excel readonly smoke (optional) — fiş numarası hardcode yok
 {
   const yevPath = path.join(
     process.env.USERPROFILE || "",
@@ -354,38 +524,42 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     const sheetRows = readSheetRowsFromArrayBuffer(ab);
     const r = runGenelMuhasebeKontrol({
-      companyId: "mare-smoke",
+      companyId: "real-smoke-company",
       period: "2026/03",
       yevmiyeSheetRows: sheetRows,
       accountPlanAccounts: fx.accountPlan,
       accountPlanStatus: "loaded",
     });
-    const prep = prepareCorrectionFromFinding({
-      finding: (r.findingsCatalog || []).find(
-        (f) => f.fisNo === "00049" && f.severity === "UYARI"
-      ),
-      ledgerRows: r.rows,
-      companyAccountingRules: fx.companyAccountingRules,
-    });
-    if (prep.recipe?.ok) {
+    const eligibleFinding = findFirstEligibleFinding(r.findingsCatalog, r.rows);
+    if (!eligibleFinding) {
+      console.log("SKIP  real smoke — no eligible finding in live file");
+    } else {
+      const prep = prepareCorrectionFromFinding({
+        finding: eligibleFinding,
+        ledgerRows: r.rows,
+        companyAccountingRules: fx.companyAccountingRules,
+      });
+      assert(prep.recipe?.ok, "real smoke recipe detected generically");
       assert(prep.sourceVoucher?.metaComplete, "real smoke source meta complete");
-      assert(
-        prep.sourceVoucher?.tarih && prep.sourceVoucher?.belgeNo,
-        "real smoke source date+document"
+      const alt = pickAlternativeDebitAccount(
+        fx.accountPlan,
+        prep.recipe.wrongAccountCode
       );
+      assert(alt?.code, "real smoke alternative debit account from plan");
       const draft = buildCorrectionDraft(prep.recipe, {
-        correctDebitAccountCode: "740.30.038",
-        correctDebitAccountName: "MALİ DANIŞMANLIK GİDERLERİ",
+        correctDebitAccountCode: alt.code,
+        correctDebitAccountName: alt.name,
         companyAccountingRules: fx.companyAccountingRules,
         userCorrectionDate: "2026-04-01",
         accountPlanCodes: planCodes,
       });
       assert(draft.lines.length === 2, "real smoke 2 lines");
-      assert(draft.lines[0].borc === 135000, "real smoke debit amount");
+      assert(
+        draft.lines[0].borc === prep.recipe.wrongDebitAmount,
+        "real smoke debit amount from recipe"
+      );
       assert(draft.persist === 0, "real smoke persist 0");
       assert(r.counters.persistInvocations === 0, "real GM persist 0 unchanged");
-    } else {
-      console.log("SKIP  real smoke recipe not detected on live file");
     }
   }
 }

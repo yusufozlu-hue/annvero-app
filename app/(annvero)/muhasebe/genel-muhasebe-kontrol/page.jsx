@@ -28,9 +28,8 @@ import {
   pruneExpandedPresentationGroups,
 } from "@/src/utils/genelMuhasebeFindingsView";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
-import CorrectionVoucherPanel, {
-  isCorrectionEligibleFinding,
-} from "./CorrectionVoucherPanel";
+import CorrectionVoucherPanel from "./CorrectionVoucherPanel";
+import { isCorrectionEligibleFinding } from "@/src/utils/correctionVoucher";
 
 function Stat({ label, value }) {
   return (
