@@ -70,6 +70,8 @@ export const emptyCompany = {
     usePos108Accounts: true,
     useCash100Account: true,
     useFxSeparate102Accounts: true,
+    /** Son kapalı/beratlı e-Defter dönemi (YYYY/AA) — düzeltme fişi varsayılan tarihi için */
+    lastClosedEdefterPeriod: "",
   },
 
   /** Bulut Depolama — yalnız non-secret bağ (token yok) */

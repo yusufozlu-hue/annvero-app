@@ -21,13 +21,15 @@ import {
   accountCodeFromPlanRow,
   EDEFTER_ANALYZE_JOB_KIND,
 } from "@/src/utils/eDefterAnalyzeContract";
-import { createGenelMuhasebeAnalyzeGate } from "@/src/utils/genelMuhasebeKontrolEngine";
+import { createGenelMuhasebeAnalyzeGate, buildAccountPlanCodeSet } from "@/src/utils/genelMuhasebeKontrolEngine";
 import {
   buildGenelMuhasebeFindingsPresentation,
   countVisiblePresentationRows,
   pruneExpandedPresentationGroups,
 } from "@/src/utils/genelMuhasebeFindingsView";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
+import CorrectionVoucherPanel from "./CorrectionVoucherPanel";
+import { isCorrectionEligibleFinding } from "@/src/utils/correctionVoucher";
 
 function Stat({ label, value }) {
   return (
@@ -145,6 +147,8 @@ export default function GenelMuhasebeKontrolPage() {
   const [result, setResult] = useState(null);
   const [planStatus, setPlanStatus] = useState("unknown");
   const [planAccounts, setPlanAccounts] = useState(null);
+  const [correctionFinding, setCorrectionFinding] = useState(null);
+  const [correctionPanelKey, setCorrectionPanelKey] = useState(0);
   const gateRef = useRef(createGenelMuhasebeAnalyzeGate());
   const runTokenRef = useRef(0);
   const abortRef = useRef(null);
@@ -378,6 +382,32 @@ export default function GenelMuhasebeKontrolPage() {
 
   const muavinYevmiyeDiffs = summary?.muavinYevmiye?.differences || [];
   const muavinYevmiyeDiffPreview = muavinYevmiyeDiffs.slice(0, 50);
+
+  const ledgerRows = result?.rows || [];
+  const accountPlanCodes = useMemo(
+    () => (planAccounts?.length ? buildAccountPlanCodeSet(planAccounts) : null),
+    [planAccounts]
+  );
+  const companyAccountingRules = selectedCompany?.accountingRules || {};
+  const companySlug = String(selectedCompany?.companyName || "FIRMA")
+    .replace(/\s+/g, "_")
+    .slice(0, 24);
+
+  const renderCorrectionAction = (item) => {
+    if (!isCorrectionEligibleFinding(item, ledgerRows)) return null;
+    return (
+      <button
+        type="button"
+        className="mt-2 block text-sm font-medium text-teal-700 hover:underline"
+        onClick={() => {
+          setCorrectionFinding(item);
+          setCorrectionPanelKey((value) => value + 1);
+        }}
+      >
+        Düzeltme fişi hazırla
+      </button>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -696,6 +726,7 @@ export default function GenelMuhasebeKontrolPage() {
                                 <td className="px-3 py-2">
                                   {detail.displayMessage || detail.messageTr || detail.message}
                                   {renderTechnicalDetails(detail, detailKey)}
+                                  {renderCorrectionAction(detail)}
                                 </td>
                               </tr>
                             );
@@ -716,6 +747,7 @@ export default function GenelMuhasebeKontrolPage() {
                           <td className="px-3 py-2">
                             {item.displayMessage || item.messageTr || item.message}
                             {renderTechnicalDetails(item, rowKey)}
+                            {renderCorrectionAction(item)}
                           </td>
                         </tr>,
                       ];
@@ -726,6 +758,19 @@ export default function GenelMuhasebeKontrolPage() {
             </div>
           </div>
         ) : null}
+
+        <CorrectionVoucherPanel
+          key={`correction-panel-${correctionPanelKey}`}
+          open={Boolean(correctionFinding)}
+          onClose={() => setCorrectionFinding(null)}
+          finding={correctionFinding}
+          ledgerRows={ledgerRows}
+          planAccounts={planAccounts || []}
+          companyId={selectedCompanyId}
+          companySlug={companySlug}
+          companyAccountingRules={companyAccountingRules}
+          accountPlanCodes={accountPlanCodes}
+        />
       </div>
     </div>
   );
