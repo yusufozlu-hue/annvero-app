@@ -20,9 +20,17 @@ import {
   buildCorrectionRecordFingerprint,
   buildCorrectionRecordFingerprintInput,
   buildExportRecordPayloadFromDraft,
+  CORRECTION_RECORD_ERROR,
   CORRECTION_RECORD_STATUS,
+  assertExportApiReadyForDownload,
+  canOpenApplyForCorrectionRecord,
   fingerprintInputFromDraftAndRecipe,
+  isCorrectionRecordNotFoundError,
+  mergeCorrectionRecordIntoList,
   publicCorrectionRecordView,
+  resolveCorrectionRecordForFinding,
+  resolveCorrectionRecordRouteId,
+  indexCorrectionRecordsByFingerprint,
   validateApplyCorrectionRecordInput,
   validateCancelCorrectionRecordInput,
 } from "@/src/utils/correctionRecords/index.js";
@@ -306,6 +314,119 @@ const draft = buildCorrectionDraft(prep.recipe, {
   ];
   const rows = buildGenelMuhasebeFindingsPresentation(catalog, { correctionRecords: [] });
   assert(rows.some((row) => row.fisNo === "00050"), "unresolved warning visible");
+}
+
+// fail-closed export gate + apply route params + hydrate
+{
+  const failHttp = assertExportApiReadyForDownload(false, {
+    code: CORRECTION_RECORD_ERROR.EXPORT_FAILED,
+    error: "Düzeltme export kaydı oluşturulamadı.",
+  });
+  assert(!failHttp.ok && !failHttp.allowDownload && !failHttp.allowApply, "export API fail blocks download+apply");
+
+  const failMissingRecord = assertExportApiReadyForDownload(true, { created: true, fileName: "x.xlsx" });
+  assert(!failMissingRecord.ok && !failMissingRecord.allowDownload, "200 without record id blocks download");
+
+  const exportedView = publicCorrectionRecordView({
+    id: "4cc7f573-ccfb-4685-813b-bb825577154f",
+    company_id: "company-a",
+    source_voucher_no: "00049",
+    source_fingerprint: "fp-abc",
+    status: CORRECTION_RECORD_STATUS.EXPORTED,
+    finding_code: fx.finding.code,
+    wrong_account_code: fx.finding.hesapKodu,
+    exported_file_name: "MARE.xlsx",
+    correction_debit: 135000,
+    correction_credit: 135000,
+  });
+  const okGate = assertExportApiReadyForDownload(true, {
+    record: exportedView,
+    created: true,
+    fileName: "MARE.xlsx",
+  });
+  assert(
+    okGate.ok && okGate.allowDownload && okGate.allowApply && okGate.record.id === exportedView.id,
+    "export success keeps record id"
+  );
+
+  assert(canOpenApplyForCorrectionRecord(exportedView), "EXPORTED with id can open apply");
+  assert(!canOpenApplyForCorrectionRecord({ ...exportedView, id: "" }), "missing id cannot open apply");
+  assert(!canOpenApplyForCorrectionRecord({ ...exportedView, status: "DRAFT" }), "non-EXPORTED cannot open apply");
+
+  const merged = mergeCorrectionRecordIntoList([], exportedView);
+  assert(merged.length === 1 && merged[0].id === exportedView.id, "hydrate stores exported record");
+  const mergedDup = mergeCorrectionRecordIntoList(merged, {
+    ...exportedView,
+    exportedFileName: "other.xlsx",
+  });
+  assert(mergedDup.length === 1, "same fingerprint does not duplicate");
+
+  const byFp = indexCorrectionRecordsByFingerprint(mergedDup);
+  const hydrated = resolveCorrectionRecordForFinding(fx.finding, byFp);
+  assert(hydrated?.id === exportedView.id, "reload/hydrate finds same fingerprint record");
+
+  const applyOk = validateApplyCorrectionRecordInput({
+    record: {
+      id: exportedView.id,
+      status: CORRECTION_RECORD_STATUS.EXPORTED,
+      source_voucher_no: "00049",
+      correction_date: "2026-04-01",
+    },
+    externalVoucherNo: "00121",
+    externalVoucherDate: "2026-04-01",
+    userConfirmed: true,
+    lastClosedLedgerPeriod: "2026/03",
+    lastClosedReliability: "USER_CONFIRMED",
+  });
+  assert(applyOk.ok, "EXPORTED→APPLIED validation ok");
+
+  const wrongTenant = validateApplyCorrectionRecordInput({
+    record: null,
+    externalVoucherNo: "00121",
+    externalVoucherDate: "2026-04-01",
+    userConfirmed: true,
+    lastClosedLedgerPeriod: "2026/03",
+    lastClosedReliability: "USER_CONFIRMED",
+  });
+  assert(!wrongTenant.ok && wrongTenant.code === CORRECTION_RECORD_ERROR.NOT_FOUND, "missing/wrong record rejected");
+
+  assert(
+    isCorrectionRecordNotFoundError(
+      { code: CORRECTION_RECORD_ERROR.NOT_FOUND, error: "Düzeltme kaydı bulunamadı." },
+      false
+    ),
+    "NOT_FOUND closes stale apply modal"
+  );
+
+  const applyRouteSrc = fs.readFileSync(
+    path.join(process.cwd(), "app/api/accounting-correction-records/[id]/apply/route.js"),
+    "utf8"
+  );
+  const cancelRouteSrc = fs.readFileSync(
+    path.join(process.cwd(), "app/api/accounting-correction-records/[id]/cancel/route.js"),
+    "utf8"
+  );
+  assert(
+    applyRouteSrc.includes("resolveCorrectionRecordRouteId(context?.params)"),
+    "apply route awaits Next params via helper"
+  );
+  assert(
+    cancelRouteSrc.includes("resolveCorrectionRecordRouteId(context?.params)"),
+    "cancel route awaits Next params via helper"
+  );
+  assert(!/params\?\.id/.test(applyRouteSrc), "apply must not read params.id without await");
+  assert(!/params\?\.id/.test(cancelRouteSrc), "cancel must not read params.id without await");
+}
+
+{
+  const fromPromise = await resolveCorrectionRecordRouteId(
+    Promise.resolve({ id: "4cc7f573-ccfb-4685-813b-bb825577154f" })
+  );
+  assert(fromPromise === "4cc7f573-ccfb-4685-813b-bb825577154f", "await params Promise resolves id");
+  const fromObject = await resolveCorrectionRecordRouteId({ id: "abc" });
+  assert(fromObject === "abc", "plain params object still works");
+  const emptyPromise = await resolveCorrectionRecordRouteId(Promise.resolve({}));
+  assert(emptyPromise === "", "empty params Promise yields empty id (NOT_FOUND path)");
 }
 
 console.log(failed ? `\n${failed} test(s) failed` : "\nAll correction-records-v2 tests passed");

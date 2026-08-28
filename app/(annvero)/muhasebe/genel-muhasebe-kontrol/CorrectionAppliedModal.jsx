@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import AnnveroDateInput from "@/src/components/AnnveroDateInput";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 import { formatDateTR } from "@/src/utils/formatDateTR";
+import {
+  buildStaleCorrectionRecordNotice,
+  isCorrectionRecordNotFoundError,
+} from "@/src/utils/correctionRecords";
 
 export default function CorrectionAppliedModal({
   open,
@@ -11,6 +15,7 @@ export default function CorrectionAppliedModal({
   record,
   companyAccountingRules = {},
   onApplied,
+  onStaleRecord,
 }) {
   const [externalVoucherNo, setExternalVoucherNo] = useState("");
   const [externalVoucherDate, setExternalVoucherDate] = useState("");
@@ -47,7 +52,11 @@ export default function CorrectionAppliedModal({
   const handleSubmit = useCallback(async () => {
     setError("");
     setWarning("");
-    if (!record?.id) return;
+    if (!record?.id) {
+      onStaleRecord?.(buildStaleCorrectionRecordNotice());
+      onClose?.();
+      return;
+    }
     if (!confirmed) {
       setError("Luca fişi onay kutusunu işaretleyin.");
       return;
@@ -71,7 +80,17 @@ export default function CorrectionAppliedModal({
               : null,
         }),
       });
-      const payload = await response.json();
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch {
+        payload = {};
+      }
+      if (isCorrectionRecordNotFoundError(payload, response.ok)) {
+        onStaleRecord?.(buildStaleCorrectionRecordNotice());
+        onClose?.();
+        return;
+      }
       if (!response.ok) {
         setError(payload.error || "Uygulama kaydedilemedi.");
         return;
@@ -96,6 +115,7 @@ export default function CorrectionAppliedModal({
     closedPeriodInput,
     onApplied,
     onClose,
+    onStaleRecord,
   ]);
 
   if (!open || !record) return null;

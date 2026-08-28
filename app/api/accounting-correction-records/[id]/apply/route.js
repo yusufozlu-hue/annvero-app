@@ -11,6 +11,7 @@ import {
   CORRECTION_RECORD_STATUS,
   correctionRecordUserMessage,
   publicCorrectionRecordView,
+  resolveCorrectionRecordRouteId,
   validateApplyCorrectionRecordInput,
 } from "@/src/utils/correctionRecords";
 
@@ -21,8 +22,8 @@ function sanitizeText(value, max = 280) {
     .slice(0, max);
 }
 
-export async function POST(request, { params }) {
-  const recordId = String(params?.id || "").trim();
+export async function POST(request, context) {
+  const recordId = await resolveCorrectionRecordRouteId(context?.params);
   if (!recordId) {
     return NextResponse.json(
       {

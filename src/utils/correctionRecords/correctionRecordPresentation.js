@@ -4,7 +4,105 @@ import {
   buildCorrectionRecordFingerprint,
   fingerprintInputFromDraftAndRecipe,
 } from "@/src/utils/correctionRecords/correctionRecordFingerprint";
-import { CORRECTION_RECORD_STATUS } from "@/src/utils/correctionRecords/correctionRecordTypes";
+import {
+  CORRECTION_RECORD_ERROR,
+  CORRECTION_RECORD_STATUS,
+  correctionRecordUserMessage,
+} from "@/src/utils/correctionRecords/correctionRecordTypes";
+
+/**
+ * Next.js 15+/16 App Router: dynamic `params` is a Promise.
+ * Apply/cancel must await before reading `id` — otherwise recordId is empty → NOT_FOUND.
+ */
+export async function resolveCorrectionRecordRouteId(paramsOrPromise) {
+  const params = await paramsOrPromise;
+  return String(params?.id || "").trim();
+}
+
+/**
+ * Fail-closed: Excel download and apply CTA require a real server EXPORTED/APPLIED record id.
+ */
+export function assertExportApiReadyForDownload(responseOk, payload = {}) {
+  if (!responseOk || payload?.error) {
+    return {
+      ok: false,
+      allowDownload: false,
+      allowApply: false,
+      code: payload?.code || CORRECTION_RECORD_ERROR.EXPORT_FAILED,
+      error:
+        payload?.error ||
+        correctionRecordUserMessage(CORRECTION_RECORD_ERROR.EXPORT_FAILED),
+      record: null,
+    };
+  }
+
+  const record = payload?.record && typeof payload.record === "object" ? payload.record : null;
+  if (!record?.id || !record?.sourceFingerprint) {
+    return {
+      ok: false,
+      allowDownload: false,
+      allowApply: false,
+      code: CORRECTION_RECORD_ERROR.EXPORT_FAILED,
+      error: correctionRecordUserMessage(CORRECTION_RECORD_ERROR.EXPORT_FAILED),
+      record: null,
+    };
+  }
+
+  if (
+    record.status !== CORRECTION_RECORD_STATUS.EXPORTED &&
+    record.status !== CORRECTION_RECORD_STATUS.APPLIED
+  ) {
+    return {
+      ok: false,
+      allowDownload: false,
+      allowApply: false,
+      code: CORRECTION_RECORD_ERROR.EXPORT_FAILED,
+      error: correctionRecordUserMessage(CORRECTION_RECORD_ERROR.EXPORT_FAILED),
+      record: null,
+    };
+  }
+
+  return {
+    ok: true,
+    allowDownload: true,
+    allowApply: record.status === CORRECTION_RECORD_STATUS.EXPORTED,
+    code: null,
+    error: "",
+    record,
+    created: Boolean(payload.created),
+    fileName: payload.fileName || record.exportedFileName || "",
+  };
+}
+
+/** Upsert-by-id/fingerprint into local list without duplicates. */
+export function mergeCorrectionRecordIntoList(records = [], record = null) {
+  if (!record?.id) return Array.isArray(records) ? [...records] : [];
+  const next = (Array.isArray(records) ? records : []).filter(
+    (entry) =>
+      entry?.id !== record.id &&
+      (!record.sourceFingerprint || entry?.sourceFingerprint !== record.sourceFingerprint)
+  );
+  return [record, ...next];
+}
+
+export function isCorrectionRecordNotFoundError(payload = {}, responseOk = false) {
+  if (responseOk) return false;
+  if (payload?.code === CORRECTION_RECORD_ERROR.NOT_FOUND) return true;
+  return /kayd[ıi] bulunamad[ıi]/i.test(String(payload?.error || ""));
+}
+
+export function buildStaleCorrectionRecordNotice() {
+  return "Düzeltme kaydı bulunamadı. Lütfen Luca aktarım dosyasını yeniden export edin.";
+}
+
+/** Apply UI may open only with a server-backed EXPORTED record id. */
+export function canOpenApplyForCorrectionRecord(record = null) {
+  return Boolean(
+    record?.id &&
+      record?.sourceFingerprint &&
+      record.status === CORRECTION_RECORD_STATUS.EXPORTED
+  );
+}
 
 function compactFisNo(value = "") {
   return String(value ?? "").trim();

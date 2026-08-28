@@ -34,7 +34,9 @@ import CorrectionAppliedModal from "./CorrectionAppliedModal";
 import { isCorrectionEligibleFinding } from "@/src/utils/correctionVoucher";
 import {
   CORRECTION_RECORD_STATUS,
+  canOpenApplyForCorrectionRecord,
   indexCorrectionRecordsByFingerprint,
+  mergeCorrectionRecordIntoList,
   resolveCorrectionRecordForFinding,
 } from "@/src/utils/correctionRecords";
 
@@ -158,6 +160,7 @@ export default function GenelMuhasebeKontrolPage() {
   const [correctionPanelKey, setCorrectionPanelKey] = useState(0);
   const [correctionRecords, setCorrectionRecords] = useState([]);
   const [applyRecord, setApplyRecord] = useState(null);
+  const [correctionNotice, setCorrectionNotice] = useState("");
   const [showDuzeltildiOnly, setShowDuzeltildiOnly] = useState(false);
   const gateRef = useRef(createGenelMuhasebeAnalyzeGate());
   const runTokenRef = useRef(0);
@@ -463,7 +466,7 @@ export default function GenelMuhasebeKontrolPage() {
       );
     }
 
-    if (linked?.status === CORRECTION_RECORD_STATUS.EXPORTED) {
+    if (canOpenApplyForCorrectionRecord(linked)) {
       return (
         <div className="mt-2 space-y-1 text-sm">
           <p className="text-teal-800">{item.correctionStatusMessage}</p>
@@ -516,6 +519,26 @@ export default function GenelMuhasebeKontrolPage() {
     }
   }, [selectedCompanyId]);
 
+  const handleExportRecorded = useCallback(
+    (record) => {
+      if (record?.id) {
+        setCorrectionRecords((prev) => mergeCorrectionRecordIntoList(prev, record));
+        setCorrectionNotice("");
+      }
+      refreshCorrectionRecords();
+    },
+    [refreshCorrectionRecords]
+  );
+
+  const handleStaleApplyRecord = useCallback(
+    (message) => {
+      setApplyRecord(null);
+      setCorrectionNotice(message || "");
+      refreshCorrectionRecords();
+    },
+    [refreshCorrectionRecords]
+  );
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto max-w-6xl px-4 py-6">
@@ -529,6 +552,11 @@ export default function GenelMuhasebeKontrolPage() {
               Firma → dönem → Excel → tek analiz (worker). Karşıt hesap ortak motorla; yerel kontrol
               (DB yazımı yok).
             </p>
+            {correctionNotice ? (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                {correctionNotice}
+              </div>
+            ) : null}
           </div>
           <AnnveroModuleNav tone="light" />
         </div>
@@ -894,14 +922,18 @@ export default function GenelMuhasebeKontrolPage() {
               ? resolveCorrectionRecordForFinding(correctionFinding, recordsByFingerprint)
               : null
           }
-          onExportRecorded={refreshCorrectionRecords}
+          onExportRecorded={handleExportRecorded}
         />
         <CorrectionAppliedModal
           open={Boolean(applyRecord)}
           onClose={() => setApplyRecord(null)}
           record={applyRecord}
           companyAccountingRules={companyAccountingRules}
+          onStaleRecord={handleStaleApplyRecord}
           onApplied={(record) => {
+            if (record?.id) {
+              setCorrectionRecords((prev) => mergeCorrectionRecordIntoList(prev, record));
+            }
             refreshCorrectionRecords();
             setApplyRecord(record?.status === CORRECTION_RECORD_STATUS.APPLIED ? null : record);
           }}

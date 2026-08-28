@@ -14,6 +14,7 @@ import {
 } from "@/src/utils/correctionVoucher";
 import {
   CORRECTION_RECORD_STATUS,
+  assertExportApiReadyForDownload,
   buildDraftFingerprintContext,
   buildExportedPendingStatusLabel,
 } from "@/src/utils/correctionRecords";
@@ -209,7 +210,13 @@ export default function CorrectionVoucherPanel({
         lastClosedReliability: prep?.closedReliability,
       }),
     });
-    return response.json();
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
+    return assertExportApiReadyForDownload(response.ok, payload);
   }, [companyId, draft, recipe, companySlug, prep?.closedReliability]);
 
   const handleExport = useCallback(async () => {
@@ -226,15 +233,15 @@ export default function CorrectionVoucherPanel({
 
     setExportBusy(true);
     try {
-      const payload = await callExportApi();
-      if (payload.error) {
-        setExportError(payload.error);
+      const gate = await callExportApi();
+      if (!gate.ok || !gate.allowDownload || !gate.record?.id) {
+        setExportError(gate.error || "Düzeltme export kaydı oluşturulamadı.");
         return;
       }
       if (!downloadWorkbook(draft)) return;
-      setActiveRecord(payload.record);
-      onExportRecorded?.(payload.record);
-      if (!payload.created) {
+      setActiveRecord(gate.record);
+      onExportRecorded?.(gate.record);
+      if (!gate.created) {
         setExportMessage(`${buildExportedPendingStatusLabel()} · mevcut kayıt`);
       }
     } catch {
@@ -249,16 +256,16 @@ export default function CorrectionVoucherPanel({
     setExportBusy(true);
     setExportError("");
     try {
-      const payload = await callExportApi();
-      if (payload.error) {
-        setExportError(payload.error);
+      const gate = await callExportApi();
+      if (!gate.ok || !gate.allowDownload || !gate.record?.id) {
+        setExportError(gate.error || "Düzeltme export kaydı oluşturulamadı.");
         return;
       }
       downloadWorkbook(draft);
-      setActiveRecord(payload.record);
-      onExportRecorded?.(payload.record);
+      setActiveRecord(gate.record);
+      onExportRecorded?.(gate.record);
     } catch {
-      setExportError("Bağlantı hatası.");
+      setExportError("Bağlantı hatası. Kayıtsız export yapılmadı.");
     } finally {
       setExportBusy(false);
     }

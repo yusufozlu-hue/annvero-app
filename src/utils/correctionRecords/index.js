@@ -30,4 +30,10 @@ export {
   enrichFindingWithCorrectionRecord,
   summarizeCorrectionPresentationImpact,
   buildDraftFingerprintContext,
+  resolveCorrectionRecordRouteId,
+  assertExportApiReadyForDownload,
+  mergeCorrectionRecordIntoList,
+  isCorrectionRecordNotFoundError,
+  buildStaleCorrectionRecordNotice,
+  canOpenApplyForCorrectionRecord,
 } from "@/src/utils/correctionRecords/correctionRecordPresentation";
