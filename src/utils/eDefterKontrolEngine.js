@@ -27,6 +27,7 @@ import { loadDeclarationAccrualRecords } from "@/src/utils/beyannameTahakkukEngi
 import { formatDateTR, parseDateTR } from "@/src/utils/formatDateTR";
 import { parseMoneyTR } from "@/src/utils/parseMoneyTR";
 import { normalizeParserText } from "@/src/utils/textNormalize";
+import { structureMizanParseResult } from "@/src/utils/mizanAccountStructure";
 import {
   EDEFTER_ERROR_CODE,
   buildContentFingerprint,
@@ -565,7 +566,7 @@ export function parseYevmiyeSheet(sheetRows = []) {
   return parseLedgerSheet(sheetRows, E_DEFTER_KAYNAK.YEVMIYE);
 }
 
-export function parseMizanSheet(sheetRows = []) {
+function parseMizanSheetRaw(sheetRows = []) {
   if (!sheetRows.length) return [];
 
   const headerIndex = findHeaderIndex(sheetRows, [
@@ -622,6 +623,14 @@ export function parseMizanSheet(sheetRows = []) {
       };
     })
     .filter(Boolean);
+}
+
+export function parseMizanSheetWithStructure(sheetRows = []) {
+  return structureMizanParseResult(parseMizanSheetRaw(sheetRows));
+}
+
+export function parseMizanSheet(sheetRows = []) {
+  return parseMizanSheetWithStructure(sheetRows).rows;
 }
 
 export function parseEDefterListeSheet(sheetRows = []) {
@@ -1500,15 +1509,19 @@ function buildIssues(row, _allRows = [], context = {}) {
   }
 
   if (!row.aciklama) {
-    raw.push(
-      createEDefterIssue({
-        code: E_DEFTER_ISSUE_CODE.MISSING_DESCRIPTION,
-        message: "Açıklama boş.",
-        severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
-        group: E_DEFTER_KONTROL_GRUP.EKSIK_BILGI,
-        riskScore: 10,
-      })
-    );
+    const skipMizanStructuralParent =
+      row.kaynak === E_DEFTER_KAYNAK.MIZAN && row.mizanAccountRole === "PARENT";
+    if (!skipMizanStructuralParent) {
+      raw.push(
+        createEDefterIssue({
+          code: E_DEFTER_ISSUE_CODE.MISSING_DESCRIPTION,
+          message: "Açıklama boş.",
+          severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+          group: E_DEFTER_KONTROL_GRUP.EKSIK_BILGI,
+          riskScore: 10,
+        })
+      );
+    }
   }
 
   if (!row.belgeTuru && row.kaynak !== E_DEFTER_KAYNAK.MIZAN) {
@@ -1757,24 +1770,28 @@ function buildIssues(row, _allRows = [], context = {}) {
   }
 
   if (context.accountPlanCodes instanceof Set && row.hesapKodu) {
-    const code = String(row.hesapKodu).trim();
-    const short = code.split(".")[0];
-    const compactCode = compactText(code);
-    if (
-      !context.accountPlanCodes.has(code) &&
-      !context.accountPlanCodes.has(compactCode) &&
-      !context.accountPlanCodes.has(short)
-    ) {
-      raw.push(
-        createEDefterIssue({
-          code: E_DEFTER_ISSUE_CODE.ACCOUNT_NOT_IN_PLAN,
-          message: "Hesap kodu hesap planında yok.",
-          severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
-          group: E_DEFTER_KONTROL_GRUP.KRITIK,
-          blocking: true,
-          riskScore: 35,
-        })
-      );
+    const skipMizanStructuralParent =
+      row.kaynak === E_DEFTER_KAYNAK.MIZAN && row.mizanAccountRole === "PARENT";
+    if (!skipMizanStructuralParent) {
+      const code = String(row.hesapKodu).trim();
+      const short = code.split(".")[0];
+      const compactCode = compactText(code);
+      if (
+        !context.accountPlanCodes.has(code) &&
+        !context.accountPlanCodes.has(compactCode) &&
+        !context.accountPlanCodes.has(short)
+      ) {
+        raw.push(
+          createEDefterIssue({
+            code: E_DEFTER_ISSUE_CODE.ACCOUNT_NOT_IN_PLAN,
+            message: "Hesap kodu hesap planında yok.",
+            severity: E_DEFTER_ISSUE_SEVERITY.KRITIK,
+            group: E_DEFTER_KONTROL_GRUP.KRITIK,
+            blocking: true,
+            riskScore: 35,
+          })
+        );
+      }
     }
   }
 
