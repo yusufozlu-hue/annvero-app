@@ -22,6 +22,7 @@ import {
 import {
   classifyLedgerDocumentType,
   GENEL_MUHASEBE_DOC_CLASS,
+  buildMuavinYevmiyeFingerprint,
   reconcileMuavinYevmiye,
   runGenelMuhasebeKontrol,
 } from "@/src/utils/genelMuhasebeKontrolEngine.js";
@@ -35,7 +36,10 @@ import {
   buildLucaBlockYevmiyeFixture,
   LUCA_BLOCK_YEVMIYE_ROWS,
 } from "./fixtures/luca-block-yevmiye.mjs";
-import { normalizeParserText } from "@/src/utils/textNormalize.js";
+import {
+  normalizeAccountCodeForComparison,
+  normalizeParserText,
+} from "@/src/utils/textNormalize.js";
 
 let failed = 0;
 function assert(cond, msg) {
@@ -303,16 +307,7 @@ const fixture = buildLucaBlockYevmiyeFixture();
   const yevSheet = buildLucaTurkishAccountYevmiyeFixture();
   const mRows = parseMuavinSheet(muavinSheet);
   const yRows = parseYevmiyeSheet(yevSheet);
-  const compact = (v) => normalizeParserText(v).replace(/\s+/g, "");
-  const money = (v) => Number(Number(v || 0).toFixed(2));
-  const fp = (r) =>
-    [
-      String(r.tarih || "").trim(),
-      compact(r.fisNo),
-      compact(r.hesapKodu),
-      money(r.borc).toFixed(2),
-      money(r.alacak).toFixed(2),
-    ].join("|");
+  const fp = buildMuavinYevmiyeFingerprint;
 
   const mB = mRows.find((r) => r.hesapKodu === "120.01.B0027");
   const yB = yRows.find((r) => r.hesapKodu === "120.01.B0027");
@@ -345,6 +340,49 @@ const fixture = buildLucaBlockYevmiyeFixture();
       (f) => f.code === E_DEFTER_ISSUE_CODE.MUAVIN_YEVMIYE_MISMATCH
     ),
     "10e no mismatch findings on full match"
+  );
+}
+
+// 10g — Unicode hesap kodu sözleşmesi (transliterasyon yok)
+{
+  const fp = buildMuavinYevmiyeFingerprint;
+  const base = {
+    fisNo: "00001",
+    tarih: "01.01.2026",
+    borc: 79685.24,
+    alacak: 0,
+  };
+
+  const pdiTurkish = { ...base, hesapKodu: "120.01.PDİ01" };
+  const pdiAscii = { ...base, hesapKodu: "120.01.PDI01" };
+  const cTurkish = { ...base, hesapKodu: "320.10.Ç0005" };
+  const cAscii = { ...base, hesapKodu: "320.10.C0005" };
+  const sTurkish = { ...base, hesapKodu: "120.01.ŞFN01" };
+  const sAscii = { ...base, hesapKodu: "120.01.SFN01" };
+
+  assert(
+    normalizeAccountCodeForComparison("120.01.PDİ01") === "12001PDİ01",
+    "10g PDİ01 compact preserves İ"
+  );
+  assert(fp(pdiTurkish) !== fp(pdiAscii), "10g PDİ01 ≠ PDI01 fingerprint");
+  assert(fp(cTurkish) !== fp(cAscii), "10g Ç0005 ≠ C0005 fingerprint");
+  assert(fp(sTurkish) !== fp(sAscii), "10g ŞFN01 ≠ SFN01 fingerprint");
+
+  const dotted = { ...base, hesapKodu: "120.01.PDİ01" };
+  const compactCode = { ...base, hesapKodu: "12001PDİ01" };
+  assert(fp(dotted) === fp(compactCode), "10g dotted/compact Unicode formats match");
+
+  assert(
+    fp({ ...base, hesapKodu: "120.01.B0027" }) !== fp(pdiTurkish),
+    "10g B0027 ≠ PDİ01 fingerprint"
+  );
+  assert(
+    fp(pdiTurkish).includes("12001PDİ01"),
+    "10g fingerprint keeps Turkish İ in hesap segment"
+  );
+  assert(
+    !fp(pdiTurkish).includes("12001PDI01"),
+    "10g fingerprint must not ASCII-transliterate İ→I"
   );
 }
 
@@ -474,22 +512,22 @@ const fixture = buildLucaBlockYevmiyeFixture();
       // Trace B0027 / PDİ01 ham→normalize→fingerprint
       const mRows = parseMuavinSheet(mSheet);
       const yRows = parseYevmiyeSheet(sheet);
-      const compact = (v) => normalizeParserText(v).replace(/\s+/g, "");
+      const fp = buildMuavinYevmiyeFingerprint;
       const money = (v) => Number(Number(v || 0).toFixed(2));
-      const fp = (r) =>
-        [
-          String(r.tarih || "").trim(),
-          compact(r.fisNo),
-          compact(r.hesapKodu),
-          money(r.borc).toFixed(2),
-          money(r.alacak).toFixed(2),
-        ].join("|");
       const mB = mRows.find((r) => r.hesapKodu === "120.01.B0027" && money(r.borc) === 79685.24);
       const yB = yRows.find((r) => r.hesapKodu === "120.01.B0027" && money(r.borc) === 79685.24);
       const mP = mRows.find((r) => r.hesapKodu === "120.01.PDİ01" && money(r.borc) === 89415.37);
       const yP = yRows.find((r) => r.hesapKodu === "120.01.PDİ01" && money(r.borc) === 89415.37);
       assert(mB && yB && fp(mB) === fp(yB), "real B0027 fingerprint match");
       assert(mP && yP && fp(mP) === fp(yP), "real PDİ01 fingerprint match");
+      assert(
+        fp(mP).includes("12001PDİ01"),
+        "real PDİ01 fingerprint preserves Turkish İ"
+      );
+      assert(
+        !fp(mP).includes("12001PDI01"),
+        "real PDİ01 fingerprint no İ→I transliteration"
+      );
       assert(
         mRows.some((r) => r.hesapKodu === "320.10.Ç0005") &&
           yRows.some((r) => r.hesapKodu === "320.10.Ç0005"),

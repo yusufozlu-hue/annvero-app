@@ -181,10 +181,11 @@ function parseLedgerSheet(sheetRows = [], kaynak = E_DEFTER_KAYNAK.MUAVIN) {
     .filter(Boolean);
 }
 
-/** Luca muavin account header: `120.01.PDİ01 UNVAN` — Turkish letters allowed in segments. */
-const LUCA_ACCOUNT_SEGMENT_RE = "[A-Za-z0-9ÇĞİÖŞÜçğıöşü]";
+/** Luca muavin account header: `120.01.PDİ01 UNVAN` — Unicode letters in segments. */
+const LUCA_ACCOUNT_SEGMENT_RE = "[\\p{L}\\p{N}]";
 const LUCA_ACCOUNT_CODE_RE = new RegExp(
-  `^(\\d{3}(?:[./]${LUCA_ACCOUNT_SEGMENT_RE}{1,8})*)\\s+(.+)$`
+  `^(\\d{3}(?:[./]${LUCA_ACCOUNT_SEGMENT_RE}{1,8})*)\\s+(.+)$`,
+  "u"
 );
 
 function preserveFisNo(value) {

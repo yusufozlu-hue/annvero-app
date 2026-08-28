@@ -20,7 +20,10 @@ import {
   runEDefterKontrolPipeline,
   YEVMIYE_LAYOUT,
 } from "@/src/utils/eDefterKontrolEngine";
-import { normalizeParserText } from "@/src/utils/textNormalize";
+import {
+  normalizeAccountCodeForComparison,
+  normalizeParserText,
+} from "@/src/utils/textNormalize";
 import { parseDateTR } from "@/src/utils/formatDateTR";
 
 export const GENEL_MUHASEBE_DOC_CLASS = {
@@ -33,6 +36,10 @@ export const GENEL_MUHASEBE_DOC_CLASS = {
 
 function compact(value) {
   return normalizeParserText(value).replace(/\s+/g, "");
+}
+
+function compactAccountCode(value) {
+  return normalizeAccountCodeForComparison(value);
 }
 
 function roundMoney(value) {
@@ -53,7 +60,7 @@ function sampleAccountCodes(sheetRows = [], limit = 40) {
     for (const cell of row) {
       const text = String(cell || "").trim();
       // Chart codes: 3+ digit root (100, 320.01) — avoid mistaking amounts like "10".
-      if (/^\d{3,}([./]\d{1,4}){0,5}$/.test(text)) codes.add(compact(text));
+      if (/^\d{3,}([./]\d{1,4}){0,5}$/.test(text)) codes.add(compactAccountCode(text));
     }
     if (codes.size > 8) break;
   }
@@ -177,7 +184,7 @@ export function buildAccountPlanCodeSet(accounts = []) {
     const code = accountCodeFromPlanRow(account);
     if (!code) continue;
     set.add(code);
-    set.add(compact(code));
+    set.add(compactAccountCode(code));
     const short = code.split(".")[0];
     if (short) set.add(short);
   }
@@ -221,7 +228,7 @@ export function reconcileMizanMuavin({ muavinRows = [], mizanRows = [], toleranc
   const sumByAccount = (rows, isMizan) => {
     const map = new Map();
     for (const row of rows) {
-      const key = compact(row.hesapKodu);
+      const key = compactAccountCode(row.hesapKodu);
       if (!key) continue;
       const cur = map.get(key) || {
         hesapKodu: row.hesapKodu,
@@ -319,10 +326,15 @@ function muavinYevmiyeMatchKey(row = {}) {
   return [
     compact(row.fisNo),
     String(row.tarih || "").trim(),
-    compact(row.hesapKodu),
+    compactAccountCode(row.hesapKodu),
     moneyKey(row.borc),
     moneyKey(row.alacak),
   ].join("|");
+}
+
+/** Muavin↔yevmiye satır fingerprint (tarih|fiş|hesap|borç|alacak). */
+export function buildMuavinYevmiyeFingerprint(row = {}) {
+  return muavinYevmiyeMatchKey(row);
 }
 
 function pushMultiset(map, key, row) {
@@ -426,14 +438,14 @@ export function reconcileMuavinYevmiye({
 
   const muavinMap = new Map();
   for (const row of muavinRows) {
-    if (!compact(row.hesapKodu)) continue;
+    if (!compactAccountCode(row.hesapKodu)) continue;
     pushMultiset(muavinMap, muavinYevmiyeMatchKey(row), row);
   }
 
   let matchedCount = 0;
   const residualYevmiye = [];
   for (const row of yevmiyeRows) {
-    if (!compact(row.hesapKodu)) continue;
+    if (!compactAccountCode(row.hesapKodu)) continue;
     const taken = takeMultiset(muavinMap, muavinYevmiyeMatchKey(row));
     if (taken) {
       matchedCount += 1;
@@ -489,7 +501,7 @@ export function reconcileMuavinYevmiye({
       (m, y) =>
         compact(m.fisNo) === compact(y.fisNo) &&
         String(m.tarih || "").trim() === String(y.tarih || "").trim() &&
-        compact(m.hesapKodu) === compact(y.hesapKodu)
+        compactAccountCode(m.hesapKodu) === compactAccountCode(y.hesapKodu)
     )
   ) {
     /* consume amount soft pairs */
@@ -500,7 +512,7 @@ export function reconcileMuavinYevmiye({
       MUAVIN_YEVMIYE_DIFF_STATUS.DATE_DIFF,
       (m, y) =>
         compact(m.fisNo) === compact(y.fisNo) &&
-        compact(m.hesapKodu) === compact(y.hesapKodu) &&
+        compactAccountCode(m.hesapKodu) === compactAccountCode(y.hesapKodu) &&
         moneyKey(m.borc) === moneyKey(y.borc) &&
         moneyKey(m.alacak) === moneyKey(y.alacak)
     )
@@ -513,7 +525,7 @@ export function reconcileMuavinYevmiye({
       MUAVIN_YEVMIYE_DIFF_STATUS.FIS_DIFF,
       (m, y) =>
         String(m.tarih || "").trim() === String(y.tarih || "").trim() &&
-        compact(m.hesapKodu) === compact(y.hesapKodu) &&
+        compactAccountCode(m.hesapKodu) === compactAccountCode(y.hesapKodu) &&
         moneyKey(m.borc) === moneyKey(y.borc) &&
         moneyKey(m.alacak) === moneyKey(y.alacak)
     )

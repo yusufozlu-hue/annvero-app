@@ -16,6 +16,26 @@ export function getActiveNormalizeMemoSize() {
   return activeNormalizeMemo?.size || 0;
 }
 
+/** Zero-width / soft hyphen — stripped before hesap kodu identity compare. */
+const ACCOUNT_CODE_INVISIBLE_RE = /[\u200B-\u200D\uFEFF\u00AD\u2060]/g;
+/** Muavin↔yevmiye comparison contract: segment ayraçları kaldırılır; harf kimliği korunur. */
+const ACCOUNT_CODE_SEPARATOR_RE = /[./]/g;
+
+/**
+ * Hesap kodu kimlik normalizasyonu (muavin/yevmiye mutabakat anahtarı).
+ * Türkçe harfler ASCII'ye translitere edilmez (PDİ01 ≠ PDI01, Ç0005 ≠ C0005).
+ * NFC + tr-TR uppercase; nokta/slash yalnızca karşılaştırma anahtarında silinir.
+ */
+export function normalizeAccountCodeForComparison(value = "") {
+  return String(value ?? "")
+    .replace(ACCOUNT_CODE_INVISIBLE_RE, "")
+    .normalize("NFC")
+    .trim()
+    .toLocaleUpperCase("tr-TR")
+    .replace(/\s+/g, "")
+    .replace(ACCOUNT_CODE_SEPARATOR_RE, "");
+}
+
 function computeNormalizeParserText(value) {
   return String(value || "")
     .replaceAll("ı", "i")
