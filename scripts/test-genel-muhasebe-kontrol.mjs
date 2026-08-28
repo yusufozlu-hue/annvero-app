@@ -25,8 +25,10 @@ import {
 } from "@/src/utils/eDefterAnalyzeContract.js";
 import {
   buildGenelMuhasebeFindingsPresentation,
+  countVisiblePresentationRows,
   filterGenelMuhasebePresentationRows,
   normalizeFisNoForFilter,
+  pruneExpandedPresentationGroups,
 } from "@/src/utils/genelMuhasebeFindingsView.js";
 import { LUCA_MULTI_ACCOUNT_MUAVIN_ROWS } from "./fixtures/luca-multi-account-muavin.mjs";
 import fs from "node:fs";
@@ -948,6 +950,68 @@ function hasIssueCode(rows, extras, code) {
       (row) => row.fisNo === "00049"
     ),
     "q presentation-row filter exact"
+  );
+}
+
+// r) filtre değişiminde expansion prune + görünür satır sayısı
+{
+  const catalog = [
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "uyarı",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message: "round",
+    },
+    {
+      fisNo: "00001",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-a",
+    },
+    {
+      fisNo: "00001",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-b",
+    },
+  ];
+
+  const f01 = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "00001" });
+  const groupId = f01[0]?.id;
+  const expandedOld = new Set([groupId]);
+  const f49 = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "00049" });
+  const pruned = pruneExpandedPresentationGroups([...expandedOld], f49);
+
+  assert(f01.length === 1 && f01[0].kind === "group", "r 00001 grouped row");
+  assert(f49.length === 2, "r 00049 two parent rows");
+  assert(pruned.size === 0, "r stale 00001 expansion pruned on 00049 filter");
+  assert(
+    countVisiblePresentationRows(f49, pruned) === 2,
+    "r 00049 visible rows without orphan children"
+  );
+  assert(
+    !f49.some((row) => row.fisNo === "00001"),
+    "r 00049 filter hides 00001 parent"
+  );
+
+  const openOn01 = pruneExpandedPresentationGroups([groupId], f01);
+  assert(
+    countVisiblePresentationRows(f01, openOn01) === 1 + (f01[0]?.details?.length || 0),
+    "r expanded 00001 counts children"
+  );
+
+  const all = buildGenelMuhasebeFindingsPresentation(catalog);
+  const expandedAfterClear = new Set();
+  assert(expandedAfterClear.size === 0, "r clear filter resets expansion");
+  assert(
+    countVisiblePresentationRows(all, expandedAfterClear) >= 3,
+    "r clear filter shows all parent rows collapsed"
   );
 }
 

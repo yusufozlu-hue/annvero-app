@@ -251,6 +251,37 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
   return filterGenelMuhasebePresentationRows(built, fisFilter);
 }
 
+/** Aktif presentation içindeki gruplu satır kimlikleri. */
+export function collectPresentationGroupIds(rows = []) {
+  return new Set(
+    rows.filter((row) => row.kind === "group" && row.id).map((row) => row.id)
+  );
+}
+
+/** Filtre dışında kalan parent gruplarının expansion state'ini buda. */
+export function pruneExpandedPresentationGroups(expandedGroupIds = [], presentationRows = []) {
+  const allowed = collectPresentationGroupIds(presentationRows);
+  return new Set(
+    [...expandedGroupIds].filter((id) => allowed.has(id))
+  );
+}
+
+/** Tabloda görünen satır sayısı — açık grup ayrıntıları dahil. */
+export function countVisiblePresentationRows(presentationRows = [], expandedGroupIds = new Set()) {
+  let count = 0;
+  for (const row of presentationRows) {
+    if (row.kind === "group") {
+      count += 1;
+      if (expandedGroupIds.has(row.id)) {
+        count += (row.details || []).length;
+      }
+      continue;
+    }
+    count += 1;
+  }
+  return count;
+}
+
 export function isReviewIssueCode(code = "") {
   return REVIEW_ISSUE_CODES.has(code);
 }

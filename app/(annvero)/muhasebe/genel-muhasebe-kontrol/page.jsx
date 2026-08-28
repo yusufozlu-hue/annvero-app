@@ -22,7 +22,11 @@ import {
   EDEFTER_ANALYZE_JOB_KIND,
 } from "@/src/utils/eDefterAnalyzeContract";
 import { createGenelMuhasebeAnalyzeGate } from "@/src/utils/genelMuhasebeKontrolEngine";
-import { buildGenelMuhasebeFindingsPresentation } from "@/src/utils/genelMuhasebeFindingsView";
+import {
+  buildGenelMuhasebeFindingsPresentation,
+  countVisiblePresentationRows,
+  pruneExpandedPresentationGroups,
+} from "@/src/utils/genelMuhasebeFindingsView";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 
 function Stat({ label, value }) {
@@ -147,6 +151,7 @@ export default function GenelMuhasebeKontrolPage() {
   const invalidateActive = useCallback((reason) => {
     runTokenRef.current += 1;
     setResult(null);
+    setExpandedFindingGroups(new Set());
     setPerfWarning("");
     setProgressDetail("");
     bumpAnalyzeGeneration(reason);
@@ -313,9 +318,21 @@ export default function GenelMuhasebeKontrolPage() {
     });
   }, [findingsCatalog, trimmedFisFilter]);
 
+  useEffect(() => {
+    setExpandedFindingGroups(new Set());
+  }, [trimmedFisFilter, findingsCatalog]);
+
+  const openFindingGroupIds = useMemo(
+    () => pruneExpandedPresentationGroups([...expandedFindingGroups], findings),
+    [expandedFindingGroups, findings]
+  );
+
   const findingsCatalogSize = findingsCatalog?.length || 0;
   const groupedMultiCount = findings.filter((item) => item.kind === "group").length;
-  const filteredFindingsCount = findings.length;
+  const visibleFindingsRowCount = useMemo(
+    () => countVisiblePresentationRows(findings, openFindingGroupIds),
+    [findings, openFindingGroupIds]
+  );
 
   const toggleFindingGroup = useCallback((groupId) => {
     setExpandedFindingGroups((prev) => {
@@ -568,7 +585,7 @@ export default function GenelMuhasebeKontrolPage() {
                     {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu ·{" "}
                     {groupedMultiCount} gruplu MULTI özet
                     {trimmedFisFilter
-                      ? ` · ${filteredFindingsCount} sonuç gösteriliyor`
+                      ? ` · ${visibleFindingsRowCount} sonuç gösteriliyor`
                       : ""}
                   </span>
                 </div>
@@ -605,7 +622,7 @@ export default function GenelMuhasebeKontrolPage() {
                   ) : (
                     findings.flatMap((item) => {
                       if (item.kind === "group") {
-                        const open = expandedFindingGroups.has(item.id);
+                        const open = openFindingGroupIds.has(item.id);
                         const rows = [
                           <tr key={item.id} className="border-t border-slate-100 bg-slate-50/60">
                             <td className="px-3 py-2">{item.fisNo || "—"}</td>
