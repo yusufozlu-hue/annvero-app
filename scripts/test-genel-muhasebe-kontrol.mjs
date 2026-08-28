@@ -23,7 +23,11 @@ import {
   executeEDefterAnalyzePayload,
   resultsAreParityEqual,
 } from "@/src/utils/eDefterAnalyzeContract.js";
-import { buildGenelMuhasebeFindingsPresentation } from "@/src/utils/genelMuhasebeFindingsView.js";
+import {
+  buildGenelMuhasebeFindingsPresentation,
+  filterGenelMuhasebePresentationRows,
+  normalizeFisNoForFilter,
+} from "@/src/utils/genelMuhasebeFindingsView.js";
 import { LUCA_MULTI_ACCOUNT_MUAVIN_ROWS } from "./fixtures/luca-multi-account-muavin.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -874,6 +878,77 @@ function hasIssueCode(rows, extras, code) {
     assert(r.summary.muavinYevmiye?.counts?.onlyYevmiye === 0, "p onlyYevmiye 0");
     assert(r.counters.persistInvocations === 0, "p persist 0");
   }
+}
+
+// q) fiş filtresi — exact match, gruplu satırlar, boş/temizleme
+{
+  const catalog = [
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "uyarı",
+    },
+    {
+      fisNo: "00001",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-a",
+    },
+    {
+      fisNo: "00001",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-b",
+    },
+    {
+      fisNo: "00002",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "other fis",
+    },
+    {
+      fisNo: "",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MIZAN_MUAVIN_EVIDENCE_MISSING,
+      message: "Mizan yüklenmedi",
+    },
+  ];
+
+  const all = buildGenelMuhasebeFindingsPresentation(catalog);
+  const f49 = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "00049" });
+  const f01 = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "00001" });
+  const fTrim = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "  00049  " });
+  const fMissing = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "99999" });
+  const fPartial = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "0000" });
+
+  assert(all.length >= 3, "q clear filter returns grouped rows");
+  assert(
+    f49.every((row) => normalizeFisNoForFilter(row.fisNo) === "00049"),
+    "q 00049 only 00049 rows"
+  );
+  assert(!f49.some((row) => row.fisNo === "00001" || row.fisNo === "00002"), "q 00049 hides other fis");
+  assert(
+    f49.some((row) => row.code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE),
+    "q 00049 keeps UYARI row"
+  );
+  assert(
+    f01.length === 1 && f01[0].kind === "group" && f01[0].fisNo === "00001",
+    "q 00001 only grouped MULTI row"
+  );
+  assert(f01[0]?.count === 2, "q grouped MULTI count preserved");
+  assert(fMissing.length === 0, "q unknown fis empty");
+  assert(fPartial.length === 0, "q partial 0000 exact match yields none");
+  assert(
+    fTrim.length === f49.length && fTrim[0]?.fisNo === "00049",
+    "q trim preserves leading zeros"
+  );
+  assert(
+    filterGenelMuhasebePresentationRows(all, "00049").every(
+      (row) => row.fisNo === "00049"
+    ),
+    "q presentation-row filter exact"
+  );
 }
 
 assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountCode helper");

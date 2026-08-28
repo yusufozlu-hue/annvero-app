@@ -303,13 +303,19 @@ export default function GenelMuhasebeKontrolPage() {
       : summary
         ? "missing"
         : planStatus;
-  const findings = useMemo(() => {
-    if (!result?.findingsCatalog) return [];
-    return buildGenelMuhasebeFindingsPresentation(result.findingsCatalog, { fisFilter });
-  }, [result, fisFilter]);
+  const trimmedFisFilter = fisFilter.trim();
+  const findingsCatalog = result?.findingsCatalog;
 
-  const findingsCatalogSize = result?.findingsCatalog?.length || 0;
+  const findings = useMemo(() => {
+    if (!findingsCatalog?.length) return [];
+    return buildGenelMuhasebeFindingsPresentation(findingsCatalog, {
+      fisFilter: trimmedFisFilter,
+    });
+  }, [findingsCatalog, trimmedFisFilter]);
+
+  const findingsCatalogSize = findingsCatalog?.length || 0;
   const groupedMultiCount = findings.filter((item) => item.kind === "group").length;
+  const filteredFindingsCount = findings.length;
 
   const toggleFindingGroup = useCallback((groupId) => {
     setExpandedFindingGroups((prev) => {
@@ -561,6 +567,9 @@ export default function GenelMuhasebeKontrolPage() {
                   <span className="ml-2 text-slate-500">
                     {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu ·{" "}
                     {groupedMultiCount} gruplu MULTI özet
+                    {trimmedFisFilter
+                      ? ` · ${filteredFindingsCount} sonuç gösteriliyor`
+                      : ""}
                   </span>
                 </div>
                 <label className="block text-sm">
@@ -588,7 +597,9 @@ export default function GenelMuhasebeKontrolPage() {
                   {findings.length === 0 ? (
                     <tr>
                       <td className="px-3 py-3 text-slate-500" colSpan={6}>
-                        Satır bulgusu yok (veya yalnız özet bulgular).
+                        {trimmedFisFilter
+                          ? `Fiş ${trimmedFisFilter} için sonuç bulunamadı.`
+                          : "Satır bulgusu yok (veya yalnız özet bulgular)."}
                       </td>
                     </tr>
                   ) : (

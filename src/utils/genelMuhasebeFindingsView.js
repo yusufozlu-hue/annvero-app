@@ -160,10 +160,41 @@ export function sortFindingsBySeverity(catalog = []) {
   });
 }
 
+/** Fiş filtresi — baştaki sıfırları korur, yalnız trim. */
+export function normalizeFisNoForFilter(value = "") {
+  return String(value ?? "").trim();
+}
+
 function matchesFisFilter(finding, fisFilter = "") {
-  const needle = String(fisFilter || "").trim();
+  const needle = normalizeFisNoForFilter(fisFilter);
   if (!needle) return true;
-  return String(finding.fisNo || "").includes(needle);
+  return normalizeFisNoForFilter(finding.fisNo) === needle;
+}
+
+function presentationRowMatchesFisFilter(row, fisFilter = "") {
+  const needle = normalizeFisNoForFilter(fisFilter);
+  if (!needle) return true;
+  return normalizeFisNoForFilter(row.fisNo) === needle;
+}
+
+/** Presentation satırlarına filtre — gruplu MULTI dahil. */
+export function filterGenelMuhasebePresentationRows(rows = [], fisFilter = "") {
+  const needle = normalizeFisNoForFilter(fisFilter);
+  if (!needle) return rows;
+  return rows
+    .filter((row) => presentationRowMatchesFisFilter(row, needle))
+    .map((row) => {
+      if (row.kind !== "group" || !Array.isArray(row.details)) return row;
+      const details = row.details.filter((detail) =>
+        presentationRowMatchesFisFilter(detail, needle)
+      );
+      return {
+        ...row,
+        details,
+        count: details.length,
+        message: `Fiş ${row.fisNo || "—"} — ${details.length} hesap satırı — çoklu karşıt hesap; otomatik tek karşıt atanmadı.`,
+      };
+    });
 }
 
 function buildMultiCounterpartGroup(items = []) {
@@ -189,7 +220,7 @@ function buildMultiCounterpartGroup(items = []) {
  * MULTI_COUNTERPART aynı fişte tek özet satır; HATA/UYARI her zaman üstte.
  */
 export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {}) {
-  const fisFilter = options.fisFilter || "";
+  const fisFilter = normalizeFisNoForFilter(options.fisFilter || "");
   const filtered = catalog.filter((item) => matchesFisFilter(item, fisFilter));
   const sorted = sortFindingsBySeverity(filtered);
 
@@ -216,7 +247,8 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
     .sort((left, right) => String(left[0]).localeCompare(String(right[0]), "tr"))
     .map(([, items]) => buildMultiCounterpartGroup(items));
 
-  return [...priority, ...groupedMulti, ...otherInfo];
+  const built = [...priority, ...groupedMulti, ...otherInfo];
+  return filterGenelMuhasebePresentationRows(built, fisFilter);
 }
 
 export function isReviewIssueCode(code = "") {
