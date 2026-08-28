@@ -132,11 +132,12 @@ const draft = buildCorrectionDraft(prep.recipe, {
   assert(payload.row.external_system === "LUCA", "external_system LUCA");
 }
 
-// g/h/i presentation counters
+// g/h/i presentation counters + overallSonuc correction-aware
 {
   const catalog = [
     { fisNo: "00049", severity: "UYARI", code: "COUNTERPART_SAME_SIDE", hesapKodu: "320.10.Y0010" },
     { fisNo: "00050", severity: "UYARI", code: "MISSING_COUNTERPART", hesapKodu: "100" },
+    { fisNo: "00001", severity: "BILGI", code: "MULTI_COUNTERPART", hesapKodu: "100" },
   ];
   const exportedRecord = publicCorrectionRecordView({
     id: "r1",
@@ -161,16 +162,45 @@ const draft = buildCorrectionDraft(prep.recipe, {
     status: CORRECTION_RECORD_STATUS.CANCELLED,
   };
 
+  const unresolvedSummary = summarizeGenelMuhasebeFindingsWithCorrections(catalog, []);
+  assert(unresolvedSummary.overallSonuc === "Uyarı", "unresolved UYARI → Sonuç Uyarı");
+  assert(unresolvedSummary.incelemeGerekli === 2, "unresolved İnceleme 2");
+  assert(unresolvedSummary.duzeltildi === 0, "unresolved Düzeltildi 0");
+
   const exportedSummary = summarizeGenelMuhasebeFindingsWithCorrections(catalog, [exportedRecord]);
   assert(exportedSummary.duzeltildi === 0, "EXPORTED not counted as duzeltildi");
   assert(exportedSummary.incelemeGerekli === 2, "EXPORTED still inceleme");
+  assert(exportedSummary.overallSonuc === "Uyarı", "EXPORTED → Sonuç Uyarı");
 
   const appliedSummary = summarizeGenelMuhasebeFindingsWithCorrections(catalog, [appliedRecord]);
   assert(appliedSummary.duzeltildi === 1, "APPLIED duzeltildi count 1");
   assert(appliedSummary.incelemeGerekli === 1, "APPLIED removes one from inceleme");
+  assert(appliedSummary.overallSonuc === "Uyarı", "APPLIED one of two still Uyarı");
+
+  const soleAppliedCatalog = [
+    { fisNo: "00049", severity: "UYARI", code: "COUNTERPART_SAME_SIDE", hesapKodu: "320.10.Y0010" },
+    { fisNo: "00001", severity: "BILGI", code: "MULTI_COUNTERPART", hesapKodu: "100" },
+  ];
+  const soleApplied = summarizeGenelMuhasebeFindingsWithCorrections(soleAppliedCatalog, [
+    appliedRecord,
+  ]);
+  assert(soleApplied.overallSonuc === "Bilgi", "APPLIED sole UYARI → Sonuç Bilgi");
+  assert(soleApplied.incelemeGerekli === 0, "APPLIED sole → İnceleme 0");
+  assert(soleApplied.duzeltildi === 1, "APPLIED sole → Düzeltildi 1");
 
   const cancelledSummary = summarizeGenelMuhasebeFindingsWithCorrections(catalog, [cancelledRecord]);
   assert(cancelledSummary.incelemeGerekli === 2, "CANCELLED back to unresolved");
+  assert(cancelledSummary.overallSonuc === "Uyarı", "CANCELLED → Sonuç Uyarı");
+  assert(cancelledSummary.duzeltildi === 0, "CANCELLED not duzeltildi");
+
+  const presentationApplied = buildGenelMuhasebeFindingsPresentation(soleAppliedCatalog, {
+    correctionRecords: [appliedRecord],
+  });
+  const appliedRow = presentationApplied.find((row) => row.fisNo === "00049");
+  assert(appliedRow?.severity === "UYARI", "table keeps UYARI severity history");
+  assert(appliedRow?.correctionResolved === true, "table Durum=Düzeltildi via correctionResolved");
+  assert(appliedRow?.correctionStatusLabel === "Düzeltildi", "table status label Düzeltildi");
+  assert(soleApplied.overallSonuc === "Bilgi", "table UYARI history does not inflate overall");
 }
 
 // l/m/o apply validation

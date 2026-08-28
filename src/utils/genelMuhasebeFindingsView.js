@@ -12,6 +12,7 @@ import {
   resolveCorrectionRecordForFinding,
   summarizeCorrectionPresentationImpact,
 } from "@/src/utils/correctionRecords/correctionRecordPresentation";
+import { CORRECTION_RECORD_STATUS } from "@/src/utils/correctionRecords/correctionRecordTypes";
 
 function isSyntheticSystemFindingRow(row = {}) {
   const id = String(row?.id || "");
@@ -286,15 +287,37 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
   return filterGenelMuhasebePresentationRows(built, fisFilter);
 }
 
-/** Düzeltme kayıtlarıyla inceleme/düzeltildi sayacı — motor özetine dokunmaz. */
+/**
+ * Düzeltme kayıtlarıyla Genel Sonuç / İnceleme / Düzeltildi.
+ * APPLIED bulgular unresolved katalogdan çıkarılır; EXPORTED/CANCELLED unresolved kalır.
+ * overallSonuc ve incelemeGerekli aynı correction-aware katalogdan türetilir.
+ * Motor ham özetine (summary.overallSonuc) dokunmaz — UI correction-aware özeti kullanır.
+ */
 export function summarizeGenelMuhasebeFindingsWithCorrections(catalog = [], correctionRecords = []) {
   const base = summarizeGenelMuhasebeFindingsCatalog(catalog);
   const correctionImpact = summarizeCorrectionPresentationImpact(catalog, correctionRecords);
+
+  const unresolvedCatalog = [];
+  for (const item of catalog) {
+    if (item.severity === E_DEFTER_ISSUE_SEVERITY.BILGI) {
+      unresolvedCatalog.push(item);
+      continue;
+    }
+    const record = resolveCorrectionRecordForFinding(
+      item,
+      correctionImpact.recordsByFingerprint
+    );
+    if (record?.status === CORRECTION_RECORD_STATUS.APPLIED) {
+      continue;
+    }
+    unresolvedCatalog.push(item);
+  }
+
+  const corrected = summarizeGenelMuhasebeFindingsCatalog(unresolvedCatalog);
   return {
-    ...base,
+    ...corrected,
     duzeltildi: correctionImpact.duzeltildi,
     exportedPending: correctionImpact.exportedPending,
-    incelemeGerekli: correctionImpact.adjustedInceleme,
     incelemeGerekliRaw: base.incelemeGerekli,
   };
 }

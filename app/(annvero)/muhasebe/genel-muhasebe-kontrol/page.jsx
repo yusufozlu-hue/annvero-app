@@ -657,7 +657,10 @@ export default function GenelMuhasebeKontrolPage() {
         {summary ? (
           <div className="mt-6 space-y-4">
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              <Stat label="Sonuç" value={summary.overallSonuc} />
+              <Stat
+                label="Sonuç"
+                value={findingsWithCorrections?.overallSonuc ?? summary.overallSonuc}
+              />
               <Stat label="Toplam fiş" value={summary.toplamFis} />
               <Stat
                 label="Hareket"
