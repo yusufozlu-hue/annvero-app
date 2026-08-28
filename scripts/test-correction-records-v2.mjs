@@ -233,7 +233,7 @@ const draft = buildCorrectionDraft(prep.recipe, {
   assert(Boolean(sheet), "Luca Fisleri sheet preserved");
 }
 
-// s migration contract file exists + RLS keywords
+// s migration contract file exists + RLS keywords + least-privilege grants
 {
   const migration = fs.readFileSync(
     path.join(process.cwd(), "supabase/migrations/036_accounting_correction_records.sql"),
@@ -242,6 +242,54 @@ const draft = buildCorrectionDraft(prep.recipe, {
   assert(migration.includes("accounting_correction_records"), "migration table");
   assert(migration.includes("annvero_can_access_company"), "RLS company gate");
   assert(migration.includes("uq_accounting_correction_records_active_fingerprint"), "unique fingerprint");
+
+  const sql = migration.toLowerCase();
+  assert(
+    /revoke\s+all\s+privileges\s+on\s+table\s+public\.accounting_correction_records\s+from\s+anon\s*,\s*authenticated/i.test(
+      migration
+    ),
+    "036 revoke ALL from anon+authenticated"
+  );
+  assert(
+    /grant\s+select\s+on\s+table\s+public\.accounting_correction_records\s+to\s+authenticated/i.test(
+      migration
+    ),
+    "036 grant SELECT only to authenticated"
+  );
+  assert(
+    /grant\s+select\s*,\s*insert\s*,\s*update\s*,\s*delete\s+on\s+table\s+public\.accounting_correction_records\s+to\s+service_role/i.test(
+      migration
+    ),
+    "036 grant SELECT/INSERT/UPDATE/DELETE to service_role"
+  );
+  assert(!/grant\s+all\b/i.test(migration), "036 must not GRANT ALL");
+  assert(
+    !/grant\s+[^;]*\btruncate\b[^;]*to\s+authenticated/i.test(sql),
+    "036 must not GRANT TRUNCATE to authenticated"
+  );
+  assert(
+    !/grant\s+[^;]*\breferences\b[^;]*to\s+authenticated/i.test(sql),
+    "036 must not GRANT REFERENCES to authenticated"
+  );
+  assert(
+    !/grant\s+[^;]*\btrigger\b[^;]*to\s+authenticated/i.test(sql),
+    "036 must not GRANT TRIGGER to authenticated"
+  );
+  assert(
+    !/grant\s+[^;]*\btruncate\b[^;]*to\s+service_role/i.test(sql),
+    "036 must not GRANT TRUNCATE to service_role"
+  );
+  // API cancel = soft UPDATE; physical DELETE not used on correction records
+  const apiRoot = path.join(process.cwd(), "app/api/accounting-correction-records");
+  const apiFiles = fs
+    .readdirSync(apiRoot, { recursive: true })
+    .filter((f) => String(f).endsWith(".js"))
+    .map((f) => fs.readFileSync(path.join(apiRoot, f), "utf8"))
+    .join("\n");
+  assert(
+    !/\.from\(\s*CORRECTION_RECORDS_TABLE\s*\)[\s\S]{0,120}\.delete\s*\(/m.test(apiFiles),
+    "API must not physically DELETE correction records"
+  );
 }
 
 // t/u idempotent export payload same fingerprint

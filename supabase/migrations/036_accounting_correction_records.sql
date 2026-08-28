@@ -73,10 +73,19 @@ for each row execute function public.accounting_correction_records_set_updated_a
 
 alter table public.accounting_correction_records enable row level security;
 
-revoke all on public.accounting_correction_records from anon;
-revoke insert, update, delete on public.accounting_correction_records from authenticated;
-grant select on public.accounting_correction_records to authenticated;
-grant all on public.accounting_correction_records to service_role;
+-- Least-privilege ACL (033 ile aynı dar sözleşme).
+-- TRUNCATE RLS bypass eder; authenticated üzerinde bırakılamaz.
+-- service_role: ALL yok — yalnız API yazma yolu (SELECT/INSERT/UPDATE/DELETE).
+-- Fiziksel DELETE uygulama kodunda kullanılmaz (cancel = soft UPDATE); DELETE
+-- service_role’da 033 standardı ve ileri ops için açık bırakılır, TRUNCATE yok.
+revoke all privileges on table public.accounting_correction_records from public;
+revoke all privileges on table public.accounting_correction_records
+  from anon, authenticated;
+grant select on table public.accounting_correction_records to authenticated;
+
+revoke all privileges on table public.accounting_correction_records from service_role;
+grant select, insert, update, delete on table public.accounting_correction_records
+  to service_role;
 
 drop policy if exists "accounting_correction_records_select_member"
   on public.accounting_correction_records;
