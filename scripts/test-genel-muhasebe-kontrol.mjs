@@ -828,6 +828,7 @@ function hasIssueCode(rows, extras, code) {
 // p) optional real-file smoke: severity/code distribution + hidden UYARI visibility
 {
   const muavinPath = path.join(process.env.USERPROFILE || "", "Desktop", "muavin_mare.xlsx");
+  const mizanPath = path.join(process.env.USERPROFILE || "", "Desktop", "mizan_mare.xlsx");
   const yevPath = path.join(
     process.env.USERPROFILE || "",
     "Desktop",
@@ -846,6 +847,7 @@ function hasIssueCode(rows, extras, code) {
       period: "2026/03",
       muavinSheetRows: read(muavinPath),
       yevmiyeSheetRows: read(yevPath),
+      mizanSheetRows: fs.existsSync(mizanPath) ? read(mizanPath) : null,
       accountPlanAccounts: [],
       accountPlanStatus: "missing",
     });
@@ -856,6 +858,13 @@ function hasIssueCode(rows, extras, code) {
     console.log("REAL severity", r.findingsSummary?.severityCounts);
     console.log("REAL codes", r.findingsSummary?.codeCounts);
     console.log("REAL overall", r.summary.overallSonuc, "inceleme", r.summary.incelemeGerekli);
+    if (fs.existsSync(mizanPath)) {
+      assert(r.summary.mizanMuavin?.matched === true, "p mizan↔muavin matched");
+      assert(r.summary.mizanMuavin?.onlyMizan?.length === 0, "p onlyMizan 0");
+      assert(r.summary.mizanMuavin?.comparedAccounts === 260, "p compared leaf 260");
+      assert(r.summary.mizanMuavin?.grandTotals?.matched === true, "p grand totals pass");
+      assert(r.summary.hesapPlandaYok === 0, "p ACCOUNT_NOT_IN_PLAN 0");
+    }
     if (nonInfo.length === 1) {
       const only = nonInfo[0];
       console.log(

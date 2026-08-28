@@ -15,11 +15,17 @@ import {
   detectLucaMultiAccountMuavinLayout,
   detectYevmiyeLayout,
   parseMizanSheet,
+  parseMizanSheetWithStructure,
   parseMuavinSheet,
   parseYevmiyeSheet,
   runEDefterKontrolPipeline,
   YEVMIYE_LAYOUT,
 } from "@/src/utils/eDefterKontrolEngine";
+import {
+  filterLeafMizanRows,
+  MIZAN_ACCOUNT_ROLE,
+  verifyMizanMuavinGrandTotals,
+} from "@/src/utils/mizanAccountStructure";
 import {
   normalizeAccountCodeForComparison,
   normalizeParserText,
@@ -209,7 +215,12 @@ export function isSyntheticSystemFindingRow(row = {}) {
 }
 
 /** Account-level mizan ↔ muavin reconcile. Never treats mizan as voucher lines. */
-export function reconcileMizanMuavin({ muavinRows = [], mizanRows = [], tolerance = BORC_ALACAK_TOLERANCE } = {}) {
+export function reconcileMizanMuavin({
+  muavinRows = [],
+  mizanRows = [],
+  mizanTotals = null,
+  tolerance = BORC_ALACAK_TOLERANCE,
+} = {}) {
   const hasMuavin = (muavinRows || []).length > 0;
   const hasMizan = (mizanRows || []).length > 0;
   if (!hasMuavin || !hasMizan) {
@@ -226,8 +237,16 @@ export function reconcileMizanMuavin({ muavinRows = [], mizanRows = [], toleranc
       onlyMuavin: [],
       onlyMizan: [],
       comparedAccounts: 0,
+      grandTotals: null,
+      leafAccountCount: 0,
+      parentAccountCount: 0,
     };
   }
+
+  const leafMizanRows = filterLeafMizanRows(mizanRows);
+  const parentAccountCount = (mizanRows || []).filter(
+    (row) => row.mizanAccountRole === MIZAN_ACCOUNT_ROLE.PARENT
+  ).length;
 
   const sumByAccount = (rows, isMizan) => {
     const map = new Map();
@@ -242,20 +261,14 @@ export function reconcileMizanMuavin({ muavinRows = [], mizanRows = [], toleranc
       };
       cur.borc = roundMoney(cur.borc + roundMoney(row.borc));
       cur.alacak = roundMoney(cur.alacak + roundMoney(row.alacak));
-      if (isMizan) {
-        const bak = Number(row.bakiye);
-        if (Number.isFinite(bak)) cur.bakiye = roundMoney(bak);
-        else cur.bakiye = roundMoney(cur.borc - cur.alacak);
-      } else {
-        cur.bakiye = roundMoney(cur.borc - cur.alacak);
-      }
+      cur.bakiye = roundMoney(cur.borc - cur.alacak);
       map.set(key, cur);
     }
     return map;
   };
 
   const muavinMap = sumByAccount(muavinRows, false);
-  const mizanMap = sumByAccount(mizanRows, true);
+  const mizanMap = sumByAccount(leafMizanRows, true);
   const allKeys = new Set([...muavinMap.keys(), ...mizanMap.keys()]);
   const differences = [];
   const onlyMuavin = [];
@@ -274,12 +287,8 @@ export function reconcileMizanMuavin({ muavinRows = [], mizanRows = [], toleranc
     }
     const borcFark = roundMoney(m.borc - z.borc);
     const alacakFark = roundMoney(m.alacak - z.alacak);
-    const bakiyeFark = roundMoney(m.bakiye - z.bakiye);
-    if (
-      Math.abs(borcFark) > tolerance ||
-      Math.abs(alacakFark) > tolerance ||
-      Math.abs(bakiyeFark) > tolerance
-    ) {
+    if (Math.abs(borcFark) > tolerance || Math.abs(alacakFark) > tolerance) {
+      const bakiyeFark = roundMoney(m.bakiye - z.bakiye);
       differences.push({
         hesapKodu: m.hesapKodu,
         muavin: { borc: m.borc, alacak: m.alacak, bakiye: m.bakiye },
@@ -289,8 +298,16 @@ export function reconcileMizanMuavin({ muavinRows = [], mizanRows = [], toleranc
     }
   }
 
-  const matched =
+  const grandTotals = verifyMizanMuavinGrandTotals({
+    muavinRows,
+    mizanTotals,
+    leafMizanRows,
+    tolerance,
+  });
+
+  const leafMatched =
     differences.length === 0 && onlyMuavin.length === 0 && onlyMizan.length === 0;
+  const matched = leafMatched && grandTotals.matched;
 
   return {
     status: matched ? "MATCHED" : "MISMATCH",
@@ -298,11 +315,16 @@ export function reconcileMizanMuavin({ muavinRows = [], mizanRows = [], toleranc
     matched,
     message: matched
       ? "Muavin ve mizan hesap bazında mutabık."
-      : "Muavin↔mizan farkı veya yalnız bir tarafta olan hesap var.",
+      : leafMatched && !grandTotals.matched
+        ? "Muavin↔mizan genel toplam farkı var."
+        : "Muavin↔mizan farkı veya yalnız bir tarafta olan hesap var.",
     differences,
     onlyMuavin,
     onlyMizan,
     comparedAccounts: allKeys.size,
+    leafAccountCount: new Set(leafMizanRows.map((row) => row.hesapKodu)).size,
+    parentAccountCount,
+    grandTotals,
   };
 }
 
@@ -623,7 +645,7 @@ export function runGenelMuhasebeKontrol({
     totalMs: 0,
   };
   const tTotal0 = performance.now();
-  const parsed = { muavin: [], yevmiye: [], mizan: [], classes: {} };
+  const parsed = { muavin: [], yevmiye: [], mizan: [], classes: {}, mizanTotals: null, mizanStructure: null };
 
   const ingest = (sheetRows, preferredHint) => {
     if (!sheetRows) return;
@@ -656,7 +678,27 @@ export function runGenelMuhasebeKontrol({
       });
     }
   }
-  if (mizanSheetRows) ingest(mizanSheetRows, GENEL_MUHASEBE_DOC_CLASS.MIZAN);
+  if (mizanSheetRows) {
+    counters.parseInvocations += 1;
+    const t0 = performance.now();
+    const contentClass = classifyLedgerDocumentType(mizanSheetRows);
+    const documentClass = refineDocumentClass(
+      contentClass,
+      GENEL_MUHASEBE_DOC_CLASS.MIZAN,
+      mizanSheetRows
+    );
+    const bundle = parseMizanSheetWithStructure(mizanSheetRows);
+    timing.parseMs += performance.now() - t0;
+    parsed.classes[documentClass] = (parsed.classes[documentClass] || 0) + 1;
+    parsed.mizan.push(
+      ...bundle.rows.map((row) => ({
+        ...row,
+        documentClass: GENEL_MUHASEBE_DOC_CLASS.MIZAN,
+      }))
+    );
+    parsed.mizanTotals = bundle.mizanTotals;
+    parsed.mizanStructure = bundle.stats;
+  }
 
   // Stamp period for counterpart group isolation.
   const stamp = (rows) =>
@@ -701,6 +743,7 @@ export function runGenelMuhasebeKontrol({
   const reconcile = reconcileMizanMuavin({
     muavinRows: parsed.muavin,
     mizanRows: parsed.mizan,
+    mizanTotals: parsed.mizanTotals,
   });
   const muavinYevmiye = reconcileMuavinYevmiye({
     muavinRows: parsed.muavin,
@@ -889,10 +932,12 @@ export function runGenelMuhasebeKontrol({
         : reconcile.status === "EVIDENCE_MISSING"
           ? reconcile.message
           : reconcile.status === "MATCHED" || reconcile.matched
-            ? "Mutabık"
+            ? "Tam eşleşti"
             : reconcile.status === "MISMATCH"
               ? "Fark var"
               : reconcile.status || "—",
+    structure: parsed.mizanStructure,
+    mizanTotals: parsed.mizanTotals,
   };
   const yevmiyeFisKeys = new Set(
     parsed.yevmiye.map((row) => compact(row.fisNo)).filter(Boolean)
