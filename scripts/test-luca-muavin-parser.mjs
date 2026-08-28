@@ -9,6 +9,7 @@ import {
 import {
   analyzeEDefterRows,
   detectLucaMultiAccountMuavinLayout,
+  parseLucaAccountHeaderCell,
   parseLucaMultiAccountMuavinSheet,
   parseMuavinSheet,
   parseYevmiyeSheet,
@@ -22,6 +23,7 @@ import {
 import { calendarPartsFromExcelDate, formatDateTR } from "@/src/utils/formatDateTR.js";
 import {
   buildLucaMultiAccountMuavinFixture,
+  buildLucaTurkishAccountMuavinFixture,
   lucaExcelDate,
 } from "./fixtures/luca-multi-account-muavin.mjs";
 
@@ -168,6 +170,29 @@ const fixture = buildLucaMultiAccountMuavinFixture();
     (analyzed[0].issueDetails || []).some((i) => i.code === E_DEFTER_ISSUE_CODE.DATE_OUT_OF_PERIOD),
     "april DATE_OUT_OF_PERIOD for 2026/03"
   );
+}
+
+// k — Turkish letters in account codes (İ/Ç) must open new blocks
+{
+  const tr = buildLucaTurkishAccountMuavinFixture();
+  assert(
+    parseLucaAccountHeaderCell("120.01.PDİ01 ANON CARI PDI")?.hesapKodu === "120.01.PDİ01",
+    "k PDİ01 header preserves İ"
+  );
+  assert(
+    parseLucaAccountHeaderCell("320.10.Ç0005 ANON CARI C5")?.hesapKodu === "320.10.Ç0005",
+    "k Ç0005 header preserves Ç"
+  );
+  const rows = parseMuavinSheet(tr);
+  assert(rows.length === 4, "k four turkish-account movements");
+  const pdi = rows.find((r) => r.hesapKodu === "120.01.PDİ01");
+  const b27 = rows.find((r) => r.hesapKodu === "120.01.B0027");
+  const c5 = rows.find((r) => r.hesapKodu === "320.10.Ç0005");
+  const b21 = rows.find((r) => r.hesapKodu === "320.10.B0021");
+  assert(b27?.borc === 79685.24, "k B0027 keeps own amount");
+  assert(pdi?.borc === 89415.37, "k PDİ01 not absorbed into B0027");
+  assert(b21?.alacak === 5750, "k B0021 own amount");
+  assert(c5?.borc === 11220.95, "k Ç0005 not absorbed into B0021");
 }
 
 if (failed) {

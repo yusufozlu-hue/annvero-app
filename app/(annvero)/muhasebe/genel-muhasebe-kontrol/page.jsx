@@ -22,6 +22,11 @@ import {
   EDEFTER_ANALYZE_JOB_KIND,
 } from "@/src/utils/eDefterAnalyzeContract";
 import { createGenelMuhasebeAnalyzeGate } from "@/src/utils/genelMuhasebeKontrolEngine";
+import {
+  buildGenelMuhasebeFindingsPresentation,
+  countVisiblePresentationRows,
+  pruneExpandedPresentationGroups,
+} from "@/src/utils/genelMuhasebeFindingsView";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 
 function Stat({ label, value }) {
@@ -39,6 +44,27 @@ function planEvidenceLabel(summary) {
     return "Yüklü";
   }
   return "Hesap planı yüklenemedi";
+}
+
+function yevmiyeEvidenceLabel(summary) {
+  if (!summary) return "—";
+  if (summary.yevmiyeEvidence === "PRESENT") return "Yüklü";
+  return "Yüklenmedi";
+}
+
+function muavinYevmiyeLabel(summary) {
+  const my = summary?.muavinYevmiye;
+  if (!my) return "—";
+  if (my.userLabel) return my.userLabel;
+  if (my.status === "EVIDENCE_MISSING") return "Karşılaştırılamadı";
+  if (my.matched) {
+    const n = my.denominator || my.yevmiyeMovements || 0;
+    return `Tam eşleşti (${n}/${n})`;
+  }
+  if (my.status === "MISMATCH") {
+    return `${my.matchedCount || 0}/${my.denominator || 0} eşleşti`;
+  }
+  return "—";
 }
 
 function mizanMuavinLabel(summary) {
@@ -74,6 +100,11 @@ function safeUserError(err) {
     return "Excel dosyası okunamadı.";
   }
   if (code === "UNSUPPORTED_MUAVIN_LAYOUT") return "Desteklenmeyen muavin düzeni.";
+  if (code === "UNSUPPORTED_YEVMIYE_LAYOUT") return "Desteklenmeyen yevmiye düzeni.";
+  if (code === "EMPTY_YEVMIYE_PARSE") return "Yevmiye dosyasından hareket okunamadı.";
+  if (code === "MUAVIN_YEVMIYE_RECONCILE_FAILED") {
+    return "Muavin↔yevmiye farkı üretilemedi; kontrol güvenli şekilde durdu.";
+  }
   if (code === "ANALYZE_WORKER_FAILED") return "Analiz worker başarısız oldu.";
   if (code === "ANALYZE_TIMEOUT") return "Analiz zaman aşımına uğradı.";
   return "Kontrol çalıştırılamadı. Lütfen tekrar deneyin.";
@@ -107,6 +138,9 @@ export default function GenelMuhasebeKontrolPage() {
   const [progressDetail, setProgressDetail] = useState("");
   const [error, setError] = useState("");
   const [perfWarning, setPerfWarning] = useState("");
+  const [showMuavinYevmiyeDiffs, setShowMuavinYevmiyeDiffs] = useState(false);
+  const [fisFilter, setFisFilter] = useState("");
+  const [expandedFindingGroups, setExpandedFindingGroups] = useState(() => new Set());
   const [result, setResult] = useState(null);
   const [planStatus, setPlanStatus] = useState("unknown");
   const [planAccounts, setPlanAccounts] = useState(null);
@@ -117,6 +151,7 @@ export default function GenelMuhasebeKontrolPage() {
   const invalidateActive = useCallback((reason) => {
     runTokenRef.current += 1;
     setResult(null);
+    setExpandedFindingGroups(new Set());
     setPerfWarning("");
     setProgressDetail("");
     bumpAnalyzeGeneration(reason);
@@ -273,29 +308,43 @@ export default function GenelMuhasebeKontrolPage() {
       : summary
         ? "missing"
         : planStatus;
+  const trimmedFisFilter = fisFilter.trim();
+  const findingsCatalog = result?.findingsCatalog;
+
   const findings = useMemo(() => {
-    if (!result) return [];
-    const fromRows = (result.rows || [])
-      .filter((row) => (row.issueDetails || []).length)
-      .slice(0, 80)
-      .flatMap((row) =>
-        (row.issueDetails || []).map((issue) => ({
-          fisNo: row.fisNo || "",
-          hesapKodu: row.hesapKodu || "",
-          severity: issue.severity,
-          code: issue.code,
-          message: issue.message,
-        }))
-      );
-    const extras = (result.findingExtras || []).map((issue) => ({
-      fisNo: "",
-      hesapKodu: "",
-      severity: issue.severity,
-      code: issue.code,
-      message: issue.message,
-    }));
-    return [...extras, ...fromRows];
-  }, [result]);
+    if (!findingsCatalog?.length) return [];
+    return buildGenelMuhasebeFindingsPresentation(findingsCatalog, {
+      fisFilter: trimmedFisFilter,
+    });
+  }, [findingsCatalog, trimmedFisFilter]);
+
+  useEffect(() => {
+    setExpandedFindingGroups(new Set());
+  }, [trimmedFisFilter, findingsCatalog]);
+
+  const openFindingGroupIds = useMemo(
+    () => pruneExpandedPresentationGroups([...expandedFindingGroups], findings),
+    [expandedFindingGroups, findings]
+  );
+
+  const findingsCatalogSize = findingsCatalog?.length || 0;
+  const groupedMultiCount = findings.filter((item) => item.kind === "group").length;
+  const visibleFindingsRowCount = useMemo(
+    () => countVisiblePresentationRows(findings, openFindingGroupIds),
+    [findings, openFindingGroupIds]
+  );
+
+  const toggleFindingGroup = useCallback((groupId) => {
+    setExpandedFindingGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }, []);
+
+  const muavinYevmiyeDiffs = summary?.muavinYevmiye?.differences || [];
+  const muavinYevmiyeDiffPreview = muavinYevmiyeDiffs.slice(0, 50);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -434,7 +483,87 @@ export default function GenelMuhasebeKontrolPage() {
               <Stat label="Fark" value={formatTurkishMoney(summary.borcAlacakFark)} />
               <Stat label="Muavin↔Mizan" value={mizanMuavinLabel(summary)} />
               <Stat label="Plan kanıtı" value={planEvidenceLabel(summary)} />
+              {summary.yevmiyeEvidence === "PRESENT" ? (
+                <>
+                  <Stat
+                    label="Yevmiye hareketi"
+                    value={summary.yevmiyeHareketSatir ?? 0}
+                  />
+                  <Stat label="Yevmiye fişi" value={summary.yevmiyeFis ?? 0} />
+                  <Stat label="Yevmiye kanıtı" value={yevmiyeEvidenceLabel(summary)} />
+                </>
+              ) : null}
+              {summary.muavinHareketSatir > 0 && summary.yevmiyeEvidence === "PRESENT" ? (
+                <Stat label="Muavin↔Yevmiye" value={muavinYevmiyeLabel(summary)} />
+              ) : null}
             </div>
+
+            {summary.muavinHareketSatir > 0 && summary.yevmiyeEvidence === "PRESENT" ? (
+              <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+                <div className="font-medium text-slate-900">Muavin↔Yevmiye özeti</div>
+                <div className="mt-2 grid gap-1 sm:grid-cols-3">
+                  <div>
+                    Eşleşen: {summary.muavinYevmiye?.matchedCount ?? 0} /{" "}
+                    {summary.muavinYevmiye?.denominator ?? 0}
+                  </div>
+                  <div>Yalnız muavinde: {summary.muavinYevmiye?.counts?.onlyMuavin ?? 0}</div>
+                  <div>Yalnız yevmiyede: {summary.muavinYevmiye?.counts?.onlyYevmiye ?? 0}</div>
+                </div>
+                {muavinYevmiyeDiffs.length ? (
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      className="text-teal-700 hover:underline"
+                      onClick={() => setShowMuavinYevmiyeDiffs((v) => !v)}
+                    >
+                      {showMuavinYevmiyeDiffs ? "Farkları gizle" : "Farkları göster"}
+                      {` (${muavinYevmiyeDiffs.length})`}
+                    </button>
+                    {showMuavinYevmiyeDiffs ? (
+                      <div className="mt-2 overflow-auto rounded-lg border border-slate-200">
+                        <table className="min-w-full text-left text-xs">
+                          <thead className="bg-slate-50 text-slate-600">
+                            <tr>
+                              <th className="px-2 py-1">Durum</th>
+                              <th className="px-2 py-1">Fiş</th>
+                              <th className="px-2 py-1">Tarih</th>
+                              <th className="px-2 py-1">Hesap</th>
+                              <th className="px-2 py-1">Muavin B/A</th>
+                              <th className="px-2 py-1">Yevmiye B/A</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {muavinYevmiyeDiffPreview.map((diff, idx) => (
+                              <tr key={`my-diff-${idx}`} className="border-t border-slate-100">
+                                <td className="px-2 py-1">{diff.statusLabel}</td>
+                                <td className="px-2 py-1">{diff.fisNo || "—"}</td>
+                                <td className="px-2 py-1">{diff.tarih || "—"}</td>
+                                <td className="px-2 py-1">{diff.hesapKodu || "—"}</td>
+                                <td className="px-2 py-1">
+                                  {diff.muavin
+                                    ? `${formatTurkishMoney(diff.muavin.borc)} / ${formatTurkishMoney(diff.muavin.alacak)}`
+                                    : "—"}
+                                </td>
+                                <td className="px-2 py-1">
+                                  {diff.yevmiye
+                                    ? `${formatTurkishMoney(diff.yevmiye.borc)} / ${formatTurkishMoney(diff.yevmiye.alacak)}`
+                                    : "—"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {muavinYevmiyeDiffs.length > 50 ? (
+                          <p className="px-2 py-2 text-slate-500">
+                            İlk 50 fark gösteriliyor · toplam {muavinYevmiyeDiffs.length}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             {summary.mizanMuavin?.message ? (
               <p className="text-sm text-slate-600">{summary.mizanMuavin.message}</p>
@@ -449,33 +578,102 @@ export default function GenelMuhasebeKontrolPage() {
             </p>
 
             <div className="overflow-auto rounded-xl border border-slate-200 bg-white">
+              <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-3">
+                <div className="text-sm text-slate-700">
+                  <span className="font-medium text-slate-900">Sonuç tablosu</span>
+                  <span className="ml-2 text-slate-500">
+                    {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu ·{" "}
+                    {groupedMultiCount} gruplu MULTI özet
+                    {trimmedFisFilter
+                      ? ` · ${visibleFindingsRowCount} sonuç gösteriliyor`
+                      : ""}
+                  </span>
+                </div>
+                <label className="block text-sm">
+                  <span className="mb-1 block text-xs text-slate-500">Fiş no filtre</span>
+                  <input
+                    className="w-40 rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
+                    value={fisFilter}
+                    onChange={(e) => setFisFilter(e.target.value)}
+                    placeholder="00049"
+                  />
+                </label>
+              </div>
               <table className="min-w-full text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
                   <tr>
                     <th className="px-3 py-2">Fiş</th>
+                    <th className="px-3 py-2">Tarih</th>
                     <th className="px-3 py-2">Hesap</th>
                     <th className="px-3 py-2">Seviye</th>
+                    <th className="px-3 py-2">Durum / Mesaj</th>
                     <th className="px-3 py-2">Kod</th>
-                    <th className="px-3 py-2">Mesaj</th>
                   </tr>
                 </thead>
                 <tbody>
                   {findings.length === 0 ? (
                     <tr>
-                      <td className="px-3 py-3 text-slate-500" colSpan={5}>
-                        Satır bulgusu yok (veya yalnız özet bulgular).
+                      <td className="px-3 py-3 text-slate-500" colSpan={6}>
+                        {trimmedFisFilter
+                          ? `Fiş ${trimmedFisFilter} için sonuç bulunamadı.`
+                          : "Satır bulgusu yok (veya yalnız özet bulgular)."}
                       </td>
                     </tr>
                   ) : (
-                    findings.map((f, idx) => (
-                      <tr key={`${f.code}-${idx}`} className="border-t border-slate-100">
-                        <td className="px-3 py-2">{f.fisNo || "—"}</td>
-                        <td className="px-3 py-2">{f.hesapKodu || "—"}</td>
-                        <td className="px-3 py-2">{f.severity}</td>
-                        <td className="px-3 py-2">{f.code}</td>
-                        <td className="px-3 py-2">{f.message}</td>
-                      </tr>
-                    ))
+                    findings.flatMap((item) => {
+                      if (item.kind === "group") {
+                        const open = openFindingGroupIds.has(item.id);
+                        const rows = [
+                          <tr key={item.id} className="border-t border-slate-100 bg-slate-50/60">
+                            <td className="px-3 py-2">{item.fisNo || "—"}</td>
+                            <td className="px-3 py-2">{item.tarih || "—"}</td>
+                            <td className="px-3 py-2">—</td>
+                            <td className="px-3 py-2">{item.severity}</td>
+                            <td className="px-3 py-2">
+                              <button
+                                type="button"
+                                className="text-left text-teal-700 hover:underline"
+                                onClick={() => toggleFindingGroup(item.id)}
+                              >
+                                {item.message}
+                                {open ? " (gizle)" : " (ayrıntı)"}
+                              </button>
+                            </td>
+                            <td className="px-3 py-2 text-xs text-slate-500">{item.code}</td>
+                          </tr>,
+                        ];
+                        if (open) {
+                          for (const detail of item.details || []) {
+                            rows.push(
+                              <tr
+                                key={`${item.id}|${detail.hesapKodu}|${detail.message}`}
+                                className="border-t border-slate-100 bg-white"
+                              >
+                                <td className="px-3 py-2 pl-6 text-slate-500">{detail.fisNo || "—"}</td>
+                                <td className="px-3 py-2">{detail.tarih || "—"}</td>
+                                <td className="px-3 py-2">{detail.hesapKodu || "—"}</td>
+                                <td className="px-3 py-2">{detail.severity}</td>
+                                <td className="px-3 py-2">{detail.message}</td>
+                                <td className="px-3 py-2 text-xs text-slate-500">{detail.code}</td>
+                              </tr>
+                            );
+                          }
+                        }
+                        return rows;
+                      }
+                      return [
+                        <tr key={`${item.code}-${item.fisNo}-${item.hesapKodu}-${item.message}`} className="border-t border-slate-100">
+                          <td className="px-3 py-2">{item.fisNo || "—"}</td>
+                          <td className="px-3 py-2">{item.tarih || "—"}</td>
+                          <td className="px-3 py-2">{item.hesapKodu || "—"}</td>
+                          <td className="px-3 py-2">{item.severity}</td>
+                          <td className="px-3 py-2">
+                            {item.statusLabel ? `${item.statusLabel} — ${item.message}` : item.message}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-500">{item.code}</td>
+                        </tr>,
+                      ];
+                    })
                   )}
                 </tbody>
               </table>
