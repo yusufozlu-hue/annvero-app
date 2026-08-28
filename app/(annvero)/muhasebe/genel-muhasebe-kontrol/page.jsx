@@ -149,6 +149,7 @@ export default function GenelMuhasebeKontrolPage() {
   const [planStatus, setPlanStatus] = useState("unknown");
   const [planAccounts, setPlanAccounts] = useState(null);
   const [correctionFinding, setCorrectionFinding] = useState(null);
+  const [correctionPanelKey, setCorrectionPanelKey] = useState(0);
   const gateRef = useRef(createGenelMuhasebeAnalyzeGate());
   const runTokenRef = useRef(0);
   const abortRef = useRef(null);
@@ -399,7 +400,10 @@ export default function GenelMuhasebeKontrolPage() {
       <button
         type="button"
         className="mt-2 block text-sm font-medium text-teal-700 hover:underline"
-        onClick={() => setCorrectionFinding(item)}
+        onClick={() => {
+          setCorrectionFinding(item);
+          setCorrectionPanelKey((value) => value + 1);
+        }}
       >
         Düzeltme fişi hazırla
       </button>
@@ -757,11 +761,7 @@ export default function GenelMuhasebeKontrolPage() {
         ) : null}
 
         <CorrectionVoucherPanel
-          key={
-            correctionFinding
-              ? `${correctionFinding.fisNo}-${correctionFinding.hesapKodu}-${correctionFinding.code}`
-              : "closed"
-          }
+          key={`correction-panel-${correctionPanelKey}`}
           open={Boolean(correctionFinding)}
           onClose={() => setCorrectionFinding(null)}
           finding={correctionFinding}

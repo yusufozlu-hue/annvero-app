@@ -53,27 +53,118 @@ function rowMoney(row = {}, side = "borc") {
   return roundMoney(side === "borc" ? row.borc : row.alacak);
 }
 
-/** GM kontrol satırlarından kaynak fiş paketi */
+function fisNoMatches(rowFis = "", needle = "") {
+  const left = compactFisNo(rowFis);
+  const right = compactFisNo(needle);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const leftNum = left.replace(/^0+/, "") || "0";
+  const rightNum = right.replace(/^0+/, "") || "0";
+  return leftNum === rightNum && /^\d+$/.test(leftNum);
+}
+
+function uniqueNonEmpty(values = []) {
+  return [
+    ...new Set(
+      values
+        .map((value) => String(value ?? "").trim())
+        .filter(Boolean)
+    ),
+  ];
+}
+
+const SOURCE_DOCUMENT_TOKEN_RE =
+  /\b(YEF\d{10,}|[A-Z]{2,5}\d{8,})\b/i;
+
+function extractDocumentToken(text = "") {
+  const match = String(text || "").match(SOURCE_DOCUMENT_TOKEN_RE);
+  return match ? match[1].toUpperCase() : "";
+}
+
+function rowDocumentCandidates(row = {}) {
+  const direct = uniqueNonEmpty([
+    row.belgeNo,
+    row.evrakNo,
+    row.documentNo,
+    row.belge_no,
+  ]);
+  if (direct.length) return direct;
+  const token = extractDocumentToken(row.aciklama || row.detayAciklama || "");
+  return token ? [token] : [];
+}
+
+function resolveVoucherDate(rows = []) {
+  const dates = uniqueNonEmpty(
+    rows.map((row) => formatDateTR(row.tarih) || String(row.tarih || "").trim())
+  );
+  if (dates.length === 1) {
+    return { ok: true, value: dates[0] };
+  }
+  if (dates.length > 1) {
+    return {
+      ok: false,
+      reason: "AMBIGUOUS_DATE",
+      message: "Kaynak fiş tarihi birden fazla değer içeriyor; otomatik düzeltme üretilmez.",
+    };
+  }
+  return {
+    ok: false,
+    reason: "DATE_MISSING",
+    message: "Kaynak fiş tarihi belirlenemedi.",
+  };
+}
+
+function resolveVoucherDocumentNo(rows = []) {
+  const direct = uniqueNonEmpty(rows.flatMap((row) => rowDocumentCandidates(row)));
+  if (direct.length === 1) {
+    return { ok: true, value: direct[0] };
+  }
+  if (direct.length > 1) {
+    return {
+      ok: false,
+      reason: "AMBIGUOUS_DOCUMENT",
+      message: "Kaynak belge numarası birden fazla aday içeriyor; otomatik düzeltme üretilmez.",
+    };
+  }
+  return {
+    ok: false,
+    reason: "DOCUMENT_MISSING",
+    message: "Kaynak belge numarası belirlenemedi.",
+  };
+}
+
+/** GM kontrol satırlarından kaynak fiş paketi — bulgu satırı değil hareket satırları */
 export function buildSourceVoucherFromLedgerRows(rows = [], fisNo = "") {
   const needle = compactFisNo(fisNo);
   if (!needle) return null;
 
   const voucherRows = (rows || []).filter(
-    (row) => compactFisNo(row.fisNo) === needle && String(row.hesapKodu || "").trim()
+    (row) =>
+      fisNoMatches(row.fisNo, needle) && String(row.hesapKodu || "").trim()
   );
   if (!voucherRows.length) return null;
 
-  const first = voucherRows[0];
-  const belgeNo = String(
-    first.belgeNo || first.evrakNo || first.documentNo || ""
-  ).trim();
+  const dateResult = resolveVoucherDate(voucherRows);
+  const documentResult = resolveVoucherDocumentNo(voucherRows);
+  const fisDisplay =
+    compactFisNo(voucherRows.find((row) => compactFisNo(row.fisNo))?.fisNo) ||
+    needle;
+
+  const cariCandidates = uniqueNonEmpty(
+    voucherRows.map((row) => String(row.cariUnvan || row.hesapAdi || "").trim())
+  );
 
   return {
-    fisNo: first.fisNo,
-    tarih: first.tarih || "",
-    belgeNo,
-    cariUnvan: String(first.cariUnvan || first.hesapAdi || "").trim(),
+    fisNo: fisDisplay,
+    tarih: dateResult.ok ? dateResult.value : "",
+    belgeNo: documentResult.ok ? documentResult.value : "",
+    cariUnvan: cariCandidates.length === 1 ? cariCandidates[0] : "",
     rows: voucherRows,
+    metaComplete: dateResult.ok && documentResult.ok,
+    metaIssues: [
+      ...(dateResult.ok ? [] : [dateResult]),
+      ...(documentResult.ok ? [] : [documentResult]),
+    ],
   };
 }
 
@@ -183,12 +274,32 @@ export function detectCorrectionRecipe(finding = {}, sourceVoucher = null) {
 }
 
 export function buildCorrectionReference(sourceVoucher = {}) {
+  if (!sourceVoucher?.metaComplete) {
+    const issue = sourceVoucher?.metaIssues?.[0];
+    return {
+      ok: false,
+      sourceFisNo: compactFisNo(sourceVoucher?.fisNo),
+      sourceDate: "",
+      sourceDocumentNo: "",
+      sourceParty: sourceVoucher?.cariUnvan || "",
+      displaySourceDate: "",
+      reason: issue?.reason || "SOURCE_META_INCOMPLETE",
+      message:
+        issue?.message ||
+        "Kaynak fiş tarih/belge bilgisi eksik veya belirsiz; düzeltme fişi üretilmez.",
+    };
+  }
+
+  const displaySourceDate =
+    formatDateTR(sourceVoucher.tarih) || String(sourceVoucher.tarih || "").trim();
+
   return {
+    ok: true,
     sourceFisNo: compactFisNo(sourceVoucher.fisNo),
     sourceDate: sourceVoucher.tarih || "",
     sourceDocumentNo: sourceVoucher.belgeNo || "",
     sourceParty: sourceVoucher.cariUnvan || "",
-    displaySourceDate: formatDateTR(sourceVoucher.tarih) || sourceVoucher.tarih || "",
+    displaySourceDate,
   };
 }
 
@@ -197,9 +308,12 @@ export function buildCorrectionDescription({
   correctDebitAccountCode = "",
   correctDebitAccountName = "",
 } = {}) {
-  const datePart = reference.displaySourceDate || reference.sourceDate || "—";
+  const datePart = reference.displaySourceDate || reference.sourceDate || "";
   const fisPart = reference.sourceFisNo || "—";
   const belgePart = reference.sourceDocumentNo || "—";
+  if (!datePart || !reference.sourceDocumentNo) {
+    return "";
+  }
   const targetLabel = [correctDebitAccountCode, correctDebitAccountName]
     .filter(Boolean)
     .join(" ");
@@ -275,6 +389,13 @@ export function buildCorrectionDraft(recipe = {}, userSelections = {}) {
   }
 
   const reference = buildCorrectionReference(recipe.sourceVoucher);
+  if (!reference.ok) {
+    return fail(
+      reference.reason || "SOURCE_META_INCOMPLETE",
+      reference.message || "Kaynak fiş referansı oluşturulamadı."
+    );
+  }
+
   const description = buildCorrectionDescription({
     reference,
     correctDebitAccountCode: correctCode,
@@ -324,6 +445,20 @@ export function validateCorrectionDraft(draft = {}, options = {}) {
       ok: false,
       issues: [{ code: "DRAFT_INVALID", message: draft?.message || "Taslak geçersiz." }],
     };
+  }
+
+  if (!draft.reference?.sourceDate || !draft.reference?.sourceDocumentNo) {
+    issues.push({
+      code: "SOURCE_META_INCOMPLETE",
+      message: "Kaynak fiş tarih/belge bilgisi eksik; export engellendi.",
+    });
+  }
+
+  if (!draft.description) {
+    issues.push({
+      code: "DESCRIPTION_INCOMPLETE",
+      message: "Fiş açıklaması kaynak bilgileri olmadan oluşturulamaz.",
+    });
   }
 
   const lines = draft.lines || [];

@@ -38,10 +38,10 @@ export default function CorrectionVoucherPanel({
   accountPlanCodes = null,
 }) {
   const [closedPeriodInput, setClosedPeriodInput] = useState("");
-  const [correctionDate, setCorrectionDate] = useState("");
+  const [correctionDateOverride, setCorrectionDateOverride] = useState("");
   const [correctionDateSource, setCorrectionDateSource] = useState("");
   const [accountQuery, setAccountQuery] = useState("");
-  const [selectedAccount, setSelectedAccount] = useState(null);
+  const [selectedAccountCode, setSelectedAccountCode] = useState("");
   const [approved, setApproved] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
   const [exportError, setExportError] = useState("");
@@ -62,12 +62,21 @@ export default function CorrectionVoucherPanel({
   const defaultCorrectionDate = prep?.dateContext?.correctionDate || "";
   const defaultDateSource = prep?.dateContext?.correctionDateSource || "";
 
-  const effectiveCorrectionDate = correctionDate || defaultCorrectionDate;
+  const effectiveCorrectionDate = correctionDateOverride || defaultCorrectionDate;
   const effectiveDateSource = correctionDateSource || defaultDateSource;
+
+  const selectedAccount = useMemo(
+    () =>
+      planAccounts.find(
+        (account) => accountCodeFromPlanRow(account) === selectedAccountCode
+      ) || null,
+    [planAccounts, selectedAccountCode]
+  );
 
   const filteredAccounts = useMemo(() => {
     const q = accountQuery.trim().toLocaleLowerCase("tr-TR");
     const list = planAccounts || [];
+    if (!q) return list.slice(0, 40);
     return list
       .filter((account) => {
         const code = accountCodeFromPlanRow(account).toLocaleLowerCase("tr-TR");
@@ -80,9 +89,9 @@ export default function CorrectionVoucherPanel({
   }, [planAccounts, accountQuery]);
 
   const draft = useMemo(() => {
-    if (!recipe?.ok || !selectedAccount) return null;
+    if (!recipe?.ok || !selectedAccountCode || !selectedAccount) return null;
     return buildCorrectionDraft(recipe, {
-      correctDebitAccountCode: accountCodeFromPlanRow(selectedAccount),
+      correctDebitAccountCode: selectedAccountCode,
       correctDebitAccountName:
         selectedAccount?.account_name ||
         selectedAccount?.accountName ||
@@ -98,6 +107,7 @@ export default function CorrectionVoucherPanel({
     });
   }, [
     recipe,
+    selectedAccountCode,
     selectedAccount,
     companyAccountingRules,
     closedPeriodInput,
@@ -117,7 +127,7 @@ export default function CorrectionVoucherPanel({
   }, [draft, accountPlanCodes, prep?.closedReliability]);
 
   const handleDateChange = useCallback((iso) => {
-    setCorrectionDate(iso);
+    setCorrectionDateOverride(iso);
     setCorrectionDateSource(CORRECTION_DATE_SOURCE.USER_SELECTED);
     setApproved(false);
     setExportMessage("");
@@ -151,6 +161,8 @@ export default function CorrectionVoucherPanel({
   }, [draft, approved, accountPlanCodes, prep?.closedReliability, companySlug]);
 
   if (!open || !finding) return null;
+
+  const sourceMetaIssues = sourceVoucher?.metaIssues || [];
 
   return (
     <div
@@ -187,6 +199,12 @@ export default function CorrectionVoucherPanel({
 
           {recipe?.ok ? (
             <>
+              {sourceMetaIssues.length ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800">
+                  {sourceMetaIssues.map((issue) => issue.message).join(" ")}
+                </div>
+              ) : null}
+
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
                 <div className="font-medium text-slate-900">Kaynak fiş</div>
                 <dl className="mt-2 grid gap-1 sm:grid-cols-2">
@@ -221,6 +239,8 @@ export default function CorrectionVoucherPanel({
                     value={closedPeriodInput}
                     onChange={(e) => {
                       setClosedPeriodInput(e.target.value);
+                      setCorrectionDateOverride("");
+                      setCorrectionDateSource("");
                       setApproved(false);
                     }}
                     placeholder="2026/03"
@@ -246,14 +266,17 @@ export default function CorrectionVoucherPanel({
                   />
                   {effectiveDateSource === CORRECTION_DATE_SOURCE.AUTO_DEFAULT ? (
                     <span className="mt-1 block text-xs text-slate-500">
-                      Varsayılan: kapalı dönem sonrası ilk gün
+                      Varsayılan: kapalı dönem sonrası ilk gün ({defaultCorrectionDate})
                     </span>
                   ) : null}
                 </label>
                 <div>
                   <span className="mb-1 block font-medium text-slate-800">Düzeltme dönemi</span>
                   <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                    {draft?.correctionPeriod || "—"}
+                    {draft?.correctionPeriod ||
+                      (effectiveCorrectionDate
+                        ? effectiveCorrectionDate.slice(0, 7).replace("-", "/")
+                        : "—")}
                   </div>
                 </div>
               </div>
@@ -274,7 +297,7 @@ export default function CorrectionVoucherPanel({
                   ) : (
                     filteredAccounts.map((account) => {
                       const code = accountCodeFromPlanRow(account);
-                      const active = selectedAccount === account;
+                      const active = selectedAccountCode === code;
                       return (
                         <button
                           key={code}
@@ -283,7 +306,7 @@ export default function CorrectionVoucherPanel({
                             active ? "bg-teal-100 font-medium" : ""
                           }`}
                           onClick={() => {
-                            setSelectedAccount(account);
+                            setSelectedAccountCode(code);
                             setApproved(false);
                             setExportMessage("");
                           }}
@@ -313,8 +336,11 @@ export default function CorrectionVoucherPanel({
                         </tr>
                       </thead>
                       <tbody>
-                        {draft.lines.map((line) => (
-                          <tr key={line.hesapKodu} className="border-t border-slate-100">
+                        {draft.lines.map((line, index) => (
+                          <tr
+                            key={`${line.hesapKodu}-${index}-${selectedAccountCode}`}
+                            className="border-t border-slate-100"
+                          >
                             <td className="px-2 py-1">
                               {line.hesapKodu}
                               {line.hesapAdi ? ` — ${line.hesapAdi}` : ""}

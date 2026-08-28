@@ -193,7 +193,13 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
       { hesapKodu: "740.30.038", borc: 100, alacak: 0 },
       { hesapKodu: "320.10.Y0010", borc: 0, alacak: 90 },
     ],
-    reference: { sourceFisNo: "00049" },
+    reference: {
+      ok: true,
+      sourceFisNo: "00049",
+      sourceDate: "16.02.2026",
+      sourceDocumentNo: "YEF2026000000003",
+    },
+    description: "test",
     correctionPeriod: "2026/04",
   };
   const exp = exportCorrectionDraft(badDraft, {
@@ -214,6 +220,113 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
   });
   const exp = exportCorrectionDraft(draft, { userApproved: false });
   assert(!exp.ok && exp.reason === "APPROVAL_REQUIRED", "11 no export without approval");
+}
+
+// Kaynak meta tamamlanır
+{
+  assert(sourceVoucher?.metaComplete, "source voucher meta complete");
+  assert(sourceVoucher?.tarih === "16.02.2026", "source voucher date resolved");
+  assert(sourceVoucher?.belgeNo === "YEF2026000000003", "source voucher document resolved");
+}
+
+// Ay/yıl geçişi: 2026/12 → 01.01.2027
+{
+  assert(firstOpenDateAfterClosedPeriod("2026/12") === "2027-01-01", "year rollover first open");
+  const ok = validateCorrectionDate({
+    correctionDate: "2027-01-15",
+    lastClosedLedgerPeriod: "2026/12",
+    lastClosedReliability: "COMPANY_PROFILE",
+  });
+  assert(ok.ok && ok.correctionPeriod === "2027/01", "2027/01 open period accepted");
+}
+
+// Timezone kayması yok — ordinal karşılaştırma 2026-04-01 açık dönem
+{
+  const ctx = resolveCorrectionDateContext({
+    lastClosedLedgerPeriod: "2026/03",
+    lastClosedReliability: "COMPANY_PROFILE",
+  });
+  const val = validateCorrectionDate({
+    correctionDate: ctx.correctionDate,
+    lastClosedLedgerPeriod: "2026/03",
+    lastClosedReliability: "COMPANY_PROFILE",
+  });
+  assert(val.ok, "auto default date validates without tz shift");
+  assert(ctx.correctionDate === "2026-04-01", "auto default iso stable");
+}
+
+// Luca block: belge açıklamadan çözülür
+{
+  const rows = [
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      hesapKodu: "191.01.020.108",
+      borc: 27000,
+      alacak: 0,
+      aciklama: "YEF2026000000003 KDV",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      hesapKodu: "320.10.Y0010",
+      borc: 135000,
+      alacak: 0,
+      aciklama: "YEF2026000000003",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      hesapKodu: "320.10.Y0010",
+      borc: 0,
+      alacak: 162000,
+      aciklama: "YEF2026000000003",
+    },
+  ];
+  const voucher = buildSourceVoucherFromLedgerRows(rows, "00049");
+  assert(voucher?.metaComplete, "luca block meta from aciklama");
+  assert(voucher?.belgeNo === "YEF2026000000003", "luca block document token");
+}
+
+// Kaynak tarih/belge belirsizse fail-closed
+{
+  const rows = [
+    { fisNo: "X1", tarih: "01.01.2026", hesapKodu: "320.01", borc: 10, alacak: 0, belgeNo: "B1" },
+    { fisNo: "X1", tarih: "02.01.2026", hesapKodu: "320.01", borc: 0, alacak: 10, belgeNo: "B1" },
+  ];
+  const voucher = buildSourceVoucherFromLedgerRows(rows, "X1");
+  assert(!voucher?.metaComplete, "ambiguous date blocks meta");
+  const recipe = detectCorrectionRecipe({ fisNo: "X1", severity: "UYARI" }, voucher);
+  assert(!recipe?.ok || !buildCorrectionDraft(recipe, {
+    correctDebitAccountCode: "740.30.038",
+    correctDebitAccountName: "GIDER",
+    companyAccountingRules: { lastClosedEdefterPeriod: "2026/03" },
+    userCorrectionDate: "2026-04-01",
+    accountPlanCodes: planCodes,
+  }).ok, "ambiguous source meta blocks draft");
+}
+
+// Hesap seçimi taslak/açıklama/export'ta tutarlı
+{
+  const recipe = detectCorrectionRecipe(fx.finding, sourceVoucher);
+  const draftA = buildCorrectionDraft(recipe, {
+    correctDebitAccountCode: "740.30.038",
+    correctDebitAccountName: "MALİ DANIŞMANLIK GİDERLERİ",
+    companyAccountingRules: fx.companyAccountingRules,
+    userCorrectionDate: "2026-04-01",
+    accountPlanCodes: null,
+  });
+  const draftB = buildCorrectionDraft(recipe, {
+    correctDebitAccountCode: "740.03.044",
+    correctDebitAccountName: "DİĞER DANIŞMANLIK GİDERLERİ",
+    companyAccountingRules: fx.companyAccountingRules,
+    userCorrectionDate: "2026-04-01",
+    accountPlanCodes: null,
+  });
+  assert(draftA.lines[0].hesapKodu === "740.30.038", "draft A debit code");
+  assert(draftA.description.includes("740.30.038"), "draft A description code");
+  assert(draftB.lines[0].hesapKodu === "740.03.044", "draft B debit code");
+  assert(!draftA.description.includes("740.03.044"), "draft A not stale B code");
 }
 
 // prepareCorrectionFromFinding entegrasyon
@@ -255,6 +368,11 @@ const planCodes = buildAccountPlanCodeSet(fx.accountPlan);
       companyAccountingRules: fx.companyAccountingRules,
     });
     if (prep.recipe?.ok) {
+      assert(prep.sourceVoucher?.metaComplete, "real smoke source meta complete");
+      assert(
+        prep.sourceVoucher?.tarih && prep.sourceVoucher?.belgeNo,
+        "real smoke source date+document"
+      );
       const draft = buildCorrectionDraft(prep.recipe, {
         correctDebitAccountCode: "740.30.038",
         correctDebitAccountName: "MALİ DANIŞMANLIK GİDERLERİ",
