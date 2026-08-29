@@ -23,8 +23,8 @@ import {
 } from "@/src/utils/eDefterAnalyzeContract";
 import { createGenelMuhasebeAnalyzeGate, buildAccountPlanCodeSet } from "@/src/utils/genelMuhasebeKontrolEngine";
 import {
-  buildGenelMuhasebeFindingsPresentation,
-  matchesVoucherNumberFilter,
+  buildVisibleGenelMuhasebeFindingsRows,
+  presentationRowRenderKey,
   summarizeGenelMuhasebeFindingsWithCorrections,
 } from "@/src/utils/genelMuhasebeFindingsView";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
@@ -362,20 +362,18 @@ export default function GenelMuhasebeKontrolPage() {
   const findingsCatalog = result?.findingsCatalog;
   const ledgerRows = result?.rows || [];
 
-  const findings = useMemo(() => {
-    if (!findingsCatalog?.length) return [];
-    const rows = buildGenelMuhasebeFindingsPresentation(findingsCatalog, {
-      fisFilter: trimmedFisFilter,
-      correctionRecords,
-      ledgerRows,
-    });
-    // Savunma: gösterilen her satır aynı merkezi fiş-no predicate’inden geçer.
-    const fisScoped = rows.filter((item) =>
-      matchesVoucherNumberFilter(item?.fisNo, trimmedFisFilter)
-    );
-    if (!showDuzeltildiOnly) return fisScoped;
-    return fisScoped.filter((item) => item.correctionResolved);
-  }, [findingsCatalog, trimmedFisFilter, correctionRecords, showDuzeltildiOnly, ledgerRows]);
+  // Tek final liste: özet sayaç + <tbody> yalnız visibleRows.
+  const visibleRows = useMemo(
+    () =>
+      buildVisibleGenelMuhasebeFindingsRows({
+        findingsCatalog,
+        fisFilter: trimmedFisFilter,
+        correctionRecords,
+        ledgerRows,
+        showDuzeltildiOnly,
+      }),
+    [findingsCatalog, trimmedFisFilter, correctionRecords, showDuzeltildiOnly, ledgerRows]
+  );
 
   const findingsWithCorrections = useMemo(() => {
     if (!findingsCatalog?.length) return null;
@@ -396,9 +394,10 @@ export default function GenelMuhasebeKontrolPage() {
   }, [trimmedFisFilter, findingsCatalog]);
 
   const findingsCatalogSize = findingsCatalog?.length || 0;
-  const groupedMultiCount = findings.filter((item) => item.kind === "group").length;
-  const visibleFindingsRowCount = findings.length;
+  const visibleRowsCount = visibleRows.length;
+  const visibleGroupedMultiCount = visibleRows.filter((item) => item.kind === "group").length;
   const multiDetailGroup = multiCounterpartUi.multiDetailGroup;
+  const findingsTableBodyKey = `findings-body|${trimmedFisFilter}|${showDuzeltildiOnly ? "1" : "0"}|${visibleRowsCount}`;
 
   const openMultiCounterpartDetail = useCallback(
     (group, event) => {
@@ -806,8 +805,8 @@ export default function GenelMuhasebeKontrolPage() {
                   <span className="ml-2 text-slate-500">
                     {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu
                     {trimmedFisFilter
-                      ? ` · ${visibleFindingsRowCount} sonuç gösteriliyor · ${groupedMultiCount} bileşik fiş özeti`
-                      : ` · ${groupedMultiCount} bileşik fiş özeti`}
+                      ? ` · ${visibleRowsCount} sonuç gösteriliyor · ${visibleGroupedMultiCount} bileşik fiş özeti`
+                      : ` · ${visibleGroupedMultiCount} bileşik fiş özeti`}
                   </span>
                 </div>
                 <label className="block text-sm">
@@ -822,7 +821,10 @@ export default function GenelMuhasebeKontrolPage() {
                   />
                 </label>
               </div>
-              <table className="min-w-full text-left text-sm">
+              <table
+                className="min-w-full text-left text-sm"
+                data-testid="genel-muhasebe-findings-table"
+              >
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
                   <tr>
                     <th className="px-3 py-2">Fiş</th>
@@ -833,9 +835,9 @@ export default function GenelMuhasebeKontrolPage() {
                     <th className="px-3 py-2">Açıklama</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {findings.length === 0 ? (
-                    <tr>
+                <tbody key={findingsTableBodyKey} data-testid="genel-muhasebe-findings-tbody">
+                  {visibleRowsCount === 0 ? (
+                    <tr data-testid="genel-muhasebe-findings-empty">
                       <td className="px-3 py-3 text-slate-500" colSpan={6}>
                         {trimmedFisFilter
                           ? `Fiş ${trimmedFisFilter} için sonuç bulunamadı.`
@@ -843,12 +845,21 @@ export default function GenelMuhasebeKontrolPage() {
                       </td>
                     </tr>
                   ) : (
-                    findings.flatMap((item) => {
+                    visibleRows.map((item, index) => {
+                      const rowKey = presentationRowRenderKey(item, index);
                       if (item.kind === "group") {
                         // Sözleşme: MULTI grupta inline alt satır yok — yalnız modal.
-                        return [
-                          <tr key={item.id} className="border-t border-slate-100 bg-slate-50/60">
-                            <td className="px-3 py-2">{item.fisNo || "—"}</td>
+                        return (
+                          <tr
+                            key={rowKey}
+                            className="border-t border-slate-100 bg-slate-50/60"
+                            data-testid="genel-muhasebe-finding-row"
+                            data-fis-no={item.fisNo || ""}
+                            data-row-kind="group"
+                          >
+                            <td className="px-3 py-2" data-testid="genel-muhasebe-finding-fis">
+                              {item.fisNo || "—"}
+                            </td>
                             <td className="px-3 py-2">{item.tarih || "—"}</td>
                             <td className="px-3 py-2">—</td>
                             <td className="px-3 py-2">{item.severity}</td>
@@ -870,13 +881,20 @@ export default function GenelMuhasebeKontrolPage() {
                                 {" (ayrıntı)"}
                               </button>
                             </td>
-                          </tr>,
-                        ];
+                          </tr>
+                        );
                       }
-                      const rowKey = `${item.code}-${item.fisNo}-${item.hesapKodu}-${item.message}`;
-                      return [
-                        <tr key={rowKey} className="border-t border-slate-100">
-                          <td className="px-3 py-2">{item.fisNo || "—"}</td>
+                      return (
+                        <tr
+                          key={rowKey}
+                          className="border-t border-slate-100"
+                          data-testid="genel-muhasebe-finding-row"
+                          data-fis-no={item.fisNo || ""}
+                          data-row-kind="single"
+                        >
+                          <td className="px-3 py-2" data-testid="genel-muhasebe-finding-fis">
+                            {item.fisNo || "—"}
+                          </td>
                           <td className="px-3 py-2">{item.tarih || "—"}</td>
                           <td className="px-3 py-2">{item.hesapKodu || "—"}</td>
                           <td className="px-3 py-2">{item.severity}</td>
@@ -888,8 +906,8 @@ export default function GenelMuhasebeKontrolPage() {
                             {renderTechnicalDetails(item, rowKey)}
                             {renderCorrectionAction(item)}
                           </td>
-                        </tr>,
-                      ];
+                        </tr>
+                      );
                     })
                   )}
                 </tbody>

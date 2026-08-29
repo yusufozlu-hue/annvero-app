@@ -26,10 +26,12 @@ import {
 } from "@/src/utils/eDefterAnalyzeContract.js";
 import {
   buildGenelMuhasebeFindingsPresentation,
+  buildVisibleGenelMuhasebeFindingsRows,
   countVisiblePresentationRows,
   filterGenelMuhasebePresentationRows,
   matchesVoucherNumberFilter,
   normalizeFisNoForFilter,
+  presentationRowRenderKey,
   pruneExpandedPresentationGroups,
 } from "@/src/utils/genelMuhasebeFindingsView.js";
 import {
@@ -1978,8 +1980,111 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
     "utf8"
   );
-  assert(/matchesVoucherNumberFilter/.test(pageSrc), "y page uses central helper");
+  assert(/buildVisibleGenelMuhasebeFindingsRows/.test(pageSrc), "y page uses visibleRows builder");
   assert(/data-testid="genel-muhasebe-fis-filter"/.test(pageSrc), "y filter test id");
+}
+
+// z) page render wiring — summary count === tbody row source; yalnız visibleRows
+{
+  const catalog = [
+    {
+      fisNo: "00002",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-2",
+    },
+    {
+      fisNo: "00030",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "noise-30 contains 49 and 2",
+      hesapKodu: "102.49.002",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "warn-49",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-49a",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-49b",
+    },
+    {
+      fisNo: "00065",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message: "round-65-49",
+    },
+    {
+      fisNo: "00106",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-106",
+    },
+  ];
+
+  function assertRenderParity(query, expectedFis) {
+    const visibleRows = buildVisibleGenelMuhasebeFindingsRows({
+      findingsCatalog: catalog,
+      fisFilter: query,
+    });
+    const summaryCount = visibleRows.length;
+    // DOM tbody row model: one <tr> per visibleRows item (no flatMap expansion).
+    const domRows = visibleRows.map((item, index) => ({
+      key: presentationRowRenderKey(item, index),
+      fisNo: item.fisNo || "",
+      kind: item.kind || "single",
+    }));
+    assert(domRows.length === summaryCount, `z[${query}] summary count === DOM row count`);
+    assert(
+      domRows.every((row) => row.fisNo === expectedFis),
+      `z[${query}] every DOM fis cell === ${expectedFis}`
+    );
+    assert(
+      new Set(domRows.map((row) => row.key)).size === domRows.length,
+      `z[${query}] stable unique row keys`
+    );
+  }
+
+  assertRenderParity("49", "00049");
+  assertRenderParity("2", "00002");
+  assertRenderParity("106", "00106");
+  assertRenderParity("00049", "00049");
+
+  const cleared = buildVisibleGenelMuhasebeFindingsRows({
+    findingsCatalog: catalog,
+    fisFilter: "",
+  });
+  assert(cleared.length >= 5, "z clear filter restores mixed rows");
+  assert(
+    [...new Set(cleared.map((row) => row.fisNo))].sort().join(",") ===
+      "00002,00030,00049,00065,00106",
+    "z clear keeps all fixture fis numbers"
+  );
+
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(/const visibleRows = useMemo/.test(pageSrc), "z page defines visibleRows");
+  assert(/visibleRows\.map\(/.test(pageSrc), "z tbody maps visibleRows");
+  assert(/visibleRowsCount/.test(pageSrc), "z summary uses visibleRowsCount");
+  assert(
+    !/\bfindings\.flatMap\(/.test(pageSrc) && !/\bfindings\.map\(/.test(pageSrc),
+    "z page does not render legacy findings list"
+  );
+  assert(/data-testid="genel-muhasebe-findings-tbody"/.test(pageSrc), "z tbody test id");
+  assert(/data-fis-no=\{item\.fisNo/.test(pageSrc), "z row data-fis-no for DOM accept");
+  assert(/key=\{findingsTableBodyKey\}/.test(pageSrc), "z tbody remounts on filter change");
 }
 
 if (failed) {

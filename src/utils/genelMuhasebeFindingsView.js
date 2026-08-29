@@ -319,6 +319,48 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
 }
 
 /**
+ * Sayfa sonuç tablosunun tek kaynağı.
+ * Presentation (grup + single + correction) → final fisNo predicate → görünür satırlar.
+ * Sayaç ve <tbody> yalnız bu listeyi kullanmalı.
+ */
+export function buildVisibleGenelMuhasebeFindingsRows({
+  findingsCatalog = [],
+  fisFilter = "",
+  correctionRecords = [],
+  ledgerRows = [],
+  showDuzeltildiOnly = false,
+} = {}) {
+  if (!Array.isArray(findingsCatalog) || findingsCatalog.length === 0) return [];
+  const query = String(fisFilter ?? "");
+  const rows = buildGenelMuhasebeFindingsPresentation(findingsCatalog, {
+    fisFilter: query,
+    correctionRecords,
+    ledgerRows,
+  });
+  const fisScoped = rows.filter((item) => matchesVoucherNumberFilter(item?.fisNo, query));
+  if (!showDuzeltildiOnly) return fisScoped;
+  return fisScoped.filter((item) => item.correctionResolved);
+}
+
+/** Sonuç tablosu satır anahtarı — filtre değişiminde stale DOM kalmasın. */
+export function presentationRowRenderKey(item = {}, index = 0) {
+  if (item?.kind === "group") {
+    return `group|${item.id || item.fisNo || "x"}|${index}`;
+  }
+  return [
+    "single",
+    item?.id || "",
+    item?.code || "",
+    item?.fisNo || "",
+    item?.hesapKodu || "",
+    item?.tarih || "",
+    item?.severity || "",
+    String(item?.displayMessage || item?.messageTr || item?.message || "").slice(0, 80),
+    index,
+  ].join("|");
+}
+
+/**
  * Düzeltme kayıtlarıyla Genel Sonuç / İnceleme / Düzeltildi.
  * APPLIED bulgular unresolved katalogdan çıkarılır; EXPORTED/CANCELLED unresolved kalır.
  * overallSonuc ve incelemeGerekli aynı correction-aware katalogdan türetilir.
