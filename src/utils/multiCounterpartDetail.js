@@ -1,5 +1,5 @@
 /**
- * Salt okunur çoklu karşıt hesap fiş ayrıntısı.
+ * Salt okunur bileşik fiş ayrıntısı (MULTI_COUNTERPART presentation).
  * Motor sayaçlarına / otomatik seçime dokunmaz — yalnız presentation.
  */
 import {
@@ -53,10 +53,15 @@ function isYevmiyeKaynak(kaynak = "") {
   return k === E_DEFTER_KAYNAK.YEVMIYE || k === E_DEFTER_KAYNAK.YEVMIYE_XML || k.includes("yevmiye");
 }
 
-/** Kullanıcıya gösterilen neden metni — aday sayısı N. */
+/** Modal banner — N birlikte çalışan karşı hesap. */
 export function multiCounterpartReasonTr(candidateCount = 0) {
   const n = Math.max(0, Number(candidateCount) || 0);
-  return `Karşı yönde ${n} farklı hesap bulunduğu için tek karşıt hesap seçilemedi.`;
+  return `Bu hesap satırı karşı yöndeki ${n} farklı hesapla birlikte çalışmıştır.`;
+}
+
+/** Modal notu — bileşik fiş normaldir. */
+export function multiCounterpartNormalNoteTr() {
+  return "Bu durum çok satırlı muhasebe fişlerinde normaldir ve tek başına hata oluşturmaz.";
 }
 
 /**
@@ -102,7 +107,7 @@ export function selectVoucherRowsForMultiDetail(fisNo = "", ledgerRows = []) {
 
 /**
  * Motorla aynı fail-closed mantık: karşı yönün benzersiz kodları (self hariç).
- * Otomatik tek hesap seçmez.
+ * Otomatik tek hesap seçmez. Kod sırası localeCompare (önceki aday sırası).
  */
 export function collectOppositeCandidateCodes(voucherRows = []) {
   const debitCodes = new Set();
@@ -148,6 +153,40 @@ export function collectOppositeCandidateCodes(voucherRows = []) {
 }
 
 /**
+ * Aday kod sırasını koruyarak hesap adı + tutar zenginleştirir.
+ * voucherRows / candidates mutate edilmez.
+ */
+export function buildCounterpartAccountDetails(candidateCodes = [], voucherRows = []) {
+  const byCode = new Map();
+  for (const row of Array.isArray(voucherRows) ? voucherRows : []) {
+    const code = compactText(row.hesapKodu);
+    if (!code || byCode.has(code)) continue;
+    const borc = roundMoney(row.borc);
+    const alacak = roundMoney(row.alacak);
+    const side = rowSide(borc, alacak);
+    byCode.set(code, {
+      hesapKodu: code,
+      hesapAdi: compactText(row.hesapAdi || row.accountName || ""),
+      yon: side.yon,
+      borc,
+      alacak,
+    });
+  }
+
+  return (Array.isArray(candidateCodes) ? candidateCodes : []).map((code) => {
+    const found = byCode.get(compactText(code));
+    if (found) return { ...found };
+    return {
+      hesapKodu: compactText(code),
+      hesapAdi: "",
+      yon: "",
+      borc: 0,
+      alacak: 0,
+    };
+  });
+}
+
+/**
  * Presentation grubuna eklenecek clone-safe fiş ayrıntısı.
  * ledgerRows mutate edilmez; satır sırası yalnız gösterim içindir.
  */
@@ -165,6 +204,7 @@ export function buildMultiCounterpartVoucherDetail({
   );
 
   const { candidates, candidateCount } = collectOppositeCandidateCodes(voucherRows);
+  const counterpartAccounts = buildCounterpartAccountDetails(candidates, voucherRows);
 
   const mapped = voucherRows.map((row, index) => {
     const borc = roundMoney(row.borc);
@@ -199,7 +239,9 @@ export function buildMultiCounterpartVoucherDetail({
     lineCount: lines.length,
     lines,
     candidates,
+    counterpartAccounts,
     candidateCount,
     reasonTr: multiCounterpartReasonTr(candidateCount),
+    normalNoteTr: multiCounterpartNormalNoteTr(),
   };
 }

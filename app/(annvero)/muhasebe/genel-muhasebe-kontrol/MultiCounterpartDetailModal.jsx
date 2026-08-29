@@ -2,9 +2,10 @@
 
 import { useEffect, useId, useRef } from "react";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
+import { multiCounterpartNormalNoteTr } from "@/src/utils/multiCounterpartDetail";
 
 /**
- * Salt okunur “Çoklu karşıt hesap ayrıntısı” modalı.
+ * Salt okunur “Bileşik fiş ayrıntısı” modalı.
  * Otomatik hesap seçmez; DB yazmaz.
  */
 export default function MultiCounterpartDetailModal({
@@ -34,10 +35,19 @@ export default function MultiCounterpartDetailModal({
   const fisNo = detail?.fisNo || group.fisNo || "—";
   const tarih = detail?.tarih || group.tarih || "—";
   const lines = Array.isArray(detail?.lines) ? detail.lines : [];
-  const candidates = Array.isArray(detail?.candidates) ? detail.candidates : [];
+  const counterpartAccounts = Array.isArray(detail?.counterpartAccounts)
+    ? detail.counterpartAccounts
+    : (Array.isArray(detail?.candidates) ? detail.candidates : []).map((code) => ({
+        hesapKodu: code,
+        hesapAdi: "",
+        yon: "",
+        borc: 0,
+        alacak: 0,
+      }));
   const reasonTr =
     detail?.reasonTr ||
-    "Karşı yönde birden fazla hesap bulunduğu için tek karşıt hesap seçilemedi.";
+    "Bu hesap satırı karşı yöndeki birden fazla hesapla birlikte çalışmıştır.";
+  const normalNoteTr = detail?.normalNoteTr || multiCounterpartNormalNoteTr();
   const technicalRows = Array.isArray(group.details) ? group.details : [];
 
   return (
@@ -59,7 +69,7 @@ export default function MultiCounterpartDetailModal({
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
           <div>
             <h2 id={titleId} className="text-base font-semibold text-slate-900">
-              Çoklu karşıt hesap ayrıntısı
+              Bileşik fiş ayrıntısı
             </h2>
             <p className="mt-1 text-sm text-slate-600">
               Fiş {fisNo} · {tarih}
@@ -78,30 +88,56 @@ export default function MultiCounterpartDetailModal({
         </div>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3">
-          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-            {reasonTr}
-          </p>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">
+            <p>{reasonTr}</p>
+            <p className="mt-1 text-slate-600">{normalNoteTr}</p>
+          </div>
 
           <section>
-            <h3 className="mb-2 text-sm font-medium text-slate-800">Karşıt hesap adayları</h3>
-            {candidates.length === 0 ? (
-              <p className="text-sm text-slate-500">Aday listesi üretilemedi.</p>
+            <h3 className="mb-2 text-sm font-medium text-slate-800">
+              Birlikte çalışan karşı hesaplar
+            </h3>
+            {counterpartAccounts.length === 0 ? (
+              <p className="text-sm text-slate-500">
+                Birlikte çalışan karşı hesap listesi üretilemedi.
+              </p>
             ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {candidates.map((code) => (
-                  <span
-                    key={code}
-                    className="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-xs text-slate-800"
-                  >
-                    {code}
-                  </span>
-                ))}
+              <div className="overflow-auto rounded-lg border border-slate-200">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="bg-slate-100 text-xs uppercase text-slate-600">
+                    <tr>
+                      <th className="px-3 py-2">Hesap kodu</th>
+                      <th className="px-3 py-2">Hesap adı</th>
+                      <th className="px-3 py-2">Yön</th>
+                      <th className="px-3 py-2 text-right">Borç</th>
+                      <th className="px-3 py-2 text-right">Alacak</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {counterpartAccounts.map((account) => (
+                      <tr
+                        key={account.hesapKodu}
+                        className="border-t border-slate-100"
+                      >
+                        <td className="px-3 py-1.5 font-mono text-xs text-slate-900">
+                          {account.hesapKodu || "—"}
+                        </td>
+                        <td className="px-3 py-1.5 text-slate-700">
+                          {account.hesapAdi || "—"}
+                        </td>
+                        <td className="px-3 py-1.5 text-slate-800">{account.yon || "—"}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                          {formatTurkishMoney(account.borc)}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                          {formatTurkishMoney(account.alacak)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
-            <p className="mt-1 text-xs text-slate-500">
-              {detail?.candidateCount ?? candidates.length} farklı karşı yön hesabı · otomatik
-              tek hesap seçilmedi
-            </p>
           </section>
 
           <section>

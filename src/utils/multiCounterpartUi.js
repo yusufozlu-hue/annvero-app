@@ -1,5 +1,5 @@
 /**
- * Çoklu karşıt hesap ayrıntısı — UI state helpers (salt okunur modal).
+ * Bileşik fiş (MULTI_COUNTERPART) ayrıntısı — UI state helpers (salt okunur modal).
  * Inline grup genişletmesi yok; teknik satırlar yalnız modal içinde.
  */
 import { buildMultiCounterpartVoucherDetail } from "@/src/utils/multiCounterpartDetail";

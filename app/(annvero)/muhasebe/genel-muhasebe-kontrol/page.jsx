@@ -676,7 +676,7 @@ export default function GenelMuhasebeKontrolPage() {
                 value={`${summary.dengeliFis} / ${summary.dengesizFis}`}
               />
               <Stat label="Kesin karşıt" value={summary.kesinKarsit} />
-              <Stat label="Çoklu karşıt" value={summary.cokluKarsit} />
+              <Stat label="Bileşik satır" value={summary.cokluKarsit} />
               <Stat label="İnceleme" value={findingsWithCorrections?.incelemeGerekli ?? summary.incelemeGerekli} />
               <button
                 type="button"
@@ -800,7 +800,7 @@ export default function GenelMuhasebeKontrolPage() {
                   <span className="font-medium text-slate-900">Sonuç tablosu</span>
                   <span className="ml-2 text-slate-500">
                     {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu ·{" "}
-                    {groupedMultiCount} gruplu karşıt hesap özeti
+                    {groupedMultiCount} bileşik fiş özeti
                     {trimmedFisFilter
                       ? ` · ${visibleFindingsRowCount} sonuç gösteriliyor`
                       : ""}

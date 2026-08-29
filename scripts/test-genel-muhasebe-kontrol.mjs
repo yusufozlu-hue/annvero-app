@@ -45,6 +45,8 @@ import {
 } from "@/src/utils/multiCounterpartUi.js";
 import {
   buildMultiCounterpartVoucherDetail,
+  multiCounterpartNormalNoteTr,
+  multiCounterpartReasonTr,
   sortMultiCounterpartLinesForDisplay,
 } from "@/src/utils/multiCounterpartDetail.js";
 import { LUCA_MULTI_ACCOUNT_MUAVIN_ROWS } from "./fixtures/luca-multi-account-muavin.mjs";
@@ -938,6 +940,16 @@ function hasIssueCode(rows, extras, code) {
     assert(r.summary.muavinYevmiye?.counts?.onlyMuavin === 0, "p onlyMuavin 0");
     assert(r.summary.muavinYevmiye?.counts?.onlyYevmiye === 0, "p onlyYevmiye 0");
     assert(r.counters.persistInvocations === 0, "p persist 0");
+    assert(r.summary.cokluKarsit === 327, "p bileşik satır count 327");
+    assert(
+      presentation.filter((item) => item.kind === "group").length === 66,
+      "p 66 bileşik fiş groups"
+    );
+    assert(r.summary.toplamFis === 115, "p 115 fiş");
+    assert(
+      (r.summary.hareketSatir ?? r.summary.toplamSatir) === 545,
+      "p 545 hareket"
+    );
   }
 }
 
@@ -1079,8 +1091,7 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
 // s) Türkçe UI sunumu — teknik kod korunur, kullanıcı metninde İngilizce yok
 {
   assert(
-    genelMuhasebeFindingTitleTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) ===
-      "Birden fazla karşıt hesap",
+    genelMuhasebeFindingTitleTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) === "Bileşik fiş",
     "s MULTI title TR"
   );
   assert(
@@ -1093,10 +1104,17 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     "s ROUNDING title TR"
   );
   assert(
-    genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART).includes(
-      "birden fazla karşıt hesap"
-    ),
+    genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) ===
+      "Bu fişte bir hesap satırı karşı yöndeki birden fazla hesapla birlikte çalışmaktadır. Bu durum tek başına hata değildir.",
     "s MULTI message TR"
+  );
+  assert(
+    !genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART).includes("aday") &&
+      !genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART).includes("seçilemedi") &&
+      !genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART).includes(
+        "tek hesap atanmadı"
+      ),
+    "s MULTI message has no old aday/seçilemedi wording"
   );
   assert(
     genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE).includes(
@@ -1145,6 +1163,15 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     catalog[0].code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
     "s catalog technical code unchanged"
   );
+  const multiGroup = presentation.find((item) => item.kind === "group" && item.fisNo === "00001");
+  assert(multiGroup?.displayTitle === "Bileşik fiş", "s group displayTitle Bileşik fiş");
+  assert(
+    multiGroup?.displayMessage ===
+      "Bu fişte bir hesap satırı karşı yöndeki birden fazla hesapla birlikte çalışmaktadır. Bu durum tek başına hata değildir.",
+    "s group displayMessage compound voucher wording"
+  );
+  assert(multiGroup?.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART, "s group technical code kept");
+  assert(multiGroup?.severity === E_DEFTER_ISSUE_SEVERITY.BILGI, "s group severity BİLGİ");
 }
 
 // t) MULTI group multiDetail from ledgerRows — read-only voucher snapshot
@@ -1203,10 +1230,19 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     "t candidates are opposite debit codes"
   );
   assert(
-    /Karşı yönde 2 farklı hesap bulunduğu için tek karşıt hesap seçilemedi/.test(
-      group.multiDetail.reasonTr || ""
+    group.multiDetail.reasonTr ===
+      "Bu hesap satırı karşı yöndeki 2 farklı hesapla birlikte çalışmıştır.",
+    "t reasonTr mentions N=2 together-working wording"
+  );
+  assert(
+    group.multiDetail.normalNoteTr === multiCounterpartNormalNoteTr(),
+    "t normalNoteTr compound-voucher note"
+  );
+  assert(
+    !/aday|seçilemedi|tek karşıt hesap/.test(
+      `${group.multiDetail.reasonTr} ${group.multiDetail.normalNoteTr} ${group.displayMessage}`
     ),
-    "t reasonTr mentions N=2"
+    "t user texts have no aday/seçilemedi"
   );
   assert(
     group.multiDetail.lines.every((line) => line.yon === "BORÇ" || line.yon === "ALACAK"),
@@ -1292,8 +1328,19 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   assert(ui.multiDetailGroup?.multiDetail?.lineCount === 3, "u modal multiDetail 3 lines");
   assert(ui.multiDetailGroup?.multiDetail?.candidateCount === 2, "u modal 2 candidates");
   assert(
-    /tek karşıt hesap seçilemedi/.test(ui.multiDetailGroup?.multiDetail?.reasonTr || ""),
+    ui.multiDetailGroup?.multiDetail?.reasonTr ===
+      "Bu hesap satırı karşı yöndeki 2 farklı hesapla birlikte çalışmıştır.",
     "u modal reason present"
+  );
+  assert(
+    ui.multiDetailGroup?.multiDetail?.normalNoteTr ===
+      "Bu durum çok satırlı muhasebe fişlerinde normaldir ve tek başına hata oluşturmaz.",
+    "u modal normal note present"
+  );
+  assert(ui.multiDetailGroup?.displayTitle === "Bileşik fiş", "u group title Bileşik fiş");
+  assert(
+    /tek başına hata değildir/.test(ui.multiDetailGroup?.displayMessage || ""),
+    "u group message compound wording"
   );
   assert(
     (ui.multiDetailGroup?.details || []).length === 1,
@@ -1323,6 +1370,10 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     /data-testid="multi-counterpart-detail-open"/.test(pageSrc),
     "u open button test id present"
   );
+  assert(/Bileşik satır/.test(pageSrc), "u page counter label Bileşik satır");
+  assert(/bileşik fiş özeti/.test(pageSrc), "u page group summary label");
+  assert(!/Çoklu karşıt/.test(pageSrc), "u page has no Çoklu karşıt label");
+  assert(!/gruplu karşıt hesap özeti/.test(pageSrc), "u page has no old group summary");
 }
 
 // v) modal display order BORÇ then ALACAK; source order within side; ledgerRows not mutated
@@ -1381,6 +1432,15 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     detail.candidates.join(",") === "191.01.001,740.30.003",
     "v candidate codes/order unchanged (locale sorted)"
   );
+  assert(
+    detail.counterpartAccounts.map((row) => row.hesapKodu).join(",") ===
+      "191.01.001,740.30.003",
+    "v counterpartAccounts follow candidate order"
+  );
+  assert(detail.counterpartAccounts[0].hesapAdi === "KDV", "v counterpart name enriched");
+  assert(detail.counterpartAccounts[0].borc === 23.4, "v counterpart debit amount");
+  assert(detail.reasonTr === multiCounterpartReasonTr(2), "v reason plural N=2");
+  assert(detail.normalNoteTr === multiCounterpartNormalNoteTr(), "v normal note");
 
   const unsorted = [
     { yon: "BORÇ", hesapKodu: "A" },
@@ -1396,6 +1456,109 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     sorted.map((line) => line.hesapKodu).join(",") === "A,B,C,D,Z",
     "v same-side order kept; unknown last"
   );
+}
+
+// w) 00002 browser/UI metin kabulü — yeni dil; eski aday/seçilemedi yok
+{
+  const catalog = [
+    {
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      hesapKodu: "320.10.M0009",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "engine multi kept",
+    },
+  ];
+  const ledgerRows = [
+    {
+      id: "a",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "191.01.001",
+      hesapAdi: "KDV",
+      borc: 23.4,
+      alacak: 0,
+    },
+    {
+      id: "b",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "320.10.M0009",
+      hesapAdi: "Cari",
+      borc: 0,
+      alacak: 2363.4,
+      issueDetails: [{ code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART }],
+    },
+    {
+      id: "c",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "740.30.003",
+      hesapAdi: "Gider",
+      borc: 2340,
+      alacak: 0,
+    },
+  ];
+  const presentation = buildGenelMuhasebeFindingsPresentation(catalog, { ledgerRows });
+  const group = presentation.find((item) => item.kind === "group" && item.fisNo === "00002");
+  const detail = group?.multiDetail;
+  assert(group?.displayTitle === "Bileşik fiş", "w 00002 table status Bileşik fiş");
+  assert(
+    group?.displayMessage ===
+      "Bu fişte bir hesap satırı karşı yöndeki birden fazla hesapla birlikte çalışmaktadır. Bu durum tek başına hata değildir.",
+    "w 00002 table description"
+  );
+  assert(
+    detail?.reasonTr ===
+      "Bu hesap satırı karşı yöndeki 2 farklı hesapla birlikte çalışmıştır.",
+    "w 00002 modal reason N=2"
+  );
+  assert(
+    detail?.normalNoteTr ===
+      "Bu durum çok satırlı muhasebe fişlerinde normaldir ve tek başına hata oluşturmaz.",
+    "w 00002 modal normal note"
+  );
+  assert(
+    detail?.lines.map((line) => line.hesapKodu).join(",") ===
+      "191.01.001,740.30.003,320.10.M0009",
+    "w 00002 modal line order 191+740 then 320"
+  );
+
+  const modalSrc = fs.readFileSync(
+    path.resolve(
+      "app/(annvero)/muhasebe/genel-muhasebe-kontrol/MultiCounterpartDetailModal.jsx"
+    ),
+    "utf8"
+  );
+  assert(/Bileşik fiş ayrıntısı/.test(modalSrc), "w modal title Bileşik fiş ayrıntısı");
+  assert(/Birlikte çalışan karşı hesaplar/.test(modalSrc), "w modal section title");
+  assert(!/Çoklu karşıt hesap ayrıntısı/.test(modalSrc), "w modal no old title");
+  assert(!/Karşıt hesap adayları/.test(modalSrc), "w modal no adayları heading");
+  assert(!/otomatik\s+tek hesap seçilmedi/.test(modalSrc), "w modal no seçilmedi footer");
+  assert(!/\baday\b/i.test(modalSrc.replace(/candidate/gi, "")), "w modal user copy no aday");
+
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(/Bileşik satır/.test(pageSrc), "w page Bileşik satır counter");
+  assert(/bileşik fiş özeti/.test(pageSrc), "w page bileşik fiş özeti");
+  assert(!/Çoklu karşıt/.test(pageSrc), "w page no Çoklu karşıt");
+  assert(!/gruplu karşıt hesap özeti/.test(pageSrc), "w page no old özet label");
+
+  const userFacing = [
+    group?.displayTitle,
+    group?.displayMessage,
+    detail?.reasonTr,
+    detail?.normalNoteTr,
+  ].join("\n");
+  assert(!/aday/i.test(userFacing), "w user-facing no aday");
+  assert(!/seçilemedi/i.test(userFacing), "w user-facing no seçilemedi");
+  assert(group?.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART, "w technical code preserved");
 }
 
 if (failed) {
