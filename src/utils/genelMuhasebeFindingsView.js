@@ -13,6 +13,7 @@ import {
   summarizeCorrectionPresentationImpact,
 } from "@/src/utils/correctionRecords/correctionRecordPresentation";
 import { CORRECTION_RECORD_STATUS } from "@/src/utils/correctionRecords/correctionRecordTypes";
+import { buildMultiCounterpartVoucherDetail } from "@/src/utils/multiCounterpartDetail";
 
 function isSyntheticSystemFindingRow(row = {}) {
   const id = String(row?.id || "");
@@ -206,26 +207,36 @@ export function filterGenelMuhasebePresentationRows(rows = [], fisFilter = "") {
         count,
         message: messageTr,
         messageTr,
+        multiDetail: row.multiDetail || null,
       });
     });
 }
 
-function buildMultiCounterpartGroup(items = []) {
+function buildMultiCounterpartGroup(items = [], ledgerRows = []) {
   const fisNo = items[0]?.fisNo || "";
+  const tarih = items[0]?.tarih || "";
   const count = items.length;
   const messageTr = genelMuhasebeMultiGroupMessageTr(fisNo, count);
+  const details = items.map((item) => enrichFindingForUserPresentation(item));
+  const multiDetail = buildMultiCounterpartVoucherDetail({
+    fisNo,
+    tarih,
+    ledgerRows,
+    multiFindingItems: items,
+  });
   return enrichFindingForUserPresentation({
     kind: "group",
     id: `multi|${fisNo}|${E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART}`,
     fisNo,
-    tarih: items[0]?.tarih || "",
+    tarih,
     hesapKodu: "",
     severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
     code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
     message: messageTr,
     statusLabel: "",
     count,
-    details: items.map((item) => enrichFindingForUserPresentation(item)),
+    details,
+    multiDetail,
   });
 }
 
@@ -238,6 +249,11 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
   const correctionRecords = Array.isArray(options.correctionRecords)
     ? options.correctionRecords
     : [];
+  const ledgerRows = Array.isArray(options.ledgerRows)
+    ? options.ledgerRows
+    : Array.isArray(options.rows)
+      ? options.rows
+      : [];
   const correctionImpact = summarizeCorrectionPresentationImpact(catalog, correctionRecords);
   const recordsByFingerprint = correctionImpact.recordsByFingerprint;
 
@@ -278,7 +294,7 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
   const groupedMulti = [...multiByFis.entries()]
     .sort((left, right) => String(left[0]).localeCompare(String(right[0]), "tr"))
     .map(([, items]) => {
-      const group = buildMultiCounterpartGroup(items);
+      const group = buildMultiCounterpartGroup(items, ledgerRows);
       const record = resolveCorrectionRecordForFinding(items[0], recordsByFingerprint);
       return enrichFindingWithCorrectionRecord(group, record);
     });

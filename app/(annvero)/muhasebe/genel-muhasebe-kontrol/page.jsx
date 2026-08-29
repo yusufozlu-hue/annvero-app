@@ -24,13 +24,12 @@ import {
 import { createGenelMuhasebeAnalyzeGate, buildAccountPlanCodeSet } from "@/src/utils/genelMuhasebeKontrolEngine";
 import {
   buildGenelMuhasebeFindingsPresentation,
-  countVisiblePresentationRows,
-  pruneExpandedPresentationGroups,
   summarizeGenelMuhasebeFindingsWithCorrections,
 } from "@/src/utils/genelMuhasebeFindingsView";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 import CorrectionVoucherPanel from "./CorrectionVoucherPanel";
 import CorrectionAppliedModal from "./CorrectionAppliedModal";
+import MultiCounterpartDetailModal from "./MultiCounterpartDetailModal";
 import { isCorrectionEligibleFinding } from "@/src/utils/correctionVoucher";
 import {
   CORRECTION_RECORD_STATUS,
@@ -151,8 +150,8 @@ export default function GenelMuhasebeKontrolPage() {
   const [perfWarning, setPerfWarning] = useState("");
   const [showMuavinYevmiyeDiffs, setShowMuavinYevmiyeDiffs] = useState(false);
   const [fisFilter, setFisFilter] = useState("");
-  const [expandedFindingGroups, setExpandedFindingGroups] = useState(() => new Set());
   const [expandedTechnicalIds, setExpandedTechnicalIds] = useState(() => new Set());
+  const [multiDetailGroup, setMultiDetailGroup] = useState(null);
   const [result, setResult] = useState(null);
   const [planStatus, setPlanStatus] = useState("unknown");
   const [planAccounts, setPlanAccounts] = useState(null);
@@ -169,8 +168,8 @@ export default function GenelMuhasebeKontrolPage() {
   const invalidateActive = useCallback((reason) => {
     runTokenRef.current += 1;
     setResult(null);
-    setExpandedFindingGroups(new Set());
     setExpandedTechnicalIds(new Set());
+    setMultiDetailGroup(null);
     setPerfWarning("");
     setProgressDetail("");
     bumpAnalyzeGeneration(reason);
@@ -353,16 +352,18 @@ export default function GenelMuhasebeKontrolPage() {
         : planStatus;
   const trimmedFisFilter = fisFilter.trim();
   const findingsCatalog = result?.findingsCatalog;
+  const ledgerRows = result?.rows || [];
 
   const findings = useMemo(() => {
     if (!findingsCatalog?.length) return [];
     const rows = buildGenelMuhasebeFindingsPresentation(findingsCatalog, {
       fisFilter: trimmedFisFilter,
       correctionRecords,
+      ledgerRows,
     });
     if (!showDuzeltildiOnly) return rows;
     return rows.filter((item) => item.correctionResolved);
-  }, [findingsCatalog, trimmedFisFilter, correctionRecords, showDuzeltildiOnly]);
+  }, [findingsCatalog, trimmedFisFilter, correctionRecords, showDuzeltildiOnly, ledgerRows]);
 
   const findingsWithCorrections = useMemo(() => {
     if (!findingsCatalog?.length) return null;
@@ -378,29 +379,20 @@ export default function GenelMuhasebeKontrolPage() {
   );
 
   useEffect(() => {
-    setExpandedFindingGroups(new Set());
     setExpandedTechnicalIds(new Set());
+    setMultiDetailGroup(null);
   }, [trimmedFisFilter, findingsCatalog]);
-
-  const openFindingGroupIds = useMemo(
-    () => pruneExpandedPresentationGroups([...expandedFindingGroups], findings),
-    [expandedFindingGroups, findings]
-  );
 
   const findingsCatalogSize = findingsCatalog?.length || 0;
   const groupedMultiCount = findings.filter((item) => item.kind === "group").length;
-  const visibleFindingsRowCount = useMemo(
-    () => countVisiblePresentationRows(findings, openFindingGroupIds),
-    [findings, openFindingGroupIds]
-  );
+  const visibleFindingsRowCount = findings.length;
 
-  const toggleFindingGroup = useCallback((groupId) => {
-    setExpandedFindingGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
-    });
+  const openMultiCounterpartDetail = useCallback((group) => {
+    setMultiDetailGroup(group || null);
+  }, []);
+
+  const closeMultiCounterpartDetail = useCallback(() => {
+    setMultiDetailGroup(null);
   }, []);
 
   const toggleTechnicalDetails = useCallback((rowId) => {
@@ -436,7 +428,6 @@ export default function GenelMuhasebeKontrolPage() {
   const muavinYevmiyeDiffs = summary?.muavinYevmiye?.differences || [];
   const muavinYevmiyeDiffPreview = muavinYevmiyeDiffs.slice(0, 50);
 
-  const ledgerRows = result?.rows || [];
   const accountPlanCodes = useMemo(
     () => (planAccounts?.length ? buildAccountPlanCodeSet(planAccounts) : null),
     [planAccounts]
@@ -835,8 +826,7 @@ export default function GenelMuhasebeKontrolPage() {
                   ) : (
                     findings.flatMap((item) => {
                       if (item.kind === "group") {
-                        const open = openFindingGroupIds.has(item.id);
-                        const rows = [
+                        return [
                           <tr key={item.id} className="border-t border-slate-100 bg-slate-50/60">
                             <td className="px-3 py-2">{item.fisNo || "—"}</td>
                             <td className="px-3 py-2">{item.tarih || "—"}</td>
@@ -849,40 +839,15 @@ export default function GenelMuhasebeKontrolPage() {
                               <button
                                 type="button"
                                 className="text-left text-teal-700 hover:underline"
-                                onClick={() => toggleFindingGroup(item.id)}
+                                onClick={() => openMultiCounterpartDetail(item)}
                               >
                                 {item.displayMessage || item.messageTr || item.message}
-                                {open ? " (gizle)" : " (ayrıntı)"}
+                                {" (ayrıntı)"}
                               </button>
                               {renderTechnicalDetails(item, item.id)}
                             </td>
                           </tr>,
                         ];
-                        if (open) {
-                          for (const detail of item.details || []) {
-                            const detailKey = `${item.id}|${detail.hesapKodu}|${detail.code}`;
-                            rows.push(
-                              <tr
-                                key={detailKey}
-                                className="border-t border-slate-100 bg-white"
-                              >
-                                <td className="px-3 py-2 pl-6 text-slate-500">{detail.fisNo || "—"}</td>
-                                <td className="px-3 py-2">{detail.tarih || "—"}</td>
-                                <td className="px-3 py-2">{detail.hesapKodu || "—"}</td>
-                                <td className="px-3 py-2">{detail.severity}</td>
-                                <td className="px-3 py-2 font-medium text-slate-900">
-                                  {detail.displayTitle || detail.titleTr}
-                                </td>
-                                <td className="px-3 py-2">
-                                  {detail.displayMessage || detail.messageTr || detail.message}
-                                  {renderTechnicalDetails(detail, detailKey)}
-                                  {renderCorrectionAction(detail)}
-                                </td>
-                              </tr>
-                            );
-                          }
-                        }
-                        return rows;
                       }
                       const rowKey = `${item.code}-${item.fisNo}-${item.hesapKodu}-${item.message}`;
                       return [
@@ -908,6 +873,12 @@ export default function GenelMuhasebeKontrolPage() {
             </div>
           </div>
         ) : null}
+
+        <MultiCounterpartDetailModal
+          open={Boolean(multiDetailGroup)}
+          onClose={closeMultiCounterpartDetail}
+          group={multiDetailGroup}
+        />
 
         <CorrectionVoucherPanel
           key={`correction-panel-${correctionPanelKey}`}

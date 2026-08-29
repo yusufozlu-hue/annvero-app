@@ -1136,6 +1136,88 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   );
 }
 
+// t) MULTI group multiDetail from ledgerRows — read-only voucher snapshot
+{
+  const catalog = [
+    {
+      fisNo: "00017",
+      tarih: "19.01.2026",
+      hesapKodu: "102.10.V001",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi",
+    },
+  ];
+  const ledgerRows = [
+    {
+      id: "y1",
+      fisNo: "00017",
+      tarih: "19.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "102.10.V001",
+      hesapAdi: "Vadeli TL",
+      borc: 0,
+      alacak: 100,
+      issueDetails: [{ code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART }],
+    },
+    {
+      id: "y2",
+      fisNo: "00017",
+      tarih: "19.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "300.01.042",
+      hesapAdi: "Banka kredisi",
+      borc: 70,
+      alacak: 0,
+    },
+    {
+      id: "y3",
+      fisNo: "00017",
+      tarih: "19.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "780.10.003",
+      hesapAdi: "Faiz gideri",
+      borc: 30,
+      alacak: 0,
+    },
+  ];
+  const presentation = buildGenelMuhasebeFindingsPresentation(catalog, { ledgerRows });
+  const group = presentation.find((item) => item.kind === "group" && item.fisNo === "00017");
+  assert(Boolean(group?.multiDetail), "t multiDetail attached");
+  assert(group.multiDetail.lineCount === 3, "t voucher line count 3");
+  assert(group.multiDetail.candidateCount === 2, "t candidate count 2");
+  assert(
+    group.multiDetail.candidates.includes("300.01.042") &&
+      group.multiDetail.candidates.includes("780.10.003"),
+    "t candidates are opposite debit codes"
+  );
+  assert(
+    /Karşı yönde 2 farklı hesap bulunduğu için tek karşıt hesap seçilemedi/.test(
+      group.multiDetail.reasonTr || ""
+    ),
+    "t reasonTr mentions N=2"
+  );
+  assert(
+    group.multiDetail.lines.every((line) => line.yon === "BORÇ" || line.yon === "ALACAK"),
+    "t lines have BORÇ/ALACAK direction"
+  );
+  assert(
+    group.details?.length === 1 && group.details[0].hesapKodu === "102.10.V001",
+    "t technical detail rows preserved"
+  );
+  assert(
+    !JSON.stringify(group.multiDetail).includes("BANKA_VE_BORC") &&
+      !JSON.stringify(group).includes("pattern"),
+    "t heuristic pattern not exposed on presentation"
+  );
+
+  const again = buildGenelMuhasebeFindingsPresentation(catalog, { ledgerRows });
+  assert(
+    JSON.stringify(group.multiDetail) === JSON.stringify(again[0]?.multiDetail),
+    "t presentation multiDetail deterministic (worker/main same builder)"
+  );
+}
+
 if (failed) {
   console.error(`${failed} FAIL(s)`);
   process.exit(1);
