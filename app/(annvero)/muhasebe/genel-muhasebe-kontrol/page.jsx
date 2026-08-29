@@ -26,10 +26,19 @@ import {
   buildGenelMuhasebeFindingsPresentation,
   countVisiblePresentationRows,
   pruneExpandedPresentationGroups,
+  summarizeGenelMuhasebeFindingsWithCorrections,
 } from "@/src/utils/genelMuhasebeFindingsView";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 import CorrectionVoucherPanel from "./CorrectionVoucherPanel";
+import CorrectionAppliedModal from "./CorrectionAppliedModal";
 import { isCorrectionEligibleFinding } from "@/src/utils/correctionVoucher";
+import {
+  CORRECTION_RECORD_STATUS,
+  canOpenApplyForCorrectionRecord,
+  indexCorrectionRecordsByFingerprint,
+  mergeCorrectionRecordIntoList,
+  resolveCorrectionRecordForFinding,
+} from "@/src/utils/correctionRecords";
 
 function Stat({ label, value }) {
   return (
@@ -149,6 +158,10 @@ export default function GenelMuhasebeKontrolPage() {
   const [planAccounts, setPlanAccounts] = useState(null);
   const [correctionFinding, setCorrectionFinding] = useState(null);
   const [correctionPanelKey, setCorrectionPanelKey] = useState(0);
+  const [correctionRecords, setCorrectionRecords] = useState([]);
+  const [applyRecord, setApplyRecord] = useState(null);
+  const [correctionNotice, setCorrectionNotice] = useState("");
+  const [showDuzeltildiOnly, setShowDuzeltildiOnly] = useState(false);
   const gateRef = useRef(createGenelMuhasebeAnalyzeGate());
   const runTokenRef = useRef(0);
   const abortRef = useRef(null);
@@ -203,6 +216,30 @@ export default function GenelMuhasebeKontrolPage() {
       }
     }
     loadPlan();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCompanyId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadCorrectionRecords() {
+      if (!selectedCompanyId) {
+        setCorrectionRecords([]);
+        return;
+      }
+      try {
+        const response = await fetch(
+          `/api/accounting-correction-records?companyId=${encodeURIComponent(selectedCompanyId)}`
+        );
+        const payload = await response.json();
+        if (cancelled) return;
+        setCorrectionRecords(Array.isArray(payload.records) ? payload.records : []);
+      } catch {
+        if (!cancelled) setCorrectionRecords([]);
+      }
+    }
+    loadCorrectionRecords();
     return () => {
       cancelled = true;
     };
@@ -319,10 +356,26 @@ export default function GenelMuhasebeKontrolPage() {
 
   const findings = useMemo(() => {
     if (!findingsCatalog?.length) return [];
-    return buildGenelMuhasebeFindingsPresentation(findingsCatalog, {
+    const rows = buildGenelMuhasebeFindingsPresentation(findingsCatalog, {
       fisFilter: trimmedFisFilter,
+      correctionRecords,
     });
-  }, [findingsCatalog, trimmedFisFilter]);
+    if (!showDuzeltildiOnly) return rows;
+    return rows.filter((item) => item.correctionResolved);
+  }, [findingsCatalog, trimmedFisFilter, correctionRecords, showDuzeltildiOnly]);
+
+  const findingsWithCorrections = useMemo(() => {
+    if (!findingsCatalog?.length) return null;
+    return summarizeGenelMuhasebeFindingsWithCorrections(
+      findingsCatalog,
+      correctionRecords
+    );
+  }, [findingsCatalog, correctionRecords]);
+
+  const recordsByFingerprint = useMemo(
+    () => indexCorrectionRecordsByFingerprint(correctionRecords),
+    [correctionRecords]
+  );
 
   useEffect(() => {
     setExpandedFindingGroups(new Set());
@@ -394,6 +447,50 @@ export default function GenelMuhasebeKontrolPage() {
     .slice(0, 24);
 
   const renderCorrectionAction = (item) => {
+    const linked =
+      item.correctionRecord ||
+      resolveCorrectionRecordForFinding(item, recordsByFingerprint);
+
+    if (linked?.status === CORRECTION_RECORD_STATUS.APPLIED) {
+      return (
+        <div className="mt-2 space-y-1 text-sm">
+          <p className="text-emerald-800">{item.correctionStatusMessage || linked.externalVoucherNo}</p>
+          <button
+            type="button"
+            className="text-teal-700 hover:underline"
+            onClick={() => setApplyRecord(linked)}
+          >
+            Düzeltme kaydını görüntüle
+          </button>
+        </div>
+      );
+    }
+
+    if (canOpenApplyForCorrectionRecord(linked)) {
+      return (
+        <div className="mt-2 space-y-1 text-sm">
+          <p className="text-teal-800">{item.correctionStatusMessage}</p>
+          <button
+            type="button"
+            className="font-medium text-teal-700 hover:underline"
+            onClick={() => setApplyRecord(linked)}
+          >
+            Luca&apos;da işlendi olarak işaretle
+          </button>
+          <button
+            type="button"
+            className="ml-3 text-teal-700 hover:underline"
+            onClick={() => {
+              setCorrectionFinding(item);
+              setCorrectionPanelKey((value) => value + 1);
+            }}
+          >
+            Dosyayı yeniden indir
+          </button>
+        </div>
+      );
+    }
+
     if (!isCorrectionEligibleFinding(item, ledgerRows)) return null;
     return (
       <button
@@ -409,6 +506,39 @@ export default function GenelMuhasebeKontrolPage() {
     );
   };
 
+  const refreshCorrectionRecords = useCallback(async () => {
+    if (!selectedCompanyId) return;
+    try {
+      const response = await fetch(
+        `/api/accounting-correction-records?companyId=${encodeURIComponent(selectedCompanyId)}`
+      );
+      const payload = await response.json();
+      setCorrectionRecords(Array.isArray(payload.records) ? payload.records : []);
+    } catch {
+      /* ignore */
+    }
+  }, [selectedCompanyId]);
+
+  const handleExportRecorded = useCallback(
+    (record) => {
+      if (record?.id) {
+        setCorrectionRecords((prev) => mergeCorrectionRecordIntoList(prev, record));
+        setCorrectionNotice("");
+      }
+      refreshCorrectionRecords();
+    },
+    [refreshCorrectionRecords]
+  );
+
+  const handleStaleApplyRecord = useCallback(
+    (message) => {
+      setApplyRecord(null);
+      setCorrectionNotice(message || "");
+      refreshCorrectionRecords();
+    },
+    [refreshCorrectionRecords]
+  );
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto max-w-6xl px-4 py-6">
@@ -422,6 +552,11 @@ export default function GenelMuhasebeKontrolPage() {
               Firma → dönem → Excel → tek analiz (worker). Karşıt hesap ortak motorla; yerel kontrol
               (DB yazımı yok).
             </p>
+            {correctionNotice ? (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                {correctionNotice}
+              </div>
+            ) : null}
           </div>
           <AnnveroModuleNav tone="light" />
         </div>
@@ -522,7 +657,10 @@ export default function GenelMuhasebeKontrolPage() {
         {summary ? (
           <div className="mt-6 space-y-4">
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              <Stat label="Sonuç" value={summary.overallSonuc} />
+              <Stat
+                label="Sonuç"
+                value={findingsWithCorrections?.overallSonuc ?? summary.overallSonuc}
+              />
               <Stat label="Toplam fiş" value={summary.toplamFis} />
               <Stat
                 label="Hareket"
@@ -535,7 +673,19 @@ export default function GenelMuhasebeKontrolPage() {
               />
               <Stat label="Kesin karşıt" value={summary.kesinKarsit} />
               <Stat label="Çoklu karşıt" value={summary.cokluKarsit} />
-              <Stat label="İnceleme" value={summary.incelemeGerekli} />
+              <Stat label="İnceleme" value={findingsWithCorrections?.incelemeGerekli ?? summary.incelemeGerekli} />
+              <button
+                type="button"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-left shadow-sm hover:border-teal-400"
+                onClick={() => setShowDuzeltildiOnly((value) => !value)}
+              >
+                <div className="text-xs text-slate-500">
+                  Düzeltildi{showDuzeltildiOnly ? " (filtre açık)" : ""}
+                </div>
+                <div className="text-sm font-semibold text-slate-900">
+                  {findingsWithCorrections?.duzeltildi ?? 0}
+                </div>
+              </button>
               <Stat label="Hesap planda yok" value={summary.hesapPlandaYok} />
               <Stat label="Dönem dışı" value={summary.donemDisi} />
               <Stat label="Mükerrer" value={summary.mukerrer} />
@@ -770,6 +920,26 @@ export default function GenelMuhasebeKontrolPage() {
           companySlug={companySlug}
           companyAccountingRules={companyAccountingRules}
           accountPlanCodes={accountPlanCodes}
+          existingRecord={
+            correctionFinding
+              ? resolveCorrectionRecordForFinding(correctionFinding, recordsByFingerprint)
+              : null
+          }
+          onExportRecorded={handleExportRecorded}
+        />
+        <CorrectionAppliedModal
+          open={Boolean(applyRecord)}
+          onClose={() => setApplyRecord(null)}
+          record={applyRecord}
+          companyAccountingRules={companyAccountingRules}
+          onStaleRecord={handleStaleApplyRecord}
+          onApplied={(record) => {
+            if (record?.id) {
+              setCorrectionRecords((prev) => mergeCorrectionRecordIntoList(prev, record));
+            }
+            refreshCorrectionRecords();
+            setApplyRecord(record?.status === CORRECTION_RECORD_STATUS.APPLIED ? null : record);
+          }}
         />
       </div>
     </div>

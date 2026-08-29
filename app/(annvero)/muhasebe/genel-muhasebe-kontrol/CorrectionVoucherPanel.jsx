@@ -12,6 +12,12 @@ import {
   prepareCorrectionFromFinding,
   validateCorrectionDraft,
 } from "@/src/utils/correctionVoucher";
+import {
+  CORRECTION_RECORD_STATUS,
+  assertExportApiReadyForDownload,
+  buildDraftFingerprintContext,
+  buildExportedPendingStatusLabel,
+} from "@/src/utils/correctionRecords";
 
 function accountLabel(account) {
   const code = accountCodeFromPlanRow(account);
@@ -48,6 +54,8 @@ export default function CorrectionVoucherPanel({
   companySlug = "",
   companyAccountingRules = {},
   accountPlanCodes = null,
+  existingRecord = null,
+  onExportRecorded,
 }) {
   const [closedPeriodInput, setClosedPeriodInput] = useState("");
   const [correctionDateOverride, setCorrectionDateOverride] = useState("");
@@ -55,10 +63,15 @@ export default function CorrectionVoucherPanel({
   const [accountQuery, setAccountQuery] = useState("");
   const [selectedAccountCode, setSelectedAccountCode] = useState("");
   const [selectedAccountName, setSelectedAccountName] = useState("");
-  const [highlightedAccountCode, setHighlightedAccountCode] = useState("");
   const [approved, setApproved] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
   const [exportError, setExportError] = useState("");
+  const [exportBusy, setExportBusy] = useState(false);
+  const [activeRecord, setActiveRecord] = useState(existingRecord);
+
+  useEffect(() => {
+    setActiveRecord(existingRecord);
+  }, [existingRecord]);
 
   useEffect(() => {
     if (!open) return;
@@ -66,13 +79,18 @@ export default function CorrectionVoucherPanel({
     setCorrectionDateOverride("");
     setCorrectionDateSource("");
     setAccountQuery("");
-    setSelectedAccountCode("");
-    setSelectedAccountName("");
-    setHighlightedAccountCode("");
     setApproved(false);
     setExportMessage("");
     setExportError("");
-  }, [open, finding?.fisNo, finding?.code]);
+    setExportBusy(false);
+    if (existingRecord?.correctionAccountCode) {
+      setSelectedAccountCode(existingRecord.correctionAccountCode);
+      setSelectedAccountName(existingRecord.correctionAccountName || "");
+    } else {
+      setSelectedAccountCode("");
+      setSelectedAccountName("");
+    }
+  }, [open, finding?.fisNo, finding?.code, existingRecord?.id]);
 
   const prep = useMemo(() => {
     if (!open || !finding) return null;
@@ -89,29 +107,23 @@ export default function CorrectionVoucherPanel({
   const requiresClosedPeriod = prep?.dateContext?.requiresClosedPeriodInput;
   const defaultCorrectionDate = prep?.dateContext?.correctionDate || "";
   const defaultDateSource = prep?.dateContext?.correctionDateSource || "";
-
   const effectiveCorrectionDate = correctionDateOverride || defaultCorrectionDate;
   const effectiveDateSource = correctionDateSource || defaultDateSource;
-
   const sourceMetaBlocked = Boolean(sourceVoucher && !sourceVoucher.metaComplete);
-  const sourceMetaMessage =
-    sourceVoucher?.metaIssues?.[0]?.message ||
-    "Kaynak fiş tarih/belge bilgisi eksik veya belirsiz; düzeltme fişi üretilmez.";
+  const isApplied = activeRecord?.status === CORRECTION_RECORD_STATUS.APPLIED;
+  const isExportedPending = activeRecord?.status === CORRECTION_RECORD_STATUS.EXPORTED;
 
   const selectAccount = useCallback(
     (code, name = "") => {
       const trimmedCode = String(code || "").trim();
       if (!trimmedCode) return;
-      const resolvedName =
-        name || accountNameFromPlan(planAccounts, trimmedCode) || selectedAccountName;
       setSelectedAccountCode(trimmedCode);
-      setSelectedAccountName(resolvedName);
-      setHighlightedAccountCode(trimmedCode);
+      setSelectedAccountName(name || accountNameFromPlan(planAccounts, trimmedCode));
       setApproved(false);
       setExportMessage("");
       setExportError("");
     },
-    [planAccounts, selectedAccountName]
+    [planAccounts]
   );
 
   const filteredAccounts = useMemo(() => {
@@ -166,347 +178,248 @@ export default function CorrectionVoucherPanel({
     });
   }, [draft, accountPlanCodes, prep?.closedReliability]);
 
-  const handleDateChange = useCallback((iso) => {
-    setCorrectionDateOverride(iso);
-    setCorrectionDateSource(CORRECTION_DATE_SOURCE.USER_SELECTED);
-    setApproved(false);
-    setExportMessage("");
-  }, []);
-
-  const handleAccountSearchKeyDown = useCallback(
-    (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      const first = filteredAccounts[0];
-      if (!first) return;
-      const code = accountCodeFromPlanRow(first);
-      selectAccount(
-        code,
-        first?.account_name || first?.accountName || first?.name || ""
-      );
+  const downloadWorkbook = useCallback(
+    (targetDraft) => {
+      const result = exportCorrectionDraft(targetDraft, {
+        userApproved: true,
+        exportMode: CORRECTION_EXPORT_MODE.LUCA_STANDARD,
+        accountPlanCodes,
+        lastClosedReliability: prep?.closedReliability,
+        companySlug,
+      });
+      if (!result.ok) {
+        setExportError(result.message || "Export başarısız.");
+        return false;
+      }
+      setExportMessage(`İndirildi: ${result.fileName}`);
+      return true;
     },
-    [filteredAccounts, selectAccount]
+    [accountPlanCodes, prep?.closedReliability, companySlug]
   );
 
-  const handleExport = useCallback(() => {
+  const callExportApi = useCallback(async () => {
+    const response = await fetch("/api/accounting-correction-records/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        companyId,
+        draft,
+        recipe,
+        userApproved: true,
+        companySlug,
+        lastClosedReliability: prep?.closedReliability,
+      }),
+    });
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch {
+      payload = {};
+    }
+    return assertExportApiReadyForDownload(response.ok, payload);
+  }, [companyId, draft, recipe, companySlug, prep?.closedReliability]);
+
+  const handleExport = useCallback(async () => {
     setExportError("");
     setExportMessage("");
-    if (!draft?.ok) {
-      setExportError(draft?.message || "Taslak oluşturulamadı.");
+    if (isApplied) {
+      setExportError("Bu bulgu zaten düzeltilmiş.");
       return;
     }
-    if (!approved) {
-      setExportError("Export için onay kutusunu işaretleyin.");
+    if (!draft?.ok || !approved) {
+      setExportError(!approved ? "Export için onay kutusunu işaretleyin." : "Taslak geçersiz.");
       return;
     }
 
-    const result = exportCorrectionDraft(draft, {
-      userApproved: true,
-      exportMode: CORRECTION_EXPORT_MODE.LUCA_STANDARD,
-      accountPlanCodes,
-      lastClosedReliability: prep?.closedReliability,
-      companySlug,
-    });
-
-    if (!result.ok) {
-      setExportError(result.message || "Export başarısız.");
-      return;
+    setExportBusy(true);
+    try {
+      const gate = await callExportApi();
+      if (!gate.ok || !gate.allowDownload || !gate.record?.id) {
+        setExportError(gate.error || "Düzeltme export kaydı oluşturulamadı.");
+        return;
+      }
+      if (!downloadWorkbook(draft)) return;
+      setActiveRecord(gate.record);
+      onExportRecorded?.(gate.record);
+      if (!gate.created) {
+        setExportMessage(`${buildExportedPendingStatusLabel()} · mevcut kayıt`);
+      }
+    } catch {
+      setExportError("Bağlantı hatası. Kayıtsız export yapılmadı.");
+    } finally {
+      setExportBusy(false);
     }
-    setExportMessage(`İndirildi: ${result.fileName}`);
-  }, [draft, approved, accountPlanCodes, prep?.closedReliability, companySlug]);
+  }, [draft, approved, isApplied, callExportApi, downloadWorkbook, onExportRecorded]);
+
+  const handleRedownload = useCallback(async () => {
+    if (!draft?.ok) return;
+    setExportBusy(true);
+    setExportError("");
+    try {
+      const gate = await callExportApi();
+      if (!gate.ok || !gate.allowDownload || !gate.record?.id) {
+        setExportError(gate.error || "Düzeltme export kaydı oluşturulamadı.");
+        return;
+      }
+      downloadWorkbook(draft);
+      setActiveRecord(gate.record);
+      onExportRecorded?.(gate.record);
+    } catch {
+      setExportError("Bağlantı hatası. Kayıtsız export yapılmadı.");
+    } finally {
+      setExportBusy(false);
+    }
+  }, [draft, callExportApi, downloadWorkbook, onExportRecorded]);
+
+  const fingerprintPreview = useMemo(() => {
+    if (!draft?.ok || !recipe?.ok) return "";
+    return buildDraftFingerprintContext(draft, recipe).sourceFingerprint;
+  }, [draft, recipe]);
 
   if (!open || !finding) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="correction-voucher-title"
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl border border-slate-200 bg-white shadow-xl">
         <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
           <div>
-            <h2 id="correction-voucher-title" className="text-lg font-semibold text-slate-900">
-              Düzeltme fişi hazırla
-            </h2>
-            <p className="mt-1 text-sm text-slate-600">
-              Kaynak fiş değiştirilmez · persist=0 · yalnız onay sonrası indirme
-            </p>
+            <h2 className="text-lg font-semibold">Düzeltme fişi hazırla</h2>
+            <p className="mt-1 text-sm text-slate-600">Export önce kaydedilir · Luca takibi</p>
           </div>
-          <button
-            type="button"
-            className="rounded-lg px-2 py-1 text-sm text-slate-500 hover:bg-slate-100"
-            onClick={onClose}
-          >
+          <button type="button" className="text-sm text-slate-500" onClick={onClose}>
             Kapat
           </button>
         </div>
 
         <div className="space-y-4 px-5 py-4 text-sm">
-          {!recipe?.ok ? (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
-              {recipe?.message || "Bu bulgu için otomatik düzeltme fişi üretilemiyor."}
+          {isApplied ? (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-900">
+              Bu düzeltme uygulanmış; yeni export önerilmez.
             </div>
           ) : null}
 
-          {recipe?.ok ? (
-            <>
-              {sourceMetaBlocked ? (
-                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800">
-                  {sourceMetaMessage}
-                </div>
-              ) : null}
+          {isExportedPending && !isApplied ? (
+            <div className="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-teal-900">
+              {buildExportedPendingStatusLabel()}
+              <button
+                type="button"
+                className="ml-2 underline"
+                onClick={handleRedownload}
+                disabled={exportBusy}
+              >
+                Dosyayı yeniden indir
+              </button>
+            </div>
+          ) : null}
 
+          {!recipe?.ok ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+              {recipe?.message || "Otomatik düzeltme üretilemiyor."}
+            </div>
+          ) : (
+            <>
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
-                <div className="font-medium text-slate-900">Kaynak fiş</div>
-                <dl className="mt-2 grid gap-1 sm:grid-cols-2">
-                  <div>
-                    <dt className="text-slate-500">Fiş</dt>
-                    <dd>{sourceVoucher?.fisNo || "—"}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-slate-500">Tarih</dt>
-                    <dd>{sourceVoucher?.tarih || finding?.tarih || "—"}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-slate-500">Belge</dt>
-                    <dd>{sourceVoucher?.belgeNo || "—"}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-slate-500">Hatalı hesap / tutar</dt>
-                    <dd>
-                      {recipe.wrongAccountCode} · {formatTurkishMoney(recipe.wrongDebitAmount)} TL
-                    </dd>
-                  </div>
-                </dl>
+                <div className="font-medium">Kaynak fiş</div>
+                <p className="mt-1">
+                  {sourceVoucher?.fisNo} · {sourceVoucher?.tarih || finding?.tarih} ·{" "}
+                  {sourceVoucher?.belgeNo}
+                </p>
+                <p>
+                  {recipe.wrongAccountCode} · {formatTurkishMoney(recipe.wrongDebitAmount)} TL
+                </p>
               </div>
 
               {requiresClosedPeriod ? (
-                <label className="block">
-                  <span className="mb-1 block font-medium text-slate-800">
-                    Son kapalı e-Defter dönemi (YYYY/AA)
-                  </span>
-                  <input
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2"
-                    value={closedPeriodInput}
-                    onChange={(e) => {
-                      setClosedPeriodInput(e.target.value);
-                      setCorrectionDateOverride("");
-                      setCorrectionDateSource("");
-                      setApproved(false);
-                    }}
-                    placeholder="2026/03"
-                  />
-                  <span className="mt-1 block text-xs text-slate-500">
-                    Kapalı dönem güvenilir şekilde bulunamadı; otomatik tarih üretilmez.
-                  </span>
-                </label>
-              ) : (
-                <p className="text-slate-600">
-                  Son kapalı e-Defter dönemi:{" "}
-                  <span className="font-medium">{prep?.dateContext?.lastClosedLedgerPeriod}</span>
-                </p>
-              )}
+                <input
+                  className="w-full rounded-lg border px-3 py-2"
+                  value={closedPeriodInput}
+                  onChange={(e) => setClosedPeriodInput(e.target.value)}
+                  placeholder="Son kapalı dönem YYYY/AA"
+                />
+              ) : null}
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="block">
-                  <span className="mb-1 block font-medium text-slate-800">Düzeltme tarihi</span>
+              {!isApplied ? (
+                <>
                   <AnnveroDateInput
                     value={effectiveCorrectionDate}
-                    onChange={handleDateChange}
+                    onChange={(iso) => {
+                      setCorrectionDateOverride(iso);
+                      setCorrectionDateSource(CORRECTION_DATE_SOURCE.USER_SELECTED);
+                    }}
                     aria-label="Düzeltme tarihi"
                   />
-                  {effectiveDateSource === CORRECTION_DATE_SOURCE.AUTO_DEFAULT ? (
-                    <span className="mt-1 block text-xs text-slate-500">
-                      Varsayılan: kapalı dönem sonrası ilk gün ({defaultCorrectionDate})
-                    </span>
-                  ) : null}
-                </label>
-                <div>
-                  <span className="mb-1 block font-medium text-slate-800">Düzeltme dönemi</span>
-                  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                    {draft?.correctionPeriod ||
-                      (effectiveCorrectionDate
-                        ? effectiveCorrectionDate.slice(0, 7).replace("-", "/")
-                        : "—")}
-                  </div>
-                </div>
-              </div>
-
-              <div className="block">
-                <span className="mb-1 block font-medium text-slate-800">
-                  Doğru borç hesabı (aktif plan)
-                </span>
-                {selectedAccountCode ? (
-                  <div className="mb-2 flex items-center gap-2 rounded-lg border border-teal-300 bg-teal-50 px-3 py-2 text-teal-900">
-                    <span aria-hidden className="text-teal-700">
-                      ✓
-                    </span>
-                    <span>
-                      <span className="font-semibold">Seçildi:</span>{" "}
-                      {selectedAccountCode}
-                      {selectedAccountName ? ` — ${selectedAccountName}` : ""}
-                    </span>
-                  </div>
-                ) : (
-                  <p className="mb-2 text-xs text-slate-500">
-                    Listeden tıklayın veya arayıp Enter ile seçin.
-                  </p>
-                )}
-                <input
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2"
-                  value={accountQuery}
-                  onChange={(e) => setAccountQuery(e.target.value)}
-                  onKeyDown={handleAccountSearchKeyDown}
-                  placeholder="Kod veya ad ara…"
-                  aria-label="Hesap planında ara"
-                />
-                <div
-                  className="mt-2 max-h-36 overflow-auto rounded-lg border border-slate-200"
-                  role="listbox"
-                  aria-label="Hesap arama sonuçları"
-                >
-                  {filteredAccounts.length === 0 ? (
-                    <p className="px-3 py-2 text-slate-500">Sonuç yok</p>
-                  ) : (
-                    filteredAccounts.map((account) => {
+                  <input
+                    className="w-full rounded-lg border px-3 py-2"
+                    value={accountQuery}
+                    onChange={(e) => setAccountQuery(e.target.value)}
+                    placeholder="Doğru borç hesabı ara"
+                  />
+                  <div className="max-h-32 overflow-auto rounded border">
+                    {filteredAccounts.map((account) => {
                       const code = accountCodeFromPlanRow(account);
-                      const name =
-                        account?.account_name ||
-                        account?.accountName ||
-                        account?.name ||
-                        "";
-                      const selected = selectedAccountCode === code;
-                      const highlighted = highlightedAccountCode === code;
                       return (
                         <button
                           key={code}
                           type="button"
-                          role="option"
-                          aria-selected={selected}
-                          className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-teal-50 ${
-                            selected
-                              ? "bg-teal-100 font-semibold text-teal-900 ring-1 ring-inset ring-teal-400"
-                              : highlighted
-                                ? "bg-teal-50"
-                                : ""
-                          }`}
-                          onClick={() => selectAccount(code, name)}
+                          className="block w-full px-3 py-2 text-left hover:bg-teal-50"
+                          onClick={() =>
+                            selectAccount(
+                              code,
+                              account?.account_name || account?.accountName || ""
+                            )
+                          }
                         >
-                          <span>{accountLabel(account)}</span>
-                          {selected ? (
-                            <span className="shrink-0 text-xs font-semibold uppercase text-teal-700">
-                              Seçildi
-                            </span>
-                          ) : null}
+                          {accountLabel(account)}
                         </button>
                       );
-                    })
-                  )}
-                </div>
-              </div>
-
-              {draft?.ok ? (
-                <>
-                  <div>
-                    <div className="font-medium text-slate-900">Fiş açıklaması</div>
-                    <p className="mt-1 text-slate-700">{draft.description}</p>
-                  </div>
-
-                  <div className="overflow-auto rounded-lg border border-slate-200">
-                    <table className="min-w-full text-left text-xs">
-                      <thead className="bg-slate-50 text-slate-600">
-                        <tr>
-                          <th className="px-2 py-1">Hesap</th>
-                          <th className="px-2 py-1">Borç</th>
-                          <th className="px-2 py-1">Alacak</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {draft.lines.map((line, index) => (
-                          <tr
-                            key={`${line.hesapKodu}-${index}-${selectedAccountCode}`}
-                            className="border-t border-slate-100"
-                          >
-                            <td className="px-2 py-1">
-                              {line.hesapKodu}
-                              {line.hesapAdi ? ` — ${line.hesapAdi}` : ""}
-                            </td>
-                            <td className="px-2 py-1">
-                              {line.borc ? formatTurkishMoney(line.borc) : "—"}
-                            </td>
-                            <td className="px-2 py-1">
-                              {line.alacak ? formatTurkishMoney(line.alacak) : "—"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <p className="border-t border-slate-100 px-2 py-2 text-slate-500">
-                      KDV / mevcut doğru satırlar taslağa eklenmez · {draft.lines.length} satır
-                    </p>
+                    })}
                   </div>
                 </>
-              ) : draft && !draft.ok && !sourceMetaBlocked ? (
-                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800">
-                  {draft.message}
-                </div>
               ) : null}
 
-              {draftValidation && !draftValidation.ok && draft?.ok ? (
-                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800">
-                  {draftValidation.issues?.[0]?.message || "Taslak doğrulanamadı."}
-                </div>
+              {draft?.ok && draftValidation?.ok ? (
+                <label className="flex gap-2">
+                  <input
+                    type="checkbox"
+                    checked={approved}
+                    disabled={isApplied}
+                    onChange={(e) => setApproved(e.target.checked)}
+                  />
+                  <span>Taslağı inceledim; indirmeyi onaylıyorum.</span>
+                </label>
               ) : null}
 
-              <label className="flex items-start gap-2">
-                <input
-                  type="checkbox"
-                  checked={approved}
-                  disabled={!draft?.ok || !draftValidation?.ok}
-                  onChange={(e) => {
-                    setApproved(e.target.checked);
-                    setExportMessage("");
-                    setExportError("");
-                  }}
-                />
-                <span>
-                  Dengeli düzeltme fişi taslağını inceledim; indirmeyi onaylıyorum (kaynak fişe
-                  yazılmaz).
-                </span>
-              </label>
-
+              {fingerprintPreview ? (
+                <p className="text-xs text-slate-400">Takip: {fingerprintPreview.slice(0, 12)}…</p>
+              ) : null}
               {exportError ? (
-                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800">
+                <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-red-800">
                   {exportError}
                 </div>
               ) : null}
               {exportMessage ? (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-900">
+                <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2">
                   {exportMessage}
                 </div>
               ) : null}
             </>
-          ) : null}
+          )}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
-          <button
-            type="button"
-            className="rounded-xl border border-slate-300 px-4 py-2 text-sm"
-            onClick={onClose}
-          >
+        <div className="flex justify-end gap-2 border-t px-5 py-4">
+          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={onClose}>
             Vazgeç
           </button>
-          <button
-            type="button"
-            disabled={!draft?.ok || !draftValidation?.ok || !approved}
-            className="rounded-xl bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-            onClick={handleExport}
-          >
-            Luca aktarım dosyasını indir
-          </button>
+          {!isApplied ? (
+            <button
+              type="button"
+              disabled={!draft?.ok || !draftValidation?.ok || !approved || exportBusy}
+              className="rounded-xl bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300"
+              onClick={handleExport}
+            >
+              {exportBusy ? "Kaydediliyor…" : "Luca aktarım dosyasını indir"}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

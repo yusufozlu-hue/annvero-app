@@ -7,6 +7,12 @@ import {
   enrichFindingForUserPresentation,
   genelMuhasebeMultiGroupMessageTr,
 } from "@/src/utils/genelMuhasebeFindingsLabels";
+import {
+  enrichFindingWithCorrectionRecord,
+  resolveCorrectionRecordForFinding,
+  summarizeCorrectionPresentationImpact,
+} from "@/src/utils/correctionRecords/correctionRecordPresentation";
+import { CORRECTION_RECORD_STATUS } from "@/src/utils/correctionRecords/correctionRecordTypes";
 
 function isSyntheticSystemFindingRow(row = {}) {
   const id = String(row?.id || "");
@@ -229,6 +235,12 @@ function buildMultiCounterpartGroup(items = []) {
  */
 export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {}) {
   const fisFilter = normalizeFisNoForFilter(options.fisFilter || "");
+  const correctionRecords = Array.isArray(options.correctionRecords)
+    ? options.correctionRecords
+    : [];
+  const correctionImpact = summarizeCorrectionPresentationImpact(catalog, correctionRecords);
+  const recordsByFingerprint = correctionImpact.recordsByFingerprint;
+
   const filtered = catalog.filter((item) => matchesFisFilter(item, fisFilter));
   const sorted = sortFindingsBySeverity(filtered);
 
@@ -236,9 +248,21 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
   const multiByFis = new Map();
   const otherInfo = [];
 
+  function presentFinding(item, kind = "single") {
+    const record = resolveCorrectionRecordForFinding(item, recordsByFingerprint);
+    const enriched = enrichFindingWithCorrectionRecord(
+      enrichFindingForUserPresentation({ kind, ...item }),
+      record
+    );
+    if (enriched.correctionResolved) {
+      enriched.displayTitle = enriched.correctionStatusLabel || "Düzeltildi";
+    }
+    return enriched;
+  }
+
   for (const item of sorted) {
     if (item.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI) {
-      priority.push(enrichFindingForUserPresentation({ kind: "single", ...item }));
+      priority.push(presentFinding(item));
       continue;
     }
     if (item.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) {
@@ -248,15 +272,54 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
       multiByFis.set(key, list);
       continue;
     }
-    otherInfo.push(enrichFindingForUserPresentation({ kind: "single", ...item }));
+    otherInfo.push(presentFinding(item));
   }
 
   const groupedMulti = [...multiByFis.entries()]
     .sort((left, right) => String(left[0]).localeCompare(String(right[0]), "tr"))
-    .map(([, items]) => buildMultiCounterpartGroup(items));
+    .map(([, items]) => {
+      const group = buildMultiCounterpartGroup(items);
+      const record = resolveCorrectionRecordForFinding(items[0], recordsByFingerprint);
+      return enrichFindingWithCorrectionRecord(group, record);
+    });
 
   const built = [...priority, ...groupedMulti, ...otherInfo];
   return filterGenelMuhasebePresentationRows(built, fisFilter);
+}
+
+/**
+ * Düzeltme kayıtlarıyla Genel Sonuç / İnceleme / Düzeltildi.
+ * APPLIED bulgular unresolved katalogdan çıkarılır; EXPORTED/CANCELLED unresolved kalır.
+ * overallSonuc ve incelemeGerekli aynı correction-aware katalogdan türetilir.
+ * Motor ham özetine (summary.overallSonuc) dokunmaz — UI correction-aware özeti kullanır.
+ */
+export function summarizeGenelMuhasebeFindingsWithCorrections(catalog = [], correctionRecords = []) {
+  const base = summarizeGenelMuhasebeFindingsCatalog(catalog);
+  const correctionImpact = summarizeCorrectionPresentationImpact(catalog, correctionRecords);
+
+  const unresolvedCatalog = [];
+  for (const item of catalog) {
+    if (item.severity === E_DEFTER_ISSUE_SEVERITY.BILGI) {
+      unresolvedCatalog.push(item);
+      continue;
+    }
+    const record = resolveCorrectionRecordForFinding(
+      item,
+      correctionImpact.recordsByFingerprint
+    );
+    if (record?.status === CORRECTION_RECORD_STATUS.APPLIED) {
+      continue;
+    }
+    unresolvedCatalog.push(item);
+  }
+
+  const corrected = summarizeGenelMuhasebeFindingsCatalog(unresolvedCatalog);
+  return {
+    ...corrected,
+    duzeltildi: correctionImpact.duzeltildi,
+    exportedPending: correctionImpact.exportedPending,
+    incelemeGerekliRaw: base.incelemeGerekli,
+  };
 }
 
 /** Aktif presentation içindeki gruplu satır kimlikleri. */

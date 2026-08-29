@@ -220,11 +220,8 @@ function buildExportFileName(draft = {}, options = {}) {
   return `${slug}_${period}_DUZELTME_${fis}.xlsx`;
 }
 
-/**
- * Onaylı taslak → Luca standard veya ANNVERO fallback Excel.
- * Toplu düzeltme gelecekte yalnız kullanıcı onaylı taslaklardan türetilmeli.
- */
-export function exportCorrectionDraft(draft = {}, options = {}) {
+/** Onaylı taslak → workbook + dosya adı (V1 byte/header regresyonu korunur). */
+export function buildCorrectionExportWorkbook(draft = {}, options = {}) {
   const {
     userApproved = false,
     exportMode = CORRECTION_EXPORT_MODE.LUCA_STANDARD,
@@ -270,7 +267,6 @@ export function exportCorrectionDraft(draft = {}, options = {}) {
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Luca Fisleri");
-  XLSX.writeFile(workbook, fileName);
 
   const result = {
     ok: true,
@@ -279,6 +275,8 @@ export function exportCorrectionDraft(draft = {}, options = {}) {
     exportMode,
     lucaCompatible: exportMode === CORRECTION_EXPORT_MODE.LUCA_STANDARD,
     persist: 0,
+    workbook,
+    lucaRows,
   };
 
   if (exportMode === CORRECTION_EXPORT_MODE.ANNVERO_FALLBACK) {
@@ -286,6 +284,29 @@ export function exportCorrectionDraft(draft = {}, options = {}) {
       "Doğrudan Luca içe aktarım uyumluluğu henüz doğrulanmadı.";
   }
 
+  return result;
+}
+
+/**
+ * Onaylı taslak → Luca standard veya ANNVERO fallback Excel.
+ * Toplu düzeltme gelecekte yalnız kullanıcı onaylı taslaklardan türetilmeli.
+ */
+export function exportCorrectionDraft(draft = {}, options = {}) {
+  const built = buildCorrectionExportWorkbook(draft, options);
+  if (!built.ok) return built;
+
+  XLSX.writeFile(built.workbook, built.fileName);
+
+  const result = {
+    ok: true,
+    fileName: built.fileName,
+    rowCount: built.rowCount,
+    exportMode: built.exportMode,
+    lucaCompatible: built.lucaCompatible,
+    persist: 0,
+  };
+
+  if (built.warning) result.warning = built.warning;
   return result;
 }
 

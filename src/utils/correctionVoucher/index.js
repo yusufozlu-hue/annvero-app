@@ -34,6 +34,7 @@ export {
 
 export {
   buildCorrectionDraft,
+  buildCorrectionExportWorkbook,
   exportCorrectionDraft,
   isCorrectionEligibleFinding,
   prepareCorrectionFromFinding,
