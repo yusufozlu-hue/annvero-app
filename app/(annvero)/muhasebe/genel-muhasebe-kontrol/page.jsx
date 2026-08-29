@@ -24,6 +24,7 @@ import {
 import { createGenelMuhasebeAnalyzeGate, buildAccountPlanCodeSet } from "@/src/utils/genelMuhasebeKontrolEngine";
 import {
   buildGenelMuhasebeFindingsPresentation,
+  matchesVoucherNumberFilter,
   summarizeGenelMuhasebeFindingsWithCorrections,
 } from "@/src/utils/genelMuhasebeFindingsView";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
@@ -368,8 +369,12 @@ export default function GenelMuhasebeKontrolPage() {
       correctionRecords,
       ledgerRows,
     });
-    if (!showDuzeltildiOnly) return rows;
-    return rows.filter((item) => item.correctionResolved);
+    // Savunma: gösterilen her satır aynı merkezi fiş-no predicate’inden geçer.
+    const fisScoped = rows.filter((item) =>
+      matchesVoucherNumberFilter(item?.fisNo, trimmedFisFilter)
+    );
+    if (!showDuzeltildiOnly) return fisScoped;
+    return fisScoped.filter((item) => item.correctionResolved);
   }, [findingsCatalog, trimmedFisFilter, correctionRecords, showDuzeltildiOnly, ledgerRows]);
 
   const findingsWithCorrections = useMemo(() => {
@@ -799,11 +804,10 @@ export default function GenelMuhasebeKontrolPage() {
                 <div className="text-sm text-slate-700">
                   <span className="font-medium text-slate-900">Sonuç tablosu</span>
                   <span className="ml-2 text-slate-500">
-                    {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu ·{" "}
-                    {groupedMultiCount} bileşik fiş özeti
+                    {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu
                     {trimmedFisFilter
-                      ? ` · ${visibleFindingsRowCount} sonuç gösteriliyor`
-                      : ""}
+                      ? ` · ${visibleFindingsRowCount} sonuç gösteriliyor · ${groupedMultiCount} bileşik fiş özeti`
+                      : ` · ${groupedMultiCount} bileşik fiş özeti`}
                   </span>
                 </div>
                 <label className="block text-sm">
@@ -814,6 +818,7 @@ export default function GenelMuhasebeKontrolPage() {
                     onChange={(e) => setFisFilter(e.target.value)}
                     placeholder=""
                     aria-label="Fiş no filtre"
+                    data-testid="genel-muhasebe-fis-filter"
                   />
                 </label>
               </div>

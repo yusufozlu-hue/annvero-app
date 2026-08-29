@@ -172,9 +172,10 @@ export function sortFindingsBySeverity(catalog = []) {
 }
 
 /**
- * Fiş filtresi — rakam-only: baştaki sıfırları kaldır (49 ≡ 00049).
- * Alfanümerik: trim + TR locale lower-case.
- * Görünen fiş no (tabloda 00049) değişmez; yalnız karşılaştırma anahtarı.
+ * Fiş no karşılaştırma anahtarı.
+ * Rakam-only: baştaki sıfırları kaldır (49 ≡ 00049). Hepsi sıfır → "0".
+ * Alfanümerik: trim + TR locale lower-case. Kısmi arama yok.
+ * Görünen fiş no (tabloda 00049) değişmez.
  */
 export function normalizeFisNoForFilter(value = "") {
   const trimmed = String(value ?? "").trim();
@@ -186,28 +187,29 @@ export function normalizeFisNoForFilter(value = "") {
   return trimmed.toLocaleLowerCase("tr-TR");
 }
 
-function matchesFisFilter(finding, fisFilter = "") {
-  const needle = normalizeFisNoForFilter(fisFilter);
+/**
+ * Tek merkezi fiş no filtre predicate’i.
+ * Yalnız voucherNo/fisNo alanını karşılaştırır — hesap/açıklama/mesaj/JSON yok.
+ * Query boşsa her satır geçer. Aktif query’de boş fisNo eşleşmez.
+ */
+export function matchesVoucherNumberFilter(voucherNo, query = "") {
+  const needle = normalizeFisNoForFilter(query);
   if (!needle) return true;
-  return normalizeFisNoForFilter(finding.fisNo) === needle;
+  const haystack = normalizeFisNoForFilter(voucherNo);
+  if (!haystack) return false;
+  return haystack === needle;
 }
 
-function presentationRowMatchesFisFilter(row, fisFilter = "") {
-  const needle = normalizeFisNoForFilter(fisFilter);
-  if (!needle) return true;
-  return normalizeFisNoForFilter(row.fisNo) === needle;
-}
-
-/** Presentation satırlarına filtre — gruplu MULTI dahil. */
+/** Presentation satırlarına filtre — gruplu MULTI / single / düzeltilmiş aynı predicate. */
 export function filterGenelMuhasebePresentationRows(rows = [], fisFilter = "") {
-  const needle = normalizeFisNoForFilter(fisFilter);
-  if (!needle) return rows;
-  return rows
-    .filter((row) => presentationRowMatchesFisFilter(row, needle))
+  const query = String(fisFilter ?? "");
+  if (!normalizeFisNoForFilter(query)) return Array.isArray(rows) ? rows : [];
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => matchesVoucherNumberFilter(row?.fisNo, query))
     .map((row) => {
       if (row.kind !== "group" || !Array.isArray(row.details)) return row;
       const details = row.details.filter((detail) =>
-        presentationRowMatchesFisFilter(detail, needle)
+        matchesVoucherNumberFilter(detail?.fisNo, query)
       );
       const count = details.length;
       const messageTr = genelMuhasebeMultiGroupMessageTr(row.fisNo, count);
@@ -255,7 +257,7 @@ function buildMultiCounterpartGroup(items = [], ledgerRows = []) {
  * MULTI_COUNTERPART aynı fişte tek özet satır; HATA/UYARI her zaman üstte.
  */
 export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {}) {
-  const fisFilter = normalizeFisNoForFilter(options.fisFilter || "");
+  const fisFilterQuery = String(options.fisFilter ?? "");
   const correctionRecords = Array.isArray(options.correctionRecords)
     ? options.correctionRecords
     : [];
@@ -267,7 +269,9 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
   const correctionImpact = summarizeCorrectionPresentationImpact(catalog, correctionRecords);
   const recordsByFingerprint = correctionImpact.recordsByFingerprint;
 
-  const filtered = catalog.filter((item) => matchesFisFilter(item, fisFilter));
+  const filtered = (Array.isArray(catalog) ? catalog : []).filter((item) =>
+    matchesVoucherNumberFilter(item?.fisNo, fisFilterQuery)
+  );
   const sorted = sortFindingsBySeverity(filtered);
 
   const priority = [];
@@ -310,7 +314,8 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
     });
 
   const built = [...priority, ...groupedMulti, ...otherInfo];
-  return filterGenelMuhasebePresentationRows(built, fisFilter);
+  // Tek predicate — raw query; pre-normalize etme (çift dönüşüm / yanlış eşleşme yok).
+  return filterGenelMuhasebePresentationRows(built, fisFilterQuery);
 }
 
 /**

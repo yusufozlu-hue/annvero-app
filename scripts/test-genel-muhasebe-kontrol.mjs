@@ -28,6 +28,7 @@ import {
   buildGenelMuhasebeFindingsPresentation,
   countVisiblePresentationRows,
   filterGenelMuhasebePresentationRows,
+  matchesVoucherNumberFilter,
   normalizeFisNoForFilter,
   pruneExpandedPresentationGroups,
 } from "@/src/utils/genelMuhasebeFindingsView.js";
@@ -1835,6 +1836,150 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     });
     assert(cleared.length === presentation.length, "x clear filter restores all");
   }
+}
+
+// y) fiş no filtre — karışık fixture; yalnız fisNo tam eşleşme; decoy alanlar yok sayılır
+{
+  assert(matchesVoucherNumberFilter("00049", "49"), "y 49≡00049");
+  assert(matchesVoucherNumberFilter("00049", "00049"), "y 00049≡00049");
+  assert(matchesVoucherNumberFilter("00002", "2"), "y 2≡00002");
+  assert(!matchesVoucherNumberFilter("00020", "2"), "y 2≠00020");
+  assert(!matchesVoucherNumberFilter("00102", "2"), "y 2≠00102");
+  assert(!matchesVoucherNumberFilter("00030", "49"), "y 49≠00030");
+  assert(!matchesVoucherNumberFilter("00065", "49"), "y 49≠00065");
+  assert(matchesVoucherNumberFilter("00106", "106"), "y 106≡00106");
+  assert(matchesVoucherNumberFilter("00001", ""), "y empty query allows all");
+  assert(!matchesVoucherNumberFilter("", "2"), "y empty fisNo rejects active query");
+
+  const catalog = [
+    {
+      fisNo: "00002",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi 00002",
+      hesapKodu: "191.01.001",
+    },
+    {
+      fisNo: "00020",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "decoy fis 2 in message 49",
+      hesapKodu: "102.02.049",
+    },
+    {
+      fisNo: "00030",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message: "round 49 amount",
+      hesapKodu: "320.10.M0049",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "uyarı 2",
+      hesapKodu: "320.10.Y0010",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi 49",
+      hesapKodu: "100.01",
+    },
+    {
+      fisNo: "00065",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "info contains 49 and 2",
+      hesapKodu: "740.30.002",
+    },
+    {
+      fisNo: "00102",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "102",
+      hesapKodu: "102.01",
+    },
+    {
+      fisNo: "00106",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi 106",
+      hesapKodu: "191.02",
+    },
+    {
+      fisNo: "00106",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi 106b",
+      hesapKodu: "320.01",
+    },
+  ];
+
+  const correctionRecords = [
+    {
+      id: "corr-49",
+      status: "APPLIED",
+      source_finding_code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      source_fis_no: "00049",
+      fingerprint: "fp-49",
+    },
+  ];
+
+  function fisSet(rows) {
+    return [...new Set(rows.map((row) => row.fisNo))].sort();
+  }
+
+  const all = buildGenelMuhasebeFindingsPresentation(catalog, { correctionRecords });
+  assert(all.length >= 6, "y empty filter keeps mixed rows");
+
+  const q2 = buildGenelMuhasebeFindingsPresentation(catalog, {
+    fisFilter: "2",
+    correctionRecords,
+  });
+  assert(fisSet(q2).join(",") === "00002", "y query 2 → only 00002");
+  assert(
+    q2.every((row) => matchesVoucherNumberFilter(row.fisNo, "2")),
+    "y query 2 all rows pass helper"
+  );
+
+  const q49 = buildGenelMuhasebeFindingsPresentation(catalog, {
+    fisFilter: "49",
+    correctionRecords,
+  });
+  assert(fisSet(q49).join(",") === "00049", "y query 49 → only 00049");
+  assert(
+    q49.some((row) => row.kind === "group") &&
+      q49.some((row) => row.kind === "single" || row.code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE),
+    "y 49 includes group and single/warning via same predicate"
+  );
+
+  const q00049 = buildGenelMuhasebeFindingsPresentation(catalog, {
+    fisFilter: "00049",
+    correctionRecords,
+  });
+  assert(fisSet(q00049).join(",") === "00049", "y query 00049 → only 00049");
+  assert(q00049.length === q49.length, "y 49 and 00049 same result size");
+
+  const q106 = buildGenelMuhasebeFindingsPresentation(catalog, {
+    fisFilter: "106",
+    correctionRecords,
+  });
+  assert(fisSet(q106).join(",") === "00106", "y query 106 → only 00106");
+
+  const qEmpty = buildGenelMuhasebeFindingsPresentation(catalog, {
+    fisFilter: "",
+    correctionRecords,
+  });
+  assert(qEmpty.length === all.length, "y clear filter restores all");
+
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(/matchesVoucherNumberFilter/.test(pageSrc), "y page uses central helper");
+  assert(/data-testid="genel-muhasebe-fis-filter"/.test(pageSrc), "y filter test id");
 }
 
 if (failed) {
