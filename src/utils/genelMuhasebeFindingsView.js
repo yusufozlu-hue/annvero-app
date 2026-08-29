@@ -171,9 +171,19 @@ export function sortFindingsBySeverity(catalog = []) {
   });
 }
 
-/** Fiş filtresi — baştaki sıfırları korur, yalnız trim. */
+/**
+ * Fiş filtresi — rakam-only: baştaki sıfırları kaldır (49 ≡ 00049).
+ * Alfanümerik: trim + TR locale lower-case.
+ * Görünen fiş no (tabloda 00049) değişmez; yalnız karşılaştırma anahtarı.
+ */
 export function normalizeFisNoForFilter(value = "") {
-  return String(value ?? "").trim();
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return "";
+  if (/^\d+$/.test(trimmed)) {
+    const stripped = trimmed.replace(/^0+/, "");
+    return stripped === "" ? "0" : stripped;
+  }
+  return trimmed.toLocaleLowerCase("tr-TR");
 }
 
 function matchesFisFilter(finding, fisFilter = "") {

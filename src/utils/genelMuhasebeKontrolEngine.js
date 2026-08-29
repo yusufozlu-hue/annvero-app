@@ -36,6 +36,13 @@ import {
 } from "@/src/utils/genelMuhasebeFindingsView";
 import { parseDateTR } from "@/src/utils/formatDateTR";
 
+export {
+  isOpeningVoucher,
+  isOpeningVoucherGroup,
+  hasOpeningVoucherLabel,
+  OPENING_VOUCHER_CLASS,
+} from "@/src/utils/openingVoucherClassify";
+
 export const GENEL_MUHASEBE_DOC_CLASS = {
   MUAVIN: "MUAVIN",
   YEVMIYE: "YEVMIYE",
@@ -765,6 +772,7 @@ export function runGenelMuhasebeKontrol({
   let multi = 0;
   let review = 0;
   for (const row of ledgerRows) {
+    if (row.openingVoucherClass) continue;
     const codes = new Set((row.issueDetails || []).map((i) => i.code));
     if (codes.has(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART)) multi += 1;
     else if (

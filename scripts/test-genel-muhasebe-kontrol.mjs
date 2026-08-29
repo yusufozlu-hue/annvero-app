@@ -12,6 +12,7 @@ import { resolveVoucherCounterparts } from "@/src/utils/eDefterKontrolEngine.js"
 import {
   classifyLedgerDocumentType,
   createGenelMuhasebeAnalyzeGate,
+  isOpeningVoucher,
   reconcileMizanMuavin,
   refineDocumentClass,
   runGenelMuhasebeKontrol,
@@ -71,10 +72,11 @@ function yrow(p) {
     tarih: p.tarih || "10.05.2026",
     fisNo: p.fisNo ?? "10",
     yevmiyeNo: p.yevmiyeNo || "1",
+    fisTuru: p.fisTuru || "",
     hesapKodu: p.hesapKodu,
     hesapAdi: p.hesapAdi || "",
     aciklama: p.aciklama || "anon",
-    belgeTuru: "FT",
+    belgeTuru: p.belgeTuru ?? "FT",
     belgeNo: p.belgeNo || "B1",
     borc: p.borc ?? 0,
     alacak: p.alacak ?? 0,
@@ -133,6 +135,157 @@ const MUAVIN_HEADERS = [
   ]);
   assert(map.get("b1").code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART, "B multi");
   assert(!map.get("b1").counterAccountCode, "B no invent");
+}
+
+// opening) açılış fişi karşıt/MULTI analizinden hariç
+{
+  const openingLabeled = resolveVoucherCounterparts([
+    yrow({
+      id: "o1",
+      fisNo: "00087",
+      tarih: "15.03.2026",
+      fisTuru: "AÇILIŞ",
+      belgeTuru: "AÇILIŞ",
+      aciklama: "YILI AÇILIŞ",
+      hesapKodu: "100.01",
+      borc: 50,
+      alacak: 0,
+    }),
+    yrow({
+      id: "o2",
+      fisNo: "00087",
+      tarih: "15.03.2026",
+      fisTuru: "AÇILIŞ",
+      belgeTuru: "AÇILIŞ",
+      aciklama: "YILI AÇILIŞ",
+      hesapKodu: "320.01",
+      borc: 0,
+      alacak: 30,
+    }),
+    yrow({
+      id: "o3",
+      fisNo: "00087",
+      tarih: "15.03.2026",
+      fisTuru: "AÇILIŞ",
+      belgeTuru: "AÇILIŞ",
+      aciklama: "YILI AÇILIŞ",
+      hesapKodu: "391.01",
+      borc: 0,
+      alacak: 20,
+    }),
+  ]);
+  assert(openingLabeled.get("o1").reason === "opening_voucher", "opening labeled SKIP");
+  assert(!openingLabeled.get("o1").code, "opening labeled no MULTI code");
+  assert(isOpeningVoucher(yrow({ fisNo: "00087", fisTuru: "DEVİR", tarih: "20.02.2026" })), "opening DEVİR label");
+
+  const openingFallback = resolveVoucherCounterparts([
+    yrow({
+      id: "f1",
+      fisNo: "00001",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "bakiye",
+      hesapKodu: "100.01",
+      borc: 10,
+      alacak: 0,
+    }),
+    yrow({
+      id: "f2",
+      fisNo: "00001",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "bakiye",
+      hesapKodu: "320.01",
+      borc: 0,
+      alacak: 6,
+    }),
+    yrow({
+      id: "f3",
+      fisNo: "00001",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "bakiye",
+      hesapKodu: "391.01",
+      borc: 0,
+      alacak: 4,
+    }),
+  ]);
+  assert(openingFallback.get("f1").reason === "opening_voucher", "opening 00001+01.01 SKIP");
+  assert(!openingFallback.get("f1").code, "opening fallback no MULTI");
+
+  const notOpeningOtherDate = resolveVoucherCounterparts([
+    yrow({
+      id: "n1",
+      fisNo: "00001",
+      tarih: "15.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "100.01",
+      borc: 10,
+      alacak: 0,
+    }),
+    yrow({
+      id: "n2",
+      fisNo: "00001",
+      tarih: "15.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "320.01",
+      borc: 0,
+      alacak: 6,
+    }),
+    yrow({
+      id: "n3",
+      fisNo: "00001",
+      tarih: "15.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "391.01",
+      borc: 0,
+      alacak: 4,
+    }),
+  ]);
+  assert(
+    notOpeningOtherDate.get("n1").code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+    "opening 00001 other date still MULTI"
+  );
+
+  const notOpeningOtherFis = resolveVoucherCounterparts([
+    yrow({
+      id: "d1",
+      fisNo: "00002",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "100.01",
+      borc: 10,
+      alacak: 0,
+    }),
+    yrow({
+      id: "d2",
+      fisNo: "00002",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "320.01",
+      borc: 0,
+      alacak: 6,
+    }),
+    yrow({
+      id: "d3",
+      fisNo: "00002",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "391.01",
+      borc: 0,
+      alacak: 4,
+    }),
+  ]);
+  assert(
+    notOpeningOtherFis.get("d1").code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+    "opening 01.01 other fis still MULTI"
+  );
 }
 
 // C
@@ -940,15 +1093,27 @@ function hasIssueCode(rows, extras, code) {
     assert(r.summary.muavinYevmiye?.counts?.onlyMuavin === 0, "p onlyMuavin 0");
     assert(r.summary.muavinYevmiye?.counts?.onlyYevmiye === 0, "p onlyYevmiye 0");
     assert(r.counters.persistInvocations === 0, "p persist 0");
-    assert(r.summary.cokluKarsit === 327, "p bileşik satır count 327");
+    assert(r.summary.cokluKarsit === 129, "p bileşik satır count 129");
     assert(
-      presentation.filter((item) => item.kind === "group").length === 66,
-      "p 66 bileşik fiş groups"
+      presentation.filter((item) => item.kind === "group").length === 65,
+      "p 65 bileşik fiş groups"
     );
     assert(r.summary.toplamFis === 115, "p 115 fiş");
     assert(
       (r.summary.hareketSatir ?? r.summary.toplamSatir) === 545,
       "p 545 hareket"
+    );
+    assert(
+      !(r.findingsCatalog || []).some(
+        (item) =>
+          item.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART &&
+          String(item.fisNo || "").trim() === "00001"
+      ),
+      "p 00001 has no MULTI_COUNTERPART"
+    );
+    assert(
+      !presentation.some((item) => item.kind === "group" && item.fisNo === "00001"),
+      "p no 00001 bileşik fiş özeti"
     );
   }
 }
@@ -990,15 +1155,24 @@ function hasIssueCode(rows, extras, code) {
 
   const all = buildGenelMuhasebeFindingsPresentation(catalog);
   const f49 = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "00049" });
+  const f49short = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "49" });
   const f01 = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "00001" });
+  const f1short = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "1" });
+  const f2 = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "2" });
   const fTrim = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "  00049  " });
   const fMissing = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "99999" });
-  const fPartial = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "0000" });
+  const fPartial = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "4" });
+  const fClear = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "" });
 
   assert(all.length >= 3, "q clear filter returns grouped rows");
+  assert(fClear.length === all.length, "q empty filter returns all");
   assert(
-    f49.every((row) => normalizeFisNoForFilter(row.fisNo) === "00049"),
+    f49.every((row) => row.fisNo === "00049"),
     "q 00049 only 00049 rows"
+  );
+  assert(
+    f49short.length === f49.length && f49short.every((row) => row.fisNo === "00049"),
+    "q 49 matches 00049"
   );
   assert(!f49.some((row) => row.fisNo === "00001" || row.fisNo === "00002"), "q 00049 hides other fis");
   assert(
@@ -1009,18 +1183,28 @@ function hasIssueCode(rows, extras, code) {
     f01.length === 1 && f01[0].kind === "group" && f01[0].fisNo === "00001",
     "q 00001 only grouped MULTI row"
   );
+  assert(
+    f1short.length === 1 && f1short[0].fisNo === "00001",
+    "q 1 matches 00001 in catalog"
+  );
   assert(f01[0]?.count === 2, "q grouped MULTI count preserved");
+  assert(
+    f2.length === 1 && f2[0].fisNo === "00002",
+    "q 2 matches only 00002"
+  );
   assert(fMissing.length === 0, "q unknown fis empty");
-  assert(fPartial.length === 0, "q partial 0000 exact match yields none");
+  assert(fPartial.length === 0, "q partial 4 does not match 00049");
   assert(
     fTrim.length === f49.length && fTrim[0]?.fisNo === "00049",
-    "q trim preserves leading zeros"
+    "q trim matches padded fis display"
   );
+  assert(normalizeFisNoForFilter("49") === "49", "q normalize 49");
+  assert(normalizeFisNoForFilter("00049") === "49", "q normalize 00049");
+  assert(normalizeFisNoForFilter("0000") === "0", "q normalize all zeros");
+  assert(normalizeFisNoForFilter("AB-01") === "ab-01", "q normalize alphanumeric");
   assert(
-    filterGenelMuhasebePresentationRows(all, "00049").every(
-      (row) => row.fisNo === "00049"
-    ),
-    "q presentation-row filter exact"
+    filterGenelMuhasebePresentationRows(all, "49").every((row) => row.fisNo === "00049"),
+    "q presentation-row filter numeric strip"
   );
 }
 
@@ -1559,6 +1743,98 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   assert(!/aday/i.test(userFacing), "w user-facing no aday");
   assert(!/seçilemedi/i.test(userFacing), "w user-facing no seçilemedi");
   assert(group?.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART, "w technical code preserved");
+}
+
+// x) fiş filtre UI + açılış 00001 motor hariç + numeric filter
+{
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(/useState\(""\)/.test(pageSrc), "x fisFilter initial empty");
+  assert(/placeholder=""/.test(pageSrc), "x fis filter placeholder empty");
+  assert(!/placeholder="00049"/.test(pageSrc), "x no 00049 placeholder");
+
+  const alphaCatalog = [
+    {
+      fisNo: "AB-01",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "alpha",
+    },
+    {
+      fisNo: "ab-02",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "alpha2",
+    },
+  ];
+  const alphaHit = buildGenelMuhasebeFindingsPresentation(alphaCatalog, {
+    fisFilter: "ab-01",
+  });
+  assert(
+    alphaHit.length === 1 && alphaHit[0].fisNo === "AB-01",
+    "x alphanumeric case-insensitive filter"
+  );
+
+  const muavinPath = path.join(process.env.USERPROFILE || "", "Desktop", "muavin_mare.xlsx");
+  const yevPath = path.join(
+    process.env.USERPROFILE || "",
+    "Desktop",
+    "yevmiye_defteri_mare.xlsx"
+  );
+  const mizanPath = path.join(process.env.USERPROFILE || "", "Desktop", "mizan_mare.xlsx");
+  if (!fs.existsSync(muavinPath) || !fs.existsSync(yevPath)) {
+    console.log("SKIP  x mare opening/filter smoke (mare xlsx not on Desktop)");
+  } else {
+    const read = (p) => {
+      const buf = fs.readFileSync(p);
+      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      return readSheetRowsFromArrayBuffer(ab);
+    };
+    const r = runGenelMuhasebeKontrol({
+      companyId: "mare",
+      period: "2026/03",
+      muavinSheetRows: read(muavinPath),
+      yevmiyeSheetRows: read(yevPath),
+      mizanSheetRows: fs.existsSync(mizanPath) ? read(mizanPath) : null,
+      accountPlanAccounts: [],
+      accountPlanStatus: "missing",
+    });
+    const presentation = buildGenelMuhasebeFindingsPresentation(r.findingsCatalog || [], {
+      ledgerRows: r.rows || [],
+    });
+    assert(r.summary.cokluKarsit === 129, "x mare bileşik satır 129");
+    assert(
+      presentation.filter((item) => item.kind === "group").length === 65,
+      "x mare 65 bileşik fiş"
+    );
+    assert(
+      !presentation.some((item) => item.kind === "group" && item.fisNo === "00001"),
+      "x mare no 00001 bileşik özeti"
+    );
+    const filter1 = buildGenelMuhasebeFindingsPresentation(r.findingsCatalog || [], {
+      fisFilter: "1",
+      ledgerRows: r.rows || [],
+    });
+    assert(
+      !filter1.some((item) => item.kind === "group" && item.fisNo === "00001"),
+      "x filter 1 does not show 00001 bileşik (opening excluded)"
+    );
+    const filter49 = buildGenelMuhasebeFindingsPresentation(r.findingsCatalog || [], {
+      fisFilter: "49",
+      ledgerRows: r.rows || [],
+    });
+    assert(
+      filter49.length > 0 && filter49.every((row) => row.fisNo === "00049"),
+      "x filter 49 → only 00049"
+    );
+    const cleared = buildGenelMuhasebeFindingsPresentation(r.findingsCatalog || [], {
+      fisFilter: "",
+      ledgerRows: r.rows || [],
+    });
+    assert(cleared.length === presentation.length, "x clear filter restores all");
+  }
 }
 
 if (failed) {

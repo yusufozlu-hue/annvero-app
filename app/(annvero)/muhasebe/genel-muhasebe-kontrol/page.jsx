@@ -812,7 +812,8 @@ export default function GenelMuhasebeKontrolPage() {
                     className="w-40 rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
                     value={fisFilter}
                     onChange={(e) => setFisFilter(e.target.value)}
-                    placeholder="00049"
+                    placeholder=""
+                    aria-label="Fiş no filtre"
                   />
                 </label>
               </div>

@@ -29,6 +29,10 @@ import { parseMoneyTR } from "@/src/utils/parseMoneyTR";
 import { normalizeParserText } from "@/src/utils/textNormalize";
 import { structureMizanParseResult } from "@/src/utils/mizanAccountStructure";
 import {
+  OPENING_VOUCHER_CLASS,
+  isOpeningVoucherGroup,
+} from "@/src/utils/openingVoucherClassify";
+import {
   EDEFTER_ERROR_CODE,
   buildContentFingerprint,
   createFingerprintSession,
@@ -714,6 +718,21 @@ export function resolveVoucherCounterparts(rows = []) {
   }
 
   for (const [, group] of byFis.entries()) {
+    if (isOpeningVoucherGroup(group)) {
+      for (const row of group) {
+        results.set(row.id, {
+          status: "SKIP",
+          code: "",
+          counterAccountCode: "",
+          candidates: [],
+          confidence: 0,
+          reason: "opening_voucher",
+          classification: OPENING_VOUCHER_CLASS,
+        });
+      }
+      continue;
+    }
+
     const sides = new Map();
     let totalBorc = 0;
     let totalAlacak = 0;
@@ -2078,11 +2097,13 @@ export function analyzeEDefterRow(row, allRows = [], context = {}) {
     ? severityToSonucSeviye(analysis.maxSeverity)
     : sonucSeviyeFromScore(riskScore);
 
-  const resolvedCounterpart =
-    counterpartResolved?.counterAccountCode ||
-    row.counterAccountCode ||
-    row.karsiHesapKodu ||
-    "";
+  const openingSkip = counterpartResolved?.reason === "opening_voucher";
+  const resolvedCounterpart = openingSkip
+    ? ""
+    : counterpartResolved?.counterAccountCode ||
+      row.counterAccountCode ||
+      row.karsiHesapKodu ||
+      "";
 
   return {
     ...row,
@@ -2092,8 +2113,9 @@ export function analyzeEDefterRow(row, allRows = [], context = {}) {
     counterAccountCode: resolvedCounterpart,
     karsiHesapKodu: resolvedCounterpart,
     counterpartStatus: counterpartResolved?.status || "",
-    counterpartCandidates: counterpartResolved?.candidates || [],
-    counterpartConfidence: counterpartResolved?.confidence ?? null,
+    counterpartCandidates: openingSkip ? [] : counterpartResolved?.candidates || [],
+    counterpartConfidence: openingSkip ? null : counterpartResolved?.confidence ?? null,
+    openingVoucherClass: openingSkip ? OPENING_VOUCHER_CLASS : "",
     issues: analysis.issues,
     issueDetails: analysis.issueDetails,
     riskScore,
