@@ -60,7 +60,33 @@ export function multiCounterpartReasonTr(candidateCount = 0) {
 }
 
 /**
+ * Modal gösterim sırası: BORÇ → ALACAK → bilinmeyen/sıfır.
+ * Aynı yön içinde kaynak sıra korunur (stable).
+ */
+export function sideRankForDisplay(yon = "") {
+  if (yon === "BORÇ") return 0;
+  if (yon === "ALACAK") return 1;
+  return 2;
+}
+
+/**
+ * Presentation-only sıralama. Girdi dizisini mutate etmez.
+ */
+export function sortMultiCounterpartLinesForDisplay(lines = []) {
+  const source = Array.isArray(lines) ? lines : [];
+  return source
+    .map((line, sourceIndex) => ({ line, sourceIndex }))
+    .sort((left, right) => {
+      const rankDiff = sideRankForDisplay(left.line?.yon) - sideRankForDisplay(right.line?.yon);
+      if (rankDiff !== 0) return rankDiff;
+      return left.sourceIndex - right.sourceIndex;
+    })
+    .map(({ line }) => line);
+}
+
+/**
  * Fiş satırlarını seç: yevmiye varsa onu kullan (tam fiş), yoksa muavin.
+ * ledgerRows dizisini mutate etmez.
  */
 export function selectVoucherRowsForMultiDetail(fisNo = "", ledgerRows = []) {
   const needle = compactText(fisNo);
@@ -123,6 +149,7 @@ export function collectOppositeCandidateCodes(voucherRows = []) {
 
 /**
  * Presentation grubuna eklenecek clone-safe fiş ayrıntısı.
+ * ledgerRows mutate edilmez; satır sırası yalnız gösterim içindir.
  */
 export function buildMultiCounterpartVoucherDetail({
   fisNo = "",
@@ -139,7 +166,7 @@ export function buildMultiCounterpartVoucherDetail({
 
   const { candidates, candidateCount } = collectOppositeCandidateCodes(voucherRows);
 
-  const lines = voucherRows.map((row, index) => {
+  const mapped = voucherRows.map((row, index) => {
     const borc = roundMoney(row.borc);
     const alacak = roundMoney(row.alacak);
     const side = rowSide(borc, alacak);
@@ -155,14 +182,11 @@ export function buildMultiCounterpartVoucherDetail({
       borc,
       alacak,
       multiAffected: multiFromIssue || multiCodes.has(hesapKodu),
+      sourceIndex: index,
     };
   });
 
-  lines.sort((left, right) => {
-    const codeDiff = String(left.hesapKodu).localeCompare(String(right.hesapKodu), "tr");
-    if (codeDiff !== 0) return codeDiff;
-    return String(left.yon).localeCompare(String(right.yon), "tr");
-  });
+  const lines = sortMultiCounterpartLinesForDisplay(mapped);
 
   const resolvedTarih =
     compactText(tarih) ||

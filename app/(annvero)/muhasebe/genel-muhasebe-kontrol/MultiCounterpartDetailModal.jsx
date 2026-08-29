@@ -125,28 +125,47 @@ export default function MultiCounterpartDetailModal({
                       </td>
                     </tr>
                   ) : (
-                    lines.map((line) => (
-                      <tr
-                        key={line.id}
-                        className={
-                          line.multiAffected
-                            ? "border-t border-slate-100 bg-teal-50/40"
-                            : "border-t border-slate-100"
-                        }
-                      >
-                        <td className="px-3 py-1.5 font-mono text-xs text-slate-900">
-                          {line.hesapKodu || "—"}
-                        </td>
-                        <td className="px-3 py-1.5 text-slate-700">{line.hesapAdi || "—"}</td>
-                        <td className="px-3 py-1.5 text-slate-800">{line.yon || "—"}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
-                          {formatTurkishMoney(line.borc)}
-                        </td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
-                          {formatTurkishMoney(line.alacak)}
-                        </td>
-                      </tr>
-                    ))
+                    lines.flatMap((line, index) => {
+                      const prev = lines[index - 1];
+                      const showSideDivider =
+                        prev?.yon === "BORÇ" && line.yon === "ALACAK";
+                      const rows = [];
+                      if (showSideDivider) {
+                        rows.push(
+                          <tr key={`${line.id}|side-divider`} className="border-t border-slate-200">
+                            <td
+                              colSpan={5}
+                              className="bg-slate-50 px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-slate-500"
+                            >
+                              Alacak
+                            </td>
+                          </tr>
+                        );
+                      }
+                      rows.push(
+                        <tr
+                          key={line.id}
+                          className={
+                            line.multiAffected
+                              ? "border-t border-slate-100 bg-teal-50/40"
+                              : "border-t border-slate-100"
+                          }
+                        >
+                          <td className="px-3 py-1.5 font-mono text-xs text-slate-900">
+                            {line.hesapKodu || "—"}
+                          </td>
+                          <td className="px-3 py-1.5 text-slate-700">{line.hesapAdi || "—"}</td>
+                          <td className="px-3 py-1.5 text-slate-800">{line.yon || "—"}</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                            {formatTurkishMoney(line.borc)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums text-slate-800">
+                            {formatTurkishMoney(line.alacak)}
+                          </td>
+                        </tr>
+                      );
+                      return rows;
+                    })
                   )}
                 </tbody>
               </table>

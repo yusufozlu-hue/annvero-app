@@ -43,6 +43,10 @@ import {
   openMultiCounterpartGroup,
   shouldRenderInlineMultiGroupDetails,
 } from "@/src/utils/multiCounterpartUi.js";
+import {
+  buildMultiCounterpartVoucherDetail,
+  sortMultiCounterpartLinesForDisplay,
+} from "@/src/utils/multiCounterpartDetail.js";
 import { LUCA_MULTI_ACCOUNT_MUAVIN_ROWS } from "./fixtures/luca-multi-account-muavin.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -1318,6 +1322,79 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   assert(
     /data-testid="multi-counterpart-detail-open"/.test(pageSrc),
     "u open button test id present"
+  );
+}
+
+// v) modal display order BORÇ then ALACAK; source order within side; ledgerRows not mutated
+{
+  // Kaynak sıra: BORÇ / ALACAK / BORÇ → modal: BORÇ / BORÇ / ALACAK
+  const ledgerRows = [
+    {
+      id: "debit-191",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "191.01.001",
+      hesapAdi: "KDV",
+      borc: 23.4,
+      alacak: 0,
+    },
+    {
+      id: "credit-320",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "320.10.M0009",
+      hesapAdi: "Cari",
+      borc: 0,
+      alacak: 2363.4,
+      issueDetails: [{ code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART }],
+    },
+    {
+      id: "debit-740",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "740.30.003",
+      hesapAdi: "Gider",
+      borc: 2340,
+      alacak: 0,
+    },
+  ];
+  const snapshot = JSON.stringify(ledgerRows);
+  const detail = buildMultiCounterpartVoucherDetail({
+    fisNo: "00002",
+    tarih: "02.01.2026",
+    ledgerRows,
+    multiFindingItems: [{ hesapKodu: "320.10.M0009" }],
+  });
+  assert(JSON.stringify(ledgerRows) === snapshot, "v ledgerRows not mutated");
+  assert(
+    detail.lines.map((line) => `${line.yon}|${line.hesapKodu}`).join(",") ===
+      "BORÇ|191.01.001,BORÇ|740.30.003,ALACAK|320.10.M0009",
+    "v source BORÇ/ALACAK/BORÇ becomes modal BORÇ/BORÇ/ALACAK"
+  );
+  assert(detail.lines[0].borc === 23.4, "v first debit amount 23,40");
+  assert(detail.lines[1].borc === 2340, "v second debit amount 2.340,00");
+  assert(detail.lines[2].alacak === 2363.4, "v credit amount 2.363,40");
+  assert(
+    detail.candidates.join(",") === "191.01.001,740.30.003",
+    "v candidate codes/order unchanged (locale sorted)"
+  );
+
+  const unsorted = [
+    { yon: "BORÇ", hesapKodu: "A" },
+    { yon: "ALACAK", hesapKodu: "C" },
+    { yon: "BORÇ", hesapKodu: "B" },
+    { yon: "", hesapKodu: "Z" },
+    { yon: "ALACAK", hesapKodu: "D" },
+  ];
+  const unsortedSnap = JSON.stringify(unsorted);
+  const sorted = sortMultiCounterpartLinesForDisplay(unsorted);
+  assert(JSON.stringify(unsorted) === unsortedSnap, "v sort input not mutated");
+  assert(
+    sorted.map((line) => line.hesapKodu).join(",") === "A,B,C,D,Z",
+    "v same-side order kept; unknown last"
   );
 }
 
