@@ -42,8 +42,9 @@ export default function MultiCounterpartDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-3 sm:p-6"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 p-3 sm:p-6"
       role="presentation"
+      data-testid="multi-counterpart-detail-overlay"
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose?.();
       }}
@@ -52,6 +53,7 @@ export default function MultiCounterpartDetailModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        data-testid="multi-counterpart-detail-modal"
         className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl"
       >
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
@@ -67,6 +69,7 @@ export default function MultiCounterpartDetailModal({
           <button
             ref={closeRef}
             type="button"
+            data-testid="multi-counterpart-detail-close"
             className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
             onClick={onClose}
           >

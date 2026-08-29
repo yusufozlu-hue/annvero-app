@@ -27,6 +27,11 @@ import {
   summarizeGenelMuhasebeFindingsWithCorrections,
 } from "@/src/utils/genelMuhasebeFindingsView";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
+import {
+  closeMultiCounterpartGroup,
+  createMultiCounterpartUiState,
+  openMultiCounterpartGroup,
+} from "@/src/utils/multiCounterpartUi";
 import CorrectionVoucherPanel from "./CorrectionVoucherPanel";
 import CorrectionAppliedModal from "./CorrectionAppliedModal";
 import MultiCounterpartDetailModal from "./MultiCounterpartDetailModal";
@@ -151,7 +156,9 @@ export default function GenelMuhasebeKontrolPage() {
   const [showMuavinYevmiyeDiffs, setShowMuavinYevmiyeDiffs] = useState(false);
   const [fisFilter, setFisFilter] = useState("");
   const [expandedTechnicalIds, setExpandedTechnicalIds] = useState(() => new Set());
-  const [multiDetailGroup, setMultiDetailGroup] = useState(null);
+  const [multiCounterpartUi, setMultiCounterpartUi] = useState(() =>
+    createMultiCounterpartUiState(null)
+  );
   const [result, setResult] = useState(null);
   const [planStatus, setPlanStatus] = useState("unknown");
   const [planAccounts, setPlanAccounts] = useState(null);
@@ -169,7 +176,7 @@ export default function GenelMuhasebeKontrolPage() {
     runTokenRef.current += 1;
     setResult(null);
     setExpandedTechnicalIds(new Set());
-    setMultiDetailGroup(null);
+    setMultiCounterpartUi(createMultiCounterpartUiState(null));
     setPerfWarning("");
     setProgressDetail("");
     bumpAnalyzeGeneration(reason);
@@ -380,19 +387,25 @@ export default function GenelMuhasebeKontrolPage() {
 
   useEffect(() => {
     setExpandedTechnicalIds(new Set());
-    setMultiDetailGroup(null);
+    setMultiCounterpartUi(createMultiCounterpartUiState(null));
   }, [trimmedFisFilter, findingsCatalog]);
 
   const findingsCatalogSize = findingsCatalog?.length || 0;
   const groupedMultiCount = findings.filter((item) => item.kind === "group").length;
   const visibleFindingsRowCount = findings.length;
+  const multiDetailGroup = multiCounterpartUi.multiDetailGroup;
 
-  const openMultiCounterpartDetail = useCallback((group) => {
-    setMultiDetailGroup(group || null);
-  }, []);
+  const openMultiCounterpartDetail = useCallback(
+    (group, event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      setMultiCounterpartUi((prev) => openMultiCounterpartGroup(prev, group, ledgerRows));
+    },
+    [ledgerRows]
+  );
 
   const closeMultiCounterpartDetail = useCallback(() => {
-    setMultiDetailGroup(null);
+    setMultiCounterpartUi((prev) => closeMultiCounterpartGroup(prev));
   }, []);
 
   const toggleTechnicalDetails = useCallback((rowId) => {
@@ -826,6 +839,7 @@ export default function GenelMuhasebeKontrolPage() {
                   ) : (
                     findings.flatMap((item) => {
                       if (item.kind === "group") {
+                        // Sözleşme: MULTI grupta inline alt satır yok — yalnız modal.
                         return [
                           <tr key={item.id} className="border-t border-slate-100 bg-slate-50/60">
                             <td className="px-3 py-2">{item.fisNo || "—"}</td>
@@ -838,13 +852,17 @@ export default function GenelMuhasebeKontrolPage() {
                             <td className="px-3 py-2">
                               <button
                                 type="button"
+                                data-testid="multi-counterpart-detail-open"
+                                aria-haspopup="dialog"
+                                aria-expanded={Boolean(
+                                  multiDetailGroup && multiDetailGroup.id === item.id
+                                )}
                                 className="text-left text-teal-700 hover:underline"
-                                onClick={() => openMultiCounterpartDetail(item)}
+                                onClick={(event) => openMultiCounterpartDetail(item, event)}
                               >
                                 {item.displayMessage || item.messageTr || item.message}
                                 {" (ayrıntı)"}
                               </button>
-                              {renderTechnicalDetails(item, item.id)}
                             </td>
                           </tr>,
                         ];

@@ -36,6 +36,13 @@ import {
   genelMuhasebeFindingTitleTr,
   userVisibleTextHasTechnicalCode,
 } from "@/src/utils/genelMuhasebeFindingsLabels.js";
+import {
+  closeMultiCounterpartGroup,
+  createMultiCounterpartUiState,
+  isMultiCounterpartModalOpen,
+  openMultiCounterpartGroup,
+  shouldRenderInlineMultiGroupDetails,
+} from "@/src/utils/multiCounterpartUi.js";
 import { LUCA_MULTI_ACCOUNT_MUAVIN_ROWS } from "./fixtures/luca-multi-account-muavin.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -1215,6 +1222,102 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   assert(
     JSON.stringify(group.multiDetail) === JSON.stringify(again[0]?.multiDetail),
     "t presentation multiDetail deterministic (worker/main same builder)"
+  );
+}
+
+// u) MULTI (ayrıntı) → modal state; inline expand yok; close clears
+{
+  assert(
+    shouldRenderInlineMultiGroupDetails() === false,
+    "u inline multi group details disabled"
+  );
+
+  const catalog = [
+    {
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      hesapKodu: "320.10.M0009",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi",
+    },
+  ];
+  const ledgerRows = [
+    {
+      id: "a",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "191.01.001",
+      hesapAdi: "KDV",
+      borc: 23.4,
+      alacak: 0,
+    },
+    {
+      id: "b",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "320.10.M0009",
+      hesapAdi: "Cari",
+      borc: 0,
+      alacak: 2363.4,
+      issueDetails: [{ code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART }],
+    },
+    {
+      id: "c",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "740.30.003",
+      hesapAdi: "Gider",
+      borc: 2340,
+      alacak: 0,
+    },
+  ];
+  const presentation = buildGenelMuhasebeFindingsPresentation(catalog, { ledgerRows });
+  const group = presentation.find((item) => item.kind === "group" && item.fisNo === "00002");
+  assert(Boolean(group), "u group present");
+
+  let ui = createMultiCounterpartUiState(null);
+  assert(!isMultiCounterpartModalOpen(ui), "u modal closed initially");
+
+  ui = openMultiCounterpartGroup(ui, group, ledgerRows);
+  assert(isMultiCounterpartModalOpen(ui), "u (ayrıntı) opens modal state");
+  assert(ui.multiDetailGroup?.kind === "group", "u modal holds group");
+  assert(ui.multiDetailGroup?.multiDetail?.lineCount === 3, "u modal multiDetail 3 lines");
+  assert(ui.multiDetailGroup?.multiDetail?.candidateCount === 2, "u modal 2 candidates");
+  assert(
+    /tek karşıt hesap seçilemedi/.test(ui.multiDetailGroup?.multiDetail?.reasonTr || ""),
+    "u modal reason present"
+  );
+  assert(
+    (ui.multiDetailGroup?.details || []).length === 1,
+    "u technical details preserved on group for modal secondary section"
+  );
+
+  ui = closeMultiCounterpartGroup(ui);
+  assert(!isMultiCounterpartModalOpen(ui), "u close clears modal state");
+  assert(ui.multiDetailGroup === null, "u close nulls group");
+
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(!/toggleFindingGroup/.test(pageSrc), "u page has no toggleFindingGroup");
+  assert(
+    !/\{open \? " \(gizle\)" : " \(ayrıntı\)"\}/.test(pageSrc),
+    "u page has no inline gizle/ayrıntı toggle"
+  );
+  assert(
+    !/for \(const detail of item\.details/.test(pageSrc),
+    "u page does not inline-expand item.details"
+  );
+  assert(/openMultiCounterpartDetail/.test(pageSrc), "u page opens multi modal");
+  assert(/MultiCounterpartDetailModal/.test(pageSrc), "u page mounts multi modal");
+  assert(
+    /data-testid="multi-counterpart-detail-open"/.test(pageSrc),
+    "u open button test id present"
   );
 }
 
