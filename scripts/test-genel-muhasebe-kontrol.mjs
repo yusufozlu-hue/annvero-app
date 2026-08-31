@@ -35,6 +35,11 @@ import {
   pruneExpandedPresentationGroups,
 } from "@/src/utils/genelMuhasebeFindingsView.js";
 import {
+  buildVoucherResultGroups,
+  buildVisibleVoucherResultRows,
+  selectVoucherPrimaryFinding,
+} from "@/src/utils/voucherResultGroups.js";
+import {
   GENEL_MUHASEBE_FINDING_TITLE_TR,
   genelMuhasebeFindingMessageTr,
   genelMuhasebeFindingTitleTr,
@@ -1551,14 +1556,14 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     !/for \(const detail of item\.details/.test(pageSrc),
     "u page does not inline-expand item.details"
   );
-  assert(/openMultiCounterpartDetail/.test(pageSrc), "u page opens multi modal");
-  assert(/MultiCounterpartDetailModal/.test(pageSrc), "u page mounts multi modal");
+  assert(/openVoucherDetail/.test(pageSrc), "u page opens voucher detail modal");
+  assert(/VoucherFindingsDetailModal/.test(pageSrc), "u page mounts voucher detail modal");
   assert(
-    /data-testid="multi-counterpart-detail-open"/.test(pageSrc),
+    /data-testid="voucher-detail-open"/.test(pageSrc),
     "u open button test id present"
   );
   assert(/Bileşik satır/.test(pageSrc), "u page counter label Bileşik satır");
-  assert(/bileşik fiş özeti/.test(pageSrc), "u page group summary label");
+  assert(/bileşik fiş/.test(pageSrc), "u page group summary label");
   assert(!/Çoklu karşıt/.test(pageSrc), "u page has no Çoklu karşıt label");
   assert(!/gruplu karşıt hesap özeti/.test(pageSrc), "u page has no old group summary");
 }
@@ -1722,18 +1727,25 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     "utf8"
   );
   assert(/Bileşik fiş ayrıntısı/.test(modalSrc), "w modal title Bileşik fiş ayrıntısı");
-  assert(/Birlikte çalışan karşı hesaplar/.test(modalSrc), "w modal section title");
-  assert(!/Çoklu karşıt hesap ayrıntısı/.test(modalSrc), "w modal no old title");
-  assert(!/Karşıt hesap adayları/.test(modalSrc), "w modal no adayları heading");
-  assert(!/otomatik\s+tek hesap seçilmedi/.test(modalSrc), "w modal no seçilmedi footer");
-  assert(!/\baday\b/i.test(modalSrc.replace(/candidate/gi, "")), "w modal user copy no aday");
+  assert(/MultiCounterpartDetailBody/.test(modalSrc), "w modal uses shared body");
+  const bodySrc = fs.readFileSync(
+    path.resolve(
+      "app/(annvero)/muhasebe/genel-muhasebe-kontrol/MultiCounterpartDetailBody.jsx"
+    ),
+    "utf8"
+  );
+  assert(/Birlikte çalışan karşı hesaplar/.test(bodySrc), "w modal section title");
+  assert(!/Çoklu karşıt hesap ayrıntısı/.test(modalSrc + bodySrc), "w modal no old title");
+  assert(!/Karşıt hesap adayları/.test(modalSrc + bodySrc), "w modal no adayları heading");
+  assert(!/otomatik\s+tek hesap seçilmedi/.test(modalSrc + bodySrc), "w modal no seçilmedi footer");
+  assert(!/\baday\b/i.test((modalSrc + bodySrc).replace(/candidate/gi, "")), "w modal user copy no aday");
 
   const pageSrc = fs.readFileSync(
     path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
     "utf8"
   );
   assert(/Bileşik satır/.test(pageSrc), "w page Bileşik satır counter");
-  assert(/bileşik fiş özeti/.test(pageSrc), "w page bileşik fiş özeti");
+  assert(/bileşik fiş/.test(pageSrc), "w page bileşik fiş özeti");
   assert(!/Çoklu karşıt/.test(pageSrc), "w page no Çoklu karşıt");
   assert(!/gruplu karşıt hesap özeti/.test(pageSrc), "w page no old özet label");
 
@@ -2060,15 +2072,36 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   assertRenderParity("106", "00106");
   assertRenderParity("00049", "00049");
 
+  assert(
+    buildVisibleGenelMuhasebeFindingsRows({ findingsCatalog: catalog, fisFilter: "49" }).length === 1,
+    "z filter 49 → exactly 1 voucher row"
+  );
+  assert(
+    buildVisibleGenelMuhasebeFindingsRows({ findingsCatalog: catalog, fisFilter: "2" }).length === 1,
+    "z filter 2 → exactly 1 voucher row"
+  );
+  assert(
+    buildVisibleGenelMuhasebeFindingsRows({ findingsCatalog: catalog, fisFilter: "106" }).length === 1,
+    "z filter 106 → exactly 1 voucher row"
+  );
+
   const cleared = buildVisibleGenelMuhasebeFindingsRows({
     findingsCatalog: catalog,
     fisFilter: "",
   });
-  assert(cleared.length >= 5, "z clear filter restores mixed rows");
+  assert(cleared.length === 5, "z clear filter restores 5 voucher rows");
+  assert(
+    cleared.every((row) => row.kind === "voucher"),
+    "z clear rows are voucher kind"
+  );
   assert(
     [...new Set(cleared.map((row) => row.fisNo))].sort().join(",") ===
       "00002,00030,00049,00065,00106",
     "z clear keeps all fixture fis numbers"
+  );
+  assert(
+    cleared.filter((row) => row.fisNo === "00049").length === 1,
+    "z 00049 appears once in main table"
   );
 
   const pageSrc = fs.readFileSync(
@@ -2078,6 +2111,7 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   assert(/const visibleRows = useMemo/.test(pageSrc), "z page defines visibleRows");
   assert(/visibleRows\.map\(/.test(pageSrc), "z tbody maps visibleRows");
   assert(/visibleRowsCount/.test(pageSrc), "z summary uses visibleRowsCount");
+  assert(/fiş sonucu/.test(pageSrc), "z summary says fiş sonucu");
   assert(
     !/\bfindings\.flatMap\(/.test(pageSrc) && !/\bfindings\.map\(/.test(pageSrc),
     "z page does not render legacy findings list"
@@ -2085,6 +2119,171 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   assert(/data-testid="genel-muhasebe-findings-tbody"/.test(pageSrc), "z tbody test id");
   assert(/data-fis-no=\{item\.fisNo/.test(pageSrc), "z row data-fis-no for DOM accept");
   assert(/key=\{findingsTableBodyKey\}/.test(pageSrc), "z tbody remounts on filter change");
+  assert(/VoucherFindingsDetailModal/.test(pageSrc), "z page uses voucher detail modal");
+}
+
+// aa) voucherResultGroups — one row per fisNo; primary priority; secondary preserved
+{
+  const sixFindings = [
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "uyarı",
+      hesapKodu: "320.10.Y0010",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message: "yuvarlama",
+      hesapKodu: "320.10.Y0010",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "inceleme-a",
+      hesapKodu: "100.01",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "inceleme-b",
+      hesapKodu: "191.01",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-a",
+      hesapKodu: "100.01",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-b",
+      hesapKodu: "191.01",
+    },
+  ];
+
+  const corr49 = [
+    {
+      id: "corr-49",
+      status: "APPLIED",
+      sourceFingerprint: "fp-49",
+      sourceVoucherNo: "00049",
+      findingCode: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      wrongAccountCode: "320.10.Y0010",
+      externalVoucherNo: "00121",
+      externalVoucherDate: "2026-04-01",
+    },
+  ];
+
+  const catalogSnapshot = JSON.stringify(sixFindings);
+  const groups49 = buildVoucherResultGroups({
+    findingsCatalog: sixFindings,
+    correctionRecords: corr49,
+  });
+  assert(JSON.stringify(sixFindings) === catalogSnapshot, "aa catalog not mutated");
+  assert(groups49.length === 1, "aa 6 findings → 1 voucher group");
+  assert(groups49[0].fisNo === "00049", "aa group fis 00049");
+  assert(groups49[0].primaryKind === "applied", "aa 00049 primary = applied");
+  assert(groups49[0].primaryStatus === "Düzeltildi", "aa 00049 status Düzeltildi");
+  assert(groups49[0].secondaryCount === 5, "aa 00049 has 5 secondary");
+  assert(groups49[0].findingCount === 6, "aa raw finding count preserved on group");
+  assert(
+    /Luca fişi 00121/.test(groups49[0].primaryMessage || ""),
+    "aa 00049 Luca 00121 message"
+  );
+
+  const visible49 = buildVisibleVoucherResultRows({
+    findingsCatalog: sixFindings,
+    correctionRecords: corr49,
+    fisFilter: "49",
+  });
+  assert(visible49.length === 1, "aa filter 49 → 1 voucher row");
+
+  // priority: APPLIED > unresolved warning > composite > info
+  const priorityCatalog = [
+    {
+      fisNo: "00002",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi",
+      hesapKodu: "191.01",
+    },
+    {
+      fisNo: "00002",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "hesap inceleme",
+      hesapKodu: "100.01",
+    },
+  ];
+  const g02 = buildVoucherResultGroups({ findingsCatalog: priorityCatalog });
+  assert(g02.length === 1, "aa 00002 one group");
+  assert(g02[0].primaryKind === "composite", "aa 00002 primary = composite");
+  assert(g02[0].primaryStatus === "Bileşik fiş", "aa 00002 status Bileşik fiş");
+  assert(
+    g02[0].secondaryFindings.some((item) => /inceleme/i.test(item.message || item.displayMessage || "")),
+    "aa 00002 secondary keeps hesap inceleme"
+  );
+
+  const warnOverComposite = [
+    {
+      fisNo: "00106",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "warn",
+      hesapKodu: "320.01",
+    },
+    {
+      fisNo: "00106",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi",
+      hesapKodu: "191.01",
+    },
+  ];
+  const g106 = buildVoucherResultGroups({ findingsCatalog: warnOverComposite });
+  assert(g106[0].primaryKind === "warning", "aa priority warning > composite");
+
+  const appliedOverWarn = selectVoucherPrimaryFinding([
+    {
+      fisNo: "X",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: "A",
+      correctionResolved: true,
+      displayTitle: "Düzeltildi",
+    },
+    {
+      fisNo: "X",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: "B",
+      correctionResolved: false,
+    },
+  ]);
+  assert(appliedOverWarn.primaryKind === "applied", "aa priority APPLIED > unresolved warning");
+
+  const modalSrc = fs.readFileSync(
+    path.resolve(
+      "app/(annvero)/muhasebe/genel-muhasebe-kontrol/VoucherFindingsDetailModal.jsx"
+    ),
+    "utf8"
+  );
+  assert(/Escape/.test(modalSrc), "aa modal closes on Escape");
+  assert(/voucher-findings-detail-close/.test(modalSrc), "aa modal close test id");
+  assert(/Diğer kontroller/.test(modalSrc), "aa modal secondary section");
+  assert(/MultiCounterpartDetailBody/.test(modalSrc), "aa modal reuses multi body");
 }
 
 if (failed) {

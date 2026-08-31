@@ -27,15 +27,14 @@ import {
   presentationRowRenderKey,
   summarizeGenelMuhasebeFindingsWithCorrections,
 } from "@/src/utils/genelMuhasebeFindingsView";
-import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 import {
-  closeMultiCounterpartGroup,
-  createMultiCounterpartUiState,
-  openMultiCounterpartGroup,
-} from "@/src/utils/multiCounterpartUi";
+  buildVoucherResultGroups,
+  countCompositeVoucherGroups,
+} from "@/src/utils/voucherResultGroups";
+import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 import CorrectionVoucherPanel from "./CorrectionVoucherPanel";
 import CorrectionAppliedModal from "./CorrectionAppliedModal";
-import MultiCounterpartDetailModal from "./MultiCounterpartDetailModal";
+import VoucherFindingsDetailModal from "./VoucherFindingsDetailModal";
 import { isCorrectionEligibleFinding } from "@/src/utils/correctionVoucher";
 import {
   CORRECTION_RECORD_STATUS,
@@ -156,10 +155,7 @@ export default function GenelMuhasebeKontrolPage() {
   const [perfWarning, setPerfWarning] = useState("");
   const [showMuavinYevmiyeDiffs, setShowMuavinYevmiyeDiffs] = useState(false);
   const [fisFilter, setFisFilter] = useState("");
-  const [expandedTechnicalIds, setExpandedTechnicalIds] = useState(() => new Set());
-  const [multiCounterpartUi, setMultiCounterpartUi] = useState(() =>
-    createMultiCounterpartUiState(null)
-  );
+  const [voucherDetailGroup, setVoucherDetailGroup] = useState(null);
   const [result, setResult] = useState(null);
   const [planStatus, setPlanStatus] = useState("unknown");
   const [planAccounts, setPlanAccounts] = useState(null);
@@ -176,8 +172,7 @@ export default function GenelMuhasebeKontrolPage() {
   const invalidateActive = useCallback((reason) => {
     runTokenRef.current += 1;
     setResult(null);
-    setExpandedTechnicalIds(new Set());
-    setMultiCounterpartUi(createMultiCounterpartUiState(null));
+    setVoucherDetailGroup(null);
     setPerfWarning("");
     setProgressDetail("");
     bumpAnalyzeGeneration(reason);
@@ -389,58 +384,32 @@ export default function GenelMuhasebeKontrolPage() {
   );
 
   useEffect(() => {
-    setExpandedTechnicalIds(new Set());
-    setMultiCounterpartUi(createMultiCounterpartUiState(null));
+    setVoucherDetailGroup(null);
   }, [trimmedFisFilter, findingsCatalog]);
 
   const findingsCatalogSize = findingsCatalog?.length || 0;
   const visibleRowsCount = visibleRows.length;
-  const visibleGroupedMultiCount = visibleRows.filter((item) => item.kind === "group").length;
-  const multiDetailGroup = multiCounterpartUi.multiDetailGroup;
+  const allVoucherGroups = useMemo(
+    () =>
+      buildVoucherResultGroups({
+        findingsCatalog,
+        correctionRecords,
+        ledgerRows,
+      }),
+    [findingsCatalog, correctionRecords, ledgerRows]
+  );
+  const compositeVoucherCount = countCompositeVoucherGroups(allVoucherGroups);
   const findingsTableBodyKey = `findings-body|${trimmedFisFilter}|${showDuzeltildiOnly ? "1" : "0"}|${visibleRowsCount}`;
 
-  const openMultiCounterpartDetail = useCallback(
-    (group, event) => {
-      event?.preventDefault?.();
-      event?.stopPropagation?.();
-      setMultiCounterpartUi((prev) => openMultiCounterpartGroup(prev, group, ledgerRows));
-    },
-    [ledgerRows]
-  );
-
-  const closeMultiCounterpartDetail = useCallback(() => {
-    setMultiCounterpartUi((prev) => closeMultiCounterpartGroup(prev));
+  const openVoucherDetail = useCallback((group, event) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    setVoucherDetailGroup(group);
   }, []);
 
-  const toggleTechnicalDetails = useCallback((rowId) => {
-    setExpandedTechnicalIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(rowId)) next.delete(rowId);
-      else next.add(rowId);
-      return next;
-    });
+  const closeVoucherDetail = useCallback(() => {
+    setVoucherDetailGroup(null);
   }, []);
-
-  const renderTechnicalDetails = (row, rowKey) => {
-    const open = expandedTechnicalIds.has(rowKey);
-    if (!row?.code) return null;
-    return (
-      <div className="mt-1">
-        <button
-          type="button"
-          className="text-xs text-slate-500 hover:underline"
-          onClick={() => toggleTechnicalDetails(rowKey)}
-        >
-          {open ? "Teknik ayrıntıları gizle" : "Teknik ayrıntılar"}
-        </button>
-        {open ? (
-          <div className="mt-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[11px] text-slate-600">
-            Kod: {row.code}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
 
   const muavinYevmiyeDiffs = summary?.muavinYevmiye?.differences || [];
   const muavinYevmiyeDiffPreview = muavinYevmiyeDiffs.slice(0, 50);
@@ -803,10 +772,9 @@ export default function GenelMuhasebeKontrolPage() {
                 <div className="text-sm text-slate-700">
                   <span className="font-medium text-slate-900">Sonuç tablosu</span>
                   <span className="ml-2 text-slate-500">
-                    {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu
-                    {trimmedFisFilter
-                      ? ` · ${visibleRowsCount} sonuç gösteriliyor · ${visibleGroupedMultiCount} bileşik fiş özeti`
-                      : ` · ${visibleGroupedMultiCount} bileşik fiş özeti`}
+                    {summary.toplamFis} fiş işlendi · {findingsCatalogSize} ham bulgu ·{" "}
+                    {visibleRowsCount} fiş sonucu
+                    {trimmedFisFilter ? " gösteriliyor" : ""} · {compositeVoucherCount} bileşik fiş
                   </span>
                 </div>
                 <label className="block text-sm">
@@ -847,64 +815,56 @@ export default function GenelMuhasebeKontrolPage() {
                   ) : (
                     visibleRows.map((item, index) => {
                       const rowKey = presentationRowRenderKey(item, index);
-                      if (item.kind === "group") {
-                        // Sözleşme: MULTI grupta inline alt satır yok — yalnız modal.
-                        return (
-                          <tr
-                            key={rowKey}
-                            className="border-t border-slate-100 bg-slate-50/60"
-                            data-testid="genel-muhasebe-finding-row"
-                            data-fis-no={item.fisNo || ""}
-                            data-row-kind="group"
-                          >
-                            <td className="px-3 py-2" data-testid="genel-muhasebe-finding-fis">
-                              {item.fisNo || "—"}
-                            </td>
-                            <td className="px-3 py-2">{item.tarih || "—"}</td>
-                            <td className="px-3 py-2">—</td>
-                            <td className="px-3 py-2">{item.severity}</td>
-                            <td className="px-3 py-2 font-medium text-slate-900">
-                              {item.displayTitle || item.titleTr}
-                            </td>
-                            <td className="px-3 py-2">
-                              <button
-                                type="button"
-                                data-testid="multi-counterpart-detail-open"
-                                aria-haspopup="dialog"
-                                aria-expanded={Boolean(
-                                  multiDetailGroup && multiDetailGroup.id === item.id
-                                )}
-                                className="text-left text-teal-700 hover:underline"
-                                onClick={(event) => openMultiCounterpartDetail(item, event)}
-                              >
-                                {item.displayMessage || item.messageTr || item.message}
-                                {" (ayrıntı)"}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      }
+                      const secondaryCount = item.secondaryCount || 0;
                       return (
                         <tr
                           key={rowKey}
                           className="border-t border-slate-100"
                           data-testid="genel-muhasebe-finding-row"
                           data-fis-no={item.fisNo || ""}
-                          data-row-kind="single"
+                          data-row-kind="voucher"
                         >
                           <td className="px-3 py-2" data-testid="genel-muhasebe-finding-fis">
                             {item.fisNo || "—"}
                           </td>
                           <td className="px-3 py-2">{item.tarih || "—"}</td>
-                          <td className="px-3 py-2">{item.hesapKodu || "—"}</td>
-                          <td className="px-3 py-2">{item.severity}</td>
+                          <td className="px-3 py-2">{item.primaryAccount || item.hesapKodu || "—"}</td>
+                          <td className="px-3 py-2">{item.primarySeverity || item.severity || "—"}</td>
                           <td className="px-3 py-2 font-medium text-slate-900">
-                            {item.displayTitle || item.titleTr}
+                            {item.primaryStatus || item.displayTitle || "—"}
                           </td>
                           <td className="px-3 py-2">
-                            {item.displayMessage || item.messageTr || item.message}
-                            {renderTechnicalDetails(item, rowKey)}
-                            {renderCorrectionAction(item)}
+                            <p>{item.primaryMessage || item.displayMessage || "—"}</p>
+                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                              <button
+                                type="button"
+                                data-testid="voucher-detail-open"
+                                aria-haspopup="dialog"
+                                aria-expanded={Boolean(
+                                  voucherDetailGroup && voucherDetailGroup.fisNo === item.fisNo
+                                )}
+                                className="text-teal-700 hover:underline"
+                                onClick={(event) => openVoucherDetail(item, event)}
+                              >
+                                Ayrıntı
+                              </button>
+                              {secondaryCount > 0 ? (
+                                <button
+                                  type="button"
+                                  data-testid="voucher-secondary-open"
+                                  className="text-slate-600 hover:underline"
+                                  onClick={(event) => openVoucherDetail(item, event)}
+                                >
+                                  {secondaryCount} ek bulgu
+                                </button>
+                              ) : null}
+                            </div>
+                            {item.correctionResolved
+                              ? renderCorrectionAction(item.primaryFinding || item)
+                              : null}
+                            {!item.correctionResolved && item.primaryKind !== "composite"
+                              ? renderCorrectionAction(item.primaryFinding || item)
+                              : null}
                           </td>
                         </tr>
                       );
@@ -916,10 +876,13 @@ export default function GenelMuhasebeKontrolPage() {
           </div>
         ) : null}
 
-        <MultiCounterpartDetailModal
-          open={Boolean(multiDetailGroup)}
-          onClose={closeMultiCounterpartDetail}
-          group={multiDetailGroup}
+        <VoucherFindingsDetailModal
+          open={Boolean(voucherDetailGroup)}
+          onClose={closeVoucherDetail}
+          group={voucherDetailGroup}
+          onOpenCorrectionRecord={(record) => {
+            setApplyRecord(record);
+          }}
         />
 
         <CorrectionVoucherPanel

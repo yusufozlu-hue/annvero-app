@@ -14,6 +14,7 @@ import {
 } from "@/src/utils/correctionRecords/correctionRecordPresentation";
 import { CORRECTION_RECORD_STATUS } from "@/src/utils/correctionRecords/correctionRecordTypes";
 import { buildMultiCounterpartVoucherDetail } from "@/src/utils/multiCounterpartDetail";
+import { buildVisibleVoucherResultRows } from "@/src/utils/voucherResultGroups";
 
 function isSyntheticSystemFindingRow(row = {}) {
   const id = String(row?.id || "");
@@ -319,31 +320,18 @@ export function buildGenelMuhasebeFindingsPresentation(catalog = [], options = {
 }
 
 /**
- * Sayfa sonuç tablosunun tek kaynağı.
- * Presentation (grup + single + correction) → final fisNo predicate → görünür satırlar.
- * Sayaç ve <tbody> yalnız bu listeyi kullanmalı.
+ * Sayfa sonuç tablosunun tek kaynağı — her fiş bir satır (voucherResultGroups).
+ * Presentation (eski grup+single) ham katalog için ayrı; ana tablo yalnız voucher satırları.
  */
-export function buildVisibleGenelMuhasebeFindingsRows({
-  findingsCatalog = [],
-  fisFilter = "",
-  correctionRecords = [],
-  ledgerRows = [],
-  showDuzeltildiOnly = false,
-} = {}) {
-  if (!Array.isArray(findingsCatalog) || findingsCatalog.length === 0) return [];
-  const query = String(fisFilter ?? "");
-  const rows = buildGenelMuhasebeFindingsPresentation(findingsCatalog, {
-    fisFilter: query,
-    correctionRecords,
-    ledgerRows,
-  });
-  const fisScoped = rows.filter((item) => matchesVoucherNumberFilter(item?.fisNo, query));
-  if (!showDuzeltildiOnly) return fisScoped;
-  return fisScoped.filter((item) => item.correctionResolved);
+export function buildVisibleGenelMuhasebeFindingsRows(options = {}) {
+  return buildVisibleVoucherResultRows(options);
 }
 
 /** Sonuç tablosu satır anahtarı — filtre değişiminde stale DOM kalmasın. */
 export function presentationRowRenderKey(item = {}, index = 0) {
+  if (item?.kind === "voucher") {
+    return `voucher|${item.fisNo || "x"}|${item.primaryKind || ""}|${index}`;
+  }
   if (item?.kind === "group") {
     return `group|${item.id || item.fisNo || "x"}|${index}`;
   }
