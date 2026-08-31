@@ -99,6 +99,9 @@ export function resolveAnalyzeFallbackReasonCode(error = null) {
     "WORKER_MESSAGE_ERROR",
     "WORKER_POSTMESSAGE_FAILED",
     "WORKER_CANCELLED",
+    "WORKER_SCRIPT_HTML",
+    "WORKER_SCRIPT_INVALID",
+    "WORKER_SCRIPT_FETCH_FAILED",
     "ANALYZE_WORKER_EMPTY",
     "ANALYZE_WORKER_SCHEMA",
     "ANALYZE_REQUEST_ID_MISMATCH",
@@ -259,7 +262,11 @@ export async function runEDefterAnalyzeJob(
         const fallbackReasonCode = resolveAnalyzeFallbackReasonCode(error);
         analyzeJobStats.lastFallbackReasonCode = fallbackReasonCode;
         if (typeof console !== "undefined") {
-          console.debug("[eDefterAnalyzeBridge] worker→fallback", fallbackReasonCode);
+          console.warn("[eDefterAnalyzeBridge] worker→fallback", {
+            fallbackReasonCode,
+            message: error?.message || "",
+            detail: error?.detail || null,
+          });
         }
         const fallback = await runMainThreadAnalyze(input, {
           requestId,

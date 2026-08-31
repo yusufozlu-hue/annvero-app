@@ -6234,6 +6234,10 @@
   }
 
   // src/workers/eDefterAnalyze.worker.js
+  try {
+    self.postMessage({ type: "lifecycle", stage: "boot", code: "WORKER_BOOT" });
+  } catch {
+  }
   self.onmessage = async (event) => {
     const data = event.data || {};
     const requestId = data.requestId;
@@ -6244,6 +6248,15 @@
         throw Object.assign(new Error("Analyze requestId zorunlu."), {
           code: "ANALYZE_REQUEST_ID_MISSING"
         });
+      }
+      try {
+        self.postMessage({
+          type: "lifecycle",
+          stage: "job-accepted",
+          code: "WORKER_JOB_ACCEPTED",
+          requestId
+        });
+      } catch {
       }
       if (protocolVersion && protocolVersion !== EDEFTER_ANALYZE_PROTOCOL) {
         throw Object.assign(new Error("Analyze worker protokol s\xFCr\xFCm\xFC uyu\u015Fmuyor."), {

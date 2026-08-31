@@ -797,6 +797,16 @@ console.log("12) classic bundled worker asset — no @/ imports; bridge classicW
   assert.equal(/process\.env/i.test(bundleSrc), false, "12 no process.env");
   assert.equal(/https?:\/\//i.test(bundleSrc), false, "12 no external http(s) URL");
   assert.match(bridgeSrc, /classicWorker:\s*true/, "12 analyze bridge uses classicWorker");
+  assert.match(
+    bridgeSrc,
+    /classicScriptBootstrap:\s*true/,
+    "12 analyze bridge bootstraps classic script via fetch→blob"
+  );
+  assert.match(
+    bridgeSrc,
+    /bootstrapClassicWorkerScriptUrl/,
+    "12 bootstrap helper present"
+  );
   assert.match(urlsSrc, /\/workers\/eDefterAnalyze\.worker\.js/, "12 URL points at public bundle");
   assert.match(buildSrc, /bundle-edefter-analyze-worker/, "12 production build runs bundle first");
   assert.match(pageSrc, /execution === "worker"/, "12 page clears warning on worker success");
@@ -810,7 +820,60 @@ console.log("12) classic bundled worker asset — no @/ imports; bridge classicW
     false,
     "12 page does not render fallbackReasonCode"
   );
+  const proxySrc = fs.readFileSync(path.resolve("proxy.ts"), "utf8");
+  assert.match(proxySrc, /workers\(\?:\/\|\$\)/, "12 proxy excludes /workers from session matcher");
   console.log("PASS classic bundled worker asset", { bytes: bundleSrc.length });
+}
+
+console.log("12c) classic bootstrap rejects HTML / accepts JS blob");
+{
+  const { bootstrapClassicWorkerScriptUrl, parserWorkerRuntimeStats, resetParserWorkerRuntimeStats } =
+    await import("@/src/utils/workerParserBridge.js");
+  resetParserWorkerRuntimeStats();
+
+  const htmlFetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => "text/html; charset=utf-8" },
+    arrayBuffer: async () =>
+      new TextEncoder().encode("<!DOCTYPE html><html><body>vercel login</body></html>").buffer,
+  });
+  await assert.rejects(
+    () =>
+      bootstrapClassicWorkerScriptUrl("/workers/eDefterAnalyze.worker.js", {
+        fetchImpl: htmlFetch,
+      }),
+    (err) => err?.code === "WORKER_SCRIPT_HTML",
+    "12c HTML body → WORKER_SCRIPT_HTML"
+  );
+  assert.equal(
+    parserWorkerRuntimeStats.classicBootstrapHtmlBlocked >= 1,
+    true,
+    "12c html blocked counter"
+  );
+
+  const jsBody = fs.readFileSync(
+    path.resolve("public/workers/eDefterAnalyze.worker.js")
+  );
+  const created = [];
+  const jsFetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => "text/javascript; charset=utf-8" },
+    arrayBuffer: async () => jsBody.buffer.slice(jsBody.byteOffset, jsBody.byteOffset + jsBody.byteLength),
+  });
+  const boot = await bootstrapClassicWorkerScriptUrl("/workers/eDefterAnalyze.worker.js", {
+    fetchImpl: jsFetch,
+    createObjectURL: (blob) => {
+      created.push(blob);
+      return "blob:test-edefter-worker";
+    },
+  });
+  assert.equal(boot.url, "blob:test-edefter-worker", "12c blob URL returned");
+  assert.equal(created.length, 1, "12c one blob created");
+  assert.equal(boot.meta.bytes, jsBody.byteLength, "12c byte length preserved");
+  boot.revoke();
+  console.log("PASS classic bootstrap HTML reject + JS blob");
 }
 
 console.log("12b) deterministic + fresh bundle matches committed asset");

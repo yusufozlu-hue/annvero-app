@@ -17,6 +17,12 @@ import { postProgress, WORKER_PARSE_STAGES, yieldToWorker } from "./workerUtils.
  * Bridge posts: { requestId, payload: CloneSafeAnalyzePayload, protocolVersion? }
  * payload.jobKind: E_DEFTER_CONTROL (default) | GENERAL_LEDGER_CONTROL
  */
+try {
+  self.postMessage({ type: "lifecycle", stage: "boot", code: "WORKER_BOOT" });
+} catch {
+  /* ignore — some harnesses ignore early lifecycle */
+}
+
 self.onmessage = async (event) => {
   const data = event.data || {};
   const requestId = data.requestId;
@@ -31,6 +37,16 @@ self.onmessage = async (event) => {
       throw Object.assign(new Error("Analyze requestId zorunlu."), {
         code: "ANALYZE_REQUEST_ID_MISSING",
       });
+    }
+    try {
+      self.postMessage({
+        type: "lifecycle",
+        stage: "job-accepted",
+        code: "WORKER_JOB_ACCEPTED",
+        requestId,
+      });
+    } catch {
+      /* ignore */
     }
     if (protocolVersion && protocolVersion !== EDEFTER_ANALYZE_PROTOCOL) {
       throw Object.assign(new Error("Analyze worker protokol sürümü uyuşmuyor."), {
