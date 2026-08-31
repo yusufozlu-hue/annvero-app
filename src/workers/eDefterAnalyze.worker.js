@@ -1,11 +1,17 @@
+/**
+ * e-Defter / Genel Muhasebe analyze worker (module source).
+ * Production loads the classic IIFE from public/workers/eDefterAnalyze.worker.js
+ * (see scripts/bundle-edefter-analyze-worker.mjs) because Turbopack media-copy
+ * leaves bare `@/` imports unresolved → WORKER_ONERROR + permanent fallback.
+ */
 import {
   EDEFTER_ANALYZE_JOB_KIND,
   EDEFTER_ANALYZE_PROTOCOL,
   executeEDefterAnalyzePayload,
   resolveAnalyzeJobKind,
   sanitizeAnalyzeResult,
-} from "@/src/utils/eDefterAnalyzeContract";
-import { postProgress, WORKER_PARSE_STAGES, yieldToWorker } from "@/src/workers/workerUtils";
+} from "../utils/eDefterAnalyzeContract.js";
+import { postProgress, WORKER_PARSE_STAGES, yieldToWorker } from "./workerUtils.js";
 
 /**
  * Bridge posts: { requestId, payload: CloneSafeAnalyzePayload, protocolVersion? }
@@ -59,11 +65,11 @@ self.onmessage = async (event) => {
       mainThreadAnalyze: 0,
     });
 
+    // Single nested `result` — avoid flattening huge graphs twice onto the wire.
     self.postMessage({
       type: "success",
       requestId,
       result,
-      ...result,
     });
   } catch (error) {
     self.postMessage({

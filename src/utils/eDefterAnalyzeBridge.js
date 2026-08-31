@@ -29,11 +29,13 @@ export const analyzeJobStats = {
   nestedPayloadOk: 0,
   malformedRejected: 0,
   persistAllowed: 0,
+  /** Telemetry only — never copy into UI/API payloads. */
+  lastFallbackReasonCode: "",
 };
 
 export function resetAnalyzeJobStats() {
   for (const key of Object.keys(analyzeJobStats)) {
-    analyzeJobStats[key] = 0;
+    analyzeJobStats[key] = typeof analyzeJobStats[key] === "string" ? "" : 0;
   }
 }
 
@@ -85,6 +87,35 @@ function markPersistAllowed(jobKind) {
   // Genel Muhasebe is local-control only — never open persist gate.
   if (jobKind === EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL) return;
   analyzeJobStats.persistAllowed += 1;
+}
+
+/** Safe telemetry codes only — never surface raw Error stacks to end users. */
+export function resolveAnalyzeFallbackReasonCode(error = null) {
+  const code = String(error?.code || "").trim();
+  const allowed = new Set([
+    "WORKER_ONERROR",
+    "WORKER_CONSTRUCT_FAILED",
+    "WORKER_UNAVAILABLE",
+    "WORKER_MESSAGE_ERROR",
+    "WORKER_POSTMESSAGE_FAILED",
+    "WORKER_CANCELLED",
+    "ANALYZE_WORKER_EMPTY",
+    "ANALYZE_WORKER_SCHEMA",
+    "ANALYZE_REQUEST_ID_MISMATCH",
+    "ANALYZE_WORKER_FAILED",
+    "ANALYZE_PROTOCOL_MISMATCH",
+    "ANALYZE_PAYLOAD_MISSING",
+    "ANALYZE_TIMEOUT",
+  ]);
+  if (allowed.has(code)) return code;
+  const message = String(error?.message || "");
+  if (/DataCloneError|structured clone|cloneable/i.test(message)) {
+    return "WORKER_CLONE_FAILED";
+  }
+  if (/timeout/i.test(message) || /zaman aşımı/i.test(message)) {
+    return "WORKER_TIMEOUT";
+  }
+  return "WORKER_FAILED";
 }
 
 async function runMainThreadAnalyze(input, diagnostics = {}) {
@@ -225,9 +256,12 @@ export async function runEDefterAnalyzeJob(
         // Cancel/replace/stale must not consume the single fallback slot.
         assertNotStale();
         analyzeJobStats.fallbackAttempts += 1;
+        const fallbackReasonCode = resolveAnalyzeFallbackReasonCode(error);
+        analyzeJobStats.lastFallbackReasonCode = fallbackReasonCode;
+        if (typeof console !== "undefined") {
+          console.debug("[eDefterAnalyzeBridge] worker→fallback", fallbackReasonCode);
+        }
         const fallback = await runMainThreadAnalyze(input, {
-          fallbackFrom: error?.code || "WORKER_FAILED",
-          fallbackMessage: String(error?.message || "").slice(0, 200),
           requestId,
           generation: jobGeneration,
           jobKind,
@@ -249,16 +283,17 @@ export async function runEDefterAnalyzeJob(
             jobKind,
             fallback: 1,
             mainThreadAnalyze: 1,
+            // fallbackReasonCode intentionally omitted from UI/API payload
           },
         });
       }
     }
 
     analyzeJobStats.fallbackAttempts += 1;
+    analyzeJobStats.lastFallbackReasonCode = "WORKER_UNAVAILABLE";
     assertNotStale();
     const mainResult = await runMainThreadAnalyze(input, {
       requestId,
-      reason: "worker-unavailable",
       generation: jobGeneration,
       jobKind,
       performanceWarning:

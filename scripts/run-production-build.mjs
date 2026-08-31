@@ -9,9 +9,19 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const nextCli = path.join(repoRoot, "node_modules", "next", "dist", "bin", "next");
+const bundleWorker = path.join(repoRoot, "scripts", "bundle-edefter-analyze-worker.mjs");
 
 const env = { ...process.env, NODE_ENV: "production" };
 delete env.ANNVERO_ANALYSIS_PROFILE;
+
+const bundle = spawnSync(process.execPath, [bundleWorker], {
+  cwd: repoRoot,
+  env,
+  stdio: "inherit",
+});
+if (bundle.status !== 0) {
+  process.exit(bundle.status === null ? 1 : bundle.status);
+}
 
 const result = spawnSync(process.execPath, [nextCli, "build"], {
   cwd: repoRoot,

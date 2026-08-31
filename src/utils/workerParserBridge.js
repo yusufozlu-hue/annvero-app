@@ -539,6 +539,8 @@ export function runEDefterAnalyzeWorker({
   return runParserWorker({
     workerUrl,
     jobType: PARSER_JOB_TYPES.EDEFTER_ANALYZE,
+    // Prebundled public/workers IIFE — classic (no module @/ resolution).
+    classicWorker: true,
     payload: nested,
     onProgress,
     timeoutMs,
