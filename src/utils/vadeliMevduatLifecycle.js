@@ -1,8 +1,10 @@
 /**
- * Vadeli mevduat yaşam döngüsü (açılış → faiz → stopaj → kapanış).
+ * Vadeli mevduat yaşam döngüsü (açılış → faiz → stopaj → kapanış /
+ * vade dönüşü / anapara yenileme).
  *
- * Kural: Vadeli hesaplar arasında virman olmaz. Açılış/kapanış karşı hesabı
- * aynı firma + aynı bankanın VADESIZ 102 yaprak hesabı olmalıdır.
+ * Kural: Vadeli hesaplar arasında virman olmaz (otomatik / aday / reclass yok).
+ * Açılış/kapanış karşı hesabı aynı firma + aynı bankanın VADESIZ 102 yaprağıdır.
+ * accountingScenario: VADELI_LIFECYCLE (asla BANKA_ICI_VIRMAN değil).
  */
 
 import { BANK_TRANSACTION_TYPE } from "@/src/utils/bankTransactionType";
@@ -18,18 +20,27 @@ export const VADELI_LIFECYCLE_ROLE = Object.freeze({
   KAPANIS: "VADELI_KAPANIS",
   FAIZ: "FAIZ_GELIRI",
   STOPAJ: "FAIZ_STOPAJI",
+  VADE_DONUSU: "VADELI_VADE_DONUSU",
+  ANAPARA_YENILEME: "VADELI_ANAPARA_YENILEME",
 });
+
+/** Açılış/kapanış/vade/yenileme satırları — BANKA_ICI_VIRMAN değil. */
+export const VADELI_LIFECYCLE_SCENARIO = "VADELI_LIFECYCLE";
 
 /**
  * Lifecycle algoritma sürümü — idempotency / pipelineVersion bileşeni.
  * Kod değişince bump: eski tamamlanmış 2/2 job yeni analiz yerine kullanılmaz.
  */
-export const VADELI_LIFECYCLE_ALGORITHM_VERSION = "vl/2.1.0";
+export const VADELI_LIFECYCLE_ALGORITHM_VERSION = "vl/2.2.0";
 
 export const LIFECYCLE_OPEN_RE =
   /\b(HESAP\s*ACMA|VADEL[Iİ].*ACMA|MEVDUAT\s*ACMA|ACILIS)/i;
 export const LIFECYCLE_CLOSE_RE =
   /\b(HESAP\s*KAPAT|VADEL[Iİ].*KAPAT|MEVDUAT\s*KAPAT|KAPANIS)/i;
+export const LIFECYCLE_ROLLOVER_RE =
+  /\b(VADE\s*DONUS|VADE\s*D[OÖ]N[UÜ][SŞ]|ROLLOVER|YENIDEN\s*VADEL|YEN[Iİ]DEN\s*VADEL)/i;
+export const LIFECYCLE_RENEWAL_RE =
+  /\b(ANAPARA\s*YENILE|MEVDUAT\s*YENILE|YENILEME|RENEWAL|PRINCIPAL\s*RENEW)/i;
 
 const FAIZ_DESC_RE =
   /\b(FAIZ\s*GELIR|FAIZ\s*TAHAKKUK|FAIZ\s*TAHSIL|MEVDUAT\s*FAIZ|VADE\s*FAIZ|VADEL[Iİ]\s*FAIZ)/i;
@@ -323,6 +334,86 @@ export function isVadeliToVadeliTransfer(sourceBank = null, targetBank = null) {
     getBankAccountType(sourceBank) === "VADELI" &&
     getBankAccountType(targetBank) === "VADELI"
   );
+}
+
+/** Virman yalnız açık VADESIZ↔VADESIZ 102 çiftinde. */
+export function isVadesizToVadesizTransfer(sourceBank = null, targetBank = null) {
+  if (!sourceBank || !targetBank) return false;
+  return (
+    getBankAccountType(sourceBank) === "VADESIZ" &&
+    getBankAccountType(targetBank) === "VADESIZ"
+  );
+}
+
+/**
+ * VADELİ↔VADELİ sınıflandırma — açıklama tek başına yetmez.
+ * Hesap niteliği + yön + (mümkünse) tutar/bundle sinyali gerekir.
+ * @returns {{ role: string, confidence: "high"|"review", reasons: string[] } | null}
+ */
+export function classifyVadeliToVadeliMovement({
+  sourceBank = null,
+  targetBank = null,
+  description = "",
+  direction = "",
+  amount = 0,
+  relatedMovements = [],
+} = {}) {
+  if (!isVadeliToVadeliTransfer(sourceBank, targetBank)) return null;
+
+  const desc = normalizeParserText(description);
+  const dir = String(direction || "").toUpperCase();
+  const amt = Math.abs(Number(amount) || 0);
+  const reasons = ["vadeli_to_vadeli_accounts"];
+
+  const rolloverHint = LIFECYCLE_ROLLOVER_RE.test(desc);
+  const renewalHint = LIFECYCLE_RENEWAL_RE.test(desc);
+  if (rolloverHint) reasons.push("desc_rollover");
+  if (renewalHint) reasons.push("desc_renewal");
+
+  // Karşı hareket: aynı tutar, ters yön, diğer vadeli — bundle sinyali
+  const peers = Array.isArray(relatedMovements) ? relatedMovements : [];
+  const mirror = peers.find((m) => {
+    if (!m || m === sourceBank) return false;
+    const peerAmt = Math.abs(Number(m.amount ?? m.tutar ?? 0) || 0);
+    if (amt < AMOUNT_TOL || Math.abs(peerAmt - amt) > AMOUNT_TOL) return false;
+    const peerDir = String(m.direction || m.yon || "").toUpperCase();
+    const opposite =
+      (dir === "GIRIS" || dir === "GELEN") &&
+      (peerDir === "CIKIS" || peerDir === "GIDEN" || peerDir === "BORC")
+        ? true
+        : (dir === "CIKIS" || dir === "GIDEN" || dir === "BORC") &&
+          (peerDir === "GIRIS" || peerDir === "GELEN");
+    return opposite;
+  });
+  if (mirror) reasons.push("mirror_amount_opposite_direction");
+
+  const accountEvidence = Boolean(sourceBank && targetBank);
+  const strong =
+    accountEvidence &&
+    Boolean(mirror) &&
+    (rolloverHint || renewalHint);
+
+  if (strong && renewalHint && !rolloverHint) {
+    return {
+      role: VADELI_LIFECYCLE_ROLE.ANAPARA_YENILEME,
+      confidence: "high",
+      reasons,
+    };
+  }
+  if (strong && rolloverHint) {
+    return {
+      role: VADELI_LIFECYCLE_ROLE.VADE_DONUSU,
+      confidence: "high",
+      reasons,
+    };
+  }
+
+  // Açıklama tek başına veya zayıf sinyal → inceleme (virman değil)
+  return {
+    role: "",
+    confidence: "review",
+    reasons: [...reasons, "insufficient_lifecycle_evidence"],
+  };
 }
 
 export function findBankByLucaCode(company = null, lucaCode = "") {
@@ -775,6 +866,180 @@ export function isForbiddenVadeliMemorySuggestion({
 }
 
 /**
+ * VADELİ bacaklarda virman bayraklarını temizle; VADELİ↔VADELİ için
+ * vade dönüşü / anapara yenileme (çoklu kanıt) veya güvenli inceleme.
+ */
+export function applyVadeliVirmanSafetyAndRollover(movements = [], context = {}) {
+  const list = Array.isArray(movements) ? movements : [];
+  const company =
+    context.selectedCompany || context.company || context.firma || null;
+
+  for (let i = 0; i < list.length; i += 1) {
+    const row = list[i];
+    if (!row) continue;
+
+    const statementCode = compactCode(
+      row.accountCode || row.bankAccountCode || ""
+    );
+    let counterCode = compactCode(row.counterAccountCode || "");
+    const sourceBank =
+      findBankByLucaCode(company, statementCode) ||
+      (getBankAccountType({ accountType: context.statementAccountType }) ===
+      "VADELI"
+        ? { accountType: "VADELI", lucaAccountCode: statementCode }
+        : null);
+    let targetBank = counterCode
+      ? findBankByLucaCode(company, counterCode)
+      : null;
+
+    // Karşı hesap kodu yoksa evidence IBAN/hesap no ile diğer VADELİ'yi bul
+    if (!targetBank && company) {
+      const evidence = normalizeParserText(
+        `${row.description || ""} ${row.aciklama || ""} ${row.detayAciklama || ""} ${row.karsiIban || ""}`
+      );
+      const evidenceDigits = digitsOnly(evidence);
+      for (const bank of listCompanyBankAccounts(company)) {
+        if (getBankAccountType(bank) !== "VADELI") continue;
+        const code = compactCode(bank.lucaAccountCode || bank.accountCode || "");
+        if (!code || code === statementCode) continue;
+        const bankIban = normalizeIban(bank.iban || "");
+        const bankDig = digitsOnly(bank.accountNumber || bank.hesapNo || "");
+        if (
+          (bankIban && evidence.includes(bankIban)) ||
+          (bankDig.length >= 8 && evidenceDigits.includes(bankDig))
+        ) {
+          targetBank = bank;
+          counterCode = code;
+          break;
+        }
+      }
+    }
+
+    const statementIsVadeli =
+      getBankAccountType(sourceBank) === "VADELI" ||
+      normalizeAccountType(context.statementAccountType) === "VADELI" ||
+      String(row.vadeliLifecycleRole || "").startsWith("VADELI_") ||
+      String(row.transactionType || "").startsWith("VADELI_");
+
+    // Virman senaryo/bayrak temizliği — VADELİ bacak asla virman sayılmaz
+    if (statementIsVadeli || isVadeliToVadeliTransfer(sourceBank, targetBank)) {
+      const scrub = {
+        virmanCandidate: false,
+        bankInternalTransfer: false,
+      };
+      const tx = String(row.transactionType || "");
+      if (
+        tx === "BANKA_ICI_VIRMAN" ||
+        tx === "BANKALAR_ARASI_VIRMAN" ||
+        tx === "VIRMAN" ||
+        tx === "BANK_INTERNAL_TRANSFER"
+      ) {
+        scrub.transactionType = "BILINMEYEN";
+      }
+      if (
+        String(row.accountingScenario || "") === "BANKA_ICI_VIRMAN" ||
+        String(row.accountingScenario || "") === "BANKALAR_ARASI_VIRMAN"
+      ) {
+        // Lifecycle rolleri korunur; senaryo VADELI_LIFECYCLE'a çekilir
+        if (
+          row.transactionType === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+          row.transactionType === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+          row.transactionType === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+          row.transactionType === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME ||
+          row.vadeliLifecycleRole ||
+          scrub.transactionType === "BILINMEYEN"
+        ) {
+          scrub.accountingScenario =
+            row.vadeliLifecycleRole ||
+            row.transactionType === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+            row.transactionType === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+            row.transactionType === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+            row.transactionType === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME
+              ? VADELI_LIFECYCLE_SCENARIO
+              : "";
+        } else {
+          scrub.accountingScenario = "";
+        }
+      }
+      list[i] = { ...row, ...scrub };
+    }
+
+    if (!isVadeliToVadeliTransfer(sourceBank, targetBank)) continue;
+    // Zaten lifecycle açılış/kapanış (vadesiz karşı) değil — vadeli↔vadeli
+    if (
+      row.vadeliLifecycleRole === VADELI_LIFECYCLE_ROLE.ACILIS ||
+      row.vadeliLifecycleRole === VADELI_LIFECYCLE_ROLE.KAPANIS
+    ) {
+      continue;
+    }
+
+    const classified = classifyVadeliToVadeliMovement({
+      sourceBank,
+      targetBank,
+      description: row.description || row.aciklama || "",
+      direction: row.direction || row.yon || "",
+      amount: row.amount ?? row.tutar ?? 0,
+      relatedMovements: list.filter((_, j) => j !== i),
+    });
+    if (!classified) continue;
+
+    if (classified.confidence === "high") {
+      const isRenewal =
+        classified.role === VADELI_LIFECYCLE_ROLE.ANAPARA_YENILEME;
+      const tx = isRenewal
+        ? BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME
+        : BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU;
+      const warn = isRenewal
+        ? "Vadeli anapara yenileme (vadeli↔vadeli; virman değil)"
+        : "Vadeli vade dönüşü (vadeli↔vadeli; virman değil)";
+      list[i] = {
+        ...list[i],
+        transactionType: tx,
+        accountingScenario: VADELI_LIFECYCLE_SCENARIO,
+        cariRequired: false,
+        personelRequired: false,
+        virmanCandidate: false,
+        bankInternalTransfer: false,
+        missingHesapCategory: "",
+        vadeliLifecycleRole: classified.role,
+        warning: [...clearTaxWarnings(list[i]), warn].join(" | "),
+        matchedRule: {
+          source: "vadeliMevduatLifecycle",
+          islem: tx,
+          anahtar: isRenewal ? "vadeli-yenileme" : "vadeli-vade-donusu",
+          transactionType: tx,
+          reasons: classified.reasons,
+        },
+      };
+    } else {
+      // Belirsiz VADELİ↔VADELİ → inceleme; virman yok
+      list[i] = {
+        ...list[i],
+        virmanCandidate: false,
+        bankInternalTransfer: false,
+        accountingScenario:
+          list[i].accountingScenario === "BANKA_ICI_VIRMAN" ||
+          list[i].accountingScenario === "BANKALAR_ARASI_VIRMAN"
+            ? ""
+            : list[i].accountingScenario || "",
+        missingHesapCategory: MISSING_HESAP_CATEGORY.DIGER || "Diğer",
+        warning: [
+          ...clearTaxWarnings(list[i]),
+          "Vadeli↔vadeli hareket otomatik virman yapılamaz — inceleme",
+        ].join(" | "),
+        vadeliLifecycleMeta: {
+          ...(list[i].vadeliLifecycleMeta || {}),
+          vadeliToVadeliReview: true,
+          reasons: classified.reasons,
+        },
+      };
+    }
+  }
+
+  return list;
+}
+
+/**
  * Mapper post-pass: yaşam döngüsünü sınıflandır ve hesapları uygula.
  */
 export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
@@ -792,15 +1057,20 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     context.currency || context.paraBirimi || "TL"
   );
 
+  const finish = (payload) => {
+    applyVadeliVirmanSafetyAndRollover(payload.movements, context);
+    return payload;
+  };
+
   const bundle = detectVadeliLifecycleBundle(list);
   if (!bundle.ok) {
-    return {
+    return finish({
       movements: list,
       applied: false,
       bundle: null,
       memoryRecords: [],
       unresolvedReason: "no_lifecycle_bundle",
-    };
+    });
   }
 
   const hintAccount =
@@ -875,13 +1145,13 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
   }
 
   if (!statementCode || !statementBank) {
-    return {
+    return finish({
       movements: list,
       applied: false,
       bundle,
       memoryRecords: [],
       unresolvedReason: statement.reason || "statement_unresolved",
-    };
+    });
   }
 
   if (getBankAccountType(statementBank) === "VADELI") {
@@ -943,7 +1213,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       counterAccountCode: vadesiz.code,
       cariRequired: false,
       personelRequired: false,
-      accountingScenario: "BANKA_ICI_VIRMAN",
+      accountingScenario: VADELI_LIFECYCLE_SCENARIO,
       missingHesapCategory: "",
       warning: openWarn.join(" | "),
       vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.ACILIS,
@@ -968,7 +1238,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       counterAccountCode: vadesiz.code,
       cariRequired: false,
       personelRequired: false,
-      accountingScenario: "BANKA_ICI_VIRMAN",
+      accountingScenario: VADELI_LIFECYCLE_SCENARIO,
       missingHesapCategory: "",
       warning: closeWarn.join(" | "),
       vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.KAPANIS,
@@ -1072,7 +1342,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     stopajCode,
   });
 
-  return {
+  return finish({
     movements: list,
     applied: true,
     bundle: {
@@ -1093,5 +1363,5 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     },
     memoryRecords,
     unresolvedReason: vadesiz.ok ? "" : vadesiz.reason || "vadesiz_unresolved",
-  };
+  });
 }

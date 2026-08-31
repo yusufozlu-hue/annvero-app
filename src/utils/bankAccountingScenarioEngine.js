@@ -40,6 +40,8 @@ export const ACCOUNTING_SCENARIO = {
   POS_DIGER: "POS_DIGER",
   BANKA_ICI_VIRMAN: "BANKA_ICI_VIRMAN",
   BANKALAR_ARASI_VIRMAN: "BANKALAR_ARASI_VIRMAN",
+  /** Vadeli mevduat yaşam döngüsü — virman sayacı / adayı değil */
+  VADELI_LIFECYCLE: "VADELI_LIFECYCLE",
   MUSTERI_TAHSILAT: "MUSTERI_TAHSILAT",
   TEDARIKCI_ODEME: "TEDARIKCI_ODEME",
   DIGER_CARI_HAREKET: "DIGER_CARI_HAREKET",
@@ -326,9 +328,11 @@ function mapTypeToScenarioId(transactionType = "") {
   }
   if (
     t === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
-    t === BANK_TRANSACTION_TYPE.VADELI_KAPANIS
+    t === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+    t === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+    t === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME
   ) {
-    return ACCOUNTING_SCENARIO.BANKA_ICI_VIRMAN;
+    return ACCOUNTING_SCENARIO.VADELI_LIFECYCLE;
   }
   if (VIRMAN_TYPES.has(t)) {
     return ACCOUNTING_SCENARIO.BANKA_ICI_VIRMAN;
@@ -692,8 +696,24 @@ export function resolveAccountingScenario({
     };
   }
 
+  // ——— VADELİ LIFECYCLE (açılış / kapanış / vade / yenileme) ———
+  // Virman adayı veya BANKA_ICI_VIRMAN sayacına girmez.
+  if (scenarioId === ACCOUNTING_SCENARIO.VADELI_LIFECYCLE) {
+    return {
+      ...base,
+      cariRequired: false,
+      counterAccountHint: "102",
+      documentType: "FT",
+      reviewReason: "",
+      missingHesapCategory: "",
+      legs: null,
+      bankInternalTransfer: false,
+      virmanCandidate: false,
+    };
+  }
+
   // ——— VIRMAN / BANK_INTERNAL_TRANSFER ———
-  // Yalnız 102↔102 complete → kesin muhasebe. Aksi halde “virman adayı”
+  // Yalnız VADESIZ↔VADESIZ 102 complete → kesin muhasebe. Aksi halde “virman adayı”
   // (eksik hesabı VIRMAN_HESAP_EKSIK ile şişirme; 120/320 otomatik değil).
   if (
     scenarioId === ACCOUNTING_SCENARIO.BANKA_ICI_VIRMAN ||
@@ -851,6 +871,7 @@ export function isDirectAccountScenario(scenarioId = "") {
     scenarioId === ACCOUNTING_SCENARIO.POS_DIGER ||
     scenarioId === ACCOUNTING_SCENARIO.BANKA_ICI_VIRMAN ||
     scenarioId === ACCOUNTING_SCENARIO.BANKALAR_ARASI_VIRMAN ||
+    scenarioId === ACCOUNTING_SCENARIO.VADELI_LIFECYCLE ||
     scenarioId === ACCOUNTING_SCENARIO.DOVIZ ||
     scenarioId === ACCOUNTING_SCENARIO.BANKA_MASRAFI ||
     scenarioId === ACCOUNTING_SCENARIO.FINANS ||

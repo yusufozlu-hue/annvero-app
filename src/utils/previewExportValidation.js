@@ -224,7 +224,8 @@ export function classifyMissingHesapCategory(row = {}) {
       /VIRMAN HESABI BULUNAMADI/.test(note) ||
       scenario === "BANKA_ICI_VIRMAN" ||
       scenario === "BANKALAR_ARASI_VIRMAN") &&
-    row.bankInternalTransfer === true
+    row.bankInternalTransfer === true &&
+    scenario !== "VADELI_LIFECYCLE"
   ) {
     return MISSING_HESAP_CATEGORY.VIRMAN_HESAP_EKSIK;
   }
