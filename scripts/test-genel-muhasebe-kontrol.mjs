@@ -12,6 +12,7 @@ import { resolveVoucherCounterparts } from "@/src/utils/eDefterKontrolEngine.js"
 import {
   classifyLedgerDocumentType,
   createGenelMuhasebeAnalyzeGate,
+  isOpeningVoucher,
   reconcileMizanMuavin,
   refineDocumentClass,
   runGenelMuhasebeKontrol,
@@ -25,17 +26,38 @@ import {
 } from "@/src/utils/eDefterAnalyzeContract.js";
 import {
   buildGenelMuhasebeFindingsPresentation,
+  buildVisibleGenelMuhasebeFindingsRows,
   countVisiblePresentationRows,
   filterGenelMuhasebePresentationRows,
+  matchesVoucherNumberFilter,
   normalizeFisNoForFilter,
+  presentationRowRenderKey,
   pruneExpandedPresentationGroups,
 } from "@/src/utils/genelMuhasebeFindingsView.js";
+import {
+  buildVoucherResultGroups,
+  buildVisibleVoucherResultRows,
+  selectVoucherPrimaryFinding,
+} from "@/src/utils/voucherResultGroups.js";
 import {
   GENEL_MUHASEBE_FINDING_TITLE_TR,
   genelMuhasebeFindingMessageTr,
   genelMuhasebeFindingTitleTr,
   userVisibleTextHasTechnicalCode,
 } from "@/src/utils/genelMuhasebeFindingsLabels.js";
+import {
+  closeMultiCounterpartGroup,
+  createMultiCounterpartUiState,
+  isMultiCounterpartModalOpen,
+  openMultiCounterpartGroup,
+  shouldRenderInlineMultiGroupDetails,
+} from "@/src/utils/multiCounterpartUi.js";
+import {
+  buildMultiCounterpartVoucherDetail,
+  multiCounterpartNormalNoteTr,
+  multiCounterpartReasonTr,
+  sortMultiCounterpartLinesForDisplay,
+} from "@/src/utils/multiCounterpartDetail.js";
 import { LUCA_MULTI_ACCOUNT_MUAVIN_ROWS } from "./fixtures/luca-multi-account-muavin.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -58,10 +80,11 @@ function yrow(p) {
     tarih: p.tarih || "10.05.2026",
     fisNo: p.fisNo ?? "10",
     yevmiyeNo: p.yevmiyeNo || "1",
+    fisTuru: p.fisTuru || "",
     hesapKodu: p.hesapKodu,
     hesapAdi: p.hesapAdi || "",
     aciklama: p.aciklama || "anon",
-    belgeTuru: "FT",
+    belgeTuru: p.belgeTuru ?? "FT",
     belgeNo: p.belgeNo || "B1",
     borc: p.borc ?? 0,
     alacak: p.alacak ?? 0,
@@ -120,6 +143,157 @@ const MUAVIN_HEADERS = [
   ]);
   assert(map.get("b1").code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART, "B multi");
   assert(!map.get("b1").counterAccountCode, "B no invent");
+}
+
+// opening) açılış fişi karşıt/MULTI analizinden hariç
+{
+  const openingLabeled = resolveVoucherCounterparts([
+    yrow({
+      id: "o1",
+      fisNo: "00087",
+      tarih: "15.03.2026",
+      fisTuru: "AÇILIŞ",
+      belgeTuru: "AÇILIŞ",
+      aciklama: "YILI AÇILIŞ",
+      hesapKodu: "100.01",
+      borc: 50,
+      alacak: 0,
+    }),
+    yrow({
+      id: "o2",
+      fisNo: "00087",
+      tarih: "15.03.2026",
+      fisTuru: "AÇILIŞ",
+      belgeTuru: "AÇILIŞ",
+      aciklama: "YILI AÇILIŞ",
+      hesapKodu: "320.01",
+      borc: 0,
+      alacak: 30,
+    }),
+    yrow({
+      id: "o3",
+      fisNo: "00087",
+      tarih: "15.03.2026",
+      fisTuru: "AÇILIŞ",
+      belgeTuru: "AÇILIŞ",
+      aciklama: "YILI AÇILIŞ",
+      hesapKodu: "391.01",
+      borc: 0,
+      alacak: 20,
+    }),
+  ]);
+  assert(openingLabeled.get("o1").reason === "opening_voucher", "opening labeled SKIP");
+  assert(!openingLabeled.get("o1").code, "opening labeled no MULTI code");
+  assert(isOpeningVoucher(yrow({ fisNo: "00087", fisTuru: "DEVİR", tarih: "20.02.2026" })), "opening DEVİR label");
+
+  const openingFallback = resolveVoucherCounterparts([
+    yrow({
+      id: "f1",
+      fisNo: "00001",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "bakiye",
+      hesapKodu: "100.01",
+      borc: 10,
+      alacak: 0,
+    }),
+    yrow({
+      id: "f2",
+      fisNo: "00001",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "bakiye",
+      hesapKodu: "320.01",
+      borc: 0,
+      alacak: 6,
+    }),
+    yrow({
+      id: "f3",
+      fisNo: "00001",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "bakiye",
+      hesapKodu: "391.01",
+      borc: 0,
+      alacak: 4,
+    }),
+  ]);
+  assert(openingFallback.get("f1").reason === "opening_voucher", "opening 00001+01.01 SKIP");
+  assert(!openingFallback.get("f1").code, "opening fallback no MULTI");
+
+  const notOpeningOtherDate = resolveVoucherCounterparts([
+    yrow({
+      id: "n1",
+      fisNo: "00001",
+      tarih: "15.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "100.01",
+      borc: 10,
+      alacak: 0,
+    }),
+    yrow({
+      id: "n2",
+      fisNo: "00001",
+      tarih: "15.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "320.01",
+      borc: 0,
+      alacak: 6,
+    }),
+    yrow({
+      id: "n3",
+      fisNo: "00001",
+      tarih: "15.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "391.01",
+      borc: 0,
+      alacak: 4,
+    }),
+  ]);
+  assert(
+    notOpeningOtherDate.get("n1").code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+    "opening 00001 other date still MULTI"
+  );
+
+  const notOpeningOtherFis = resolveVoucherCounterparts([
+    yrow({
+      id: "d1",
+      fisNo: "00002",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "100.01",
+      borc: 10,
+      alacak: 0,
+    }),
+    yrow({
+      id: "d2",
+      fisNo: "00002",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "320.01",
+      borc: 0,
+      alacak: 6,
+    }),
+    yrow({
+      id: "d3",
+      fisNo: "00002",
+      tarih: "01.01.2026",
+      belgeTuru: "FT",
+      aciklama: "normal",
+      hesapKodu: "391.01",
+      borc: 0,
+      alacak: 4,
+    }),
+  ]);
+  assert(
+    notOpeningOtherFis.get("d1").code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+    "opening 01.01 other fis still MULTI"
+  );
 }
 
 // C
@@ -927,6 +1101,28 @@ function hasIssueCode(rows, extras, code) {
     assert(r.summary.muavinYevmiye?.counts?.onlyMuavin === 0, "p onlyMuavin 0");
     assert(r.summary.muavinYevmiye?.counts?.onlyYevmiye === 0, "p onlyYevmiye 0");
     assert(r.counters.persistInvocations === 0, "p persist 0");
+    assert(r.summary.cokluKarsit === 129, "p bileşik satır count 129");
+    assert(
+      presentation.filter((item) => item.kind === "group").length === 65,
+      "p 65 bileşik fiş groups"
+    );
+    assert(r.summary.toplamFis === 115, "p 115 fiş");
+    assert(
+      (r.summary.hareketSatir ?? r.summary.toplamSatir) === 545,
+      "p 545 hareket"
+    );
+    assert(
+      !(r.findingsCatalog || []).some(
+        (item) =>
+          item.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART &&
+          String(item.fisNo || "").trim() === "00001"
+      ),
+      "p 00001 has no MULTI_COUNTERPART"
+    );
+    assert(
+      !presentation.some((item) => item.kind === "group" && item.fisNo === "00001"),
+      "p no 00001 bileşik fiş özeti"
+    );
   }
 }
 
@@ -967,15 +1163,24 @@ function hasIssueCode(rows, extras, code) {
 
   const all = buildGenelMuhasebeFindingsPresentation(catalog);
   const f49 = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "00049" });
+  const f49short = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "49" });
   const f01 = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "00001" });
+  const f1short = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "1" });
+  const f2 = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "2" });
   const fTrim = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "  00049  " });
   const fMissing = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "99999" });
-  const fPartial = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "0000" });
+  const fPartial = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "4" });
+  const fClear = buildGenelMuhasebeFindingsPresentation(catalog, { fisFilter: "" });
 
   assert(all.length >= 3, "q clear filter returns grouped rows");
+  assert(fClear.length === all.length, "q empty filter returns all");
   assert(
-    f49.every((row) => normalizeFisNoForFilter(row.fisNo) === "00049"),
+    f49.every((row) => row.fisNo === "00049"),
     "q 00049 only 00049 rows"
+  );
+  assert(
+    f49short.length === f49.length && f49short.every((row) => row.fisNo === "00049"),
+    "q 49 matches 00049"
   );
   assert(!f49.some((row) => row.fisNo === "00001" || row.fisNo === "00002"), "q 00049 hides other fis");
   assert(
@@ -986,18 +1191,28 @@ function hasIssueCode(rows, extras, code) {
     f01.length === 1 && f01[0].kind === "group" && f01[0].fisNo === "00001",
     "q 00001 only grouped MULTI row"
   );
+  assert(
+    f1short.length === 1 && f1short[0].fisNo === "00001",
+    "q 1 matches 00001 in catalog"
+  );
   assert(f01[0]?.count === 2, "q grouped MULTI count preserved");
+  assert(
+    f2.length === 1 && f2[0].fisNo === "00002",
+    "q 2 matches only 00002"
+  );
   assert(fMissing.length === 0, "q unknown fis empty");
-  assert(fPartial.length === 0, "q partial 0000 exact match yields none");
+  assert(fPartial.length === 0, "q partial 4 does not match 00049");
   assert(
     fTrim.length === f49.length && fTrim[0]?.fisNo === "00049",
-    "q trim preserves leading zeros"
+    "q trim matches padded fis display"
   );
+  assert(normalizeFisNoForFilter("49") === "49", "q normalize 49");
+  assert(normalizeFisNoForFilter("00049") === "49", "q normalize 00049");
+  assert(normalizeFisNoForFilter("0000") === "0", "q normalize all zeros");
+  assert(normalizeFisNoForFilter("AB-01") === "ab-01", "q normalize alphanumeric");
   assert(
-    filterGenelMuhasebePresentationRows(all, "00049").every(
-      (row) => row.fisNo === "00049"
-    ),
-    "q presentation-row filter exact"
+    filterGenelMuhasebePresentationRows(all, "49").every((row) => row.fisNo === "00049"),
+    "q presentation-row filter numeric strip"
   );
 }
 
@@ -1068,8 +1283,7 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
 // s) Türkçe UI sunumu — teknik kod korunur, kullanıcı metninde İngilizce yok
 {
   assert(
-    genelMuhasebeFindingTitleTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) ===
-      "Birden fazla karşıt hesap",
+    genelMuhasebeFindingTitleTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) === "Bileşik fiş",
     "s MULTI title TR"
   );
   assert(
@@ -1082,10 +1296,17 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     "s ROUNDING title TR"
   );
   assert(
-    genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART).includes(
-      "birden fazla karşıt hesap"
-    ),
+    genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART) ===
+      "Bu fişte bir hesap satırı karşı yöndeki birden fazla hesapla birlikte çalışmaktadır. Bu durum tek başına hata değildir.",
     "s MULTI message TR"
+  );
+  assert(
+    !genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART).includes("aday") &&
+      !genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART).includes("seçilemedi") &&
+      !genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART).includes(
+        "tek hesap atanmadı"
+      ),
+    "s MULTI message has no old aday/seçilemedi wording"
   );
   assert(
     genelMuhasebeFindingMessageTr(E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE).includes(
@@ -1134,6 +1355,935 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     catalog[0].code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
     "s catalog technical code unchanged"
   );
+  const multiGroup = presentation.find((item) => item.kind === "group" && item.fisNo === "00001");
+  assert(multiGroup?.displayTitle === "Bileşik fiş", "s group displayTitle Bileşik fiş");
+  assert(
+    multiGroup?.displayMessage ===
+      "Bu fişte bir hesap satırı karşı yöndeki birden fazla hesapla birlikte çalışmaktadır. Bu durum tek başına hata değildir.",
+    "s group displayMessage compound voucher wording"
+  );
+  assert(multiGroup?.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART, "s group technical code kept");
+  assert(multiGroup?.severity === E_DEFTER_ISSUE_SEVERITY.BILGI, "s group severity BİLGİ");
+}
+
+// t) MULTI group multiDetail from ledgerRows — read-only voucher snapshot
+{
+  const catalog = [
+    {
+      fisNo: "00017",
+      tarih: "19.01.2026",
+      hesapKodu: "102.10.V001",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi",
+    },
+  ];
+  const ledgerRows = [
+    {
+      id: "y1",
+      fisNo: "00017",
+      tarih: "19.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "102.10.V001",
+      hesapAdi: "Vadeli TL",
+      borc: 0,
+      alacak: 100,
+      issueDetails: [{ code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART }],
+    },
+    {
+      id: "y2",
+      fisNo: "00017",
+      tarih: "19.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "300.01.042",
+      hesapAdi: "Banka kredisi",
+      borc: 70,
+      alacak: 0,
+    },
+    {
+      id: "y3",
+      fisNo: "00017",
+      tarih: "19.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "780.10.003",
+      hesapAdi: "Faiz gideri",
+      borc: 30,
+      alacak: 0,
+    },
+  ];
+  const presentation = buildGenelMuhasebeFindingsPresentation(catalog, { ledgerRows });
+  const group = presentation.find((item) => item.kind === "group" && item.fisNo === "00017");
+  assert(Boolean(group?.multiDetail), "t multiDetail attached");
+  assert(group.multiDetail.lineCount === 3, "t voucher line count 3");
+  assert(group.multiDetail.candidateCount === 2, "t candidate count 2");
+  assert(
+    group.multiDetail.candidates.includes("300.01.042") &&
+      group.multiDetail.candidates.includes("780.10.003"),
+    "t candidates are opposite debit codes"
+  );
+  assert(
+    group.multiDetail.reasonTr ===
+      "Bu hesap satırı karşı yöndeki 2 farklı hesapla birlikte çalışmıştır.",
+    "t reasonTr mentions N=2 together-working wording"
+  );
+  assert(
+    group.multiDetail.normalNoteTr === multiCounterpartNormalNoteTr(),
+    "t normalNoteTr compound-voucher note"
+  );
+  assert(
+    !/aday|seçilemedi|tek karşıt hesap/.test(
+      `${group.multiDetail.reasonTr} ${group.multiDetail.normalNoteTr} ${group.displayMessage}`
+    ),
+    "t user texts have no aday/seçilemedi"
+  );
+  assert(
+    group.multiDetail.lines.every((line) => line.yon === "BORÇ" || line.yon === "ALACAK"),
+    "t lines have BORÇ/ALACAK direction"
+  );
+  assert(
+    group.details?.length === 1 && group.details[0].hesapKodu === "102.10.V001",
+    "t technical detail rows preserved"
+  );
+  assert(
+    !JSON.stringify(group.multiDetail).includes("BANKA_VE_BORC") &&
+      !JSON.stringify(group).includes("pattern"),
+    "t heuristic pattern not exposed on presentation"
+  );
+
+  const again = buildGenelMuhasebeFindingsPresentation(catalog, { ledgerRows });
+  assert(
+    JSON.stringify(group.multiDetail) === JSON.stringify(again[0]?.multiDetail),
+    "t presentation multiDetail deterministic (worker/main same builder)"
+  );
+}
+
+// u) MULTI (ayrıntı) → modal state; inline expand yok; close clears
+{
+  assert(
+    shouldRenderInlineMultiGroupDetails() === false,
+    "u inline multi group details disabled"
+  );
+
+  const catalog = [
+    {
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      hesapKodu: "320.10.M0009",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi",
+    },
+  ];
+  const ledgerRows = [
+    {
+      id: "a",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "191.01.001",
+      hesapAdi: "KDV",
+      borc: 23.4,
+      alacak: 0,
+    },
+    {
+      id: "b",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "320.10.M0009",
+      hesapAdi: "Cari",
+      borc: 0,
+      alacak: 2363.4,
+      issueDetails: [{ code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART }],
+    },
+    {
+      id: "c",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "740.30.003",
+      hesapAdi: "Gider",
+      borc: 2340,
+      alacak: 0,
+    },
+  ];
+  const presentation = buildGenelMuhasebeFindingsPresentation(catalog, { ledgerRows });
+  const group = presentation.find((item) => item.kind === "group" && item.fisNo === "00002");
+  assert(Boolean(group), "u group present");
+
+  let ui = createMultiCounterpartUiState(null);
+  assert(!isMultiCounterpartModalOpen(ui), "u modal closed initially");
+
+  ui = openMultiCounterpartGroup(ui, group, ledgerRows);
+  assert(isMultiCounterpartModalOpen(ui), "u (ayrıntı) opens modal state");
+  assert(ui.multiDetailGroup?.kind === "group", "u modal holds group");
+  assert(ui.multiDetailGroup?.multiDetail?.lineCount === 3, "u modal multiDetail 3 lines");
+  assert(ui.multiDetailGroup?.multiDetail?.candidateCount === 2, "u modal 2 candidates");
+  assert(
+    ui.multiDetailGroup?.multiDetail?.reasonTr ===
+      "Bu hesap satırı karşı yöndeki 2 farklı hesapla birlikte çalışmıştır.",
+    "u modal reason present"
+  );
+  assert(
+    ui.multiDetailGroup?.multiDetail?.normalNoteTr ===
+      "Bu durum çok satırlı muhasebe fişlerinde normaldir ve tek başına hata oluşturmaz.",
+    "u modal normal note present"
+  );
+  assert(ui.multiDetailGroup?.displayTitle === "Bileşik fiş", "u group title Bileşik fiş");
+  assert(
+    /tek başına hata değildir/.test(ui.multiDetailGroup?.displayMessage || ""),
+    "u group message compound wording"
+  );
+  assert(
+    (ui.multiDetailGroup?.details || []).length === 1,
+    "u technical details preserved on group for modal secondary section"
+  );
+
+  ui = closeMultiCounterpartGroup(ui);
+  assert(!isMultiCounterpartModalOpen(ui), "u close clears modal state");
+  assert(ui.multiDetailGroup === null, "u close nulls group");
+
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(!/toggleFindingGroup/.test(pageSrc), "u page has no toggleFindingGroup");
+  assert(
+    !/\{open \? " \(gizle\)" : " \(ayrıntı\)"\}/.test(pageSrc),
+    "u page has no inline gizle/ayrıntı toggle"
+  );
+  assert(
+    !/for \(const detail of item\.details/.test(pageSrc),
+    "u page does not inline-expand item.details"
+  );
+  assert(/openVoucherDetail/.test(pageSrc), "u page opens voucher detail modal");
+  assert(/VoucherFindingsDetailModal/.test(pageSrc), "u page mounts voucher detail modal");
+  assert(
+    /data-testid="voucher-detail-open"/.test(pageSrc),
+    "u open button test id present"
+  );
+  assert(/Bileşik satır/.test(pageSrc), "u page counter label Bileşik satır");
+  assert(/bileşik fiş/.test(pageSrc), "u page group summary label");
+  assert(!/Çoklu karşıt/.test(pageSrc), "u page has no Çoklu karşıt label");
+  assert(!/gruplu karşıt hesap özeti/.test(pageSrc), "u page has no old group summary");
+}
+
+// v) modal display order BORÇ then ALACAK; source order within side; ledgerRows not mutated
+{
+  // Kaynak sıra: BORÇ / ALACAK / BORÇ → modal: BORÇ / BORÇ / ALACAK
+  const ledgerRows = [
+    {
+      id: "debit-191",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "191.01.001",
+      hesapAdi: "KDV",
+      borc: 23.4,
+      alacak: 0,
+    },
+    {
+      id: "credit-320",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "320.10.M0009",
+      hesapAdi: "Cari",
+      borc: 0,
+      alacak: 2363.4,
+      issueDetails: [{ code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART }],
+    },
+    {
+      id: "debit-740",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "740.30.003",
+      hesapAdi: "Gider",
+      borc: 2340,
+      alacak: 0,
+    },
+  ];
+  const snapshot = JSON.stringify(ledgerRows);
+  const detail = buildMultiCounterpartVoucherDetail({
+    fisNo: "00002",
+    tarih: "02.01.2026",
+    ledgerRows,
+    multiFindingItems: [{ hesapKodu: "320.10.M0009" }],
+  });
+  assert(JSON.stringify(ledgerRows) === snapshot, "v ledgerRows not mutated");
+  assert(
+    detail.lines.map((line) => `${line.yon}|${line.hesapKodu}`).join(",") ===
+      "BORÇ|191.01.001,BORÇ|740.30.003,ALACAK|320.10.M0009",
+    "v source BORÇ/ALACAK/BORÇ becomes modal BORÇ/BORÇ/ALACAK"
+  );
+  assert(detail.lines[0].borc === 23.4, "v first debit amount 23,40");
+  assert(detail.lines[1].borc === 2340, "v second debit amount 2.340,00");
+  assert(detail.lines[2].alacak === 2363.4, "v credit amount 2.363,40");
+  assert(
+    detail.candidates.join(",") === "191.01.001,740.30.003",
+    "v candidate codes/order unchanged (locale sorted)"
+  );
+  assert(
+    detail.counterpartAccounts.map((row) => row.hesapKodu).join(",") ===
+      "191.01.001,740.30.003",
+    "v counterpartAccounts follow candidate order"
+  );
+  assert(detail.counterpartAccounts[0].hesapAdi === "KDV", "v counterpart name enriched");
+  assert(detail.counterpartAccounts[0].borc === 23.4, "v counterpart debit amount");
+  assert(detail.reasonTr === multiCounterpartReasonTr(2), "v reason plural N=2");
+  assert(detail.normalNoteTr === multiCounterpartNormalNoteTr(), "v normal note");
+
+  const unsorted = [
+    { yon: "BORÇ", hesapKodu: "A" },
+    { yon: "ALACAK", hesapKodu: "C" },
+    { yon: "BORÇ", hesapKodu: "B" },
+    { yon: "", hesapKodu: "Z" },
+    { yon: "ALACAK", hesapKodu: "D" },
+  ];
+  const unsortedSnap = JSON.stringify(unsorted);
+  const sorted = sortMultiCounterpartLinesForDisplay(unsorted);
+  assert(JSON.stringify(unsorted) === unsortedSnap, "v sort input not mutated");
+  assert(
+    sorted.map((line) => line.hesapKodu).join(",") === "A,B,C,D,Z",
+    "v same-side order kept; unknown last"
+  );
+}
+
+// w) 00002 browser/UI metin kabulü — yeni dil; eski aday/seçilemedi yok
+{
+  const catalog = [
+    {
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      hesapKodu: "320.10.M0009",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "engine multi kept",
+    },
+  ];
+  const ledgerRows = [
+    {
+      id: "a",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "191.01.001",
+      hesapAdi: "KDV",
+      borc: 23.4,
+      alacak: 0,
+    },
+    {
+      id: "b",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "320.10.M0009",
+      hesapAdi: "Cari",
+      borc: 0,
+      alacak: 2363.4,
+      issueDetails: [{ code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART }],
+    },
+    {
+      id: "c",
+      fisNo: "00002",
+      tarih: "02.01.2026",
+      kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+      hesapKodu: "740.30.003",
+      hesapAdi: "Gider",
+      borc: 2340,
+      alacak: 0,
+    },
+  ];
+  const presentation = buildGenelMuhasebeFindingsPresentation(catalog, { ledgerRows });
+  const group = presentation.find((item) => item.kind === "group" && item.fisNo === "00002");
+  const detail = group?.multiDetail;
+  assert(group?.displayTitle === "Bileşik fiş", "w 00002 table status Bileşik fiş");
+  assert(
+    group?.displayMessage ===
+      "Bu fişte bir hesap satırı karşı yöndeki birden fazla hesapla birlikte çalışmaktadır. Bu durum tek başına hata değildir.",
+    "w 00002 table description"
+  );
+  assert(
+    detail?.reasonTr ===
+      "Bu hesap satırı karşı yöndeki 2 farklı hesapla birlikte çalışmıştır.",
+    "w 00002 modal reason N=2"
+  );
+  assert(
+    detail?.normalNoteTr ===
+      "Bu durum çok satırlı muhasebe fişlerinde normaldir ve tek başına hata oluşturmaz.",
+    "w 00002 modal normal note"
+  );
+  assert(
+    detail?.lines.map((line) => line.hesapKodu).join(",") ===
+      "191.01.001,740.30.003,320.10.M0009",
+    "w 00002 modal line order 191+740 then 320"
+  );
+
+  const modalSrc = fs.readFileSync(
+    path.resolve(
+      "app/(annvero)/muhasebe/genel-muhasebe-kontrol/MultiCounterpartDetailModal.jsx"
+    ),
+    "utf8"
+  );
+  assert(/Bileşik fiş ayrıntısı/.test(modalSrc), "w modal title Bileşik fiş ayrıntısı");
+  assert(/MultiCounterpartDetailBody/.test(modalSrc), "w modal uses shared body");
+  const bodySrc = fs.readFileSync(
+    path.resolve(
+      "app/(annvero)/muhasebe/genel-muhasebe-kontrol/MultiCounterpartDetailBody.jsx"
+    ),
+    "utf8"
+  );
+  assert(/Birlikte çalışan karşı hesaplar/.test(bodySrc), "w modal section title");
+  assert(!/Çoklu karşıt hesap ayrıntısı/.test(modalSrc + bodySrc), "w modal no old title");
+  assert(!/Karşıt hesap adayları/.test(modalSrc + bodySrc), "w modal no adayları heading");
+  assert(!/otomatik\s+tek hesap seçilmedi/.test(modalSrc + bodySrc), "w modal no seçilmedi footer");
+  assert(!/\baday\b/i.test((modalSrc + bodySrc).replace(/candidate/gi, "")), "w modal user copy no aday");
+
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(/Bileşik satır/.test(pageSrc), "w page Bileşik satır counter");
+  assert(/bileşik fiş/.test(pageSrc), "w page bileşik fiş özeti");
+  assert(!/Çoklu karşıt/.test(pageSrc), "w page no Çoklu karşıt");
+  assert(!/gruplu karşıt hesap özeti/.test(pageSrc), "w page no old özet label");
+
+  const userFacing = [
+    group?.displayTitle,
+    group?.displayMessage,
+    detail?.reasonTr,
+    detail?.normalNoteTr,
+  ].join("\n");
+  assert(!/aday/i.test(userFacing), "w user-facing no aday");
+  assert(!/seçilemedi/i.test(userFacing), "w user-facing no seçilemedi");
+  assert(group?.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART, "w technical code preserved");
+}
+
+// x) fiş filtre UI + açılış 00001 motor hariç + numeric filter
+{
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(/useState\(""\)/.test(pageSrc), "x fisFilter initial empty");
+  assert(/placeholder=""/.test(pageSrc), "x fis filter placeholder empty");
+  assert(!/placeholder="00049"/.test(pageSrc), "x no 00049 placeholder");
+
+  const alphaCatalog = [
+    {
+      fisNo: "AB-01",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "alpha",
+    },
+    {
+      fisNo: "ab-02",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "alpha2",
+    },
+  ];
+  const alphaHit = buildGenelMuhasebeFindingsPresentation(alphaCatalog, {
+    fisFilter: "ab-01",
+  });
+  assert(
+    alphaHit.length === 1 && alphaHit[0].fisNo === "AB-01",
+    "x alphanumeric case-insensitive filter"
+  );
+
+  const muavinPath = path.join(process.env.USERPROFILE || "", "Desktop", "muavin_mare.xlsx");
+  const yevPath = path.join(
+    process.env.USERPROFILE || "",
+    "Desktop",
+    "yevmiye_defteri_mare.xlsx"
+  );
+  const mizanPath = path.join(process.env.USERPROFILE || "", "Desktop", "mizan_mare.xlsx");
+  if (!fs.existsSync(muavinPath) || !fs.existsSync(yevPath)) {
+    console.log("SKIP  x mare opening/filter smoke (mare xlsx not on Desktop)");
+  } else {
+    const read = (p) => {
+      const buf = fs.readFileSync(p);
+      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      return readSheetRowsFromArrayBuffer(ab);
+    };
+    const r = runGenelMuhasebeKontrol({
+      companyId: "mare",
+      period: "2026/03",
+      muavinSheetRows: read(muavinPath),
+      yevmiyeSheetRows: read(yevPath),
+      mizanSheetRows: fs.existsSync(mizanPath) ? read(mizanPath) : null,
+      accountPlanAccounts: [],
+      accountPlanStatus: "missing",
+    });
+    const presentation = buildGenelMuhasebeFindingsPresentation(r.findingsCatalog || [], {
+      ledgerRows: r.rows || [],
+    });
+    assert(r.summary.cokluKarsit === 129, "x mare bileşik satır 129");
+    assert(
+      presentation.filter((item) => item.kind === "group").length === 65,
+      "x mare 65 bileşik fiş"
+    );
+    assert(
+      !presentation.some((item) => item.kind === "group" && item.fisNo === "00001"),
+      "x mare no 00001 bileşik özeti"
+    );
+    const filter1 = buildGenelMuhasebeFindingsPresentation(r.findingsCatalog || [], {
+      fisFilter: "1",
+      ledgerRows: r.rows || [],
+    });
+    assert(
+      !filter1.some((item) => item.kind === "group" && item.fisNo === "00001"),
+      "x filter 1 does not show 00001 bileşik (opening excluded)"
+    );
+    const filter49 = buildGenelMuhasebeFindingsPresentation(r.findingsCatalog || [], {
+      fisFilter: "49",
+      ledgerRows: r.rows || [],
+    });
+    assert(
+      filter49.length > 0 && filter49.every((row) => row.fisNo === "00049"),
+      "x filter 49 → only 00049"
+    );
+    const cleared = buildGenelMuhasebeFindingsPresentation(r.findingsCatalog || [], {
+      fisFilter: "",
+      ledgerRows: r.rows || [],
+    });
+    assert(cleared.length === presentation.length, "x clear filter restores all");
+  }
+}
+
+// y) fiş no filtre — karışık fixture; yalnız fisNo tam eşleşme; decoy alanlar yok sayılır
+{
+  assert(matchesVoucherNumberFilter("00049", "49"), "y 49≡00049");
+  assert(matchesVoucherNumberFilter("00049", "00049"), "y 00049≡00049");
+  assert(matchesVoucherNumberFilter("00002", "2"), "y 2≡00002");
+  assert(!matchesVoucherNumberFilter("00020", "2"), "y 2≠00020");
+  assert(!matchesVoucherNumberFilter("00102", "2"), "y 2≠00102");
+  assert(!matchesVoucherNumberFilter("00030", "49"), "y 49≠00030");
+  assert(!matchesVoucherNumberFilter("00065", "49"), "y 49≠00065");
+  assert(matchesVoucherNumberFilter("00106", "106"), "y 106≡00106");
+  assert(matchesVoucherNumberFilter("00001", ""), "y empty query allows all");
+  assert(!matchesVoucherNumberFilter("", "2"), "y empty fisNo rejects active query");
+
+  const catalog = [
+    {
+      fisNo: "00002",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi 00002",
+      hesapKodu: "191.01.001",
+    },
+    {
+      fisNo: "00020",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "decoy fis 2 in message 49",
+      hesapKodu: "102.02.049",
+    },
+    {
+      fisNo: "00030",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message: "round 49 amount",
+      hesapKodu: "320.10.M0049",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "uyarı 2",
+      hesapKodu: "320.10.Y0010",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi 49",
+      hesapKodu: "100.01",
+    },
+    {
+      fisNo: "00065",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "info contains 49 and 2",
+      hesapKodu: "740.30.002",
+    },
+    {
+      fisNo: "00102",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "102",
+      hesapKodu: "102.01",
+    },
+    {
+      fisNo: "00106",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi 106",
+      hesapKodu: "191.02",
+    },
+    {
+      fisNo: "00106",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi 106b",
+      hesapKodu: "320.01",
+    },
+  ];
+
+  const correctionRecords = [
+    {
+      id: "corr-49",
+      status: "APPLIED",
+      source_finding_code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      source_fis_no: "00049",
+      fingerprint: "fp-49",
+    },
+  ];
+
+  function fisSet(rows) {
+    return [...new Set(rows.map((row) => row.fisNo))].sort();
+  }
+
+  const all = buildGenelMuhasebeFindingsPresentation(catalog, { correctionRecords });
+  assert(all.length >= 6, "y empty filter keeps mixed rows");
+
+  const q2 = buildGenelMuhasebeFindingsPresentation(catalog, {
+    fisFilter: "2",
+    correctionRecords,
+  });
+  assert(fisSet(q2).join(",") === "00002", "y query 2 → only 00002");
+  assert(
+    q2.every((row) => matchesVoucherNumberFilter(row.fisNo, "2")),
+    "y query 2 all rows pass helper"
+  );
+
+  const q49 = buildGenelMuhasebeFindingsPresentation(catalog, {
+    fisFilter: "49",
+    correctionRecords,
+  });
+  assert(fisSet(q49).join(",") === "00049", "y query 49 → only 00049");
+  assert(
+    q49.some((row) => row.kind === "group") &&
+      q49.some((row) => row.kind === "single" || row.code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE),
+    "y 49 includes group and single/warning via same predicate"
+  );
+
+  const q00049 = buildGenelMuhasebeFindingsPresentation(catalog, {
+    fisFilter: "00049",
+    correctionRecords,
+  });
+  assert(fisSet(q00049).join(",") === "00049", "y query 00049 → only 00049");
+  assert(q00049.length === q49.length, "y 49 and 00049 same result size");
+
+  const q106 = buildGenelMuhasebeFindingsPresentation(catalog, {
+    fisFilter: "106",
+    correctionRecords,
+  });
+  assert(fisSet(q106).join(",") === "00106", "y query 106 → only 00106");
+
+  const qEmpty = buildGenelMuhasebeFindingsPresentation(catalog, {
+    fisFilter: "",
+    correctionRecords,
+  });
+  assert(qEmpty.length === all.length, "y clear filter restores all");
+
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(/buildVisibleGenelMuhasebeFindingsRows/.test(pageSrc), "y page uses visibleRows builder");
+  assert(/data-testid="genel-muhasebe-fis-filter"/.test(pageSrc), "y filter test id");
+}
+
+// z) page render wiring — summary count === tbody row source; yalnız visibleRows
+{
+  const catalog = [
+    {
+      fisNo: "00002",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-2",
+    },
+    {
+      fisNo: "00030",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "noise-30 contains 49 and 2",
+      hesapKodu: "102.49.002",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "warn-49",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-49a",
+    },
+    {
+      fisNo: "00049",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-49b",
+    },
+    {
+      fisNo: "00065",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message: "round-65-49",
+    },
+    {
+      fisNo: "00106",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-106",
+    },
+  ];
+
+  function assertRenderParity(query, expectedFis) {
+    const visibleRows = buildVisibleGenelMuhasebeFindingsRows({
+      findingsCatalog: catalog,
+      fisFilter: query,
+    });
+    const summaryCount = visibleRows.length;
+    // DOM tbody row model: one <tr> per visibleRows item (no flatMap expansion).
+    const domRows = visibleRows.map((item, index) => ({
+      key: presentationRowRenderKey(item, index),
+      fisNo: item.fisNo || "",
+      kind: item.kind || "single",
+    }));
+    assert(domRows.length === summaryCount, `z[${query}] summary count === DOM row count`);
+    assert(
+      domRows.every((row) => row.fisNo === expectedFis),
+      `z[${query}] every DOM fis cell === ${expectedFis}`
+    );
+    assert(
+      new Set(domRows.map((row) => row.key)).size === domRows.length,
+      `z[${query}] stable unique row keys`
+    );
+  }
+
+  assertRenderParity("49", "00049");
+  assertRenderParity("2", "00002");
+  assertRenderParity("106", "00106");
+  assertRenderParity("00049", "00049");
+
+  assert(
+    buildVisibleGenelMuhasebeFindingsRows({ findingsCatalog: catalog, fisFilter: "49" }).length === 1,
+    "z filter 49 → exactly 1 voucher row"
+  );
+  assert(
+    buildVisibleGenelMuhasebeFindingsRows({ findingsCatalog: catalog, fisFilter: "2" }).length === 1,
+    "z filter 2 → exactly 1 voucher row"
+  );
+  assert(
+    buildVisibleGenelMuhasebeFindingsRows({ findingsCatalog: catalog, fisFilter: "106" }).length === 1,
+    "z filter 106 → exactly 1 voucher row"
+  );
+
+  const cleared = buildVisibleGenelMuhasebeFindingsRows({
+    findingsCatalog: catalog,
+    fisFilter: "",
+  });
+  assert(cleared.length === 5, "z clear filter restores 5 voucher rows");
+  assert(
+    cleared.every((row) => row.kind === "voucher"),
+    "z clear rows are voucher kind"
+  );
+  assert(
+    [...new Set(cleared.map((row) => row.fisNo))].sort().join(",") ===
+      "00002,00030,00049,00065,00106",
+    "z clear keeps all fixture fis numbers"
+  );
+  assert(
+    cleared.filter((row) => row.fisNo === "00049").length === 1,
+    "z 00049 appears once in main table"
+  );
+
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(/const visibleRows = useMemo/.test(pageSrc), "z page defines visibleRows");
+  assert(/visibleRows\.map\(/.test(pageSrc), "z tbody maps visibleRows");
+  assert(/visibleRowsCount/.test(pageSrc), "z summary uses visibleRowsCount");
+  assert(/fiş sonucu/.test(pageSrc), "z summary says fiş sonucu");
+  assert(
+    !/\bfindings\.flatMap\(/.test(pageSrc) && !/\bfindings\.map\(/.test(pageSrc),
+    "z page does not render legacy findings list"
+  );
+  assert(/data-testid="genel-muhasebe-findings-tbody"/.test(pageSrc), "z tbody test id");
+  assert(/data-fis-no=\{item\.fisNo/.test(pageSrc), "z row data-fis-no for DOM accept");
+  assert(/key=\{findingsTableBodyKey\}/.test(pageSrc), "z tbody remounts on filter change");
+  assert(/VoucherFindingsDetailModal/.test(pageSrc), "z page uses voucher detail modal");
+}
+
+// aa) voucherResultGroups — one row per fisNo; primary priority; secondary preserved
+{
+  const sixFindings = [
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "uyarı",
+      hesapKodu: "320.10.Y0010",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING,
+      message: "yuvarlama",
+      hesapKodu: "320.10.Y0010",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "inceleme-a",
+      hesapKodu: "100.01",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "inceleme-b",
+      hesapKodu: "191.01",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-a",
+      hesapKodu: "100.01",
+    },
+    {
+      fisNo: "00049",
+      tarih: "16.02.2026",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi-b",
+      hesapKodu: "191.01",
+    },
+  ];
+
+  const corr49 = [
+    {
+      id: "corr-49",
+      status: "APPLIED",
+      sourceFingerprint: "fp-49",
+      sourceVoucherNo: "00049",
+      findingCode: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      wrongAccountCode: "320.10.Y0010",
+      externalVoucherNo: "00121",
+      externalVoucherDate: "2026-04-01",
+    },
+  ];
+
+  const catalogSnapshot = JSON.stringify(sixFindings);
+  const groups49 = buildVoucherResultGroups({
+    findingsCatalog: sixFindings,
+    correctionRecords: corr49,
+  });
+  assert(JSON.stringify(sixFindings) === catalogSnapshot, "aa catalog not mutated");
+  assert(groups49.length === 1, "aa 6 findings → 1 voucher group");
+  assert(groups49[0].fisNo === "00049", "aa group fis 00049");
+  assert(groups49[0].primaryKind === "applied", "aa 00049 primary = applied");
+  assert(groups49[0].primaryStatus === "Düzeltildi", "aa 00049 status Düzeltildi");
+  assert(groups49[0].secondaryCount === 5, "aa 00049 has 5 secondary");
+  assert(groups49[0].findingCount === 6, "aa raw finding count preserved on group");
+  assert(
+    /Luca fişi 00121/.test(groups49[0].primaryMessage || ""),
+    "aa 00049 Luca 00121 message"
+  );
+
+  const visible49 = buildVisibleVoucherResultRows({
+    findingsCatalog: sixFindings,
+    correctionRecords: corr49,
+    fisFilter: "49",
+  });
+  assert(visible49.length === 1, "aa filter 49 → 1 voucher row");
+
+  // priority: APPLIED > unresolved warning > composite > info
+  const priorityCatalog = [
+    {
+      fisNo: "00002",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi",
+      hesapKodu: "191.01",
+    },
+    {
+      fisNo: "00002",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+      message: "hesap inceleme",
+      hesapKodu: "100.01",
+    },
+  ];
+  const g02 = buildVoucherResultGroups({ findingsCatalog: priorityCatalog });
+  assert(g02.length === 1, "aa 00002 one group");
+  assert(g02[0].primaryKind === "composite", "aa 00002 primary = composite");
+  assert(g02[0].primaryStatus === "Bileşik fiş", "aa 00002 status Bileşik fiş");
+  assert(
+    g02[0].secondaryFindings.some((item) => /inceleme/i.test(item.message || item.displayMessage || "")),
+    "aa 00002 secondary keeps hesap inceleme"
+  );
+
+  const warnOverComposite = [
+    {
+      fisNo: "00106",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE,
+      message: "warn",
+      hesapKodu: "320.01",
+    },
+    {
+      fisNo: "00106",
+      severity: E_DEFTER_ISSUE_SEVERITY.BILGI,
+      code: E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART,
+      message: "multi",
+      hesapKodu: "191.01",
+    },
+  ];
+  const g106 = buildVoucherResultGroups({ findingsCatalog: warnOverComposite });
+  assert(g106[0].primaryKind === "warning", "aa priority warning > composite");
+
+  const appliedOverWarn = selectVoucherPrimaryFinding([
+    {
+      fisNo: "X",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: "A",
+      correctionResolved: true,
+      displayTitle: "Düzeltildi",
+    },
+    {
+      fisNo: "X",
+      severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+      code: "B",
+      correctionResolved: false,
+    },
+  ]);
+  assert(appliedOverWarn.primaryKind === "applied", "aa priority APPLIED > unresolved warning");
+
+  const modalSrc = fs.readFileSync(
+    path.resolve(
+      "app/(annvero)/muhasebe/genel-muhasebe-kontrol/VoucherFindingsDetailModal.jsx"
+    ),
+    "utf8"
+  );
+  assert(/Escape/.test(modalSrc), "aa modal closes on Escape");
+  assert(/voucher-findings-detail-close/.test(modalSrc), "aa modal close test id");
+  assert(/Diğer kontroller/.test(modalSrc), "aa modal secondary section");
+  assert(/MultiCounterpartDetailBody/.test(modalSrc), "aa modal reuses multi body");
 }
 
 if (failed) {

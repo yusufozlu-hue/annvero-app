@@ -23,14 +23,18 @@ import {
 } from "@/src/utils/eDefterAnalyzeContract";
 import { createGenelMuhasebeAnalyzeGate, buildAccountPlanCodeSet } from "@/src/utils/genelMuhasebeKontrolEngine";
 import {
-  buildGenelMuhasebeFindingsPresentation,
-  countVisiblePresentationRows,
-  pruneExpandedPresentationGroups,
+  buildVisibleGenelMuhasebeFindingsRows,
+  presentationRowRenderKey,
   summarizeGenelMuhasebeFindingsWithCorrections,
 } from "@/src/utils/genelMuhasebeFindingsView";
+import {
+  buildVoucherResultGroups,
+  countCompositeVoucherGroups,
+} from "@/src/utils/voucherResultGroups";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 import CorrectionVoucherPanel from "./CorrectionVoucherPanel";
 import CorrectionAppliedModal from "./CorrectionAppliedModal";
+import VoucherFindingsDetailModal from "./VoucherFindingsDetailModal";
 import { isCorrectionEligibleFinding } from "@/src/utils/correctionVoucher";
 import {
   CORRECTION_RECORD_STATUS,
@@ -151,8 +155,7 @@ export default function GenelMuhasebeKontrolPage() {
   const [perfWarning, setPerfWarning] = useState("");
   const [showMuavinYevmiyeDiffs, setShowMuavinYevmiyeDiffs] = useState(false);
   const [fisFilter, setFisFilter] = useState("");
-  const [expandedFindingGroups, setExpandedFindingGroups] = useState(() => new Set());
-  const [expandedTechnicalIds, setExpandedTechnicalIds] = useState(() => new Set());
+  const [voucherDetailGroup, setVoucherDetailGroup] = useState(null);
   const [result, setResult] = useState(null);
   const [planStatus, setPlanStatus] = useState("unknown");
   const [planAccounts, setPlanAccounts] = useState(null);
@@ -169,8 +172,7 @@ export default function GenelMuhasebeKontrolPage() {
   const invalidateActive = useCallback((reason) => {
     runTokenRef.current += 1;
     setResult(null);
-    setExpandedFindingGroups(new Set());
-    setExpandedTechnicalIds(new Set());
+    setVoucherDetailGroup(null);
     setPerfWarning("");
     setProgressDetail("");
     bumpAnalyzeGeneration(reason);
@@ -353,16 +355,20 @@ export default function GenelMuhasebeKontrolPage() {
         : planStatus;
   const trimmedFisFilter = fisFilter.trim();
   const findingsCatalog = result?.findingsCatalog;
+  const ledgerRows = result?.rows || [];
 
-  const findings = useMemo(() => {
-    if (!findingsCatalog?.length) return [];
-    const rows = buildGenelMuhasebeFindingsPresentation(findingsCatalog, {
-      fisFilter: trimmedFisFilter,
-      correctionRecords,
-    });
-    if (!showDuzeltildiOnly) return rows;
-    return rows.filter((item) => item.correctionResolved);
-  }, [findingsCatalog, trimmedFisFilter, correctionRecords, showDuzeltildiOnly]);
+  // Tek final liste: özet sayaç + <tbody> yalnız visibleRows.
+  const visibleRows = useMemo(
+    () =>
+      buildVisibleGenelMuhasebeFindingsRows({
+        findingsCatalog,
+        fisFilter: trimmedFisFilter,
+        correctionRecords,
+        ledgerRows,
+        showDuzeltildiOnly,
+      }),
+    [findingsCatalog, trimmedFisFilter, correctionRecords, showDuzeltildiOnly, ledgerRows]
+  );
 
   const findingsWithCorrections = useMemo(() => {
     if (!findingsCatalog?.length) return null;
@@ -378,65 +384,36 @@ export default function GenelMuhasebeKontrolPage() {
   );
 
   useEffect(() => {
-    setExpandedFindingGroups(new Set());
-    setExpandedTechnicalIds(new Set());
+    setVoucherDetailGroup(null);
   }, [trimmedFisFilter, findingsCatalog]);
 
-  const openFindingGroupIds = useMemo(
-    () => pruneExpandedPresentationGroups([...expandedFindingGroups], findings),
-    [expandedFindingGroups, findings]
-  );
-
   const findingsCatalogSize = findingsCatalog?.length || 0;
-  const groupedMultiCount = findings.filter((item) => item.kind === "group").length;
-  const visibleFindingsRowCount = useMemo(
-    () => countVisiblePresentationRows(findings, openFindingGroupIds),
-    [findings, openFindingGroupIds]
+  const visibleRowsCount = visibleRows.length;
+  const allVoucherGroups = useMemo(
+    () =>
+      buildVoucherResultGroups({
+        findingsCatalog,
+        correctionRecords,
+        ledgerRows,
+      }),
+    [findingsCatalog, correctionRecords, ledgerRows]
   );
+  const compositeVoucherCount = countCompositeVoucherGroups(allVoucherGroups);
+  const findingsTableBodyKey = `findings-body|${trimmedFisFilter}|${showDuzeltildiOnly ? "1" : "0"}|${visibleRowsCount}`;
 
-  const toggleFindingGroup = useCallback((groupId) => {
-    setExpandedFindingGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
-    });
+  const openVoucherDetail = useCallback((group, event) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    setVoucherDetailGroup(group);
   }, []);
 
-  const toggleTechnicalDetails = useCallback((rowId) => {
-    setExpandedTechnicalIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(rowId)) next.delete(rowId);
-      else next.add(rowId);
-      return next;
-    });
+  const closeVoucherDetail = useCallback(() => {
+    setVoucherDetailGroup(null);
   }, []);
-
-  const renderTechnicalDetails = (row, rowKey) => {
-    const open = expandedTechnicalIds.has(rowKey);
-    if (!row?.code) return null;
-    return (
-      <div className="mt-1">
-        <button
-          type="button"
-          className="text-xs text-slate-500 hover:underline"
-          onClick={() => toggleTechnicalDetails(rowKey)}
-        >
-          {open ? "Teknik ayrıntıları gizle" : "Teknik ayrıntılar"}
-        </button>
-        {open ? (
-          <div className="mt-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[11px] text-slate-600">
-            Kod: {row.code}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
 
   const muavinYevmiyeDiffs = summary?.muavinYevmiye?.differences || [];
   const muavinYevmiyeDiffPreview = muavinYevmiyeDiffs.slice(0, 50);
 
-  const ledgerRows = result?.rows || [];
   const accountPlanCodes = useMemo(
     () => (planAccounts?.length ? buildAccountPlanCodeSet(planAccounts) : null),
     [planAccounts]
@@ -672,7 +649,7 @@ export default function GenelMuhasebeKontrolPage() {
                 value={`${summary.dengeliFis} / ${summary.dengesizFis}`}
               />
               <Stat label="Kesin karşıt" value={summary.kesinKarsit} />
-              <Stat label="Çoklu karşıt" value={summary.cokluKarsit} />
+              <Stat label="Bileşik satır" value={summary.cokluKarsit} />
               <Stat label="İnceleme" value={findingsWithCorrections?.incelemeGerekli ?? summary.incelemeGerekli} />
               <button
                 type="button"
@@ -795,11 +772,9 @@ export default function GenelMuhasebeKontrolPage() {
                 <div className="text-sm text-slate-700">
                   <span className="font-medium text-slate-900">Sonuç tablosu</span>
                   <span className="ml-2 text-slate-500">
-                    {summary.toplamFis} fiş işlendi · {findingsCatalogSize} bulgu ·{" "}
-                    {groupedMultiCount} gruplu karşıt hesap özeti
-                    {trimmedFisFilter
-                      ? ` · ${visibleFindingsRowCount} sonuç gösteriliyor`
-                      : ""}
+                    {summary.toplamFis} fiş işlendi · {findingsCatalogSize} ham bulgu ·{" "}
+                    {visibleRowsCount} fiş sonucu
+                    {trimmedFisFilter ? " gösteriliyor" : ""} · {compositeVoucherCount} bileşik fiş
                   </span>
                 </div>
                 <label className="block text-sm">
@@ -808,11 +783,16 @@ export default function GenelMuhasebeKontrolPage() {
                     className="w-40 rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
                     value={fisFilter}
                     onChange={(e) => setFisFilter(e.target.value)}
-                    placeholder="00049"
+                    placeholder=""
+                    aria-label="Fiş no filtre"
+                    data-testid="genel-muhasebe-fis-filter"
                   />
                 </label>
               </div>
-              <table className="min-w-full text-left text-sm">
+              <table
+                className="min-w-full text-left text-sm"
+                data-testid="genel-muhasebe-findings-table"
+              >
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
                   <tr>
                     <th className="px-3 py-2">Fiş</th>
@@ -823,9 +803,9 @@ export default function GenelMuhasebeKontrolPage() {
                     <th className="px-3 py-2">Açıklama</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {findings.length === 0 ? (
-                    <tr>
+                <tbody key={findingsTableBodyKey} data-testid="genel-muhasebe-findings-tbody">
+                  {visibleRowsCount === 0 ? (
+                    <tr data-testid="genel-muhasebe-findings-empty">
                       <td className="px-3 py-3 text-slate-500" colSpan={6}>
                         {trimmedFisFilter
                           ? `Fiş ${trimmedFisFilter} için sonuç bulunamadı.`
@@ -833,74 +813,61 @@ export default function GenelMuhasebeKontrolPage() {
                       </td>
                     </tr>
                   ) : (
-                    findings.flatMap((item) => {
-                      if (item.kind === "group") {
-                        const open = openFindingGroupIds.has(item.id);
-                        const rows = [
-                          <tr key={item.id} className="border-t border-slate-100 bg-slate-50/60">
-                            <td className="px-3 py-2">{item.fisNo || "—"}</td>
-                            <td className="px-3 py-2">{item.tarih || "—"}</td>
-                            <td className="px-3 py-2">—</td>
-                            <td className="px-3 py-2">{item.severity}</td>
-                            <td className="px-3 py-2 font-medium text-slate-900">
-                              {item.displayTitle || item.titleTr}
-                            </td>
-                            <td className="px-3 py-2">
-                              <button
-                                type="button"
-                                className="text-left text-teal-700 hover:underline"
-                                onClick={() => toggleFindingGroup(item.id)}
-                              >
-                                {item.displayMessage || item.messageTr || item.message}
-                                {open ? " (gizle)" : " (ayrıntı)"}
-                              </button>
-                              {renderTechnicalDetails(item, item.id)}
-                            </td>
-                          </tr>,
-                        ];
-                        if (open) {
-                          for (const detail of item.details || []) {
-                            const detailKey = `${item.id}|${detail.hesapKodu}|${detail.code}`;
-                            rows.push(
-                              <tr
-                                key={detailKey}
-                                className="border-t border-slate-100 bg-white"
-                              >
-                                <td className="px-3 py-2 pl-6 text-slate-500">{detail.fisNo || "—"}</td>
-                                <td className="px-3 py-2">{detail.tarih || "—"}</td>
-                                <td className="px-3 py-2">{detail.hesapKodu || "—"}</td>
-                                <td className="px-3 py-2">{detail.severity}</td>
-                                <td className="px-3 py-2 font-medium text-slate-900">
-                                  {detail.displayTitle || detail.titleTr}
-                                </td>
-                                <td className="px-3 py-2">
-                                  {detail.displayMessage || detail.messageTr || detail.message}
-                                  {renderTechnicalDetails(detail, detailKey)}
-                                  {renderCorrectionAction(detail)}
-                                </td>
-                              </tr>
-                            );
-                          }
-                        }
-                        return rows;
-                      }
-                      const rowKey = `${item.code}-${item.fisNo}-${item.hesapKodu}-${item.message}`;
-                      return [
-                        <tr key={rowKey} className="border-t border-slate-100">
-                          <td className="px-3 py-2">{item.fisNo || "—"}</td>
+                    visibleRows.map((item, index) => {
+                      const rowKey = presentationRowRenderKey(item, index);
+                      const secondaryCount = item.secondaryCount || 0;
+                      return (
+                        <tr
+                          key={rowKey}
+                          className="border-t border-slate-100"
+                          data-testid="genel-muhasebe-finding-row"
+                          data-fis-no={item.fisNo || ""}
+                          data-row-kind="voucher"
+                        >
+                          <td className="px-3 py-2" data-testid="genel-muhasebe-finding-fis">
+                            {item.fisNo || "—"}
+                          </td>
                           <td className="px-3 py-2">{item.tarih || "—"}</td>
-                          <td className="px-3 py-2">{item.hesapKodu || "—"}</td>
-                          <td className="px-3 py-2">{item.severity}</td>
+                          <td className="px-3 py-2">{item.primaryAccount || item.hesapKodu || "—"}</td>
+                          <td className="px-3 py-2">{item.primarySeverity || item.severity || "—"}</td>
                           <td className="px-3 py-2 font-medium text-slate-900">
-                            {item.displayTitle || item.titleTr}
+                            {item.primaryStatus || item.displayTitle || "—"}
                           </td>
                           <td className="px-3 py-2">
-                            {item.displayMessage || item.messageTr || item.message}
-                            {renderTechnicalDetails(item, rowKey)}
-                            {renderCorrectionAction(item)}
+                            <p>{item.primaryMessage || item.displayMessage || "—"}</p>
+                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                              <button
+                                type="button"
+                                data-testid="voucher-detail-open"
+                                aria-haspopup="dialog"
+                                aria-expanded={Boolean(
+                                  voucherDetailGroup && voucherDetailGroup.fisNo === item.fisNo
+                                )}
+                                className="text-teal-700 hover:underline"
+                                onClick={(event) => openVoucherDetail(item, event)}
+                              >
+                                Ayrıntı
+                              </button>
+                              {secondaryCount > 0 ? (
+                                <button
+                                  type="button"
+                                  data-testid="voucher-secondary-open"
+                                  className="text-slate-600 hover:underline"
+                                  onClick={(event) => openVoucherDetail(item, event)}
+                                >
+                                  {secondaryCount} ek bulgu
+                                </button>
+                              ) : null}
+                            </div>
+                            {item.correctionResolved
+                              ? renderCorrectionAction(item.primaryFinding || item)
+                              : null}
+                            {!item.correctionResolved && item.primaryKind !== "composite"
+                              ? renderCorrectionAction(item.primaryFinding || item)
+                              : null}
                           </td>
-                        </tr>,
-                      ];
+                        </tr>
+                      );
                     })
                   )}
                 </tbody>
@@ -908,6 +875,15 @@ export default function GenelMuhasebeKontrolPage() {
             </div>
           </div>
         ) : null}
+
+        <VoucherFindingsDetailModal
+          open={Boolean(voucherDetailGroup)}
+          onClose={closeVoucherDetail}
+          group={voucherDetailGroup}
+          onOpenCorrectionRecord={(record) => {
+            setApplyRecord(record);
+          }}
+        />
 
         <CorrectionVoucherPanel
           key={`correction-panel-${correctionPanelKey}`}

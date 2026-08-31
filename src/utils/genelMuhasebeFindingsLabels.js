@@ -7,7 +7,7 @@ import { E_DEFTER_ISSUE_CODE } from "@/src/config/eDefterKontrolDefaults";
 
 /** Kod → Türkçe durum başlığı (sonuç tablosu). */
 export const GENEL_MUHASEBE_FINDING_TITLE_TR = {
-  [E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART]: "Birden fazla karşıt hesap",
+  [E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART]: "Bileşik fiş",
   [E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE]: "Aynı yönlü kayıt",
   [E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING]: "Şüpheli yuvarlama kaydı",
   [E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE]: "Hesap inceleme bilgisi",
@@ -37,7 +37,7 @@ export const GENEL_MUHASEBE_FINDING_TITLE_TR = {
  */
 export const GENEL_MUHASEBE_FINDING_MESSAGE_TR = {
   [E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART]:
-    "Bu fişte birden fazla karşıt hesap bulunduğu için otomatik olarak tek hesap atanmadı.",
+    "Bu fişte bir hesap satırı karşı yöndeki birden fazla hesapla birlikte çalışmaktadır. Bu durum tek başına hata değildir.",
   [E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE]:
     "Aynı fişte yalnız aynı yönlü kayıtlar bulunduğu için karşıt hesap belirlenemedi.",
   [E_DEFTER_ISSUE_CODE.SUSPICIOUS_ROUNDING]:
@@ -92,11 +92,9 @@ export function genelMuhasebeFindingMessageTr(code = "", fallbackMessage = "") {
   return "Bu kayıt inceleme gerektirebilir.";
 }
 
-/** Gruplu MULTI satırı için Türkçe kullanıcı mesajı (fiş/adet ayrıntısı). */
-export function genelMuhasebeMultiGroupMessageTr(fisNo = "", count = 0) {
-  const base = GENEL_MUHASEBE_FINDING_MESSAGE_TR[E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART];
-  const fis = String(fisNo || "").trim() || "—";
-  return `Fiş ${fis} · ${count} hesap satırı — ${base}`;
+/** Gruplu MULTI satırı için Türkçe kullanıcı mesajı (bileşik fiş). */
+export function genelMuhasebeMultiGroupMessageTr(_fisNo = "", _count = 0) {
+  return GENEL_MUHASEBE_FINDING_MESSAGE_TR[E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART];
 }
 
 /**
