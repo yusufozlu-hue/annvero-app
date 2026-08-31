@@ -32,7 +32,7 @@ export function resolveAnalyzeJobKind(value) {
 }
 
 function cloneJson(value, depth = 0) {
-  if (depth > 8) return null;
+  if (depth > 12) return null;
   if (value == null) return value;
   if (typeof value === "string") return value.slice(0, 4000);
   if (typeof value === "number") {
@@ -40,11 +40,19 @@ function cloneJson(value, depth = 0) {
     return value;
   }
   if (typeof value === "boolean") return value;
+  if (typeof ArrayBuffer !== "undefined" && value instanceof ArrayBuffer) {
+    // Never put detached/live buffers into analyze wire payloads.
+    return null;
+  }
+  if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView?.(value)) {
+    return null;
+  }
   if (Array.isArray(value)) {
     return value.slice(0, 200_000).map((item) => cloneJson(item, depth + 1));
   }
   if (typeof value !== "object") return null;
   if (value instanceof Date) return value.toISOString();
+  if (value instanceof Map || value instanceof Set) return null;
   const out = {};
   for (const [key, raw] of Object.entries(value)) {
     if (SENSITIVE_KEY_RE.test(key)) continue;

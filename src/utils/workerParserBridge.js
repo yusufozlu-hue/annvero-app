@@ -18,7 +18,120 @@ export const parserWorkerRuntimeStats = {
   postMessages: 0,
   timeouts: 0,
   cancels: 0,
+  classicBootstraps: 0,
+  classicBootstrapHtmlBlocked: 0,
 };
+
+/**
+ * Classic public/workers scripts must not be passed straight to `new Worker(url)`
+ * on Vercel Authentication previews: the Worker script request (Sec-Fetch-Dest:
+ * worker) often receives the SSO HTML interstitial instead of JS → WORKER_ONERROR.
+ * Main-thread fetch keeps the auth cookie, validates the body, then uses a blob:
+ * URL (allowed by worker-src 'self' blob:).
+ *
+ * @param {string|URL} workerUrl
+ * @param {{ fetchImpl?: typeof fetch, createObjectURL?: typeof URL.createObjectURL }} [opts]
+ */
+export async function bootstrapClassicWorkerScriptUrl(workerUrl, opts = {}) {
+  const href = String(workerUrl || "");
+  if (!href) {
+    throw Object.assign(new Error("Worker URL tanımsız."), {
+      code: "WORKER_SCRIPT_FETCH_FAILED",
+    });
+  }
+
+  const fetchImpl = opts.fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
+  if (typeof fetchImpl !== "function") {
+    throw Object.assign(new Error("fetch API kullanılamıyor (classic worker bootstrap)."), {
+      code: "WORKER_SCRIPT_FETCH_FAILED",
+    });
+  }
+
+  let response;
+  try {
+    response = await fetchImpl(href, {
+      credentials: "same-origin",
+      cache: "no-cache",
+      headers: { Accept: "text/javascript, application/javascript, */*;q=0.1" },
+    });
+  } catch (networkError) {
+    throw Object.assign(
+      new Error(networkError?.message || "Worker script fetch başarısız."),
+      { code: "WORKER_SCRIPT_FETCH_FAILED" }
+    );
+  }
+
+  const contentType = String(response.headers?.get?.("content-type") || "");
+  const buffer = await response.arrayBuffer();
+  const bytes = buffer?.byteLength || 0;
+  const head = new TextDecoder("utf-8", { fatal: false }).decode(
+    buffer.slice(0, Math.min(240, bytes))
+  );
+  const isHtml =
+    /text\/html/i.test(contentType) ||
+    /^\s*<!DOCTYPE/i.test(head) ||
+    /^\s*<html[\s>]/i.test(head);
+  const looksLikeWorker =
+    /annvero eDefterAnalyze classic worker/i.test(head) ||
+    /["']use strict["']/.test(head) ||
+    /\bonmessage\b/.test(head);
+
+  if (!response.ok || isHtml || !looksLikeWorker || bytes < 1_000) {
+    parserWorkerRuntimeStats.classicBootstrapHtmlBlocked += 1;
+    const err = new Error(
+      isHtml
+        ? "Worker script HTML döndü (auth/SSO veya 404 sayfası). Classic blob bootstrap reddetti."
+        : `Worker script geçersiz (status=${response.status}, type=${contentType || "?"}, bytes=${bytes}).`
+    );
+    err.code = isHtml ? "WORKER_SCRIPT_HTML" : "WORKER_SCRIPT_INVALID";
+    err.detail = {
+      status: response.status,
+      contentType,
+      bytes,
+      head: head.slice(0, 120),
+      href,
+    };
+    console.warn("[workerParserBridge] classic bootstrap rejected script", err.detail);
+    throw err;
+  }
+
+  const createObjectURL =
+    opts.createObjectURL ||
+    (typeof URL !== "undefined" && typeof URL.createObjectURL === "function"
+      ? URL.createObjectURL.bind(URL)
+      : null);
+  if (typeof createObjectURL !== "function") {
+    throw Object.assign(new Error("URL.createObjectURL kullanılamıyor."), {
+      code: "WORKER_SCRIPT_INVALID",
+    });
+  }
+
+  const blob = new Blob([buffer], { type: "text/javascript" });
+  const blobUrl = createObjectURL(blob);
+  parserWorkerRuntimeStats.classicBootstraps += 1;
+  console.info("[workerParserBridge] classic bootstrap ok", {
+    href,
+    status: response.status,
+    contentType: contentType || "n/a",
+    bytes,
+    blobUrlPrefix: String(blobUrl).slice(0, 24),
+  });
+
+  return {
+    url: blobUrl,
+    sourceHref: href,
+    meta: { status: response.status, contentType, bytes },
+    revoke() {
+      try {
+        if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+          URL.revokeObjectURL(blobUrl);
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+  };
+}
 
 export function resetParserWorkerRuntimeStats() {
   for (const key of Object.keys(parserWorkerRuntimeStats)) {
@@ -247,10 +360,18 @@ export function runParserWorker({
    * evaluation (bare/`@/` import) yapamaz. Diğer worker'lar module kalır.
    */
   classicWorker = false,
+  /**
+   * eDefterAnalyze public IIFE: fetch(+cookie) → validate → blob: Worker.
+   * Skipped when WorkerImpl is injected (unit/Node harness).
+   */
+  classicScriptBootstrap = false,
   /** Test harness injection — production uses global Worker. */
   WorkerImpl = typeof Worker !== "undefined" ? Worker : undefined,
   /** Optional stable id (analyze bridge); otherwise generated. */
   requestId: requestIdOption,
+  /** Test injection for classic bootstrap. */
+  fetchImpl,
+  createObjectURL,
 }) {
   return new Promise((resolve, reject) => {
     cancelActiveParseJob("replaced");
@@ -262,189 +383,247 @@ export function runParserWorker({
 
     let worker;
     let settled = false;
+    let revokeBlobUrl = null;
     const settleOnce = (fn) => (value) => {
       if (settled) return;
       settled = true;
       if (activeSettler?.requestId === requestId) activeSettler = null;
+      try {
+        revokeBlobUrl?.();
+      } catch {
+        /* ignore */
+      }
+      revokeBlobUrl = null;
       fn(value);
     };
     const resolveOnce = settleOnce(resolve);
     const rejectOnce = settleOnce(reject);
 
-    try {
-      if (!workerUrl) {
-        throw new Error("Worker URL tanımsız.");
+    const cleanupWorker = () => {
+      try {
+        worker?.terminate();
+        parserWorkerRuntimeStats.terminates += 1;
+      } catch {
+        /* ignore */
       }
-      if (typeof WorkerImpl !== "function") {
-        throw Object.assign(new Error("Worker API kullanılamıyor."), {
-          code: "WORKER_UNAVAILABLE",
+      if (activeWorker === worker) activeWorker = null;
+      if (activeJob?.id === requestId) activeJob = null;
+      if (activeSettler?.requestId === requestId) activeSettler = null;
+    };
+
+    const startWorker = (resolvedUrl) => {
+      try {
+        if (!resolvedUrl) {
+          throw new Error("Worker URL tanımsız.");
+        }
+        if (typeof WorkerImpl !== "function") {
+          throw Object.assign(new Error("Worker API kullanılamıyor."), {
+            code: "WORKER_UNAVAILABLE",
+          });
+        }
+        worker = classicWorker
+          ? new WorkerImpl(resolvedUrl)
+          : new WorkerImpl(resolvedUrl, { type: "module" });
+        parserWorkerRuntimeStats.constructs += 1;
+        console.info("[workerParserBridge] worker constructed", {
+          jobType,
+          requestId,
+          classicWorker: Boolean(classicWorker),
+          bootstrapped: Boolean(revokeBlobUrl),
+          workerUrl: String(workerUrl || ""),
         });
+      } catch (constructError) {
+        const message =
+          constructError?.message ||
+          "Worker oluşturulamadı (new Worker başarısız).";
+        console.warn("[workerParserBridge] Worker construct failed", {
+          message,
+          workerUrl: String(workerUrl || ""),
+          code: constructError?.code || "WORKER_CONSTRUCT_FAILED",
+        });
+        const err = new Error(message);
+        err.code = constructError?.code || "WORKER_CONSTRUCT_FAILED";
+        if (constructError?.detail) err.detail = constructError.detail;
+        rejectOnce(err);
+        return;
       }
-      worker = classicWorker
-        ? new WorkerImpl(workerUrl)
-        : new WorkerImpl(workerUrl, { type: "module" });
-      parserWorkerRuntimeStats.constructs += 1;
-    } catch (constructError) {
-      const message =
-        constructError?.message ||
-        "Worker oluşturulamadı (new Worker başarısız).";
-      console.warn("[workerParserBridge] Worker construct failed", {
-        message,
-        workerUrl: String(workerUrl || ""),
-      });
-      const err = new Error(message);
-      err.code = "WORKER_CONSTRUCT_FAILED";
-      rejectOnce(err);
+
+      activeWorker = worker;
+      activeJob = {
+        id: requestId,
+        type: jobType,
+        status: "running",
+        startedAt: Date.now(),
+      };
+
+      emit({ type: "start", jobId: requestId, jobType });
+
+      const timer = setTimeout(() => {
+        parserWorkerRuntimeStats.timeouts += 1;
+        emit({ type: "timeout", jobId: requestId, jobType });
+        cancelActiveParseJob("timeout");
+      }, timeoutMs);
+
+      activeSettler = {
+        requestId,
+        clearTimer: () => clearTimeout(timer),
+        reject: rejectOnce,
+      };
+
+      worker.onmessage = (event) => {
+        const message = event.data || {};
+        if (message.type === "lifecycle") {
+          console.info("[workerParserBridge] worker lifecycle", {
+            stage: message.stage,
+            code: message.code,
+            requestId: message.requestId || null,
+            jobType,
+          });
+          emit({
+            type: "lifecycle",
+            jobId: requestId,
+            jobType,
+            stage: message.stage,
+            code: message.code,
+          });
+          return;
+        }
+        if (message.type === "progress") {
+          onProgress?.(message);
+          emit({ type: "progress", jobId: requestId, jobType, ...message });
+          return;
+        }
+        if (message.requestId !== requestId) return;
+
+        clearTimeout(timer);
+        cleanupWorker();
+
+        if (message.type === "success" || message.type === "result") {
+          emit({ type: "done", jobId: requestId, jobType, result: message });
+          resolveOnce(message);
+          return;
+        }
+
+        if (message.type === "cancelled") {
+          emit({
+            type: "cancelled",
+            jobId: requestId,
+            jobType,
+            reason: message.reason || "cancelled",
+          });
+          rejectOnce(
+            Object.assign(new Error("İşlem iptal edildi."), {
+              code: "WORKER_CANCELLED",
+            })
+          );
+          return;
+        }
+
+        const errorText =
+          message.errorMessage || message.error || "Parser başarısız.";
+        emit({
+          type: "error",
+          jobId: requestId,
+          jobType,
+          error: errorText,
+          phase: message.phase || message.stage || null,
+        });
+        const err = new Error(errorText);
+        if (message.errorCode || message.code) {
+          err.code = message.errorCode || message.code;
+        }
+        if (message.errorName) err.name = message.errorName;
+        if (message.phase) err.phase = message.phase;
+        if (message.stack) err.stack = message.stack;
+        rejectOnce(err);
+      };
+
+      worker.onerror = (errorEvent) => {
+        clearTimeout(timer);
+        cleanupWorker();
+
+        const detail = serializeWorkerErrorEvent(errorEvent);
+        const message = formatWorkerLoadFailureMessage(detail);
+        // Managed fallback path — do not console.error ErrorEvent (Next overlay).
+        console.warn("[workerParserBridge] worker.onerror", {
+          ...detail,
+          workerUrl: String(workerUrl || ""),
+          resolvedMessage: message,
+        });
+
+        emit({ type: "error", jobId: requestId, jobType, error: message, detail });
+        const err = new Error(message);
+        err.code = "WORKER_ONERROR";
+        err.detail = detail;
+        rejectOnce(err);
+      };
+
+      worker.onmessageerror = (errorEvent) => {
+        clearTimeout(timer);
+        cleanupWorker();
+        const detail = serializeWorkerErrorEvent(errorEvent);
+        const message =
+          detail.message ||
+          detail.errorMessage ||
+          "Worker mesajı işlenemedi (structured clone / serializable olmayan veri).";
+        console.warn("[workerParserBridge] worker.onmessageerror", {
+          ...detail,
+          resolvedMessage: message,
+        });
+        emit({ type: "error", jobId: requestId, jobType, error: message, detail });
+        const err = new Error(message);
+        err.code = "WORKER_MESSAGE_ERROR";
+        rejectOnce(err);
+      };
+
+      try {
+        console.info("[workerParserBridge] postMessage", {
+          jobType,
+          requestId,
+          stage: "postMessage",
+        });
+        worker.postMessage({ requestId, ...payload }, transferables);
+        parserWorkerRuntimeStats.postMessages += 1;
+      } catch (postError) {
+        clearTimeout(timer);
+        cleanupWorker();
+        const message =
+          postError?.message ||
+          "Worker'a mesaj gönderilemedi (transferable / clone hatası).";
+        console.warn("[workerParserBridge] postMessage failed", { message });
+        const err = new Error(message);
+        err.code = "WORKER_POSTMESSAGE_FAILED";
+        rejectOnce(err);
+      }
+    };
+
+    const defaultWorker =
+      typeof Worker !== "undefined" ? Worker : undefined;
+    const useBootstrap =
+      classicWorker &&
+      classicScriptBootstrap &&
+      WorkerImpl === defaultWorker &&
+      typeof (fetchImpl || (typeof fetch !== "undefined" ? fetch : null)) ===
+        "function";
+
+    if (useBootstrap) {
+      bootstrapClassicWorkerScriptUrl(workerUrl, { fetchImpl, createObjectURL })
+        .then((boot) => {
+          revokeBlobUrl = boot.revoke;
+          startWorker(boot.url);
+        })
+        .catch((bootError) => {
+          const err = new Error(
+            bootError?.message || "Classic worker bootstrap başarısız."
+          );
+          err.code = bootError?.code || "WORKER_SCRIPT_FETCH_FAILED";
+          if (bootError?.detail) err.detail = bootError.detail;
+          rejectOnce(err);
+        });
       return;
     }
 
-    activeWorker = worker;
-    activeJob = {
-      id: requestId,
-      type: jobType,
-      status: "running",
-      startedAt: Date.now(),
-    };
-
-    emit({ type: "start", jobId: requestId, jobType });
-
-    const timer = setTimeout(() => {
-      parserWorkerRuntimeStats.timeouts += 1;
-      emit({ type: "timeout", jobId: requestId, jobType });
-      cancelActiveParseJob("timeout");
-    }, timeoutMs);
-
-    activeSettler = {
-      requestId,
-      clearTimer: () => clearTimeout(timer),
-      reject: rejectOnce,
-    };
-
-    worker.onmessage = (event) => {
-      const message = event.data || {};
-      if (message.type === "progress") {
-        onProgress?.(message);
-        emit({ type: "progress", jobId: requestId, jobType, ...message });
-        return;
-      }
-      if (message.requestId !== requestId) return;
-
-      clearTimeout(timer);
-      try {
-        worker.terminate();
-        parserWorkerRuntimeStats.terminates += 1;
-      } catch {
-        /* ignore */
-      }
-      if (activeWorker === worker) activeWorker = null;
-      if (activeJob?.id === requestId) activeJob = null;
-      if (activeSettler?.requestId === requestId) activeSettler = null;
-
-      if (message.type === "success" || message.type === "result") {
-        emit({ type: "done", jobId: requestId, jobType, result: message });
-        resolveOnce(message);
-        return;
-      }
-
-      if (message.type === "cancelled") {
-        emit({ type: "cancelled", jobId: requestId, jobType, reason: message.reason || "cancelled" });
-        rejectOnce(Object.assign(new Error("İşlem iptal edildi."), { code: "WORKER_CANCELLED" }));
-        return;
-      }
-
-      const errorText =
-        message.errorMessage || message.error || "Parser başarısız.";
-      emit({
-        type: "error",
-        jobId: requestId,
-        jobType,
-        error: errorText,
-        phase: message.phase || message.stage || null,
-      });
-      const err = new Error(errorText);
-      if (message.errorCode || message.code) err.code = message.errorCode || message.code;
-      if (message.errorName) err.name = message.errorName;
-      if (message.phase) err.phase = message.phase;
-      if (message.stack) err.stack = message.stack;
-      rejectOnce(err);
-    };
-
-    worker.onerror = (errorEvent) => {
-      clearTimeout(timer);
-      try {
-        worker.terminate();
-        parserWorkerRuntimeStats.terminates += 1;
-      } catch {
-        /* ignore */
-      }
-      if (activeWorker === worker) activeWorker = null;
-      if (activeJob?.id === requestId) activeJob = null;
-      if (activeSettler?.requestId === requestId) activeSettler = null;
-
-      const detail = serializeWorkerErrorEvent(errorEvent);
-      const message = formatWorkerLoadFailureMessage(detail);
-      // Managed fallback path — do not console.error ErrorEvent (Next overlay).
-      console.warn("[workerParserBridge] worker.onerror", {
-        ...detail,
-        workerUrl: String(workerUrl || ""),
-        resolvedMessage: message,
-      });
-
-      emit({ type: "error", jobId: requestId, jobType, error: message, detail });
-      const err = new Error(message);
-      err.code = "WORKER_ONERROR";
-      err.detail = detail;
-      rejectOnce(err);
-    };
-
-    worker.onmessageerror = (errorEvent) => {
-      clearTimeout(timer);
-      try {
-        worker.terminate();
-        parserWorkerRuntimeStats.terminates += 1;
-      } catch {
-        /* ignore */
-      }
-      if (activeWorker === worker) activeWorker = null;
-      if (activeJob?.id === requestId) activeJob = null;
-      if (activeSettler?.requestId === requestId) activeSettler = null;
-      const detail = serializeWorkerErrorEvent(errorEvent);
-      const message =
-        detail.message ||
-        detail.errorMessage ||
-        "Worker mesajı işlenemedi (structured clone / serializable olmayan veri).";
-      console.warn("[workerParserBridge] worker.onmessageerror", {
-        ...detail,
-        resolvedMessage: message,
-      });
-      emit({ type: "error", jobId: requestId, jobType, error: message, detail });
-      const err = new Error(message);
-      err.code = "WORKER_MESSAGE_ERROR";
-      rejectOnce(err);
-    };
-
-    try {
-      worker.postMessage({ requestId, ...payload }, transferables);
-      parserWorkerRuntimeStats.postMessages += 1;
-    } catch (postError) {
-      clearTimeout(timer);
-      try {
-        worker.terminate();
-        parserWorkerRuntimeStats.terminates += 1;
-      } catch {
-        /* ignore */
-      }
-      if (activeWorker === worker) activeWorker = null;
-      if (activeJob?.id === requestId) activeJob = null;
-      if (activeSettler?.requestId === requestId) activeSettler = null;
-      const message =
-        postError?.message ||
-        "Worker'a mesaj gönderilemedi (transferable / clone hatası).";
-      console.warn("[workerParserBridge] postMessage failed", { message });
-      const err = new Error(message);
-      err.code = "WORKER_POSTMESSAGE_FAILED";
-      rejectOnce(err);
-    }
+    startWorker(workerUrl);
   });
 }
 
@@ -539,6 +718,10 @@ export function runEDefterAnalyzeWorker({
   return runParserWorker({
     workerUrl,
     jobType: PARSER_JOB_TYPES.EDEFTER_ANALYZE,
+    // Prebundled public/workers IIFE — classic (no module @/ resolution).
+    classicWorker: true,
+    // Vercel SSO / HTML interstitial: fetch(+cookie) → blob Worker.
+    classicScriptBootstrap: true,
     payload: nested,
     onProgress,
     timeoutMs,

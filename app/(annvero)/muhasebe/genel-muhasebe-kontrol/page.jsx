@@ -318,7 +318,12 @@ export default function GenelMuhasebeKontrolPage() {
       }
 
       setResult(analysis);
-      if (analysis?.diagnostics?.fallback === 1 || analysis?.diagnostics?.performanceWarning) {
+      if (analysis?.diagnostics?.execution === "worker") {
+        setPerfWarning("");
+      } else if (
+        analysis?.diagnostics?.fallback === 1 ||
+        analysis?.diagnostics?.performanceWarning
+      ) {
         setPerfWarning(
           analysis.diagnostics.performanceWarning ||
             "Analiz worker yedeğe düştü; büyük dosyada tarayıcı yavaşlayabilir."

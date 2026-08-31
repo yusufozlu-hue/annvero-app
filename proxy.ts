@@ -16,6 +16,10 @@ export const config = {
      * Statik varlıklar hariç tüm path'ler (API dahil).
      * Resmi Supabase SSR: her istekte cookie yenileme.
      */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    /*
+     * `/workers/*` classic IIFE assets must bypass session middleware so the
+     * static JS (not an HTML rewrite) is what fetch/Worker bootstrap reads.
+     */
+    "/((?!_next/static|_next/image|favicon.ico|workers(?:/|$)|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

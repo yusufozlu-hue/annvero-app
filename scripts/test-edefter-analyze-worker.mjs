@@ -11,6 +11,7 @@
  */
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -773,6 +774,227 @@ console.log("11) GENERAL_LEDGER_CONTROL 1k/10k/100k worker_threads heartbeat");
   const s10k = await runGlScale("10k", 5000);
   const s100k = await runGlScale("100k", 50000);
   console.log("PASS GENERAL_LEDGER_CONTROL scales", { s1k, s10k, s100k });
+}
+
+console.log("12) classic bundled worker asset — no @/ imports; bridge classicWorker");
+{
+  const bridgeSrc = fs.readFileSync(
+    path.resolve("src/utils/workerParserBridge.js"),
+    "utf8"
+  );
+  const urlsSrc = fs.readFileSync(path.resolve("src/utils/parserWorkerUrls.js"), "utf8");
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  const buildSrc = fs.readFileSync(path.resolve("scripts/run-production-build.mjs"), "utf8");
+  const bundlePath = path.resolve("public/workers/eDefterAnalyze.worker.js");
+  assert.ok(fs.existsSync(bundlePath), "12 bundled worker exists in public/workers");
+  const bundleSrc = fs.readFileSync(bundlePath, "utf8");
+  assert.ok(bundleSrc.length > 10_000, "12 bundle is substantial (not media-copy stub)");
+  assert.equal(/from\s+["']@\//.test(bundleSrc), false, "12 bundle has no @/ imports");
+  assert.equal(/sourceMappingURL/i.test(bundleSrc), false, "12 no sourceMappingURL");
+  assert.equal(/process\.env/i.test(bundleSrc), false, "12 no process.env");
+  assert.equal(/https?:\/\//i.test(bundleSrc), false, "12 no external http(s) URL");
+  assert.match(bridgeSrc, /classicWorker:\s*true/, "12 analyze bridge uses classicWorker");
+  assert.match(
+    bridgeSrc,
+    /classicScriptBootstrap:\s*true/,
+    "12 analyze bridge bootstraps classic script via fetch→blob"
+  );
+  assert.match(
+    bridgeSrc,
+    /bootstrapClassicWorkerScriptUrl/,
+    "12 bootstrap helper present"
+  );
+  assert.match(urlsSrc, /\/workers\/eDefterAnalyze\.worker\.js/, "12 URL points at public bundle");
+  assert.match(buildSrc, /bundle-edefter-analyze-worker/, "12 production build runs bundle first");
+  assert.match(pageSrc, /execution === "worker"/, "12 page clears warning on worker success");
+  assert.match(
+    pageSrc,
+    /Analiz worker yedeğe düştü/,
+    "12 page keeps fallback warning copy"
+  );
+  assert.equal(
+    /fallbackReasonCode/.test(pageSrc),
+    false,
+    "12 page does not render fallbackReasonCode"
+  );
+  const proxySrc = fs.readFileSync(path.resolve("proxy.ts"), "utf8");
+  assert.match(proxySrc, /workers\(\?:\/\|\$\)/, "12 proxy excludes /workers from session matcher");
+  console.log("PASS classic bundled worker asset", { bytes: bundleSrc.length });
+}
+
+console.log("12c) classic bootstrap rejects HTML / accepts JS blob");
+{
+  const { bootstrapClassicWorkerScriptUrl, parserWorkerRuntimeStats, resetParserWorkerRuntimeStats } =
+    await import("@/src/utils/workerParserBridge.js");
+  resetParserWorkerRuntimeStats();
+
+  const htmlFetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => "text/html; charset=utf-8" },
+    arrayBuffer: async () =>
+      new TextEncoder().encode("<!DOCTYPE html><html><body>vercel login</body></html>").buffer,
+  });
+  await assert.rejects(
+    () =>
+      bootstrapClassicWorkerScriptUrl("/workers/eDefterAnalyze.worker.js", {
+        fetchImpl: htmlFetch,
+      }),
+    (err) => err?.code === "WORKER_SCRIPT_HTML",
+    "12c HTML body → WORKER_SCRIPT_HTML"
+  );
+  assert.equal(
+    parserWorkerRuntimeStats.classicBootstrapHtmlBlocked >= 1,
+    true,
+    "12c html blocked counter"
+  );
+
+  const jsBody = fs.readFileSync(
+    path.resolve("public/workers/eDefterAnalyze.worker.js")
+  );
+  const created = [];
+  const jsFetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => "text/javascript; charset=utf-8" },
+    arrayBuffer: async () => jsBody.buffer.slice(jsBody.byteOffset, jsBody.byteOffset + jsBody.byteLength),
+  });
+  const boot = await bootstrapClassicWorkerScriptUrl("/workers/eDefterAnalyze.worker.js", {
+    fetchImpl: jsFetch,
+    createObjectURL: (blob) => {
+      created.push(blob);
+      return "blob:test-edefter-worker";
+    },
+  });
+  assert.equal(boot.url, "blob:test-edefter-worker", "12c blob URL returned");
+  assert.equal(created.length, 1, "12c one blob created");
+  assert.equal(boot.meta.bytes, jsBody.byteLength, "12c byte length preserved");
+  boot.revoke();
+  console.log("PASS classic bootstrap HTML reject + JS blob");
+}
+
+console.log("12b) deterministic + fresh bundle matches committed asset");
+{
+  const { spawnSync } = await import("node:child_process");
+  const { createHash } = await import("node:crypto");
+  const bundlePath = path.resolve("public/workers/eDefterAnalyze.worker.js");
+  const before = fs.readFileSync(bundlePath);
+  const run1 = spawnSync(process.execPath, [path.resolve("scripts/bundle-edefter-analyze-worker.mjs")], {
+    encoding: "utf8",
+  });
+  assert.equal(run1.status, 0, `12b bundle run1 ok: ${run1.stderr || run1.stdout}`);
+  const mid = fs.readFileSync(bundlePath);
+  const run2 = spawnSync(process.execPath, [path.resolve("scripts/bundle-edefter-analyze-worker.mjs")], {
+    encoding: "utf8",
+  });
+  assert.equal(run2.status, 0, `12b bundle run2 ok: ${run2.stderr || run2.stdout}`);
+  const after = fs.readFileSync(bundlePath);
+  assert.equal(
+    createHash("sha256").update(mid).digest("hex"),
+    createHash("sha256").update(after).digest("hex"),
+    "12b second bundle run is byte-identical (deterministic)"
+  );
+  assert.equal(
+    createHash("sha256").update(before).digest("hex"),
+    createHash("sha256").update(after).digest("hex"),
+    "12b committed bundle matches fresh rebuild (not stale)"
+  );
+  console.log("PASS deterministic + non-stale bundle", {
+    sha256: createHash("sha256").update(after).digest("hex").slice(0, 16),
+    bytes: after.length,
+  });
+}
+
+console.log("13) fallback reason code + yellow warning contract");
+{
+  resetAll("error");
+  const input = makeInput(20);
+  const generation = bumpAnalyzeGeneration("fallback-reason");
+  const result = await runEDefterAnalyzeJob(
+    {
+      ...input,
+      jobKind: EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL,
+      yevmiyeSheetRows: [
+        ["TARİH", "FİŞ NO", "HESAP KODU", "BORÇ", "ALACAK"],
+        ["10.05.2026", "1", "100.01", "10", "0"],
+        ["10.05.2026", "1", "320.01", "0", "10"],
+      ],
+    },
+    {
+      preferWorker: true,
+      workerUrl: "mock://eDefterAnalyze.worker.js",
+      WorkerImpl: MockAnalyzeWorker,
+      generation,
+    }
+  );
+  assert.equal(result.diagnostics?.execution, "main-thread-fallback");
+  assert.equal(result.diagnostics?.fallback, 1);
+  assert.equal(analyzeJobStats.fallbackAttempts, 1, "13 single fallback attempt");
+  assert.ok(analyzeJobStats.lastFallbackReasonCode, "13 reason in telemetry stats");
+  assert.equal(
+    result.diagnostics?.fallbackReasonCode,
+    undefined,
+    "13 reason code not in UI/API diagnostics"
+  );
+  assert.ok(
+    result.diagnostics?.performanceWarning,
+    "13 real fallback keeps user performance warning"
+  );
+  assert.equal(
+    /yedeğe düştü/.test(result.diagnostics.performanceWarning || ""),
+    true,
+    "13 yellow warning text on real fallback"
+  );
+
+  resetAll("success");
+  const ok = await runEDefterAnalyzeJob(
+    {
+      jobKind: EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL,
+      companyId: "gl-warn",
+      period: "2026/05",
+      yevmiyeSheetRows: [
+        ["TARİH", "FİŞ NO", "HESAP KODU", "BORÇ", "ALACAK"],
+        ["10.05.2026", "1", "100.01", "10", "0"],
+        ["10.05.2026", "1", "320.01", "0", "10"],
+      ],
+    },
+    {
+      preferWorker: true,
+      WorkerImpl: MockAnalyzeWorker,
+      generation: bumpAnalyzeGeneration("no-warn"),
+    }
+  );
+  assert.equal(ok.diagnostics?.execution, "worker");
+  assert.equal(ok.diagnostics?.fallback || 0, 0);
+  assert.equal(ok.diagnostics?.performanceWarning || "", "", "13 worker success → no yellow warning");
+  assert.equal(analyzeJobStats.fallbackAttempts, 0, "13 worker success → no fallback");
+  console.log("PASS fallback reason + warning contract", {
+    lastFallbackReasonCode: analyzeJobStats.lastFallbackReasonCode || "(cleared on success reset)",
+  });
+}
+
+console.log("14) clone-safe payload strips ArrayBuffer; detach regression guard");
+{
+  const buf = new ArrayBuffer(8);
+  const safe = buildCloneSafeAnalyzePayload({
+    jobKind: EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL,
+    companyId: "clone-co",
+    muavinSheetRows: [["A"], ["1"]],
+    // accidental buffer must not enter wire payload
+    rawBuffer: buf,
+    arrayBuffer: buf,
+  });
+  assert.equal(safe.rawBuffer, undefined);
+  assert.equal(safe.arrayBuffer, undefined);
+  assert.ok(Array.isArray(safe.muavinSheetRows));
+  const cloned = structuredClone(safe);
+  assert.equal(cloned.jobKind, EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL);
+  // Original buffer still usable (no transfer/detach on analyze path).
+  assert.equal(buf.byteLength, 8, "14 ArrayBuffer not detached by analyze sanitize");
+  console.log("PASS clone-safe + detach guard");
 }
 
 console.log("\nAll edefter analyze worker real-path evidence checks passed.");

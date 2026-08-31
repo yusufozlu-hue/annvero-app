@@ -67,6 +67,7 @@
     "test:ziraat-pdf-layout": "node --import ./scripts/_alias-loader.mjs ./scripts/test-ziraat-pdf-layout.mjs",
     "test:vakif-pdf-layout": "node --import ./scripts/_alias-loader.mjs ./scripts/test-vakif-pdf-layout.mjs",
     "test:bank-excel-auto-detect": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-excel-auto-detect.mjs",
+    "test:edefter-analyze-worker": "node ./scripts/bundle-edefter-analyze-worker.mjs && node --import ./scripts/_alias-loader.mjs ./scripts/test-edefter-analyze-worker.mjs",
     "test:v1-job-persist-idempotency": "node --import ./scripts/_alias-loader.mjs ./scripts/test-v1-job-persist-idempotency.mjs",
     "test:mare-staging-22": "node --import ./scripts/_alias-loader.mjs --test ./scripts/test-mare-staging-runtime-22-fix.mjs"
   },
@@ -90,6 +91,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "esbuild": "^0.25.9",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "tailwindcss": "^4",

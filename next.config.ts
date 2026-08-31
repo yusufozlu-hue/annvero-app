@@ -25,6 +25,21 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        // Classic analyze worker — explicit JS MIME for public/workers IIFE.
+        source: "/workers/:path*",
+        headers: [
+          {
+            key: "Content-Type",
+            value: "text/javascript; charset=utf-8",
+          },
+          {
+            key: "Cache-Control",
+            value: "public, max-age=0, must-revalidate",
+          },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+        ],
+      },
+      {
         source: "/:path*",
         headers: buildSecurityHeaders({ isDev }),
       },
