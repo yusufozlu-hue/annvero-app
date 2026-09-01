@@ -13,12 +13,16 @@ import {
   applyVakifRunningBalanceSigns,
   classifyVakifPdfDocument,
   looksLikeVakifStatement,
+  parseVakifStatementTextFallback,
 } from "@/src/utils/bankPdf/vakifPdfLayout.js";
 import {
   buildVakifTwoTokenPdfFixture,
   buildBankStatementPdfFixture,
   buildZiraatDekontPdfFixture,
   buildZiraatDekontOwnershipPdfFixture,
+  buildVakifCoordRefBleedPdfFixture,
+  buildVakifTextRefBleedPdfFixture,
+  buildVakifTextRefBleedLines,
 } from "./fixtures/bankPdfFixtures.mjs";
 import { bankMovementsToStandardLucaRows } from "@/src/utils/standardLucaRow.js";
 import { dedupeCanonicalTransactions } from "@/src/utils/bankCanonicalTransaction.js";
@@ -171,6 +175,52 @@ await test("Ziraat dekont without ownership stays UNKNOWN", async () => {
       result.transactions[0].reviewReason === ACCOUNT_OWNERSHIP_UNRESOLVED ||
       result.reviewRequired
   );
+});
+
+await test("coord fixture: ref suffix 468/757 never bleed into amount", async () => {
+  const bytes = buildVakifCoordRefBleedPdfFixture();
+  const result = await parseBankStatementPdf(bytes, { selectedBank: "VAKIFBANK" });
+  assert.ok((result.transactions || []).length >= 3);
+  const amounts = result.transactions.map((t) => Number(t.amount));
+  assert.ok(!amounts.some((a) => Math.abs(a) >= 468000000));
+  assert.ok(!amounts.some((a) => Math.abs(a - 468173000) < 1));
+  assert.equal(Math.abs(amounts[0]), 173000);
+  assert.ok(Math.abs(Math.abs(amounts[1]) - 966.9) < 0.02);
+  const mareLike = result.transactions.find((t) => Math.abs(Number(t.amount)) >= 1000000);
+  assert.ok(mareLike);
+  assert.ok(Math.abs(Math.abs(Number(mareLike.amount)) - 1018500) < 0.02);
+});
+
+await test("scaled coord fixture still separates columns", async () => {
+  const bytes = buildVakifCoordRefBleedPdfFixture({ scale: 1.15 });
+  const result = await parseBankStatementPdf(bytes, { selectedBank: "VAKIFBANK" });
+  assert.ok((result.transactions || []).length >= 3);
+  assert.equal(Math.abs(Number(result.transactions[0].amount)), 173000);
+});
+
+await test("multipage coord fixture keeps amounts clean", async () => {
+  const bytes = buildVakifCoordRefBleedPdfFixture({ multipage: true });
+  const result = await parseBankStatementPdf(bytes, { selectedBank: "VAKIFBANK" });
+  assert.ok((result.transactions || []).length >= 3);
+  assert.ok(!result.transactions.some((t) => Math.abs(Number(t.amount)) >= 468000000));
+});
+
+await test("text fallback strips ref before amount regex", () => {
+  const text = buildVakifTextRefBleedLines();
+  const parsed = parseVakifStatementTextFallback(text, { selectedBank: "VAKIFBANK" });
+  assert.equal(parsed.transactions.length, 4);
+  assert.equal(Math.abs(Number(parsed.transactions[0].amount)), 173000);
+  assert.ok(Math.abs(Math.abs(Number(parsed.transactions[1].amount)) - 966.9) < 0.02);
+  assert.ok(!parsed.transactions.some((t) => Math.abs(Number(t.amount)) >= 468000000));
+});
+
+await test("text-bleed PDF fixture via full parse path", async () => {
+  const bytes = buildVakifTextRefBleedPdfFixture();
+  const result = await parseBankStatementPdf(bytes, { selectedBank: "VAKIFBANK" });
+  assert.ok((result.transactions || []).length >= 3);
+  assert.equal(Math.abs(Number(result.transactions[0].amount)), 173000);
+  assert.ok(!String(JSON.stringify(result)).includes("468173000"));
+  assert.ok(!String(JSON.stringify(result)).includes("468000000"));
 });
 
 await test("Garanti extract-path pdfjs still wins over latin1 garbage", () => {

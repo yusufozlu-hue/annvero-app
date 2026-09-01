@@ -613,14 +613,21 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     accountType: context.statementAccountType || "",
     lucaHint: context.statementLucaHint || "",
   });
-  const bankLucaBase = statementResolve.ok
-    ? statementResolve.code
-    : resolve102BankAccount(
-        bankAccounts,
-        "102",
-        getDefaultBankLucaCode(bankAccounts, selectedBank),
-        selectedBank
-      );
+  // Bilinmeyen vadeli hesapta eski 102'ye sessiz banka-adı fallback yok.
+  // Kesin eşleşme yoksa boş bırak; lifecycle "Vadeli mevduat hesabı eşleştirilmedi" üretir.
+  let bankLucaBase = "";
+  if (statementResolve.ok) {
+    bankLucaBase = statementResolve.code;
+  } else if (String(context.statementAccountType || "").toUpperCase() === "VADELI") {
+    bankLucaBase = "";
+  } else {
+    bankLucaBase = resolve102BankAccount(
+      bankAccounts,
+      "102",
+      getDefaultBankLucaCode(bankAccounts, selectedBank),
+      selectedBank
+    );
+  }
 
   accountCode = bankLucaBase;
 
@@ -1403,7 +1410,11 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
 
   if (
     matchedRule?.source !== "learningMemory" &&
-    matchedRule?.source !== "accountingRuleEngine"
+    matchedRule?.source !== "accountingRuleEngine" &&
+    !(
+      String(context.statementAccountType || "").toUpperCase() === "VADELI" &&
+      !statementResolve.ok
+    )
   ) {
     accountCode = resolve102BankAccount(
       selectedCompany?.bankAccounts || [],

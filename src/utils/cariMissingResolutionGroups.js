@@ -245,11 +245,24 @@ export function isExcludedFromCariResolution(
     cat === MISSING_HESAP_CATEGORY.FINAN_ISLEM ||
     cat === MISSING_HESAP_CATEGORY.VIRMAN_HESAP_EKSIK ||
     cat === MISSING_HESAP_CATEGORY.CEK_HESAP_EKSIK ||
-    cat === MISSING_HESAP_CATEGORY.KASA_HESAP_EKSIK
+    cat === MISSING_HESAP_CATEGORY.KASA_HESAP_EKSIK ||
+    cat === MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI
   ) {
     return true;
   }
   if (cat === MISSING_HESAP_CATEGORY.VIRMAN_ADAY) return true;
+  if (
+    type === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+    type === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+    type === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+    type === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME ||
+    type === BANK_TRANSACTION_TYPE.FAIZ_GELIRI ||
+    type === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI ||
+    String(row.accountingScenario || "") === "VADELI_LIFECYCLE" ||
+    String(row.vadeliLifecycleRole || "").startsWith("VADELI_")
+  ) {
+    return true;
+  }
 
   const virmanBucket = classifyVirmanForCariCenter(row, context).bucket;
   if (!skipOwnVirman && virmanBucket === "definite") return true;

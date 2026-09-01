@@ -14,6 +14,7 @@ import {
 import { analyzeStandardLucaRows } from "@/src/utils/fisKontrolMerkezi.js";
 import { BANK_TRANSACTION_TYPE } from "@/src/utils/bankTransactionType.js";
 import { isTaxObligationMissingRow } from "@/src/utils/cariMissingResolutionGroups.js";
+import { MISSING_HESAP_CATEGORY } from "@/src/utils/previewExportValidation.js";
 import {
   buildVadeliLifecycleMemoryRecords,
   detectVadeliLifecycleBundle,
@@ -25,6 +26,8 @@ import {
   VADELI_LIFECYCLE_SCENARIO,
   resolveStatementBankAccount,
   resolveVadesizCounter102,
+  applyVadeliKeywordGate,
+  VADELI_ACCOUNT_UNMATCHED_LABEL,
 } from "@/src/utils/vadeliMevduatLifecycle.js";
 import {
   detectAndClassifyBankInternalTransfer,
@@ -795,6 +798,154 @@ test("MARE: açılış/kapanış Luca yön/tutar + virman adayı 0", () => {
       "none"
     );
   }
+});
+
+test("N dönem lifecycle: 173000 + Σ(faiz−stopaj) = 177025.42", () => {
+  const faizList = [966.9, 971.36, 975.84, 980.34, 984.86];
+  const stopajList = [169.21, 169.99, 170.77, 171.56, 172.35];
+  const faizSum = faizList.reduce((s, n) => s + n, 0);
+  const stopajSum = stopajList.reduce((s, n) => s + n, 0);
+  assert.equal(Math.round((173000 + faizSum - stopajSum) * 100) / 100, 177025.42);
+
+  const rows = [
+    {
+      sourceRowId: "o1",
+      tarih: "2026-03-02",
+      aciklama: "Vadeli Mevduat Hesap Açma",
+      tutar: 173000,
+      yon: "GIRIS",
+      hesapNo: "00158018033466201",
+    },
+    ...faizList.map((amt, i) => ({
+      sourceRowId: `f${i + 1}`,
+      tarih: `2026-03-${15 + i}`,
+      aciklama: "Mevduat Faiz Tahakkuku",
+      tutar: amt,
+      yon: "GIRIS",
+      hesapNo: "00158018033466201",
+    })),
+    ...stopajList.map((amt, i) => ({
+      sourceRowId: `s${i + 1}`,
+      tarih: `2026-03-${15 + i}`,
+      aciklama: "Mevduat Faiz Stopaj",
+      tutar: amt,
+      yon: "CIKIS",
+      hesapNo: "00158018033466201",
+    })),
+    {
+      sourceRowId: "c1",
+      tarih: "2026-05-06",
+      aciklama: "Hesap Kapatma",
+      tutar: 177025.42,
+      yon: "CIKIS",
+      hesapNo: "00158018033466201",
+    },
+  ];
+  const movements = mapParsedRowsToStandardMovements(rows, mareContext());
+  assert.equal(movements.length, 12);
+  const bundle = detectVadeliLifecycleBundle(movements);
+  assert.equal(bundle.ok, true);
+  assert.equal(bundle.mode, "multi_period");
+  assert.equal(Math.round(bundle.expected * 100) / 100, 177025.42);
+
+  const open = bySource(movements, "o1");
+  const close = bySource(movements, "c1");
+  assert.equal(open.transactionType, BANK_TRANSACTION_TYPE.VADELI_ACILIS);
+  assert.equal(close.transactionType, BANK_TRANSACTION_TYPE.VADELI_KAPANIS);
+  assert.equal(open.accountingScenario, VADELI_LIFECYCLE_SCENARIO);
+  assert.equal(open.accountCode, "102.10.V002");
+  assert.equal(open.counterAccountCode, "102.10.V001");
+  const faizRows = movements.filter(
+    (m) => m.transactionType === BANK_TRANSACTION_TYPE.FAIZ_GELIRI
+  );
+  const stopajRows = movements.filter(
+    (m) => m.transactionType === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI
+  );
+  assert.equal(faizRows.length, 5);
+  assert.equal(stopajRows.length, 5);
+  for (const s of stopajRows) {
+    assert.equal(s.counterAccountCode, "193.01.001");
+    assert.equal(isTaxObligationMissingRow(s), false);
+  }
+  for (const m of movements) {
+    assert.equal(m.virmanCandidate, false);
+    assert.notEqual(m.missingHesapCategory, "Cari bulunamadı");
+  }
+});
+
+test("bilinmeyen vadeli hesap: eski 102 sessiz fallback yok", () => {
+  const rows = [
+    {
+      sourceRowId: "o1",
+      tarih: "2026-03-02",
+      aciklama: "Vadeli Mevduat Hesap Açma",
+      tutar: 173000,
+      yon: "GIRIS",
+      hesapNo: "99999999999999999",
+    },
+    {
+      sourceRowId: "f1",
+      tarih: "2026-03-15",
+      aciklama: "Mevduat Faiz Tahakkuku",
+      tutar: 100,
+      yon: "GIRIS",
+      hesapNo: "99999999999999999",
+    },
+    {
+      sourceRowId: "s1",
+      tarih: "2026-03-15",
+      aciklama: "Mevduat Faiz Stopaj",
+      tutar: 17.5,
+      yon: "CIKIS",
+      hesapNo: "99999999999999999",
+    },
+    {
+      sourceRowId: "c1",
+      tarih: "2026-05-06",
+      aciklama: "Hesap Kapatma",
+      tutar: 173082.5,
+      yon: "CIKIS",
+      hesapNo: "99999999999999999",
+    },
+  ];
+  const movements = mapParsedRowsToStandardMovements(
+    rows,
+    mareContext({
+      statementAccountHint: "99999999999999999",
+      statementAccountType: "VADELI",
+    })
+  );
+  for (const m of movements) {
+    assert.notEqual(m.accountCode, "102.10.V002");
+    assert.ok(
+      String(m.warning || "").includes(VADELI_ACCOUNT_UNMATCHED_LABEL) ||
+        m.missingHesapCategory === MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI
+    );
+    assert.equal(m.virmanCandidate, false);
+  }
+  const gated = applyVadeliKeywordGate(movements);
+  assert.equal(gated[0].transactionType, BANK_TRANSACTION_TYPE.VADELI_ACILIS);
+});
+
+test("keyword gate bundle olmadan da çalışır", () => {
+  const gated = applyVadeliKeywordGate([
+    {
+      description: "Vadeli Mevduat Hesap Açma",
+      direction: "GIRIS",
+      amount: 100,
+      transactionType: "BILINMEYEN",
+    },
+    {
+      description: "Hesap Kapatma",
+      direction: "CIKIS",
+      amount: 100,
+      transactionType: "BILINMEYEN",
+    },
+  ]);
+  assert.equal(gated[0].transactionType, BANK_TRANSACTION_TYPE.VADELI_ACILIS);
+  assert.equal(gated[1].transactionType, BANK_TRANSACTION_TYPE.VADELI_KAPANIS);
+  assert.equal(gated[0].cariRequired, false);
+  assert.equal(gated[0].virmanCandidate, false);
 });
 
 console.log("OK: test-mare-term-deposit-lifecycle");

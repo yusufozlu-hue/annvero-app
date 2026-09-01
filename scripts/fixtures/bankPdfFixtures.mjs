@@ -403,6 +403,154 @@ export function buildVakifTwoTokenPdfFixture() {
   return buildTextPdf(lines, { pageCount: 1, bankLabel: "VakifBank Hesap Ekstresi" });
 }
 
+/**
+ * Koordinatlı VakıfBank ekstre — referans soneki tutar ile birleşmemeli.
+ * Sentetik: ref ...468 + 173.000,00; ref ...757 + 966,90; MARE-benzeri ...580 + 1.018.500,00
+ * Gerçek hesap no / finansal belge fixture olarak commit edilmez.
+ */
+export function buildVakifCoordRefBleedPdfFixture({ scale = 1, multipage = false } = {}) {
+  const s = Number(scale) || 1;
+  const putOps = [];
+  const put = (x, y, text) => {
+    putOps.push(`1 0 0 1 ${(x * s).toFixed(1)} ${(y * s).toFixed(1)} Tm (${pdfEscape(text)}) Tj`);
+  };
+
+  function movementRow(y, { date, time, ref, amount, balance, desc }) {
+    put(70, y, date);
+    put(134, y, time);
+    put(162, y, ref);
+    put(280, y, amount);
+    put(358, y, balance);
+    put(408, y, desc);
+  }
+
+  putOps.push("BT /F1 9 Tf");
+  put(40, 800, "VakifBank Hesap Ekstresi");
+  put(40, 780, "VB Mus. No : 1000000001 Bakiye : 0,00 TL");
+  put(40, 760, "Hesap Turu : VADELI TL");
+  put(40, 740, "Hesap Hareketleri");
+
+  const rows = [
+    {
+      date: "02.03.2026",
+      time: "14:53",
+      ref: "2026003159123468",
+      amount: "173.000,00",
+      balance: "173.000,00",
+      desc: "Vadeli Mevduat Hesap Acma",
+    },
+    {
+      date: "15.03.2026",
+      time: "00:34",
+      ref: "2026003830504757",
+      amount: "966,90",
+      balance: "173.966,90",
+      desc: "Mevduat Faiz Tahakkuku",
+    },
+    {
+      date: "15.03.2026",
+      time: "00:34",
+      ref: "2026003830504757",
+      amount: "-169,21",
+      balance: "173.797,69",
+      desc: "Mevduat Faiz Stopaj",
+    },
+    {
+      date: "26.12.2025",
+      time: "17:46",
+      ref: "2025018436000580",
+      amount: "1.018.500,00",
+      balance: "1.192.297,69",
+      desc: "Vadeli Mevduat Hesap Acma",
+    },
+  ];
+
+  let y = 700;
+  const page1Count = multipage ? 2 : rows.length;
+  for (let i = 0; i < page1Count; i += 1) {
+    movementRow(y, rows[i]);
+    y -= 30;
+  }
+  putOps.push("ET");
+  const page1 = putOps.join("\n");
+
+  const pages = [page1];
+  if (multipage) {
+    const ops2 = ["BT /F1 9 Tf"];
+    const put2 = (x, y2, text) => {
+      ops2.push(`1 0 0 1 ${(x * s).toFixed(1)} ${(y2 * s).toFixed(1)} Tm (${pdfEscape(text)}) Tj`);
+    };
+    put2(40, 800, "VakifBank Hesap Ekstresi");
+    put2(40, 780, "Sayfa 2");
+    let y2 = 740;
+    for (let i = 2; i < rows.length; i += 1) {
+      const r = rows[i];
+      put2(70, y2, r.date);
+      put2(134, y2, r.time);
+      put2(162, y2, r.ref);
+      put2(280, y2, r.amount);
+      put2(358, y2, r.balance);
+      put2(408, y2, r.desc);
+      y2 -= 30;
+    }
+    ops2.push("ET");
+    pages.push(ops2.join("\n"));
+  }
+
+  const objects = [];
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  const kids = pages.map((_, i) => `${3 + i * 2} 0 R`).join(" ");
+  objects[2] = `<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`;
+  let next = 3;
+  for (let i = 0; i < pages.length; i += 1) {
+    const pageObj = next;
+    const contentObj = next + 1;
+    objects[pageObj] =
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${(595 * s).toFixed(0)} ${(842 * s).toFixed(0)}] /Contents ${contentObj} 0 R /Resources << /Font << /F1 ${3 + pages.length * 2} 0 R >> >> >>`;
+    const stream = pages[i];
+    objects[contentObj] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+    next += 2;
+  }
+  const fontObj = next;
+  objects[fontObj] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (let i = 1; i <= fontObj; i += 1) {
+    offsets[i] = Buffer.byteLength(pdf, "latin1");
+    pdf += `${i} 0 obj\n${objects[i]}\nendobj\n`;
+  }
+  const xrefPos = Buffer.byteLength(pdf, "latin1");
+  pdf += `xref\n0 ${fontObj + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let i = 1; i <= fontObj; i += 1) {
+    pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${fontObj + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`;
+  const out = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i += 1) out[i] = pdf.charCodeAt(i) & 0xff;
+  return out;
+}
+
+/** Düz metin fallback — referans strip edilmezse 468+173.000 birleşirdi. */
+export function buildVakifTextRefBleedLines() {
+  return [
+    "VakifBank Hesap Ekstresi",
+    "VB Mus. No : 1000000001 Bakiye : 0,00 TL",
+    "02.03.2026 14:53 2026003159123468 173.000,00 173.000,00 Vadeli Mevduat Hesap Acma",
+    "15.03.2026 00:34 2026003830504757 966,90 173.966,90 Mevduat Faiz Tahakkuku",
+    "15.03.2026 00:34 2026003830504757 -169,21 173.797,69 Mevduat Faiz Stopaj",
+    "26.12.2025 17:46 2025018436000580 1.018.500,00 1.192.297,69 Vadeli Mevduat Hesap Acma",
+  ].join("\n");
+}
+
+export function buildVakifTextRefBleedPdfFixture() {
+  return buildTextPdf(buildVakifTextRefBleedLines().split("\n"), {
+    pageCount: 1,
+    bankLabel: "VakifBank Hesap Ekstresi",
+  });
+}
+
 /** Anonim Ziraat dekont + etiketli IBAN tarafları (sahiplik). Sentetik TR IBAN. */
 export function buildZiraatDekontOwnershipPdfFixture({
   firmRole = "sender",

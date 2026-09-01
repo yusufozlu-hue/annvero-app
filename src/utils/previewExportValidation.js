@@ -46,6 +46,7 @@ export const MISSING_HESAP_CATEGORY = {
   VIRMAN_ADAY: "Virman adayı — karşı banka hesabı tanımlanmalı",
   CEK_HESAP_EKSIK: "Çek hesabı 101/103 eksik",
   KASA_HESAP_EKSIK: "Kasa hesabı 100 eksik",
+  VADELI_HESAP_ESLESMEDI: "Vadeli mevduat hesabı eşleştirilmedi",
   DIGER: "Diğer",
 };
 
@@ -232,6 +233,24 @@ export function classifyMissingHesapCategory(row = {}) {
 
   if (isFinanceType(transactionType) || /FINANS ISLEM TURU COZULEMEDI/.test(note)) {
     return MISSING_HESAP_CATEGORY.FINAN_ISLEM;
+  }
+
+  if (
+    existing === MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI ||
+    /VADELI MEVDUAT HESABI ESLESTIRILMEDI/.test(note) ||
+    transactionType === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+    transactionType === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+    transactionType === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+    transactionType === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME ||
+    scenario === "VADELI_LIFECYCLE"
+  ) {
+    if (
+      !String(row.counterAccountCode || row.karsiHesap || "").trim() ||
+      existing === MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI ||
+      /VADELI MEVDUAT HESABI ESLESTIRILMEDI/.test(note)
+    ) {
+      return MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI;
+    }
   }
 
   if (
