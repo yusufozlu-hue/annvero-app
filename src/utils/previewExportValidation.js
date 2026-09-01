@@ -47,6 +47,7 @@ export const MISSING_HESAP_CATEGORY = {
   CEK_HESAP_EKSIK: "Çek hesabı 101/103 eksik",
   KASA_HESAP_EKSIK: "Kasa hesabı 100 eksik",
   VADELI_HESAP_ESLESMEDI: "Vadeli mevduat hesabı eşleştirilmedi",
+  FAIZ_STOPAJI_HESAP: "Faiz stopajı hesabı seçilmeli",
   DIGER: "Diğer",
 };
 
@@ -179,7 +180,24 @@ export function classifyMissingHesapCategory(row = {}) {
     ) {
       return missingCategoryForTransactionType(transactionType);
     }
-    return existing;
+    // Eski DIGER / cari etiketi vadeli-stopaj satırında kalmasın
+    if (
+      (existing === MISSING_HESAP_CATEGORY.DIGER ||
+        existing === MISSING_HESAP_CATEGORY.CARI_BULUNAMADI ||
+        existing === MISSING_HESAP_CATEGORY.FINAN_ISLEM) &&
+      (transactionType === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI ||
+        transactionType === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+        transactionType === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+        transactionType === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+        transactionType === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME ||
+        transactionType === BANK_TRANSACTION_TYPE.FAIZ_GELIRI ||
+        scenario === "VADELI_LIFECYCLE" ||
+        String(row.vadeliLifecycleRole || "").startsWith("VADELI_"))
+    ) {
+      // aşağıda tip/senaryo sınıflamasına düş
+    } else {
+      return existing;
+    }
   }
 
   // Sabit öncelik: Banka 102 → Çek → Kasa → POS → Vergi/SGK → Finans → Personel → Cari → Diğer
@@ -231,8 +249,15 @@ export function classifyMissingHesapCategory(row = {}) {
     return MISSING_HESAP_CATEGORY.VIRMAN_HESAP_EKSIK;
   }
 
-  if (isFinanceType(transactionType) || /FINANS ISLEM TURU COZULEMEDI/.test(note)) {
-    return MISSING_HESAP_CATEGORY.FINAN_ISLEM;
+  // Stopaj 193 — cari / genel finans kovasına düşmesin
+  if (
+    existing === MISSING_HESAP_CATEGORY.FAIZ_STOPAJI_HESAP ||
+    transactionType === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI ||
+    /FAIZ STOPAJI HESABI SECILMELI|193 PESIN/.test(note) ||
+    (/\b(STOPAJ|MEVDUAT\s*FAIZ\s*STOPAJ)\b/i.test(rowDescription(row)) &&
+      !String(row.hesapKodu || "").trim())
+  ) {
+    return MISSING_HESAP_CATEGORY.FAIZ_STOPAJI_HESAP;
   }
 
   if (
@@ -242,15 +267,18 @@ export function classifyMissingHesapCategory(row = {}) {
     transactionType === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
     transactionType === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
     transactionType === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME ||
-    scenario === "VADELI_LIFECYCLE"
+    transactionType === BANK_TRANSACTION_TYPE.FAIZ_GELIRI ||
+    scenario === "VADELI_LIFECYCLE" ||
+    String(row.vadeliLifecycleRole || "").startsWith("VADELI_") ||
+    /\b(HESAP\s*ACMA|VADEL[Iİ].*ACMA|HESAP\s*KAPAT(?:MA)?|VADEL[Iİ].*KAPAT|VADE\s*DONUS|ANAPARA\s*YENILE|MEVDUAT\s*FAIZ\s*TAHAKKUK)\b/i.test(
+      rowDescription(row)
+    )
   ) {
-    if (
-      !String(row.counterAccountCode || row.karsiHesap || "").trim() ||
-      existing === MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI ||
-      /VADELI MEVDUAT HESABI ESLESTIRILMEDI/.test(note)
-    ) {
-      return MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI;
-    }
+    return MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI;
+  }
+
+  if (isFinanceType(transactionType) || /FINANS ISLEM TURU COZULEMEDI/.test(note)) {
+    return MISSING_HESAP_CATEGORY.FINAN_ISLEM;
   }
 
   if (

@@ -633,6 +633,7 @@ function buildBankLucaLine({
     cariRequired: Boolean(movement.cariRequired),
     personelRequired: Boolean(movement.personelRequired),
     missingHesapCategory: movement.missingHesapCategory || "",
+    vadeliLifecycleRole: movement.vadeliLifecycleRole || "",
     matchedMemoryId: movement.matchedMemoryId || null,
   });
 }
@@ -912,6 +913,12 @@ export function stripStandardLucaRow(row) {
     accountSuggestions: row.accountSuggestions || [],
     cariSuggestions: row.cariSuggestions || [],
     missingHesapCategory: row.missingHesapCategory || "",
+    // Preview / reanalysis / hydrate — vadeli-cari divert için korunmalı
+    transactionType: row.transactionType || "",
+    accountingScenario: row.accountingScenario || "",
+    cariRequired: row.cariRequired === true,
+    personelRequired: row.personelRequired === true,
+    vadeliLifecycleRole: row.vadeliLifecycleRole || "",
   };
 }
 

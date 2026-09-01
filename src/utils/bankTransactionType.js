@@ -981,6 +981,18 @@ export function missingCategoryForTransactionType(transactionType = "") {
   if (isKasaType(type)) return "Kasa hesabı 100 eksik";
   if (isVergiSgkType(type)) return "Vergi/SGK türü çözülemedi";
   if (isVirmanType(type)) return "Virman hesabı bulunamadı";
+  if (type === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI) {
+    return "Faiz stopajı hesabı seçilmeli";
+  }
+  if (
+    type === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+    type === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+    type === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+    type === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME ||
+    type === BANK_TRANSACTION_TYPE.FAIZ_GELIRI
+  ) {
+    return "Vadeli mevduat hesabı eşleştirilmedi";
+  }
   if (isFinanceType(type)) return "Finans işlem türü çözülemedi";
   if (isPersonelRequiredForType(type)) return "Personel bulunamadı";
   if (

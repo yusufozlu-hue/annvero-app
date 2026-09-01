@@ -1479,7 +1479,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       accountCode: statementCode,
       counterAccountCode: "",
       cariRequired: false,
-      missingHesapCategory: MISSING_HESAP_CATEGORY.DIGER || "Diğer",
+      missingHesapCategory: MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI,
       warning: [...clearTaxWarnings(bundle.open), reason].join(" | "),
       vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.ACILIS,
     });
@@ -1488,7 +1488,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       accountCode: statementCode,
       counterAccountCode: "",
       cariRequired: false,
-      missingHesapCategory: MISSING_HESAP_CATEGORY.DIGER || "Diğer",
+      missingHesapCategory: MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI,
       warning: [...clearTaxWarnings(bundle.close), reason].join(" | "),
       vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.KAPANIS,
     });
@@ -1504,7 +1504,9 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       cariRequired: false,
       personelRequired: false,
       accountingScenario: "FINANS",
-      missingHesapCategory: faizCode ? "" : MISSING_HESAP_CATEGORY.DIGER || "Diğer",
+      missingHesapCategory: faizCode
+        ? ""
+        : MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI,
       warning: faizWarn.join(" | "),
       vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.FAIZ,
       matchedRule: {
@@ -1556,7 +1558,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
         cariRequired: false,
         personelRequired: false,
         accountingScenario: "FINANS",
-        missingHesapCategory: MISSING_HESAP_CATEGORY.DIGER || "Diğer",
+        missingHesapCategory: MISSING_HESAP_CATEGORY.FAIZ_STOPAJI_HESAP,
         warning: stopajWarn.join(" | "),
         vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.STOPAJ,
         faizStopajiMeta: {

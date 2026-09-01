@@ -85,6 +85,8 @@ export const CARI_RESOLUTION_FILTERS = {
   VIRMAN_CANDIDATES: "virman_candidates",
   CREDIT_CARDS: "credit_cards",
   TAX_OBLIGATIONS: "tax_obligations",
+  VADELI_ACCOUNTS: "vadeli_accounts",
+  FAIZ_STOPAJI: "faiz_stopaji",
 };
 
 /** İlk açılışta peşinen aday üretilecek grup sayısı */
@@ -92,6 +94,57 @@ export const CARI_RESOLUTION_INITIAL_CANDIDATE_GROUPS = 30;
 
 /** Karşı taraf çıkarılamayan / yalnız kendi firma unvanı */
 export const PARTY_UNRESOLVED_LABEL = "Karşı taraf tespit edilemedi";
+
+export const VADELI_ACCOUNT_MISSING_LABEL =
+  MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI;
+export const FAIZ_STOPAJI_MISSING_LABEL =
+  MISSING_HESAP_CATEGORY.FAIZ_STOPAJI_HESAP;
+
+const VADELI_DESC_RE =
+  /\b(HESAP\s*AC[Iİ]L[Iİ]?S|HESAP\s*ACMA|VADEL[Iİ].*ACMA|MEVDUAT\s*ACMA|HESAP\s*KAPAT(?:MA)?|VADEL[Iİ].*KAPAT|MEVDUAT\s*KAPAT|VADE\s*DONUS|ANAPARA\s*YENILE|MEVDUAT\s*FAIZ\s*TAHAKKUK|FAIZ\s*TAHAKKUK)\b/i;
+const STOPAJ_DESC_RE =
+  /\b(STOPAJ|MEVDUAT\s*FAIZ\s*STOPAJ|FAIZ\s*STOPAJ|FAIZ\s*VERGI)\b/i;
+
+/**
+ * Vadeli lifecycle / finans faiz satırı — cari grup ve “Karşı taraf” kovasına girmez.
+ * transactionType / accountingScenario / kategori öncelikli; açıklama yedek.
+ */
+export function isVadeliLifecycleMissingRow(row = {}, context = {}) {
+  if (!isMissingHesapRow(row)) return false;
+  if (isCreditCardMissingRow(row, context)) return false;
+  const type = String(row.transactionType || "");
+  const scenario = String(row.accountingScenario || "");
+  const role = String(row.vadeliLifecycleRole || "");
+  const cat = classifyMissingHesapCategory(row);
+  if (cat === MISSING_HESAP_CATEGORY.FAIZ_STOPAJI_HESAP) return false;
+  if (cat === MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI) return true;
+  if (
+    type === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+    type === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+    type === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+    type === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME ||
+    type === BANK_TRANSACTION_TYPE.FAIZ_GELIRI
+  ) {
+    return true;
+  }
+  if (scenario === "VADELI_LIFECYCLE" || role.startsWith("VADELI_")) return true;
+  if (type === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI) return false;
+  const desc = rowDescription(row);
+  if (STOPAJ_DESC_RE.test(desc)) return false;
+  return VADELI_DESC_RE.test(desc);
+}
+
+/** Faiz stopajı (193) eksik — cari değil */
+export function isFaizStopajiMissingRow(row = {}, context = {}) {
+  if (!isMissingHesapRow(row)) return false;
+  if (isCreditCardMissingRow(row, context)) return false;
+  const type = String(row.transactionType || "");
+  const cat = classifyMissingHesapCategory(row);
+  if (cat === MISSING_HESAP_CATEGORY.FAIZ_STOPAJI_HESAP) return true;
+  if (type === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI) return true;
+  if (String(row.vadeliLifecycleRole || "") === "FAIZ_STOPAJI") return true;
+  return STOPAJ_DESC_RE.test(rowDescription(row));
+}
 
 const STRONG_CARI_AUTO_REASONS = new Set([
   CARI_MATCH_REASON.UNVAN,
@@ -246,7 +299,8 @@ export function isExcludedFromCariResolution(
     cat === MISSING_HESAP_CATEGORY.VIRMAN_HESAP_EKSIK ||
     cat === MISSING_HESAP_CATEGORY.CEK_HESAP_EKSIK ||
     cat === MISSING_HESAP_CATEGORY.KASA_HESAP_EKSIK ||
-    cat === MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI
+    cat === MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI ||
+    cat === MISSING_HESAP_CATEGORY.FAIZ_STOPAJI_HESAP
   ) {
     return true;
   }
@@ -259,7 +313,11 @@ export function isExcludedFromCariResolution(
     type === BANK_TRANSACTION_TYPE.FAIZ_GELIRI ||
     type === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI ||
     String(row.accountingScenario || "") === "VADELI_LIFECYCLE" ||
-    String(row.vadeliLifecycleRole || "").startsWith("VADELI_")
+    String(row.vadeliLifecycleRole || "").startsWith("VADELI_") ||
+    String(row.vadeliLifecycleRole || "") === "FAIZ_STOPAJI" ||
+    String(row.vadeliLifecycleRole || "") === "FAIZ_GELIRI" ||
+    VADELI_DESC_RE.test(rowDescription(row)) ||
+    STOPAJ_DESC_RE.test(rowDescription(row))
   ) {
     return true;
   }
@@ -903,6 +961,8 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
   const virmanCandidates = [];
   const creditCardRows = [];
   const taxObligationRows = [];
+  const vadeliAccountRows = [];
+  const faizStopajiRows = [];
   const groups = new Map();
   let unresolvedCount = 0;
   let totalMissing = 0;
@@ -940,6 +1000,18 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       continue;
     }
 
+    // 2c) Faiz stopajı 193 — cari / karşı taraf kovasına girmez
+    if (isFaizStopajiMissingRow(row, fullContext)) {
+      faizStopajiRows.push(row);
+      continue;
+    }
+
+    // 2d) Vadeli mevduat — cari / karşı taraf kovasına girmez
+    if (isVadeliLifecycleMissingRow(row, fullContext)) {
+      vadeliAccountRows.push(row);
+      continue;
+    }
+
     // 3) Virman adayı — cari aday / 120-320 üretme
     if (virman.bucket === "candidate") {
       const verdict = evaluateOwnAccountVirmanTransfer(row, fullContext);
@@ -957,9 +1029,16 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
       continue;
     }
 
-    // 4) Normal cari grubu — cari olmayan diğer eksikler de sessizce düşmesin
+    // 4) Normal cari grubu — yalnız gerçek cari eksikleri
+    if (isExcludedFromCariResolution(row, fullContext)) {
+      continue;
+    }
     const isCariRow = isCariMissingRow(row, fullContext);
-    if (isCariRow) unresolvedCount += 1;
+    if (!isCariRow) {
+      // Cari olmayan diğer eksikler sessizce cari Map'ine düşmesin
+      continue;
+    }
+    unresolvedCount += 1;
     const direction = resolveLucaRowBankDirection(row, fullContext) || "";
     const desc = rowDescription(row);
     const ownIdentity = buildOwnCompanyIdentity(selectedCompany);
@@ -970,13 +1049,11 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
         ownIdentity,
       }) || "";
     const partyMissingOrOwn =
-      !isCariRow ||
       !extractedParty ||
       isOwnCompanyPartyName(extractedParty, ownIdentity) ||
       isOwnOnlyOrMissingCounterparty(desc, direction, selectedCompany);
 
     if (partyMissingOrOwn) {
-      // Tek generic yığın yok — her hareket ayrı güvenli anahtar
       const movementKey =
         String(row.sourceRowId || row.sourceMovementId || row.id || "").trim() ||
         normalizeBankAnalysisKey(
@@ -984,9 +1061,8 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
           direction
         ) ||
         `party-unresolved|${direction || "NA"}|${groups.size + 1}`;
-      const bucket = isCariRow ? "party-unresolved" : "other-missing";
       pushRowIntoCariGroupMap(groups, row, fullContext, {
-        forceKey: `${bucket}|${direction || "NA"}|${movementKey}`,
+        forceKey: `party-unresolved|${direction || "NA"}|${movementKey}`,
         partyUnresolved: true,
       });
       continue;
@@ -1440,6 +1516,119 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     fullContext
   );
 
+  const planRowsForGl = (() => {
+    ensurePlanCache();
+    return planCache?.planRows || companyPlans || [];
+  })();
+
+  const filterLeafByPrefix = (prefixes = []) =>
+    (planRowsForGl || [])
+      .filter((p) => {
+        if (p?.isActive === false) return false;
+        const code = compactCode(p.code || p.accountCode || "");
+        if (!code || !code.includes(".")) return false;
+        return prefixes.some(
+          (pref) => code === pref || code.startsWith(`${pref}.`) || code.startsWith(pref)
+        );
+      })
+      .slice(0, 40)
+      .map((p) => ({
+        code: compactCode(p.code || p.accountCode || ""),
+        name: String(p.name || p.accountName || "").slice(0, 120),
+        confidence: 0,
+      }));
+
+  const buildLeafMissingGroups = (sourceRows, {
+    idPrefix,
+    label,
+    preferredPrefixes,
+    groupFlag,
+    hint = "",
+  }) => {
+    const map = new Map();
+    for (const row of sourceRows || []) {
+      const type = String(row.transactionType || "UNKNOWN");
+      const dir = resolveLucaRowBankDirection(row, fullContext) || "";
+      const key =
+        String(row.sourceMovementId || row.sourceRowId || row._movementId || row.id || "")
+          .trim() ||
+        normalizeBankAnalysisKey(rowDescription(row), dir) ||
+        `${idPrefix}:${map.size + 1}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          id: `${idPrefix}:${key}`,
+          partyName: label,
+          partyUnresolved: false,
+          samples: [],
+          rowIds: [],
+          rows: [],
+          count: 0,
+          totalAmount: 0,
+          direction: dir,
+          transactionType: type,
+          status: "remaining",
+          [groupFlag]: true,
+          vendorMessage: label,
+          preferredPrefixes,
+          candidates: [],
+          suggestedAccount: "",
+          suggestedName: "",
+          confidence: 0,
+          confidenceLabel: "Hesap seçilmeli",
+          matchReason: "",
+          candidatesReady: true,
+          foreignVendor: false,
+          learnAllowedDefault: false,
+          hideCariSearch: true,
+          selectionHint: hint,
+        });
+      }
+      const g = map.get(key);
+      g.count += 1;
+      g.rowIds.push(row.id);
+      g.rows.push(row);
+      g.totalAmount += rowAmount(row);
+      const sample = rowDescription(row).slice(0, 160);
+      if (sample && g.samples.length < 5) g.samples.push(sample);
+      if (!g.direction && dir) g.direction = dir;
+      if (type && type !== "UNKNOWN") g.transactionType = type;
+    }
+    const candidates = filterLeafByPrefix(preferredPrefixes);
+    return [...map.values()]
+      .map((g) => {
+        const needsVadesiz =
+          g.transactionType === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+          g.transactionType === BANK_TRANSACTION_TYPE.VADELI_KAPANIS;
+        return {
+          ...g,
+          candidates,
+          selectionHint: needsVadesiz
+            ? "Kaynak/hedef vadesiz banka hesabı seçilmeli (102)"
+            : hint || label,
+          vendorMessage: needsVadesiz
+            ? `${label} — kaynak/hedef vadesiz 102 seçilmeli`
+            : label,
+        };
+      })
+      .sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount);
+  };
+
+  const vadeliAccountGroups = buildLeafMissingGroups(vadeliAccountRows, {
+    idPrefix: "vadeli",
+    label: VADELI_ACCOUNT_MISSING_LABEL,
+    preferredPrefixes: ["102"],
+    groupFlag: "vadeliAccountGroup",
+    hint: "Hesap planından yalnız 102 alt hesabı seçilebilir",
+  });
+
+  const faizStopajiGroups = buildLeafMissingGroups(faizStopajiRows, {
+    idPrefix: "faiz-stopaj",
+    label: FAIZ_STOPAJI_MISSING_LABEL,
+    preferredPrefixes: ["193"],
+    groupFlag: "faizStopajiGroup",
+    hint: "Hesap planından yalnız 193 alt hesabı seçilebilir",
+  });
+
   const result = {
     totalMissing,
     cariMissingCount: unresolvedCount,
@@ -1472,11 +1661,21 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     taxObligationMissingCount: taxObligationRows.length,
     taxObligationGroupCount: taxObligationGroups.length,
     taxObligationGroups,
+    vadeliAccountMissingCount: vadeliAccountRows.length,
+    vadeliAccountGroupCount: vadeliAccountGroups.length,
+    vadeliAccountGroups,
+    vadeliAccountMissingLabel: VADELI_ACCOUNT_MISSING_LABEL,
+    faizStopajiMissingCount: faizStopajiRows.length,
+    faizStopajiGroupCount: faizStopajiGroups.length,
+    faizStopajiGroups,
+    faizStopajiMissingLabel: FAIZ_STOPAJI_MISSING_LABEL,
     resolvableGroupCount:
       ranked.length +
       taxObligationGroups.length +
       creditCardGroups.length +
-      virmanCandidateGroups.length,
+      virmanCandidateGroups.length +
+      vadeliAccountGroups.length +
+      faizStopajiGroups.length,
   };
 
   if (collectStats) {
@@ -1544,6 +1743,8 @@ export function listResolvableResolutionGroups(snapshot = {}) {
   pushAll(snapshot.taxObligationGroups);
   pushAll(snapshot.creditCardGroups);
   pushAll(snapshot.virmanCandidateGroups);
+  pushAll(snapshot.vadeliAccountGroups);
+  pushAll(snapshot.faizStopajiGroups);
   return out;
 }
 
@@ -1572,6 +1773,12 @@ export function pickDefaultCariResolutionFilter(
   if ((snapshot.taxObligationGroups || []).length) {
     return CARI_RESOLUTION_FILTERS.TAX_OBLIGATIONS;
   }
+  if ((snapshot.vadeliAccountGroups || []).length) {
+    return CARI_RESOLUTION_FILTERS.VADELI_ACCOUNTS;
+  }
+  if ((snapshot.faizStopajiGroups || []).length) {
+    return CARI_RESOLUTION_FILTERS.FAIZ_STOPAJI;
+  }
   if ((snapshot.creditCardGroups || []).length) {
     return CARI_RESOLUTION_FILTERS.CREDIT_CARDS;
   }
@@ -1597,6 +1804,8 @@ export function selectVisibleResolutionGroups({
   virmanCandidateGroups = [],
   creditCardGroups = [],
   taxObligationGroups = [],
+  vadeliAccountGroups = [],
+  faizStopajiGroups = [],
 } = {}) {
   const snapshot = {
     groups,
@@ -1604,6 +1813,8 @@ export function selectVisibleResolutionGroups({
     virmanCandidateGroups,
     creditCardGroups,
     taxObligationGroups,
+    vadeliAccountGroups,
+    faizStopajiGroups,
   };
 
   if (filter === CARI_RESOLUTION_FILTERS.RESOLVED) {
@@ -1634,6 +1845,20 @@ export function selectVisibleResolutionGroups({
       resolvedIds,
     });
   }
+  if (filter === CARI_RESOLUTION_FILTERS.VADELI_ACCOUNTS) {
+    return filterCariResolutionGroups(vadeliAccountGroups, {
+      filter: CARI_RESOLUTION_FILTERS.ALL,
+      query,
+      resolvedIds,
+    });
+  }
+  if (filter === CARI_RESOLUTION_FILTERS.FAIZ_STOPAJI) {
+    return filterCariResolutionGroups(faizStopajiGroups, {
+      filter: CARI_RESOLUTION_FILTERS.ALL,
+      query,
+      resolvedIds,
+    });
+  }
 
   if (
     filter === CARI_RESOLUTION_FILTERS.ALL ||
@@ -1653,7 +1878,11 @@ export function selectVisibleResolutionGroups({
     resolvedIds,
   }).filter(
     (g) =>
-      !g.virmanCandidate && !g.creditCardGroup && !g.taxObligationGroup
+      !g.virmanCandidate &&
+      !g.creditCardGroup &&
+      !g.taxObligationGroup &&
+      !g.vadeliAccountGroup &&
+      !g.faizStopajiGroup
   );
 }
 
