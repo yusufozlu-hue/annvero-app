@@ -60,6 +60,10 @@ import {
 import { BANK_TRANSACTION_TYPE } from "@/src/utils/bankTransactionType";
 import { buildTaxObligationResolutionGroups } from "@/src/utils/taxObligation/resolutionGroups";
 import { classifyObligationPayment } from "@/src/utils/taxObligation/classify";
+import {
+  buildVadeliOnboardingGroups,
+  formatVadeliOnboardingApplyLabel,
+} from "@/src/utils/vadeliResolutionOnboarding";
 
 export {
   extractIbansFromText,
@@ -1516,118 +1520,28 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     fullContext
   );
 
-  const planRowsForGl = (() => {
-    ensurePlanCache();
-    return planCache?.planRows || companyPlans || [];
-  })();
-
-  const filterLeafByPrefix = (prefixes = []) =>
-    (planRowsForGl || [])
-      .filter((p) => {
-        if (p?.isActive === false) return false;
-        const code = compactCode(p.code || p.accountCode || "");
-        if (!code || !code.includes(".")) return false;
-        return prefixes.some(
-          (pref) => code === pref || code.startsWith(`${pref}.`) || code.startsWith(pref)
-        );
-      })
-      .slice(0, 40)
-      .map((p) => ({
-        code: compactCode(p.code || p.accountCode || ""),
-        name: String(p.name || p.accountName || "").slice(0, 120),
-        confidence: 0,
-      }));
-
-  const buildLeafMissingGroups = (sourceRows, {
-    idPrefix,
-    label,
-    preferredPrefixes,
-    groupFlag,
-    hint = "",
-  }) => {
-    const map = new Map();
-    for (const row of sourceRows || []) {
-      const type = String(row.transactionType || "UNKNOWN");
-      const dir = resolveLucaRowBankDirection(row, fullContext) || "";
-      const key =
-        String(row.sourceMovementId || row.sourceRowId || row._movementId || row.id || "")
-          .trim() ||
-        normalizeBankAnalysisKey(rowDescription(row), dir) ||
-        `${idPrefix}:${map.size + 1}`;
-      if (!map.has(key)) {
-        map.set(key, {
-          id: `${idPrefix}:${key}`,
-          partyName: label,
-          partyUnresolved: false,
-          samples: [],
-          rowIds: [],
-          rows: [],
-          count: 0,
-          totalAmount: 0,
-          direction: dir,
-          transactionType: type,
-          status: "remaining",
-          [groupFlag]: true,
-          vendorMessage: label,
-          preferredPrefixes,
-          candidates: [],
-          suggestedAccount: "",
-          suggestedName: "",
-          confidence: 0,
-          confidenceLabel: "Hesap seçilmeli",
-          matchReason: "",
-          candidatesReady: true,
-          foreignVendor: false,
-          learnAllowedDefault: false,
-          hideCariSearch: true,
-          selectionHint: hint,
-        });
-      }
-      const g = map.get(key);
-      g.count += 1;
-      g.rowIds.push(row.id);
-      g.rows.push(row);
-      g.totalAmount += rowAmount(row);
-      const sample = rowDescription(row).slice(0, 160);
-      if (sample && g.samples.length < 5) g.samples.push(sample);
-      if (!g.direction && dir) g.direction = dir;
-      if (type && type !== "UNKNOWN") g.transactionType = type;
+  const onboarding = buildVadeliOnboardingGroups(
+    [...vadeliAccountRows, ...faizStopajiRows],
+    {
+      ...fullContext,
+      selectedCompany,
+      companyPlans,
+      allRows: rows,
+      selectedBank: context.selectedBank || fullContext.selectedBank || "",
+      statementAccountHint:
+        context.statementAccountHint || fullContext.statementAccountHint || "",
+      sourceFileName: context.sourceFileName || fullContext.sourceFileName || "",
     }
-    const candidates = filterLeafByPrefix(preferredPrefixes);
-    return [...map.values()]
-      .map((g) => {
-        const needsVadesiz =
-          g.transactionType === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
-          g.transactionType === BANK_TRANSACTION_TYPE.VADELI_KAPANIS;
-        return {
-          ...g,
-          candidates,
-          selectionHint: needsVadesiz
-            ? "Kaynak/hedef vadesiz banka hesabı seçilmeli (102)"
-            : hint || label,
-          vendorMessage: needsVadesiz
-            ? `${label} — kaynak/hedef vadesiz 102 seçilmeli`
-            : label,
-        };
-      })
-      .sort((a, b) => b.count - a.count || b.totalAmount - a.totalAmount);
-  };
-
-  const vadeliAccountGroups = buildLeafMissingGroups(vadeliAccountRows, {
-    idPrefix: "vadeli",
-    label: VADELI_ACCOUNT_MISSING_LABEL,
-    preferredPrefixes: ["102"],
-    groupFlag: "vadeliAccountGroup",
-    hint: "Hesap planından yalnız 102 alt hesabı seçilebilir",
-  });
-
-  const faizStopajiGroups = buildLeafMissingGroups(faizStopajiRows, {
-    idPrefix: "faiz-stopaj",
-    label: FAIZ_STOPAJI_MISSING_LABEL,
-    preferredPrefixes: ["193"],
-    groupFlag: "faizStopajiGroup",
-    hint: "Hesap planından yalnız 193 alt hesabı seçilebilir",
-  });
+  );
+  const vadeliAccountGroups = onboarding.vadeliAccountGroups || [];
+  const faizStopajiGroups = onboarding.faizStopajiGroups || [];
+  // Sayaçlar onboarding satırlarına göre (statement bank legs / stopaj counters)
+  const vadeliAccountMissingCount = (
+    onboarding.vadeliAccountRows || vadeliAccountRows
+  ).length;
+  const faizStopajiMissingCount = (
+    onboarding.faizStopajiRows || faizStopajiRows
+  ).length;
 
   const result = {
     totalMissing,
@@ -1661,11 +1575,11 @@ export function buildCariResolutionGroups(rows = [], context = {}, options = {})
     taxObligationMissingCount: taxObligationRows.length,
     taxObligationGroupCount: taxObligationGroups.length,
     taxObligationGroups,
-    vadeliAccountMissingCount: vadeliAccountRows.length,
+    vadeliAccountMissingCount,
     vadeliAccountGroupCount: vadeliAccountGroups.length,
     vadeliAccountGroups,
     vadeliAccountMissingLabel: VADELI_ACCOUNT_MISSING_LABEL,
-    faizStopajiMissingCount: faizStopajiRows.length,
+    faizStopajiMissingCount,
     faizStopajiGroupCount: faizStopajiGroups.length,
     faizStopajiGroups,
     faizStopajiMissingLabel: FAIZ_STOPAJI_MISSING_LABEL,
@@ -2107,7 +2021,14 @@ export function buildCariApplyGroupPayload(group, selectedRowIds = []) {
   };
 }
 
-export function formatCariApplyButtonLabel(selectedCount = 0) {
+export function formatCariApplyButtonLabel(selectedCount = 0, group = null) {
+  if (
+    group?.vadeliOnboardingStep ||
+    group?.vadeliAccountGroup ||
+    group?.faizStopajiGroup
+  ) {
+    return formatVadeliOnboardingApplyLabel(group, selectedCount);
+  }
   const n = Number(selectedCount) || 0;
   if (n <= 0) return "Seçilen Hesabı İşleme Uygula";
   return `Seçilen Hesabı ${n} İşleme Uygula`;

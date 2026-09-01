@@ -18,7 +18,13 @@ import {
   annveroCardClass,
   annveroInputClass,
 } from "@/src/styles/annveroDesign";
-import { getCompanyDisplayName } from "@/src/utils/companies";
+import { getCompanyDisplayName, persistCompaniesToLocalStorage, broadcastCompaniesRefresh } from "@/src/utils/companies";
+import { saveCompanyRecord } from "@/src/utils/companiesApi";
+import { inferStatementAccountHint } from "@/src/utils/bankParserCore";
+import {
+  mergeStatementVadeliBankLearning,
+  VADELI_ONBOARDING_STEP,
+} from "@/src/utils/vadeliResolutionOnboarding";
 import {
   countCompanyRules,
   findCompanyBankAccount,
@@ -701,6 +707,7 @@ export default function BankParserWorkbench() {
     isLoading: isLoadingCompanies,
     companies: workspaceCompanies = [],
     setSelectedCompanyId,
+    refreshCompanies,
   } = useCompanyList();
 
   const selectedCompany = useMemo(
@@ -1980,6 +1987,18 @@ export default function BankParserWorkbench() {
         selectedBank,
         selectedCompany,
         obligationAccruals: loadObligationAccruals(),
+        statementAccountHint: inferStatementAccountHint({
+          sourceFileName:
+            fileName ||
+            selectedFile?.name ||
+            canonicalFileNameRef.current ||
+            "",
+        }),
+        sourceFileName:
+          fileName ||
+          selectedFile?.name ||
+          canonicalFileNameRef.current ||
+          "",
       },
       { initialCandidateGroups }
     );
@@ -2122,7 +2141,11 @@ export default function BankParserWorkbench() {
     }
     const code = String(accountCode || "").trim();
     if (!group?.seedRow || !code) return;
-    if (!isAccountAllowedForDirection(code, group.direction)) {
+    const isVadeliOnboarding = Boolean(group.vadeliOnboardingStep);
+    if (
+      !isVadeliOnboarding &&
+      !isAccountAllowedForDirection(code, group.direction)
+    ) {
       showToast(
         "Bu hesap, grubun yönü (gelen/giden) için uygun değil.",
         "error"
@@ -2174,6 +2197,90 @@ export default function BankParserWorkbench() {
       lucaRef.current = applyResult.lucaRows;
       if (applyResult.warning) {
         showToast(applyResult.warning, "error");
+      }
+
+      // Vadeli statement→102: firma banka kartına kalıcı bağ (sonraki ekstreler otomatik)
+      let companyBankNote = "";
+      if (
+        learn &&
+        group.vadeliOnboardingStep === VADELI_ONBOARDING_STEP.STATEMENT_102 &&
+        selectedCompany &&
+        selectedCompanyId
+      ) {
+        const digits = String(
+          group.statementAccountDigits ||
+            inferStatementAccountHint({
+              sourceFileName:
+                fileName ||
+                selectedFile?.name ||
+                canonicalFileNameRef.current ||
+                "",
+            }) ||
+            ""
+        ).replace(/\D/g, "");
+        const merged = mergeStatementVadeliBankLearning(selectedCompany, {
+          bankName: selectedBank || group.statementBankName || "",
+          accountNumber: digits,
+          lucaAccountCode: code,
+          currency: "TL",
+        });
+        if (merged.changed && merged.company) {
+          try {
+            await saveCompanyRecord({
+              id: selectedCompanyId,
+              company_name:
+                getCompanyDisplayName(merged.company) ||
+                merged.company.companyName ||
+                "",
+              data: merged.company,
+            });
+            const updatedList = (workspaceCompanies || []).map((c) =>
+              String(c.id) === String(selectedCompanyId) ? merged.company : c
+            );
+            if (updatedList.length) {
+              persistCompaniesToLocalStorage(updatedList);
+              broadcastCompaniesRefresh();
+            }
+            if (typeof refreshCompanies === "function") {
+              await refreshCompanies({ force: true }).catch(() => {});
+            }
+            companyBankNote = " · vadeli hesap firma kartına kaydedildi";
+          } catch (err) {
+            companyBankNote = ` · firma kartı kaydı başarısız${
+              err?.message ? ` (${err.message})` : ""
+            }`;
+          }
+        } else if (merged.reason === "already_linked") {
+          companyBankNote = " · vadeli hesap zaten kayıtlı";
+        }
+      }
+
+      // Statement banka bacağı: hareket accountCode güncelle (lifecycle sonraki adım)
+      if (group.vadeliOnboardingStep === VADELI_ONBOARDING_STEP.STATEMENT_102) {
+        const sourceIds = new Set();
+        for (const r of group.rows || []) {
+          const sid =
+            r.sourceMovementId ||
+            r._movementId ||
+            r.learnSeed?.sourceMovementId ||
+            "";
+          if (sid) sourceIds.add(String(sid));
+        }
+        for (const id of group.rowIds || []) {
+          const row = (lucaRef.current || []).find((r) => r.id === id);
+          const sid = row?.sourceMovementId || row?._movementId || "";
+          if (sid) sourceIds.add(String(sid));
+        }
+        movementsRef.current = (movementsRef.current || []).map((m) => {
+          const mid = String(m.id || "");
+          const srid = String(m.sourceRowId || "");
+          if (!sourceIds.has(mid) && !sourceIds.has(srid)) return m;
+          return {
+            ...m,
+            accountCode: code,
+            missingHesapCategory: "",
+          };
+        });
       }
 
       // Belgeye özel karar — server revision (canonical hareketler dokunulmaz)
@@ -2317,7 +2424,7 @@ export default function BankParserWorkbench() {
         },
       });
       setLastCariApplyMessage(
-        `${applyResult.updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${persistNote}${memNote}. Yeniden analiz ${reanalyze.durationMs} ms.`
+        `${applyResult.updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${persistNote}${memNote}${companyBankNote}. Yeniden analiz ${reanalyze.durationMs} ms.`
       );
       setCariResolutionSnapshot(snapshot);
       if (learn && applyResult.learnPersistFailed) {

@@ -901,6 +901,7 @@ export function stripStandardLucaRow(row) {
     detayAciklama: row.detayAciklama,
     borc: row.borc,
     alacak: row.alacak,
+    direction: row.direction || "",
     riskDurumu: row.riskDurumu,
     kontrolNotu: row.kontrolNotu,
     hafizaEslesme: row.hafizaEslesme,
