@@ -514,7 +514,7 @@ await test("compatible completed reuse stays pipeline=0 persist=0", () => {
   assert.equal(bound.balanceMatched, true);
 });
 
-await test("wiring: workbench gates hydrate arm; one-click shows archive title", () => {
+await test("wiring: workbench clean-open; hydrate helpers + one-click archive", () => {
   const workbench = fs.readFileSync(
     path.join(
       root,
@@ -533,15 +533,14 @@ await test("wiring: workbench gates hydrate arm; one-click shows archive title",
     path.join(root, "src/utils/canonicalHydrateReuse.js"),
     "utf8"
   );
-  assert.match(workbench, /decideCanonicalHydrateReanalyze/);
+  // Product rule: Banka Parser her girişte temiz — auto UI hydrate yok
+  assert.match(workbench, /her girişte temiz|auto-hydrate kapalı/);
+  assert.doesNotMatch(workbench, /void hydrateCanonicalSnapshot\(\)/);
+  assert.match(workbench, /loadAuditHistoryOnly/);
+  assert.match(workbench, /fileInputKey/);
+  // Manual reanalyze / archive paths still gated
   assert.match(workbench, /shouldSkipHydratePipeline/);
-  assert.match(workbench, /buildCanonicalHydrateBoundResult/);
-  assert.match(workbench, /canonicalBalanceEvidence:\s*canonicalBalanceEvidenceRef\.current/);
-  assert.match(workbench, /materializedLucaRowCount/);
   assert.match(workbench, /buildLucaRowsFromMovementsAsync/);
-  assert.match(workbench, /movementsHaveArchiveAccountingLegs/);
-  assert.match(workbench, /evaluateArchiveLucaHandoffReadiness/);
-  assert.match(workbench, /LEGACY_ARCHIVE_NEEDS_PREPARE/);
   assert.match(workbench, /handlePrepareLegacyArchiveAndGoToFisKontrol/);
   assert.match(workbench, /markHydrateReanalyzeConsumed/);
   assert.match(reuse, /lucaReadyHint/);

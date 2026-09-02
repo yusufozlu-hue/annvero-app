@@ -145,8 +145,13 @@ test("onboarding: unmatched statement → tek STATEMENT kartı, stopaj ayrı, va
   assert.match(statement.statementBankName || "", /Vakıf/i);
   assert.equal(
     statement.onboardingQuestion,
-    "Bu vadeli mevduat hesabı hangi 102 alt hesabıdır?"
+    "VakıfBank TL vadeli mevduat işlemleri hangi 102 hesabında izleniyor?"
   );
+  assert.match(
+    statement.learnLabel || "",
+    /tüm VakıfBank TL vadeli hesaplarında kullan/
+  );
+  assert.equal(statement.mappingScopeDefault, "BANK_PRODUCT_CURRENCY");
   assert.ok(
     (statement.candidates || []).every((c) => String(c.code).startsWith("102."))
   );
@@ -246,19 +251,24 @@ test("onboarding: statement dolu → açılış+kapanış tek VADESIZ kartı", (
   );
 });
 
-test("mergeStatementVadeliBankLearning kalıcı bağ yazar; kod uydurmaz", () => {
+test("mergeStatementVadeliBankLearning BANK_PRODUCT_CURRENCY yazar; kod uydurmaz", () => {
   const { company, changed } = mergeStatementVadeliBankLearning(COMPANY, {
     bankName: "VAKIFBANK",
     accountNumber: "00158018033973987",
     lucaAccountCode: "102.10.V099",
   });
   assert.equal(changed, true);
-  const bank = (company.bankAccounts || []).find(
-    (b) => String(b.lucaAccountCode) === "102.10.V099"
+  const mapping = (company.bankProductMappings || []).find(
+    (m) => String(m.lucaAccountCode) === "102.10.V099"
   );
-  assert.ok(bank);
-  assert.equal(String(bank.accountType).toUpperCase(), "VADELI");
-  assert.equal(maskBankAccountNumber(bank.accountNumber), "…3987");
+  assert.ok(mapping);
+  assert.equal(mapping.scope, "BANK_PRODUCT_CURRENCY");
+  assert.equal(String(mapping.accountType).toUpperCase(), "VADELI");
+  assert.equal(normalizeCurrencyLike(mapping.currency), "TL");
+  assert.ok(
+    (mapping.aliases || []).some((a) => String(a).endsWith("3987")),
+    "alias korunur"
+  );
 
   const bad = mergeStatementVadeliBankLearning(COMPANY, {
     bankName: "VAKIFBANK",
@@ -267,6 +277,12 @@ test("mergeStatementVadeliBankLearning kalıcı bağ yazar; kod uydurmaz", () =>
   });
   assert.equal(bad.changed, false);
 });
+
+function normalizeCurrencyLike(value = "TL") {
+  const raw = String(value || "TL").trim().toUpperCase();
+  if (!raw || raw === "TRY") return "TL";
+  return raw;
+}
 
 test("applyLeg: statement yalnız banka bacağına, stopaj yalnız karşıya", () => {
   const bankRow = {

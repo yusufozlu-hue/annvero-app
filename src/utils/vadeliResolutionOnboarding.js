@@ -9,8 +9,13 @@ import {
   bankNamesCompatible,
   listCompanyBankAccounts,
   resolve102RoleFromAccountPlan,
-  resolveStatementBankAccount,
 } from "@/src/utils/vadeliMevduatLifecycle";
+import {
+  BANK_ACCOUNT_MAPPING_SCOPE,
+  mergeBankProductCurrencyLearning,
+  mergeExactVadeliAccountLearning,
+  resolveStatementAccountMapping,
+} from "@/src/utils/bankProductAccountMapping";
 import { normalizeParserText } from "@/src/utils/textNormalize";
 import { inferStatementAccountHint } from "@/src/utils/bankParserCore";
 
@@ -308,7 +313,7 @@ export function buildVadeliOnboardingGroups(missingRows = [], context = {}) {
   const statementMasked = maskBankAccountNumber(statementDigits);
   const bankLabel = displayBankLabel(bankName);
 
-  const statementProbe = resolveStatementBankAccount({
+  const statementProbe = resolveStatementAccountMapping({
     company,
     accountNumber: statementDigits,
     bankName,
@@ -413,16 +418,17 @@ export function buildVadeliOnboardingGroups(missingRows = [], context = {}) {
       statementBankName: bankLabel,
       statementAccountMasked: statementMasked,
       statementAccountDigits: statementDigits,
-      onboardingQuestion:
-        "Bu vadeli mevduat hesabı hangi 102 alt hesabıdır?",
+      statementCurrency: context.currency || "TL",
+      mappingScopeDefault: BANK_ACCOUNT_MAPPING_SCOPE.BANK_PRODUCT_CURRENCY,
+      onboardingQuestion: `${bankLabel} TL vadeli mevduat işlemleri hangi 102 hesabında izleniyor?`,
       selectionHint:
-        "Muhasebe bacağı: ekstre (vadeli) banka hesabı — 102 alt hesap",
+        "Muhasebe bacağı: ortak vadeli 102 (banka/ürün/PB). Bankadaki hesap numarası alias olarak saklanır; planda yeni alt hesap açılmaz.",
       applyButtonTemplate: "vadeli_statement",
       vendorMessage: MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI,
       createAccountHref: "/muhasebe/firma-yonetimi?tab=banks",
       createAccountLabel:
         "Uygun hesap yok — firma kartında vadeli 102 tanımla",
-      learnLabel: "Bu firma için kaydet (hesap no → 102)",
+      learnLabel: `Bu firmanın tüm ${bankLabel} TL vadeli hesaplarında kullan`,
     });
   }
 
@@ -582,7 +588,9 @@ export function formatVadeliOnboardingApplyLabel(group = {}, selectedCount = 0) 
 }
 
 /**
- * Firma bankAccounts içine statement hesap no → 102 (VADELI) yazar.
+ * Firma bankProductMappings / exact bankAccounts kaydı.
+ * Varsayılan: BANK_PRODUCT_CURRENCY (tüm VakıfBank TL vadeli → ortak 102).
+ * Exact istisna için scope=EXACT_ACCOUNT verin.
  * Otomatik kod uydurmaz — yalnız kullanıcı seçimini kaydeder.
  */
 export function mergeStatementVadeliBankLearning(
@@ -592,73 +600,24 @@ export function mergeStatementVadeliBankLearning(
     accountNumber = "",
     lucaAccountCode = "",
     currency = "TL",
+    scope = BANK_ACCOUNT_MAPPING_SCOPE.BANK_PRODUCT_CURRENCY,
   } = {}
 ) {
-  if (!company || typeof company !== "object") {
-    return { company, changed: false, reason: "no_company" };
+  if (scope === BANK_ACCOUNT_MAPPING_SCOPE.EXACT_ACCOUNT) {
+    return mergeExactVadeliAccountLearning(company, {
+      bankName,
+      accountNumber,
+      lucaAccountCode,
+      currency,
+    });
   }
-  const code = compactCode(lucaAccountCode);
-  const dig = digitsOnly(accountNumber);
-  if (!isLeaf102(code)) {
-    return { company, changed: false, reason: "invalid_102" };
-  }
-  if (dig.length < 8) {
-    return { company, changed: false, reason: "invalid_account_number" };
-  }
-
-  const banks = [...listCompanyBankAccounts(company)];
-  const idx = banks.findIndex((b) => {
-    const bd = digitsOnly(b.accountNumber || b.hesapNo || "");
-    return (
-      bd &&
-      (bd === dig || bd.endsWith(dig) || dig.endsWith(bd))
-    );
+  return mergeBankProductCurrencyLearning(company, {
+    bankName,
+    accountType: "VADELI",
+    currency,
+    lucaAccountCode,
+    aliasAccountNumber: accountNumber,
   });
-
-  let nextBanks;
-  if (idx >= 0) {
-    const prev = banks[idx];
-    const next = {
-      ...prev,
-      accountNumber: dig,
-      hesapNo: dig,
-      lucaAccountCode: code,
-      accountCode: code,
-      accountType: "VADELI",
-      bankName: prev.bankName || bankName || "VAKIFBANK",
-      currency: prev.currency || currency,
-      isActive: prev.isActive !== false,
-    };
-    if (
-      compactCode(prev.lucaAccountCode || prev.accountCode) === code &&
-      String(prev.accountType || "").toUpperCase() === "VADELI"
-    ) {
-      return { company, changed: false, reason: "already_linked" };
-    }
-    nextBanks = banks.map((b, i) => (i === idx ? next : b));
-  } else {
-    nextBanks = [
-      ...banks,
-      {
-        id: `bank-vadeli-${dig.slice(-8)}`,
-        bankName: bankName || "VAKIFBANK",
-        accountName: `Vadeli ${maskBankAccountNumber(dig)}`,
-        accountNumber: dig,
-        hesapNo: dig,
-        lucaAccountCode: code,
-        accountCode: code,
-        accountType: "VADELI",
-        currency,
-        isActive: true,
-      },
-    ];
-  }
-
-  return {
-    company: { ...company, bankAccounts: nextBanks, banks: nextBanks },
-    changed: true,
-    reason: idx >= 0 ? "updated" : "created",
-  };
 }
 
 /**

@@ -33,6 +33,7 @@ export const emptyCompany = {
   },
 
   bankAccounts: [],
+  bankProductMappings: [],
   creditCards: [],
   cashAccounts: [],
   posMerchantAccounts: [],
@@ -204,6 +205,7 @@ export function normalizeCompany(c) {
         currency: account.currency || "TL",
         accountType: account.accountType || "VADESIZ",
         lucaAccountCode: account.lucaAccountCode || "",
+        mappingScope: account.mappingScope || "",
         isPosAccount: account.isPosAccount ?? false,
         isActive: account.isActive ?? true,
       }))
@@ -214,6 +216,25 @@ export function normalizeCompany(c) {
           { sensitivity: "base" }
         )
       ),
+
+    bankProductMappings: Array.isArray(source.bankProductMappings)
+      ? source.bankProductMappings
+          .filter((m) => m && typeof m === "object")
+          .map((m) => ({
+            id: m.id || newId(),
+            scope: m.scope || "BANK_PRODUCT_CURRENCY",
+            bankName: m.bankName || "",
+            accountType: m.accountType || "VADELI",
+            currency: m.currency || "TL",
+            lucaAccountCode: m.lucaAccountCode || m.accountCode || "",
+            accountCode: m.accountCode || m.lucaAccountCode || "",
+            aliases: Array.isArray(m.aliases)
+              ? m.aliases.map((a) => String(a || "").replace(/\D/g, "")).filter(Boolean)
+              : [],
+            createdAt: m.createdAt || "",
+            updatedAt: m.updatedAt || "",
+          }))
+      : [],
 
     creditCards: (source.creditCards || []).map((card) => ({
       id: card.id || newId(),

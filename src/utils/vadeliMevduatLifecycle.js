@@ -14,6 +14,10 @@ import {
   matchesVadeliLifecycleAmounts,
   matchesFaizStopajRate,
 } from "@/src/utils/faizStopajiClassify";
+import {
+  BANK_ACCOUNT_MAPPING_SCOPE,
+  resolveStatementAccountMapping,
+} from "@/src/utils/bankProductAccountMapping";
 
 export const VADELI_LIFECYCLE_ROLE = Object.freeze({
   ACILIS: "VADELI_ACILIS",
@@ -153,9 +157,16 @@ export function getBankAccountType(bank = null) {
   return normalizeAccountType(bank?.accountType);
 }
 
+export { BANK_ACCOUNT_MAPPING_SCOPE };
+
 /**
  * Statement hesabını banka adı .find() ile değil; hesap no / IBAN / banka /
  * PB / accountType ile bağla. Birden fazla eşit aday → ambiguous.
+ *
+ * Öncelik:
+ * 1) EXACT_ACCOUNT (hesap no / IBAN)
+ * 2) BANK_PRODUCT_CURRENCY (firma + banka + ürün + PB)
+ * 3) kullanıcı seçimi (çağıran taraf)
  */
 export function resolveStatementBankAccount({
   company = null,
@@ -166,6 +177,39 @@ export function resolveStatementBankAccount({
   accountType = "",
   lucaHint = "",
 } = {}) {
+  const mapped = resolveStatementAccountMapping({
+    company,
+    accountNumber,
+    iban,
+    bankName,
+    currency,
+    accountType,
+  });
+  if (mapped.ok) {
+    return {
+      ok: true,
+      ambiguous: false,
+      bank: mapped.bank || {
+        bankName: mapped.bankName || bankName,
+        accountType: mapped.accountType || accountType || "VADELI",
+        lucaAccountCode: mapped.code,
+        accountCode: mapped.code,
+        currency: mapped.currency || currency,
+        accountNumber: accountNumber || "",
+        mappingScope: mapped.scope,
+      },
+      code: mapped.code,
+      accountType: mapped.accountType || accountType,
+      score: mapped.scope === BANK_ACCOUNT_MAPPING_SCOPE.EXACT_ACCOUNT ? 100 : 80,
+      reasons:
+        mapped.scope === BANK_ACCOUNT_MAPPING_SCOPE.EXACT_ACCOUNT
+          ? ["exact_account"]
+          : ["bank_product_currency"],
+      mappingScope: mapped.scope,
+    };
+  }
+
+  // Exact skor yolu (lucaHint / partial) — ürün kuralı yokken
   const banks = listCompanyBankAccounts(company);
   const wantDigits = digitsOnly(accountNumber);
   const wantIban = normalizeIban(iban);
@@ -230,7 +274,13 @@ export function resolveStatementBankAccount({
 
   scored.sort((a, b) => b.score - a.score);
   if (!scored.length) {
-    return { ok: false, ambiguous: false, bank: null, code: "", reason: "no_match" };
+    return {
+      ok: false,
+      ambiguous: Boolean(mapped.ambiguous),
+      bank: null,
+      code: "",
+      reason: mapped.reason || "no_match",
+    };
   }
   const best = scored[0];
   const ties = scored.filter((s) => s.score === best.score);
@@ -244,7 +294,6 @@ export function resolveStatementBankAccount({
       reason: "ambiguous_statement_account",
     };
   }
-  // Güçlü bağ: IBAN veya hesap no veya (banka+tür+hint)
   const strong =
     best.reasons.includes("iban") ||
     best.reasons.includes("account_number") ||
@@ -268,6 +317,7 @@ export function resolveStatementBankAccount({
     accountType: best.accountType,
     score: best.score,
     reasons: best.reasons,
+    mappingScope: BANK_ACCOUNT_MAPPING_SCOPE.EXACT_ACCOUNT,
   };
 }
 

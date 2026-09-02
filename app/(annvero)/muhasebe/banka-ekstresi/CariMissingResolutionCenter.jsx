@@ -898,7 +898,7 @@ function GroupCard({
             {isGlLeafCard && learnNext && learnEnabled ? (
               <p className="text-[11px] text-slate-500">
                 {hydratedGroup.vadeliOnboardingStep === "STATEMENT_102"
-                  ? "Sonraki ekstrelerde aynı hesap numarası otomatik 102’ye bağlanır."
+                  ? "Bu firmanın tüm VakıfBank TL vadeli hesapları aynı 102’ye bağlanır; hesap numaraları alias olarak saklanır."
                   : hydratedGroup.vadeliOnboardingStep === "FAIZ_STOPAJI_193"
                     ? `${selectedApplyCount} stopaj hareketine uygulanır; firma hafızasına yazılır.`
                     : "Seçim uygulandıktan sonra isteğe bağlı öğrenilir."}
