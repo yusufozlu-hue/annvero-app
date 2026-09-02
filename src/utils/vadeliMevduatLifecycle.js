@@ -18,6 +18,10 @@ import {
   BANK_ACCOUNT_MAPPING_SCOPE,
   resolveStatementAccountMapping,
 } from "@/src/utils/bankProductAccountMapping";
+import {
+  resolveAccountingDecision,
+  mapCentralDecisionToStatementResolve,
+} from "@/src/utils/centralAccountingDecisionResolver";
 
 export const VADELI_LIFECYCLE_ROLE = Object.freeze({
   ACILIS: "VADELI_ACILIS",
@@ -160,23 +164,110 @@ export function getBankAccountType(bank = null) {
 export { BANK_ACCOUNT_MAPPING_SCOPE };
 
 /**
- * Statement hesabını banka adı .find() ile değil; hesap no / IBAN / banka /
- * PB / accountType ile bağla. Birden fazla eşit aday → ambiguous.
- *
- * Öncelik:
- * 1) EXACT_ACCOUNT (hesap no / IBAN)
- * 2) BANK_PRODUCT_CURRENCY (firma + banka + ürün + PB)
- * 3) kullanıcı seçimi (çağıran taraf)
+ * Legacy mapping-only yolu (shadow / regresyon karşılaştırması).
  */
-export function resolveStatementBankAccount({
+export function resolveStatementBankAccountLegacyMapping({
   company = null,
   accountNumber = "",
   iban = "",
   bankName = "",
   currency = "TL",
   accountType = "",
-  lucaHint = "",
 } = {}) {
+  return resolveStatementAccountMapping({
+    company,
+    accountNumber,
+    iban,
+    bankName,
+    currency,
+    accountType,
+  });
+}
+
+/**
+ * Statement hesabını banka adı .find() ile değil; hesap no / IBAN / banka /
+ * PB / accountType ile bağla. Birden fazla eşit aday → ambiguous.
+ *
+ * Öncelik (merkezi resolver — Faz 1):
+ * A) belge override  B) EXACT  C) BANK_PRODUCT_CURRENCY  D) USER_LEARNED  E) SYSTEM
+ * Ardından legacy skor fallback (ürün kuralı yokken).
+ */
+export function resolveStatementBankAccount({
+  company = null,
+  companyId = "",
+  accountNumber = "",
+  iban = "",
+  bankName = "",
+  currency = "TL",
+  accountType = "",
+  lucaHint = "",
+  accountPlan = null,
+  learningMemory = null,
+  documentResolutions = null,
+  sourceDocumentId = "",
+  sourceMovementId = "",
+  systemCandidates = null,
+  direction = "",
+  transactionType = "",
+  description = "",
+} = {}) {
+  const centralDecision = resolveAccountingDecision({
+    company,
+    companyId: companyId || company?.id,
+    accountPlan,
+    bankName,
+    accountNumber,
+    iban,
+    productType: accountType,
+    currency,
+    description,
+    direction,
+    transactionType,
+    sourceDocumentId,
+    sourceMovementId,
+    documentResolutions,
+    learningMemory,
+    systemCandidates,
+    lucaLeg: "bank",
+  });
+  const centralMapped = mapCentralDecisionToStatementResolve(
+    centralDecision,
+    "no_match"
+  );
+  if (centralMapped.ok) {
+    return {
+      ok: true,
+      ambiguous: false,
+      bank: {
+        bankName: bankName || "",
+        accountType: accountType || "VADELI",
+        lucaAccountCode: centralMapped.code,
+        accountCode: centralMapped.code,
+        currency,
+        accountNumber: accountNumber || "",
+        mappingScope: centralMapped.mappingScope,
+      },
+      code: centralMapped.code,
+      accountType: accountType || "VADELI",
+      score: centralMapped.score,
+      reasons: centralMapped.reasons || ["central_resolver"],
+      mappingScope: centralMapped.mappingScope,
+      centralSource: centralMapped.centralSource,
+      centralScopeKey: centralMapped.centralScopeKey,
+    };
+  }
+  if (centralMapped.ambiguous) {
+    return {
+      ok: false,
+      ambiguous: true,
+      bank: null,
+      code: "",
+      reason: centralMapped.reason || centralDecision.reason || "review_required",
+      centralSource: centralMapped.centralSource,
+      centralScopeKey: centralMapped.centralScopeKey,
+    };
+  }
+
   const mapped = resolveStatementAccountMapping({
     company,
     accountNumber,
