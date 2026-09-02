@@ -330,14 +330,26 @@ test("shouldStartMissingApplyReanalyzeJob guards", () => {
       companyMappingChanged: true,
       alreadyRunning: false,
       companyId: "c1",
+      remainingMissingCount: 3,
     }),
     true
   );
   assert.equal(
     shouldStartMissingApplyReanalyzeJob({
       companyMappingChanged: true,
+      alreadyRunning: false,
+      companyId: "c1",
+      remainingMissingCount: 0,
+    }),
+    false,
+    "eksik 0 iken full reanalyze / Son kontroller yarışı başlatılmaz"
+  );
+  assert.equal(
+    shouldStartMissingApplyReanalyzeJob({
+      companyMappingChanged: true,
       alreadyRunning: true,
       companyId: "c1",
+      remainingMissingCount: 3,
     }),
     false
   );
@@ -346,6 +358,7 @@ test("shouldStartMissingApplyReanalyzeJob guards", () => {
       companyMappingChanged: false,
       alreadyRunning: false,
       companyId: "c1",
+      remainingMissingCount: 3,
     }),
     false
   );
