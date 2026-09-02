@@ -75,9 +75,14 @@ import {
 } from "@/src/utils/missingAccountsReanalyze";
 import {
   mergePipelineResultAfterMissingApply,
+  buildFinalPipelineResultAfterMissingApply,
   shouldAcceptMissingApplyParentSync,
   shouldStartMissingApplyReanalyzeJob,
+  shouldSkipCloseParentPatch,
+  shouldPersistLegacyCariMemoryForGroup,
+  buildMissingApplyUserMessage,
   resolveMissingApplyReanalyzeBusyFeedback,
+  shouldRestoreLastGoodMissingApplyResult,
 } from "@/src/utils/missingAccountApplyParentSync";
 import { classifyFisKontrolFindings } from "@/src/utils/fisKontrolFindingClasses";
 import {
@@ -686,6 +691,8 @@ export default function BankParserWorkbench() {
   const missingApplyGenerationRef = useRef(0);
   const lastMissingApplyPatchRef = useRef(null);
   const lastMissingApplyCompareRef = useRef(null);
+  const lastGoodMissingApplyResultRef = useRef(null);
+  const missingApplyOwnerActiveRef = useRef(false);
   const showCariResolutionCenterRef = useRef(false);
   const manualDetailsRef = useRef(null);
 
@@ -1294,6 +1301,7 @@ export default function BankParserWorkbench() {
     pipelinePatch,
     revisionCompare = null,
     applyGeneration = 0,
+    finalizeReady = false,
   } = {}) => {
     if (
       !shouldAcceptMissingApplyParentSync({
@@ -1301,7 +1309,7 @@ export default function BankParserWorkbench() {
         activeGeneration: missingApplyGenerationRef.current,
       })
     ) {
-      return;
+      return null;
     }
     const patch = pipelinePatch || {};
     lastMissingApplyPatchRef.current = patch;
@@ -1322,15 +1330,35 @@ export default function BankParserWorkbench() {
           }
         : prev
     );
-    setPipelineResult((prev) =>
-      mergePipelineResultAfterMissingApply(prev, {
+    const build = finalizeReady
+      ? buildFinalPipelineResultAfterMissingApply
+      : mergePipelineResultAfterMissingApply;
+    let nextResult = null;
+    setPipelineResult((prev) => {
+      nextResult = build(prev, {
         pipelinePatch: patch,
         lucaRowCount: (lucaRef.current || []).length,
+        movementCount: (movementsRef.current || []).length,
         revisionCompare:
           revisionCompare || lastMissingApplyCompareRef.current,
         applyGeneration,
-      })
-    );
+      });
+      lastGoodMissingApplyResultRef.current = nextResult;
+      return nextResult;
+    });
+    if (finalizeReady && Number(patch.missingCount || 0) === 0) {
+      setPipelineError(null);
+      setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+      setPipelineMode("idle");
+      setPipelineProgress({
+        percent: 100,
+        label: "İşlem ve kontrol tamamlandı.",
+        detail: "Eksik hesap çözümü uygulandı.",
+        processed: (movementsRef.current || []).length,
+        total: (movementsRef.current || []).length,
+      });
+    }
+    return nextResult;
   };
 
   // Snapshot hydrate: single-flight — Strict Mode / manuel tıklama ikinci job açmaz
@@ -1889,7 +1917,19 @@ export default function BankParserWorkbench() {
     setShowCariResolutionCenter(false);
     setCariResolutionLoading(false);
     setCariResolutionError("");
-    // Modal kapanınca ana kart eski snapshot sayaçlarında kalmasın
+
+    // Canlı missing_apply / pipeline varken hibrit patch uygulama —
+    // tamamlanınca atomik sonuç gelir; yarım Son kontroller hatası üretme.
+    if (
+      shouldSkipCloseParentPatch({
+        pipelineRunning,
+        isReanalyzing,
+        missingApplyOwnerActive: missingApplyOwnerActiveRef.current,
+      })
+    ) {
+      return;
+    }
+
     const report = analyzeMissingHesapRows(lucaRef.current || []);
     setMissingHesapReport(report);
     const patch =
@@ -1919,15 +1959,12 @@ export default function BankParserWorkbench() {
       }),
     };
     lastMissingApplyPatchRef.current = mergedPatch;
-    setPipelineResult((prev) =>
-      mergePipelineResultAfterMissingApply(prev, {
-        pipelinePatch: mergedPatch,
-        lucaRowCount: (lucaRef.current || []).length,
-        revisionCompare: lastMissingApplyCompareRef.current,
-        applyGeneration: missingApplyGenerationRef.current,
-      })
-    );
-    // resolvedCariGroupIds korunur
+    syncParentAfterMissingApply({
+      pipelinePatch: mergedPatch,
+      revisionCompare: lastMissingApplyCompareRef.current,
+      applyGeneration: missingApplyGenerationRef.current || 1,
+      finalizeReady: Number(report.missingCount || 0) === 0,
+    });
   };
 
   const handleReviewMissingAccounts = () => {
@@ -2020,11 +2057,17 @@ export default function BankParserWorkbench() {
         lucaRef.current || [],
         group.rowIds || []
       );
+      const isBankProductCurrencyLearn =
+        group.vadeliOnboardingStep === VADELI_ONBOARDING_STEP.STATEMENT_102 &&
+        (group.mappingScopeDefault === "BANK_PRODUCT_CURRENCY" ||
+          !group.mappingScopeDefault);
+      const persistLegacyLearn =
+        Boolean(learn) && shouldPersistLegacyCariMemoryForGroup(group);
       const applyResult = await runCariResolutionGroupApply({
         lucaRows: lucaRef.current || [],
         group,
         accountCode: code,
-        learn: Boolean(learn),
+        learn: persistLegacyLearn,
         selectedCompanyId,
         selectedBank,
         resolveMemoryLearnContext,
@@ -2042,7 +2085,9 @@ export default function BankParserWorkbench() {
       }
 
       // Vadeli statement→102: firma banka kartına kalıcı bağ (sonraki ekstreler otomatik)
-      let companyBankNote = "";
+      let productMappingSaved = false;
+      let productMappingFailed = false;
+      let productMappingAlready = false;
       if (
         learn &&
         group.vadeliOnboardingStep === VADELI_ONBOARDING_STEP.STATEMENT_102 &&
@@ -2089,15 +2134,12 @@ export default function BankParserWorkbench() {
             if (typeof refreshCompanies === "function") {
               await refreshCompanies({ force: true }).catch(() => {});
             }
-            companyBankNote =
-              " · VakıfBank TL vadeli ortak 102 firma kuralına kaydedildi";
-          } catch (err) {
-            companyBankNote = ` · firma kartı kaydı başarısız${
-              err?.message ? ` (${err.message})` : ""
-            }`;
+            productMappingSaved = true;
+          } catch {
+            productMappingFailed = true;
           }
         } else if (merged.reason === "already_linked") {
-          companyBankNote = " · vadeli ürün kuralı zaten kayıtlı";
+          productMappingAlready = true;
         }
       }
 
@@ -2215,13 +2257,17 @@ export default function BankParserWorkbench() {
           trulyNotFoundCount: countTrulyNotFoundFromGroups(snapshot.groups || []),
         })
       );
+      const remainingMissing = Number(report.missingCount || 0);
       syncParentAfterMissingApply({
         pipelinePatch: {
           ...reanalyze.pipelinePatch,
           lucaRowCount: (lucaRef.current || []).length,
+          movementCount: (movementsRef.current || []).length,
         },
         revisionCompare: compare,
         applyGeneration,
+        // Eksik 0 → atomik READY; full pipeline Son kontroller yarışını başlatma
+        finalizeReady: remainingMissing === 0,
       });
       setLastCariApplyCompare({
         ...compare,
@@ -2260,32 +2306,44 @@ export default function BankParserWorkbench() {
           },
         ];
       });
-      const memNote =
-        learn && applyResult.learned
-          ? " · firma hafızası kaydedildi"
-          : learn && applyResult.learnPersistFailed
-            ? " · firma hafızası kaydı başarısız"
-            : reanalyze.memoryApplied
-              ? ` · hafızadan +${reanalyze.memoryApplied} satır`
-              : learn
-                ? " · firma hafızası yazılmadı"
-                : "";
-      setLastCariApplyMessage(
-        `${applyResult.updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${persistNote}${memNote}${companyBankNote}. Yeniden analiz ${reanalyze.durationMs} ms.`
-      );
+      const userMsg = buildMissingApplyUserMessage({
+        updatedCount: applyResult.updated || group.count,
+        accountCode: code,
+        beforeMissing: applyResult.beforeMissing,
+        afterMissing: report.missingCount,
+        isBankProductCurrency: isBankProductCurrencyLearn,
+        productMappingSaved,
+        productMappingFailed,
+        productMappingAlready,
+        documentPersistOk: persistNote.includes("kaydedildi"),
+        legacyLearnFailed:
+          !isBankProductCurrencyLearn &&
+          Boolean(learn && applyResult.learnPersistFailed),
+      });
+      setLastCariApplyMessage(userMsg.message);
       setCariResolutionSnapshot(snapshot);
       if (
         shouldStartMissingApplyReanalyzeJob({
-          companyMappingChanged: companyBankNote.includes("kaydedildi"),
+          companyMappingChanged: productMappingSaved,
           alreadyRunning: Boolean(isReanalyzing || reactPipelineBusy),
           companyId: selectedCompanyId,
+          remainingMissingCount: remainingMissing,
         })
       ) {
-        void handleReanalyzeWithNewPlanRef.current?.({
-          reason: "missing_apply",
+        missingApplyOwnerActiveRef.current = true;
+        void Promise.resolve(
+          handleReanalyzeWithNewPlanRef.current?.({
+            reason: "missing_apply",
+          })
+        ).finally(() => {
+          missingApplyOwnerActiveRef.current = false;
         });
       }
-      if (learn && applyResult.learnPersistFailed) {
+      if (
+        !isBankProductCurrencyLearn &&
+        learn &&
+        applyResult.learnPersistFailed
+      ) {
         const reason =
           applyResult.learnSaveTrace?.immediateReadBack?.rejectReason ||
           "save_or_readback_failed";
@@ -2293,26 +2351,10 @@ export default function BankParserWorkbench() {
           `Belge kararı uygulandı; firma hafızası kaydedilemedi (${reason}).`,
           "error"
         );
-      } else if (persistNote.includes("kaydedildi") && learn && applyResult.learned) {
-        showToast(
-          `Belge kararı kaydedildi. Firma hafızası kaydedildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}.`,
-          "success"
-        );
-      } else if (persistNote.includes("kaydedildi")) {
-        showToast(
-          `Belge kararı kaydedildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${memNote}.`,
-          "success"
-        );
-      } else if (learn && applyResult.learned) {
-        showToast(
-          `Firma hafızası kaydedildi${persistNote}. Eksik ${applyResult.beforeMissing} → ${report.missingCount}.`,
-          "success"
-        );
+      } else if (userMsg.tone === "warning") {
+        showToast(userMsg.message, "warning");
       } else {
-        showToast(
-          `Eksik ${applyResult.beforeMissing} → ${report.missingCount}${persistNote}${memNote}`,
-          "success"
-        );
+        showToast(userMsg.message, "success");
       }
     } finally {
       setApplyingCariGroupId(null);
@@ -7031,6 +7073,17 @@ export default function BankParserWorkbench() {
           fromCanonicalSnapshot: hasSnapshot && !sourceFile,
           planFingerprint: planFp,
         });
+        // Full pipeline ERROR basmış olabilir (throw etmeden) — missing_apply için geri al
+        if (
+          reason === "missing_apply" &&
+          pipelinePhaseRef.current === PIPELINE_PHASES.ERROR &&
+          lastGoodMissingApplyResultRef.current
+        ) {
+          setPipelineResult(lastGoodMissingApplyResultRef.current);
+          setPipelineError(null);
+          setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+          setPipelineMode("idle");
+        }
         if (canonicalSourceIdRef.current) {
           try {
             const fp =
@@ -7070,6 +7123,22 @@ export default function BankParserWorkbench() {
               : prev
           );
           failed = false;
+        } else if (
+          shouldRestoreLastGoodMissingApplyResult({
+            reason,
+            hasLastGood: Boolean(lastGoodMissingApplyResultRef.current),
+          })
+        ) {
+          // missing_apply Son kontroller yarışı: hata kartı yerine son iyi apply sonucu
+          setPipelineResult(lastGoodMissingApplyResultRef.current);
+          setPipelineError(null);
+          setPipelinePhaseSafe(PIPELINE_PHASES.READY_FOR_EXPORT);
+          setPipelineMode("idle");
+          failed = false;
+          showToast(
+            "Eksik hesap çözümü korundu; yeniden analiz atlandı.",
+            "info"
+          );
         } else {
           showToast(
             error?.message || "Yeniden analiz tamamlanamadı.",
@@ -7091,6 +7160,7 @@ export default function BankParserWorkbench() {
           reanalyzeOptionsRef.current = null;
         }
       } finally {
+        missingApplyOwnerActiveRef.current = false;
         if (failed) {
           failReanalyzeFlight(flightKey, { failed: true });
         } else {
