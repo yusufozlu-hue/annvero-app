@@ -69,9 +69,16 @@ import {
 import { runCariResolutionGroupApply } from "@/src/utils/cariResolutionGroupApply";
 import {
   reanalyzeAfterMissingAccountApply,
+  buildPipelinePatchFromReanalyze,
   snapshotLucaRowsForUndo,
   restoreLucaRowsFromUndoSnapshot,
 } from "@/src/utils/missingAccountsReanalyze";
+import {
+  mergePipelineResultAfterMissingApply,
+  shouldAcceptMissingApplyParentSync,
+  shouldStartMissingApplyReanalyzeJob,
+  resolveMissingApplyReanalyzeBusyFeedback,
+} from "@/src/utils/missingAccountApplyParentSync";
 import { classifyFisKontrolFindings } from "@/src/utils/fisKontrolFindingClasses";
 import {
   recordCariStageFinalMissing,
@@ -146,6 +153,7 @@ import {
   consumeCanonicalHydrateReanalyze,
   markHydrateReanalyzeConsumed,
   shouldFollowExistingJobOnConflict,
+  healStaleReanalyzeFlights,
 } from "@/src/utils/bankReanalyzeClick";
 import {
   shouldSkipHydratePipeline,
@@ -675,6 +683,9 @@ export default function BankParserWorkbench() {
   const companyManualConfirmedRef = useRef(null);
   const cariResolutionCancelRef = useRef(null);
   const cariResolutionGenerationRef = useRef(0);
+  const missingApplyGenerationRef = useRef(0);
+  const lastMissingApplyPatchRef = useRef(null);
+  const lastMissingApplyCompareRef = useRef(null);
   const showCariResolutionCenterRef = useRef(false);
   const manualDetailsRef = useRef(null);
 
@@ -1268,15 +1279,59 @@ export default function BankParserWorkbench() {
     setStandardLucaRows(filtered.slice(start, start + PREVIEW_PAGE_SIZE));
   };
 
-  const isJobBusy =
+  const reactPipelineBusy =
     isParsing ||
     isAnalyzing ||
     isPreparingLuca ||
     isApplyingCoreAll ||
     isExporting ||
     isEnginePreparing ||
-    pipelineRunning ||
-    shouldBlockNewBankJob(bankJobStateRef.current);
+    pipelineRunning;
+  const isJobBusy =
+    reactPipelineBusy || shouldBlockNewBankJob(bankJobStateRef.current);
+
+  const syncParentAfterMissingApply = ({
+    pipelinePatch,
+    revisionCompare = null,
+    applyGeneration = 0,
+  } = {}) => {
+    if (
+      !shouldAcceptMissingApplyParentSync({
+        applyGeneration,
+        activeGeneration: missingApplyGenerationRef.current,
+      })
+    ) {
+      return;
+    }
+    const patch = pipelinePatch || {};
+    lastMissingApplyPatchRef.current = patch;
+    if (revisionCompare) lastMissingApplyCompareRef.current = revisionCompare;
+    setMissingHesapReport((prev) =>
+      patch.missingCount != null
+        ? {
+            ...(prev || {}),
+            missingCount: patch.missingCount,
+            missingLucaRowCount:
+              patch.missingLucaRowCount ?? patch.missingCount,
+            uniqueUnresolvedMovements: patch.uniqueUnresolvedMovements,
+            uniqueMatchedMovements: patch.uniqueMatchedMovements,
+            readyCount:
+              patch.autoMatchedCount ??
+              prev?.readyCount ??
+              0,
+          }
+        : prev
+    );
+    setPipelineResult((prev) =>
+      mergePipelineResultAfterMissingApply(prev, {
+        pipelinePatch: patch,
+        lucaRowCount: (lucaRef.current || []).length,
+        revisionCompare:
+          revisionCompare || lastMissingApplyCompareRef.current,
+        applyGeneration,
+      })
+    );
+  };
 
   // Snapshot hydrate: single-flight — Strict Mode / manuel tıklama ikinci job açmaz
   useEffect(() => {
@@ -1834,6 +1889,44 @@ export default function BankParserWorkbench() {
     setShowCariResolutionCenter(false);
     setCariResolutionLoading(false);
     setCariResolutionError("");
+    // Modal kapanınca ana kart eski snapshot sayaçlarında kalmasın
+    const report = analyzeMissingHesapRows(lucaRef.current || []);
+    setMissingHesapReport(report);
+    const patch =
+      lastMissingApplyPatchRef.current ||
+      buildPipelinePatchFromReanalyze({
+        missingReport: report,
+        fisKontrol: {
+          passed: pipelineResult?.passed,
+          warnings: pipelineResult?.warnings,
+          errors: pipelineResult?.errors,
+        },
+      });
+    const mergedPatch = {
+      ...patch,
+      missingCount: report.missingCount,
+      missingLucaRowCount: report.missingLucaRowCount ?? report.missingCount,
+      uniqueUnresolvedMovements: report.uniqueUnresolvedMovements,
+      uniqueMatchedMovements: report.uniqueMatchedMovements,
+      autoMatchedCount: deriveAutoMatchedMovements(report.readyCount, {
+        uniqueMatchedMovements: report.uniqueMatchedMovements,
+      }),
+      unresolvedMovementCount: deriveUnresolvedMovements(report.missingCount, {
+        uniqueUnresolvedMovements: report.uniqueUnresolvedMovements,
+      }),
+      unrecognizedCount: deriveUnresolvedMovements(report.missingCount, {
+        uniqueUnresolvedMovements: report.uniqueUnresolvedMovements,
+      }),
+    };
+    lastMissingApplyPatchRef.current = mergedPatch;
+    setPipelineResult((prev) =>
+      mergePipelineResultAfterMissingApply(prev, {
+        pipelinePatch: mergedPatch,
+        lucaRowCount: (lucaRef.current || []).length,
+        revisionCompare: lastMissingApplyCompareRef.current,
+        applyGeneration: missingApplyGenerationRef.current,
+      })
+    );
     // resolvedCariGroupIds korunur
   };
 
@@ -2114,15 +2207,31 @@ export default function BankParserWorkbench() {
 
       syncLucaPage(lucaPage);
       const { report, snapshot } = rebuildCariResolutionSnapshot();
-      setPipelineResult((prev) =>
-        prev
-          ? {
-              ...prev,
-              ...reanalyze.pipelinePatch,
-              lucaRowCount: (lucaRef.current || []).length,
-            }
-          : prev
+      const applyGeneration = ++missingApplyGenerationRef.current;
+      const compare = buildRevisionCompareView(
+        deriveRevisionCounters({
+          previous: previousCounters,
+          next: reanalyze.pipelinePatch,
+          trulyNotFoundCount: countTrulyNotFoundFromGroups(snapshot.groups || []),
+        })
       );
+      syncParentAfterMissingApply({
+        pipelinePatch: {
+          ...reanalyze.pipelinePatch,
+          lucaRowCount: (lucaRef.current || []).length,
+        },
+        revisionCompare: compare,
+        applyGeneration,
+      });
+      setLastCariApplyCompare({
+        ...compare,
+        fisKontrol: {
+          errors: reanalyze.pipelinePatch?.errors ?? 0,
+          warnings: reanalyze.pipelinePatch?.warnings ?? 0,
+          passed: reanalyze.pipelinePatch?.passed ?? 0,
+        },
+      });
+      lastMissingApplyCompareRef.current = compare;
       setCariApplyUndoStack((prev) => [
         ...prev,
         {
@@ -2161,25 +2270,21 @@ export default function BankParserWorkbench() {
               : learn
                 ? " · firma hafızası yazılmadı"
                 : "";
-      const compare = buildRevisionCompareView(
-        deriveRevisionCounters({
-          previous: previousCounters,
-          next: reanalyze.pipelinePatch,
-          trulyNotFoundCount: countTrulyNotFoundFromGroups(snapshot.groups || []),
-        })
-      );
-      setLastCariApplyCompare({
-        ...compare,
-        fisKontrol: {
-          errors: reanalyze.pipelinePatch?.errors ?? 0,
-          warnings: reanalyze.pipelinePatch?.warnings ?? 0,
-          passed: reanalyze.pipelinePatch?.passed ?? 0,
-        },
-      });
       setLastCariApplyMessage(
         `${applyResult.updated || group.count} işlem ${code} hesabıyla eşleştirildi. Eksik ${applyResult.beforeMissing} → ${report.missingCount}${persistNote}${memNote}${companyBankNote}. Yeniden analiz ${reanalyze.durationMs} ms.`
       );
       setCariResolutionSnapshot(snapshot);
+      if (
+        shouldStartMissingApplyReanalyzeJob({
+          companyMappingChanged: companyBankNote.includes("kaydedildi"),
+          alreadyRunning: Boolean(isReanalyzing || reactPipelineBusy),
+          companyId: selectedCompanyId,
+        })
+      ) {
+        void handleReanalyzeWithNewPlanRef.current?.({
+          reason: "missing_apply",
+        });
+      }
       if (learn && applyResult.learnPersistFailed) {
         const reason =
           applyResult.learnSaveTrace?.immediateReadBack?.rejectReason ||
@@ -2345,15 +2450,22 @@ export default function BankParserWorkbench() {
 
       syncLucaPage(lucaPage);
       const { report, snapshot } = rebuildCariResolutionSnapshot();
-      setPipelineResult((prev) =>
-        prev
-          ? {
-              ...prev,
-              ...reanalyze.pipelinePatch,
-              lucaRowCount: (lucaRef.current || []).length,
-            }
-          : prev
+      const applyGeneration = ++missingApplyGenerationRef.current;
+      const compare = buildRevisionCompareView(
+        deriveRevisionCounters({
+          previous: previousCounters,
+          next: reanalyze.pipelinePatch,
+          trulyNotFoundCount: countTrulyNotFoundFromGroups(snapshot.groups || []),
+        })
       );
+      syncParentAfterMissingApply({
+        pipelinePatch: {
+          ...reanalyze.pipelinePatch,
+          lucaRowCount: (lucaRef.current || []).length,
+        },
+        revisionCompare: compare,
+        applyGeneration,
+      });
       setCariApplyUndoStack((prev) => [
         ...prev,
         {
@@ -2384,13 +2496,6 @@ export default function BankParserWorkbench() {
         ];
       });
       setCariResolutionSnapshot(snapshot);
-      const compare = buildRevisionCompareView(
-        deriveRevisionCounters({
-          previous: previousCounters,
-          next: reanalyze.pipelinePatch,
-          trulyNotFoundCount: countTrulyNotFoundFromGroups(snapshot.groups || []),
-        })
-      );
       setLastCariApplyCompare({
         ...compare,
         fisKontrol: {
@@ -2399,6 +2504,7 @@ export default function BankParserWorkbench() {
           passed: reanalyze.pipelinePatch?.passed ?? 0,
         },
       });
+      lastMissingApplyCompareRef.current = compare;
       setLastCariApplyMessage(
         `Toplu: ${groups.length} grup · ${totalUpdated} satır → ${code}. Eksik kalan: ${report.missingCount}. Yeniden analiz ${reanalyze.durationMs} ms.`
       );
@@ -4677,8 +4783,24 @@ export default function BankParserWorkbench() {
     planFingerprint = "",
   } = {}) => {
     const isReanalyzeRun = Boolean(reanalyze);
-    if (isJobBusy) {
-      showToast("Başka bir işlem sürüyor.", "error");
+    // Stale bankJob / flight kilidi: canlı iş yoksa temizle
+    healStaleReanalyzeFlights({
+      companyId: selectedCompanyId,
+      activeFlightKey: activeReanalyzeFlightKeyRef.current,
+    });
+    if (
+      shouldBlockNewBankJob(bankJobStateRef.current) &&
+      !pipelineRunning &&
+      !reactPipelineBusy
+    ) {
+      bankJobStateRef.current = createInitialBankJobState();
+    }
+    if (reactPipelineBusy || pipelineRunning) {
+      if (isReanalyzeRun) {
+        showToast("Yeniden analiz tamamlanıyor", "info");
+      } else {
+        showToast("Başka bir işlem sürüyor.", "error");
+      }
       return;
     }
     if (!ensureAccountMemoryReadyForProcess()) return;
@@ -6664,11 +6786,18 @@ export default function BankParserWorkbench() {
     const claim = claimReanalyzeClick({
       lockRef: reanalyzeClickLockRef,
       isReanalyzing,
-      isJobBusy,
+      isJobBusy: reactPipelineBusy,
       pipelineRunning,
       setIsReanalyzing,
       flightKey,
       owner: reason,
+      companyId: selectedCompanyId,
+      activeFlightKey: activeReanalyzeFlightKeyRef.current,
+      bankJobBlocking: shouldBlockNewBankJob(bankJobStateRef.current),
+      reactJobBusy: reactPipelineBusy,
+      resetBankJobState: () => {
+        bankJobStateRef.current = createInitialBankJobState();
+      },
     });
     if (!claim.ok) {
       if (claim.reason === "join_in_flight" && claim.flight?.promise) {
@@ -6683,19 +6812,20 @@ export default function BankParserWorkbench() {
         }
         return;
       }
+      const feedback = resolveMissingApplyReanalyzeBusyFeedback({
+        reason,
+        claimReason: claim.reason,
+        isLiveBusy: Boolean(claim.isLiveBusy),
+      });
+      if (feedback.level && feedback.message) {
+        showToast(feedback.message, feedback.level);
+      }
       if (claim.reason === "job_busy") {
         releaseReanalyzeClick({
           lockRef: reanalyzeClickLockRef,
           setIsReanalyzing,
           clearOverrides,
         });
-        if (reason === "manual") {
-          showToast(REANALYZE_CLICK_BUSY_TOAST, "error");
-        }
-        return;
-      }
-      if (claim.reason === "in_flight") {
-        return;
       }
       return;
     }
@@ -7709,9 +7839,16 @@ export default function BankParserWorkbench() {
           <div>
             <button
               type="button"
-              onClick={() => void runFullBankPipeline()}
+              onClick={() => {
+                if (isReanalyzing || reactPipelineBusy) {
+                  showToast("Yeniden analiz tamamlanıyor", "info");
+                  return;
+                }
+                void runFullBankPipeline();
+              }}
               disabled={
                 isJobBusy ||
+                isReanalyzing ||
                 !accountMemoryReady ||
                 isLoadingCompanies ||
                 !selectedCompanyId ||
@@ -7724,7 +7861,9 @@ export default function BankParserWorkbench() {
               }
               className={`w-full max-w-xl rounded-xl px-7 py-3.5 text-base font-semibold disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto ${annveroBtnPrimary}`}
             >
-              {isEnginePreparing
+              {isReanalyzing
+                ? "Yeniden analiz ediliyor…"
+                : isEnginePreparing
                 ? "Hazırlanıyor…"
                 : !accountMemoryReady || isLoadingCompanies
                   ? "Hafıza yükleniyor…"
