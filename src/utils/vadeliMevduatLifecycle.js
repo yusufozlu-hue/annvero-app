@@ -1,8 +1,10 @@
 /**
- * Vadeli mevduat yaşam döngüsü (açılış → faiz → stopaj → kapanış).
+ * Vadeli mevduat yaşam döngüsü (açılış → faiz → stopaj → kapanış /
+ * vade dönüşü / anapara yenileme).
  *
- * Kural: Vadeli hesaplar arasında virman olmaz. Açılış/kapanış karşı hesabı
- * aynı firma + aynı bankanın VADESIZ 102 yaprak hesabı olmalıdır.
+ * Kural: Vadeli hesaplar arasında virman olmaz (otomatik / aday / reclass yok).
+ * Açılış/kapanış karşı hesabı aynı firma + aynı bankanın VADESIZ 102 yaprağıdır.
+ * accountingScenario: VADELI_LIFECYCLE (asla BANKA_ICI_VIRMAN değil).
  */
 
 import { BANK_TRANSACTION_TYPE } from "@/src/utils/bankTransactionType";
@@ -12,27 +14,46 @@ import {
   matchesVadeliLifecycleAmounts,
   matchesFaizStopajRate,
 } from "@/src/utils/faizStopajiClassify";
+import {
+  BANK_ACCOUNT_MAPPING_SCOPE,
+  resolveStatementAccountMapping,
+} from "@/src/utils/bankProductAccountMapping";
 
 export const VADELI_LIFECYCLE_ROLE = Object.freeze({
   ACILIS: "VADELI_ACILIS",
   KAPANIS: "VADELI_KAPANIS",
   FAIZ: "FAIZ_GELIRI",
   STOPAJ: "FAIZ_STOPAJI",
+  VADE_DONUSU: "VADELI_VADE_DONUSU",
+  ANAPARA_YENILEME: "VADELI_ANAPARA_YENILEME",
 });
+
+/** Açılış/kapanış/vade/yenileme satırları — BANKA_ICI_VIRMAN değil. */
+export const VADELI_LIFECYCLE_SCENARIO = "VADELI_LIFECYCLE";
 
 /**
  * Lifecycle algoritma sürümü — idempotency / pipelineVersion bileşeni.
  * Kod değişince bump: eski tamamlanmış 2/2 job yeni analiz yerine kullanılmaz.
  */
-export const VADELI_LIFECYCLE_ALGORITHM_VERSION = "vl/2.1.0";
+export const VADELI_LIFECYCLE_ALGORITHM_VERSION = "vl/2.3.0";
 
 export const LIFECYCLE_OPEN_RE =
   /\b(HESAP\s*ACMA|VADEL[Iİ].*ACMA|MEVDUAT\s*ACMA|ACILIS)/i;
 export const LIFECYCLE_CLOSE_RE =
   /\b(HESAP\s*KAPAT|VADEL[Iİ].*KAPAT|MEVDUAT\s*KAPAT|KAPANIS)/i;
+export const LIFECYCLE_ROLLOVER_RE =
+  /\b(VADE\s*DONUS|VADE\s*D[OÖ]N[UÜ][SŞ]|ROLLOVER|YENIDEN\s*VADEL|YEN[Iİ]DEN\s*VADEL)/i;
+export const LIFECYCLE_RENEWAL_RE =
+  /\b(ANAPARA\s*YENILE|MEVDUAT\s*YENILE|YENILEME|RENEWAL|PRINCIPAL\s*RENEW)/i;
 
 const FAIZ_DESC_RE =
   /\b(FAIZ\s*GELIR|FAIZ\s*TAHAKKUK|FAIZ\s*TAHSIL|MEVDUAT\s*FAIZ|VADE\s*FAIZ|VADEL[Iİ]\s*FAIZ)/i;
+
+const STOPAJ_DESC_RE =
+  /\b(STOPAJ|MEVDUAT\s*FAIZ\s*STOPAJ|FAIZ\s*STOPAJ|FAIZ\s*VERGI)\b/i;
+
+/** Kullanıcıya gösterilen eksik vadeli hesap mesajı / kategorisi */
+export const VADELI_ACCOUNT_UNMATCHED_LABEL = "Vadeli mevduat hesabı eşleştirilmedi";
 
 const AMOUNT_TOL = 1.0;
 
@@ -136,9 +157,16 @@ export function getBankAccountType(bank = null) {
   return normalizeAccountType(bank?.accountType);
 }
 
+export { BANK_ACCOUNT_MAPPING_SCOPE };
+
 /**
  * Statement hesabını banka adı .find() ile değil; hesap no / IBAN / banka /
  * PB / accountType ile bağla. Birden fazla eşit aday → ambiguous.
+ *
+ * Öncelik:
+ * 1) EXACT_ACCOUNT (hesap no / IBAN)
+ * 2) BANK_PRODUCT_CURRENCY (firma + banka + ürün + PB)
+ * 3) kullanıcı seçimi (çağıran taraf)
  */
 export function resolveStatementBankAccount({
   company = null,
@@ -149,6 +177,39 @@ export function resolveStatementBankAccount({
   accountType = "",
   lucaHint = "",
 } = {}) {
+  const mapped = resolveStatementAccountMapping({
+    company,
+    accountNumber,
+    iban,
+    bankName,
+    currency,
+    accountType,
+  });
+  if (mapped.ok) {
+    return {
+      ok: true,
+      ambiguous: false,
+      bank: mapped.bank || {
+        bankName: mapped.bankName || bankName,
+        accountType: mapped.accountType || accountType || "VADELI",
+        lucaAccountCode: mapped.code,
+        accountCode: mapped.code,
+        currency: mapped.currency || currency,
+        accountNumber: accountNumber || "",
+        mappingScope: mapped.scope,
+      },
+      code: mapped.code,
+      accountType: mapped.accountType || accountType,
+      score: mapped.scope === BANK_ACCOUNT_MAPPING_SCOPE.EXACT_ACCOUNT ? 100 : 80,
+      reasons:
+        mapped.scope === BANK_ACCOUNT_MAPPING_SCOPE.EXACT_ACCOUNT
+          ? ["exact_account"]
+          : ["bank_product_currency"],
+      mappingScope: mapped.scope,
+    };
+  }
+
+  // Exact skor yolu (lucaHint / partial) — ürün kuralı yokken
   const banks = listCompanyBankAccounts(company);
   const wantDigits = digitsOnly(accountNumber);
   const wantIban = normalizeIban(iban);
@@ -213,7 +274,13 @@ export function resolveStatementBankAccount({
 
   scored.sort((a, b) => b.score - a.score);
   if (!scored.length) {
-    return { ok: false, ambiguous: false, bank: null, code: "", reason: "no_match" };
+    return {
+      ok: false,
+      ambiguous: Boolean(mapped.ambiguous),
+      bank: null,
+      code: "",
+      reason: mapped.reason || "no_match",
+    };
   }
   const best = scored[0];
   const ties = scored.filter((s) => s.score === best.score);
@@ -227,7 +294,6 @@ export function resolveStatementBankAccount({
       reason: "ambiguous_statement_account",
     };
   }
-  // Güçlü bağ: IBAN veya hesap no veya (banka+tür+hint)
   const strong =
     best.reasons.includes("iban") ||
     best.reasons.includes("account_number") ||
@@ -251,6 +317,7 @@ export function resolveStatementBankAccount({
     accountType: best.accountType,
     score: best.score,
     reasons: best.reasons,
+    mappingScope: BANK_ACCOUNT_MAPPING_SCOPE.EXACT_ACCOUNT,
   };
 }
 
@@ -325,6 +392,86 @@ export function isVadeliToVadeliTransfer(sourceBank = null, targetBank = null) {
   );
 }
 
+/** Virman yalnız açık VADESIZ↔VADESIZ 102 çiftinde. */
+export function isVadesizToVadesizTransfer(sourceBank = null, targetBank = null) {
+  if (!sourceBank || !targetBank) return false;
+  return (
+    getBankAccountType(sourceBank) === "VADESIZ" &&
+    getBankAccountType(targetBank) === "VADESIZ"
+  );
+}
+
+/**
+ * VADELİ↔VADELİ sınıflandırma — açıklama tek başına yetmez.
+ * Hesap niteliği + yön + (mümkünse) tutar/bundle sinyali gerekir.
+ * @returns {{ role: string, confidence: "high"|"review", reasons: string[] } | null}
+ */
+export function classifyVadeliToVadeliMovement({
+  sourceBank = null,
+  targetBank = null,
+  description = "",
+  direction = "",
+  amount = 0,
+  relatedMovements = [],
+} = {}) {
+  if (!isVadeliToVadeliTransfer(sourceBank, targetBank)) return null;
+
+  const desc = normalizeParserText(description);
+  const dir = String(direction || "").toUpperCase();
+  const amt = Math.abs(Number(amount) || 0);
+  const reasons = ["vadeli_to_vadeli_accounts"];
+
+  const rolloverHint = LIFECYCLE_ROLLOVER_RE.test(desc);
+  const renewalHint = LIFECYCLE_RENEWAL_RE.test(desc);
+  if (rolloverHint) reasons.push("desc_rollover");
+  if (renewalHint) reasons.push("desc_renewal");
+
+  // Karşı hareket: aynı tutar, ters yön, diğer vadeli — bundle sinyali
+  const peers = Array.isArray(relatedMovements) ? relatedMovements : [];
+  const mirror = peers.find((m) => {
+    if (!m || m === sourceBank) return false;
+    const peerAmt = Math.abs(Number(m.amount ?? m.tutar ?? 0) || 0);
+    if (amt < AMOUNT_TOL || Math.abs(peerAmt - amt) > AMOUNT_TOL) return false;
+    const peerDir = String(m.direction || m.yon || "").toUpperCase();
+    const opposite =
+      (dir === "GIRIS" || dir === "GELEN") &&
+      (peerDir === "CIKIS" || peerDir === "GIDEN" || peerDir === "BORC")
+        ? true
+        : (dir === "CIKIS" || dir === "GIDEN" || dir === "BORC") &&
+          (peerDir === "GIRIS" || peerDir === "GELEN");
+    return opposite;
+  });
+  if (mirror) reasons.push("mirror_amount_opposite_direction");
+
+  const accountEvidence = Boolean(sourceBank && targetBank);
+  const strong =
+    accountEvidence &&
+    Boolean(mirror) &&
+    (rolloverHint || renewalHint);
+
+  if (strong && renewalHint && !rolloverHint) {
+    return {
+      role: VADELI_LIFECYCLE_ROLE.ANAPARA_YENILEME,
+      confidence: "high",
+      reasons,
+    };
+  }
+  if (strong && rolloverHint) {
+    return {
+      role: VADELI_LIFECYCLE_ROLE.VADE_DONUSU,
+      confidence: "high",
+      reasons,
+    };
+  }
+
+  // Açıklama tek başına veya zayıf sinyal → inceleme (virman değil)
+  return {
+    role: "",
+    confidence: "review",
+    reasons: [...reasons, "insufficient_lifecycle_evidence"],
+  };
+}
+
 export function findBankByLucaCode(company = null, lucaCode = "") {
   const code = compactCode(lucaCode);
   if (!code) return null;
@@ -336,7 +483,120 @@ export function findBankByLucaCode(company = null, lucaCode = "") {
 }
 
 /**
- * Statement içindeki 4’lü yaşam döngüsü demetini bul.
+ * Keyword gate — bundle doğrulanmasa bile açılış/kapanış/faiz/stopaj tipini işaretle.
+ * Hesap atamaz; cari/virman yanlış sınıflamasını önler.
+ */
+export function applyVadeliKeywordGate(movements = []) {
+  const list = Array.isArray(movements) ? movements : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const row = list[i];
+    if (!row) continue;
+    const desc = rowDesc(row);
+    const dir = rowDirection(row);
+    const existing = String(row.transactionType || "");
+
+    if (dir === "GIRIS" && LIFECYCLE_OPEN_RE.test(desc)) {
+      if (
+        !existing ||
+        existing === "BILINMEYEN" ||
+        existing === BANK_TRANSACTION_TYPE.GELEN_HAVALE ||
+        existing === "BANKA_ICI_VIRMAN"
+      ) {
+        list[i] = {
+          ...row,
+          transactionType: BANK_TRANSACTION_TYPE.VADELI_ACILIS,
+          cariRequired: false,
+          personelRequired: false,
+          virmanCandidate: false,
+          accountingScenario: VADELI_LIFECYCLE_SCENARIO,
+          vadeliLifecycleRole:
+            row.vadeliLifecycleRole || VADELI_LIFECYCLE_ROLE.ACILIS,
+          vadeliKeywordGate: true,
+        };
+      }
+      continue;
+    }
+    if (dir === "CIKIS" && LIFECYCLE_CLOSE_RE.test(desc)) {
+      if (
+        !existing ||
+        existing === "BILINMEYEN" ||
+        existing === BANK_TRANSACTION_TYPE.GIDEN_HAVALE ||
+        existing === "BANKA_ICI_VIRMAN"
+      ) {
+        list[i] = {
+          ...row,
+          transactionType: BANK_TRANSACTION_TYPE.VADELI_KAPANIS,
+          cariRequired: false,
+          personelRequired: false,
+          virmanCandidate: false,
+          accountingScenario: VADELI_LIFECYCLE_SCENARIO,
+          vadeliLifecycleRole:
+            row.vadeliLifecycleRole || VADELI_LIFECYCLE_ROLE.KAPANIS,
+          vadeliKeywordGate: true,
+        };
+      }
+      continue;
+    }
+    if (
+      dir === "GIRIS" &&
+      FAIZ_DESC_RE.test(desc) &&
+      existing !== BANK_TRANSACTION_TYPE.FAIZ_GELIRI
+    ) {
+      list[i] = {
+        ...row,
+        transactionType: BANK_TRANSACTION_TYPE.FAIZ_GELIRI,
+        cariRequired: false,
+        personelRequired: false,
+        virmanCandidate: false,
+        vadeliLifecycleRole: row.vadeliLifecycleRole || VADELI_LIFECYCLE_ROLE.FAIZ,
+        vadeliKeywordGate: true,
+      };
+      continue;
+    }
+    if (
+      dir === "CIKIS" &&
+      (STOPAJ_DESC_RE.test(desc) ||
+        String(row.transactionType || "") === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI) &&
+      existing !== BANK_TRANSACTION_TYPE.FAIZ_STOPAJI
+    ) {
+      list[i] = {
+        ...row,
+        transactionType: BANK_TRANSACTION_TYPE.FAIZ_STOPAJI,
+        cariRequired: false,
+        personelRequired: false,
+        virmanCandidate: false,
+        vadeliLifecycleRole: row.vadeliLifecycleRole || VADELI_LIFECYCLE_ROLE.STOPAJ,
+        vadeliKeywordGate: true,
+      };
+    }
+  }
+  return list;
+}
+
+function isStopajCandidate(row, open, close) {
+  if (!row || row === open || row === close) return false;
+  if (rowDirection(row) !== "CIKIS") return false;
+  const t = String(row.transactionType || "");
+  if (t === BANK_TRANSACTION_TYPE.FAIZ_GELIRI) return false;
+  if (LIFECYCLE_OPEN_RE.test(rowDesc(row))) return false;
+  if (LIFECYCLE_CLOSE_RE.test(rowDesc(row))) return false;
+  if (t === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI) return true;
+  if (STOPAJ_DESC_RE.test(rowDesc(row))) return true;
+  if (/\b(VERGI|STOPAJ)\b/i.test(rowDesc(row))) return true;
+  return absAmount(row) > 0 && absAmount(row) < absAmount(open || { amount: Infinity });
+}
+
+function isFaizCandidate(row) {
+  if (!row || rowDirection(row) !== "GIRIS") return false;
+  return (
+    String(row.transactionType || "") === BANK_TRANSACTION_TYPE.FAIZ_GELIRI ||
+    FAIZ_DESC_RE.test(rowDesc(row))
+  );
+}
+
+/**
+ * Statement içindeki yaşam döngüsü demetini bul.
+ * Tek dönem (4’lü) veya N dönem (açılış + Σ(faiz−stopaj) = kapanış).
  */
 export function detectVadeliLifecycleBundle(movements = []) {
   const rows = Array.isArray(movements) ? movements : [];
@@ -346,29 +606,16 @@ export function detectVadeliLifecycleBundle(movements = []) {
   const closes = rows.filter(
     (r) => rowDirection(r) === "CIKIS" && LIFECYCLE_CLOSE_RE.test(rowDesc(r))
   );
-  const faizRows = rows.filter(
-    (r) =>
-      rowDirection(r) === "GIRIS" &&
-      (String(r.transactionType || "") === BANK_TRANSACTION_TYPE.FAIZ_GELIRI ||
-        FAIZ_DESC_RE.test(rowDesc(r)))
-  );
 
+  // 1) Klasik tek faiz/stopaj demeti
+  const faizRows = rows.filter(isFaizCandidate);
   for (const open of opens) {
     for (const faiz of faizRows) {
       for (const close of closes) {
         const principal = absAmount(open);
         const faizAmt = absAmount(faiz);
         const closing = absAmount(close);
-        // stopaj adayları: CIKIS, open/close/faiz değil
-        const stopajCandidates = rows.filter((r) => {
-          if (r === open || r === faiz || r === close) return false;
-          if (rowDirection(r) !== "CIKIS") return false;
-          const t = String(r.transactionType || "");
-          if (t === BANK_TRANSACTION_TYPE.FAIZ_GELIRI) return false;
-          if (LIFECYCLE_OPEN_RE.test(rowDesc(r))) return false;
-          if (LIFECYCLE_CLOSE_RE.test(rowDesc(r))) return false;
-          return absAmount(r) > 0;
-        });
+        const stopajCandidates = rows.filter((r) => isStopajCandidate(r, open, close));
 
         for (const stopaj of stopajCandidates) {
           const stopajAmt = absAmount(stopaj);
@@ -378,7 +625,6 @@ export function detectVadeliLifecycleBundle(movements = []) {
 
           const rate = matchesFaizStopajRate(stopajAmt, faizAmt);
           const life = matchesVadeliLifecycleAmounts(rows, stopaj, faiz);
-          // Tutar denklemi zaten tuttu; soft "Vergi ödemesi" de kabul
           const stopajTypeOk =
             String(stopaj.transactionType || "") ===
               BANK_TRANSACTION_TYPE.FAIZ_STOPAJI ||
@@ -390,10 +636,13 @@ export function detectVadeliLifecycleBundle(movements = []) {
 
           return {
             ok: true,
+            mode: "single_period",
             open,
             faiz,
             stopaj,
             close,
+            faizRows: [faiz],
+            stopajRows: [stopaj],
             principal,
             faizAmount: faizAmt,
             stopajAmount: stopajAmt,
@@ -406,20 +655,46 @@ export function detectVadeliLifecycleBundle(movements = []) {
     }
   }
 
-  return { ok: false };
-}
+  // 2) N dönem: principal + Σ(faiz − stopaj) = kapanış
+  for (const open of opens) {
+    for (const close of closes) {
+      const principal = absAmount(open);
+      const closing = absAmount(close);
+      const periodFaiz = rows.filter(
+        (r) => r !== open && isFaizCandidate(r)
+      );
+      const periodStopaj = rows.filter((r) => isStopajCandidate(r, open, close));
+      if (!periodFaiz.length || !periodStopaj.length) continue;
 
-function findPlanAccount(companyPlans = [], prefixes = []) {
-  const plans = Array.isArray(companyPlans) ? companyPlans : [];
-  for (const prefix of prefixes) {
-    const hit = plans.find((p) => {
-      if (p?.isActive === false) return false;
-      const code = compactCode(p.accountCode || p.code || "");
-      return code === prefix || code.startsWith(`${prefix}.`) || code.startsWith(prefix);
-    });
-    if (hit) return compactCode(hit.accountCode || hit.code || "");
+      const faizSum = periodFaiz.reduce((s, r) => s + absAmount(r), 0);
+      const stopajSum = periodStopaj.reduce((s, r) => s + absAmount(r), 0);
+      const expected =
+        Math.round((principal + faizSum - stopajSum) * 100) / 100;
+      if (Math.abs(closing - expected) > AMOUNT_TOL) continue;
+
+      // Her faiz için oran-uyumlu en az bir stopaj veya toplam oran
+      const rate = matchesFaizStopajRate(stopajSum, faizSum);
+
+      return {
+        ok: true,
+        mode: "multi_period",
+        open,
+        faiz: periodFaiz[0],
+        stopaj: periodStopaj[0],
+        close,
+        faizRows: periodFaiz,
+        stopajRows: periodStopaj,
+        principal,
+        faizAmount: faizSum,
+        stopajAmount: stopajSum,
+        closing,
+        expected,
+        rate: rate.ok ? rate.rate : null,
+      };
+    }
   }
-  return "";
+
+  return { ok: false };
 }
 
 function planRowName(plan = {}) {
@@ -607,6 +882,7 @@ export function resolve102RoleFromAccountPlan({
     ambiguous: false,
     code: best.code,
     reason: "plan_unique",
+    reasons: best.reasons,
     bank: {
       bankName: bankName || "",
       accountName: best.name,
@@ -775,10 +1051,205 @@ export function isForbiddenVadeliMemorySuggestion({
 }
 
 /**
+ * VADELİ bacaklarda virman bayraklarını temizle; VADELİ↔VADELİ için
+ * vade dönüşü / anapara yenileme (çoklu kanıt) veya güvenli inceleme.
+ */
+export function applyVadeliVirmanSafetyAndRollover(movements = [], context = {}) {
+  const list = Array.isArray(movements) ? movements : [];
+  const company =
+    context.selectedCompany || context.company || context.firma || null;
+
+  for (let i = 0; i < list.length; i += 1) {
+    const row = list[i];
+    if (!row) continue;
+
+    const statementCode = compactCode(
+      row.accountCode || row.bankAccountCode || ""
+    );
+    let counterCode = compactCode(row.counterAccountCode || "");
+    const sourceBank =
+      findBankByLucaCode(company, statementCode) ||
+      (getBankAccountType({ accountType: context.statementAccountType }) ===
+      "VADELI"
+        ? { accountType: "VADELI", lucaAccountCode: statementCode }
+        : null);
+    let targetBank = counterCode
+      ? findBankByLucaCode(company, counterCode)
+      : null;
+
+    // Karşı hesap kodu yoksa evidence IBAN/hesap no ile diğer VADELİ'yi bul
+    if (!targetBank && company) {
+      const evidence = normalizeParserText(
+        `${row.description || ""} ${row.aciklama || ""} ${row.detayAciklama || ""} ${row.karsiIban || ""}`
+      );
+      const evidenceDigits = digitsOnly(evidence);
+      for (const bank of listCompanyBankAccounts(company)) {
+        if (getBankAccountType(bank) !== "VADELI") continue;
+        const code = compactCode(bank.lucaAccountCode || bank.accountCode || "");
+        if (!code || code === statementCode) continue;
+        const bankIban = normalizeIban(bank.iban || "");
+        const bankDig = digitsOnly(bank.accountNumber || bank.hesapNo || "");
+        if (
+          (bankIban && evidence.includes(bankIban)) ||
+          (bankDig.length >= 8 && evidenceDigits.includes(bankDig))
+        ) {
+          targetBank = bank;
+          counterCode = code;
+          break;
+        }
+      }
+    }
+
+    const statementIsVadeli =
+      getBankAccountType(sourceBank) === "VADELI" ||
+      normalizeAccountType(context.statementAccountType) === "VADELI" ||
+      String(row.vadeliLifecycleRole || "").startsWith("VADELI_") ||
+      String(row.transactionType || "").startsWith("VADELI_");
+
+    // Virman senaryo/bayrak temizliği — VADELİ bacak asla virman sayılmaz
+    if (statementIsVadeli || isVadeliToVadeliTransfer(sourceBank, targetBank)) {
+      const scrub = {
+        virmanCandidate: false,
+        bankInternalTransfer: false,
+      };
+      const tx = String(row.transactionType || "");
+      if (
+        tx === "BANKA_ICI_VIRMAN" ||
+        tx === "BANKALAR_ARASI_VIRMAN" ||
+        tx === "VIRMAN" ||
+        tx === "BANK_INTERNAL_TRANSFER"
+      ) {
+        scrub.transactionType = "BILINMEYEN";
+      }
+      if (
+        String(row.accountingScenario || "") === "BANKA_ICI_VIRMAN" ||
+        String(row.accountingScenario || "") === "BANKALAR_ARASI_VIRMAN"
+      ) {
+        // Lifecycle rolleri korunur; senaryo VADELI_LIFECYCLE'a çekilir
+        if (
+          row.transactionType === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+          row.transactionType === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+          row.transactionType === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+          row.transactionType === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME ||
+          row.vadeliLifecycleRole ||
+          scrub.transactionType === "BILINMEYEN"
+        ) {
+          scrub.accountingScenario =
+            row.vadeliLifecycleRole ||
+            row.transactionType === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+            row.transactionType === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+            row.transactionType === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+            row.transactionType === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME
+              ? VADELI_LIFECYCLE_SCENARIO
+              : "";
+        } else {
+          scrub.accountingScenario = "";
+        }
+      }
+      list[i] = { ...row, ...scrub };
+    }
+
+    if (!isVadeliToVadeliTransfer(sourceBank, targetBank)) continue;
+    // Zaten lifecycle açılış/kapanış (vadesiz karşı) değil — vadeli↔vadeli
+    if (
+      row.vadeliLifecycleRole === VADELI_LIFECYCLE_ROLE.ACILIS ||
+      row.vadeliLifecycleRole === VADELI_LIFECYCLE_ROLE.KAPANIS
+    ) {
+      continue;
+    }
+
+    const classified = classifyVadeliToVadeliMovement({
+      sourceBank,
+      targetBank,
+      description: row.description || row.aciklama || "",
+      direction: row.direction || row.yon || "",
+      amount: row.amount ?? row.tutar ?? 0,
+      relatedMovements: list.filter((_, j) => j !== i),
+    });
+    if (!classified) continue;
+
+    if (classified.confidence === "high") {
+      const isRenewal =
+        classified.role === VADELI_LIFECYCLE_ROLE.ANAPARA_YENILEME;
+      const tx = isRenewal
+        ? BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME
+        : BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU;
+      const warn = isRenewal
+        ? "Vadeli anapara yenileme (vadeli↔vadeli; virman değil)"
+        : "Vadeli vade dönüşü (vadeli↔vadeli; virman değil)";
+      list[i] = {
+        ...list[i],
+        transactionType: tx,
+        accountingScenario: VADELI_LIFECYCLE_SCENARIO,
+        cariRequired: false,
+        personelRequired: false,
+        virmanCandidate: false,
+        bankInternalTransfer: false,
+        missingHesapCategory: "",
+        vadeliLifecycleRole: classified.role,
+        warning: [...clearTaxWarnings(list[i]), warn].join(" | "),
+        matchedRule: {
+          source: "vadeliMevduatLifecycle",
+          islem: tx,
+          anahtar: isRenewal ? "vadeli-yenileme" : "vadeli-vade-donusu",
+          transactionType: tx,
+          reasons: classified.reasons,
+        },
+      };
+    } else {
+      // Belirsiz VADELİ↔VADELİ → inceleme; virman yok
+      list[i] = {
+        ...list[i],
+        virmanCandidate: false,
+        bankInternalTransfer: false,
+        accountingScenario:
+          list[i].accountingScenario === "BANKA_ICI_VIRMAN" ||
+          list[i].accountingScenario === "BANKALAR_ARASI_VIRMAN"
+            ? ""
+            : list[i].accountingScenario || "",
+        missingHesapCategory: MISSING_HESAP_CATEGORY.DIGER || "Diğer",
+        warning: [
+          ...clearTaxWarnings(list[i]),
+          "Vadeli↔vadeli hareket otomatik virman yapılamaz — inceleme",
+        ].join(" | "),
+        vadeliLifecycleMeta: {
+          ...(list[i].vadeliLifecycleMeta || {}),
+          vadeliToVadeliReview: true,
+          reasons: classified.reasons,
+        },
+      };
+    }
+  }
+
+  return list;
+}
+
+function findUniquePlanAccount(companyPlans = [], prefixes = []) {
+  const plans = Array.isArray(companyPlans) ? companyPlans : [];
+  const hits = [];
+  for (const prefix of prefixes) {
+    for (const p of plans) {
+      if (p?.isActive === false) continue;
+      const code = compactCode(p.accountCode || p.code || "");
+      if (!code) continue;
+      if (code === prefix || code.startsWith(`${prefix}.`) || code.startsWith(prefix)) {
+        if (!hits.includes(code)) hits.push(code);
+      }
+    }
+    if (hits.length) break;
+  }
+  if (hits.length === 1) return { ok: true, code: hits[0], ambiguous: false };
+  if (hits.length > 1) return { ok: false, code: "", ambiguous: true, candidates: hits };
+  return { ok: false, code: "", ambiguous: false };
+}
+
+/**
  * Mapper post-pass: yaşam döngüsünü sınıflandır ve hesapları uygula.
  */
 export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
-  const list = Array.isArray(movements) ? movements.map((m) => ({ ...m })) : [];
+  const list = applyVadeliKeywordGate(
+    Array.isArray(movements) ? movements.map((m) => ({ ...m })) : []
+  );
   const company =
     context.selectedCompany || context.company || context.firma || null;
   const companyId = String(
@@ -792,15 +1263,78 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     context.currency || context.paraBirimi || "TL"
   );
 
+  const finish = (payload) => {
+    applyVadeliVirmanSafetyAndRollover(payload.movements, context);
+    return payload;
+  };
+
+  const markVadeliUnmatched = (reason = "") => {
+    for (let i = 0; i < list.length; i += 1) {
+      const row = list[i];
+      const role = String(row.vadeliLifecycleRole || "");
+      const tx = String(row.transactionType || "");
+      const isVadeliRow =
+        role.startsWith("VADELI_") ||
+        tx === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+        tx === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+        tx === BANK_TRANSACTION_TYPE.FAIZ_GELIRI ||
+        tx === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI ||
+        LIFECYCLE_OPEN_RE.test(rowDesc(row)) ||
+        LIFECYCLE_CLOSE_RE.test(rowDesc(row));
+      if (!isVadeliRow) continue;
+      list[i] = {
+        ...row,
+        cariRequired: false,
+        personelRequired: false,
+        virmanCandidate: false,
+        bankInternalTransfer: false,
+        missingHesapCategory: MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI,
+        warning: [
+          ...clearTaxWarnings(row),
+          VADELI_ACCOUNT_UNMATCHED_LABEL,
+          reason,
+        ]
+          .filter(Boolean)
+          .join(" | "),
+      };
+    }
+  };
+
   const bundle = detectVadeliLifecycleBundle(list);
   if (!bundle.ok) {
-    return {
+    const hasVadeliKeyword = list.some(
+      (r) =>
+        r.vadeliKeywordGate ||
+        String(r.transactionType || "").startsWith("VADELI_") ||
+        LIFECYCLE_OPEN_RE.test(rowDesc(r)) ||
+        LIFECYCLE_CLOSE_RE.test(rowDesc(r))
+    );
+    if (hasVadeliKeyword) {
+      const hintAccount =
+        context.statementAccountHint ||
+        context.accountNumber ||
+        context.hesapNo ||
+        "";
+      const statementProbe = resolveStatementBankAccount({
+        company,
+        accountNumber: hintAccount,
+        iban: context.statementIban || context.iban || "",
+        bankName: selectedBank,
+        currency,
+        accountType: "VADELI",
+        lucaHint: context.statementLucaHint || "",
+      });
+      if (!statementProbe.ok) {
+        markVadeliUnmatched(statementProbe.reason || "no_lifecycle_bundle");
+      }
+    }
+    return finish({
       movements: list,
       applied: false,
       bundle: null,
       memoryRecords: [],
       unresolvedReason: "no_lifecycle_bundle",
-    };
+    });
   }
 
   const hintAccount =
@@ -824,28 +1358,16 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     bankName: selectedBank,
     currency,
     accountType: "VADELI",
-    lucaHint:
-      bundle.open?.accountCode ||
-      context.statementLucaHint ||
-      "",
+    lucaHint: context.statementLucaHint || "",
   });
 
-  // Statement bağlanamazsa mevcut accountCode üzerinden dene (mapper ön seçimi)
   let statementBank = statement.bank;
   let statementCode = statement.code;
+
   if (!statement.ok) {
-    const fallbackCode = compactCode(bundle.open?.accountCode || "");
-    const byCode = findBankByLucaCode(company, fallbackCode);
-    if (byCode && getBankAccountType(byCode) === "VADELI") {
-      statementBank = byCode;
-      statementCode = fallbackCode;
-    } else if (
-      byCode &&
-      !byCode.accountType &&
-      isLeaf102Code(fallbackCode) &&
-      hintAccount
-    ) {
-      // Tip eksik kart — hesap no ile aynı satırsa vadeli kabul
+    const candidateCode = compactCode(bundle.open?.accountCode || "");
+    const byCode = findBankByLucaCode(company, candidateCode);
+    if (byCode && getBankAccountType(byCode) === "VADELI" && hintAccount) {
       const dig = digitsOnly(byCode.accountNumber || byCode.hesapNo || "");
       const hintDig = digitsOnly(hintAccount);
       if (
@@ -853,14 +1375,13 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
         hintDig &&
         (dig === hintDig || dig.endsWith(hintDig) || hintDig.endsWith(dig))
       ) {
-        statementBank = { ...byCode, accountType: "VADELI" };
-        statementCode = fallbackCode;
+        statementBank = byCode;
+        statementCode = candidateCode;
       }
     }
   }
 
-  // Firma banka kartı boş/eksik: hesap planından tek kesin VADELI 102
-  if (!statementCode || !statementBank) {
+  if ((!statementCode || !statementBank) && hintAccount) {
     const fromPlan = resolve102RoleFromAccountPlan({
       companyPlans,
       bankName: selectedBank,
@@ -868,20 +1389,21 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       accountType: "VADELI",
       accountNumber: hintAccount,
     });
-    if (fromPlan.ok) {
+    if (fromPlan.ok && (fromPlan.reasons || []).includes("account_number")) {
       statementBank = fromPlan.bank;
       statementCode = fromPlan.code;
     }
   }
 
   if (!statementCode || !statementBank) {
-    return {
+    markVadeliUnmatched(statement.reason || "statement_unresolved");
+    return finish({
       movements: list,
       applied: false,
       bundle,
       memoryRecords: [],
       unresolvedReason: statement.reason || "statement_unresolved",
-    };
+    });
   }
 
   if (getBankAccountType(statementBank) === "VADELI") {
@@ -916,13 +1438,23 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     }
   }
 
+  const faizResolved = findUniquePlanAccount(companyPlans, [
+    "642.01.001",
+    "642.01",
+    "642",
+  ]);
   const faizCode =
-    findPlanAccount(companyPlans, ["642.01.001", "642.01", "642"]) ||
-    compactCode(bundle.faiz?.counterAccountCode || "") ||
-    "642.01.001";
-  const stopajCode =
-    findPlanAccount(companyPlans, ["193.01.001", "193.01", "193"]) ||
-    "193.01.001";
+    faizResolved.ok
+      ? faizResolved.code
+      : compactCode(bundle.faiz?.counterAccountCode || "") ||
+        (faizResolved.ambiguous ? "" : "642.01.001");
+
+  const stopajResolved = findUniquePlanAccount(companyPlans, [
+    "193.01.001",
+    "193.01",
+    "193",
+  ]);
+  const stopajCode = stopajResolved.ok ? stopajResolved.code : "";
 
   const patchRow = (row, patch) => {
     const id = movementId(row);
@@ -933,7 +1465,9 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     list[idx] = { ...list[idx], ...patch };
   };
 
-  // Açılış
+  const faizRows = bundle.faizRows || (bundle.faiz ? [bundle.faiz] : []);
+  const stopajRows = bundle.stopajRows || (bundle.stopaj ? [bundle.stopaj] : []);
+
   if (vadesiz.ok && !isVadeliToVadeliTransfer(statementBank, vadesiz.bank)) {
     const openWarn = clearTaxWarnings(bundle.open);
     openWarn.push("Vadeli mevduat açılışı (vadesiz 102)");
@@ -943,7 +1477,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       counterAccountCode: vadesiz.code,
       cariRequired: false,
       personelRequired: false,
-      accountingScenario: "BANKA_ICI_VIRMAN",
+      accountingScenario: VADELI_LIFECYCLE_SCENARIO,
       missingHesapCategory: "",
       warning: openWarn.join(" | "),
       vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.ACILIS,
@@ -951,6 +1485,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
         statementCode,
         counterCode: vadesiz.code,
         bundle: true,
+        mode: bundle.mode || "single_period",
       },
       matchedRule: {
         source: "vadeliMevduatLifecycle",
@@ -968,7 +1503,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       counterAccountCode: vadesiz.code,
       cariRequired: false,
       personelRequired: false,
-      accountingScenario: "BANKA_ICI_VIRMAN",
+      accountingScenario: VADELI_LIFECYCLE_SCENARIO,
       missingHesapCategory: "",
       warning: closeWarn.join(" | "),
       vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.KAPANIS,
@@ -976,6 +1511,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
         statementCode,
         counterCode: vadesiz.code,
         bundle: true,
+        mode: bundle.mode || "single_period",
       },
       matchedRule: {
         source: "vadeliMevduatLifecycle",
@@ -985,7 +1521,6 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       },
     });
   } else {
-    // Belirsiz / yok → incelemede bırak, yine de tipleri işaretle
     const reason = vadesiz.ambiguous
       ? "Birden fazla vadesiz 102 adayı — otomatik seçilmedi"
       : "Vadesiz 102 karşı hesap bulunamadı";
@@ -994,7 +1529,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       accountCode: statementCode,
       counterAccountCode: "",
       cariRequired: false,
-      missingHesapCategory: MISSING_HESAP_CATEGORY.DIGER || "Diğer",
+      missingHesapCategory: MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI,
       warning: [...clearTaxWarnings(bundle.open), reason].join(" | "),
       vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.ACILIS,
     });
@@ -1003,24 +1538,25 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       accountCode: statementCode,
       counterAccountCode: "",
       cariRequired: false,
-      missingHesapCategory: MISSING_HESAP_CATEGORY.DIGER || "Diğer",
+      missingHesapCategory: MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI,
       warning: [...clearTaxWarnings(bundle.close), reason].join(" | "),
       vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.KAPANIS,
     });
   }
 
-  // Faiz — mevcut 642 davranışını koru / güçlendir
-  {
-    const faizWarn = clearTaxWarnings(bundle.faiz);
+  for (const faizRow of faizRows) {
+    const faizWarn = clearTaxWarnings(faizRow);
     faizWarn.push("Sistem kuralı: Banka faiz geliri");
-    patchRow(bundle.faiz, {
+    patchRow(faizRow, {
       transactionType: BANK_TRANSACTION_TYPE.FAIZ_GELIRI,
       accountCode: statementCode,
       counterAccountCode: faizCode,
       cariRequired: false,
       personelRequired: false,
       accountingScenario: "FINANS",
-      missingHesapCategory: "",
+      missingHesapCategory: faizCode
+        ? ""
+        : MISSING_HESAP_CATEGORY.VADELI_HESAP_ESLESMEDI,
       warning: faizWarn.join(" | "),
       vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.FAIZ,
       matchedRule: {
@@ -1032,33 +1568,64 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     });
   }
 
-  // Stopaj — yalnız lifecycle doğrulanmışsa 193 autofill
-  {
-    const stopajWarn = clearTaxWarnings(bundle.stopaj);
-    stopajWarn.push("Faiz stopajı (193 Peşin Ödenen Vergiler)");
-    patchRow(bundle.stopaj, {
-      transactionType: BANK_TRANSACTION_TYPE.FAIZ_STOPAJI,
-      accountCode: statementCode,
-      counterAccountCode: stopajCode,
-      cariRequired: false,
-      personelRequired: false,
-      accountingScenario: "FINANS",
-      missingHesapCategory: "",
-      warning: stopajWarn.join(" | "),
-      vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.STOPAJ,
-      faizStopajiMeta: {
-        ...(bundle.stopaj.faizStopajiMeta || {}),
-        lifecycleConfirmed: true,
-        rate: bundle.rate,
-        autoFilled193: true,
-      },
-      matchedRule: {
-        source: "vadeliMevduatLifecycle",
-        islem: "FAIZ_STOPAJI",
-        anahtar: "faiz-stopaj",
+  for (const stopajRow of stopajRows) {
+    const stopajWarn = clearTaxWarnings(stopajRow);
+    if (stopajCode) {
+      stopajWarn.push("Faiz stopajı (193 Peşin Ödenen Vergiler)");
+      patchRow(stopajRow, {
         transactionType: BANK_TRANSACTION_TYPE.FAIZ_STOPAJI,
-      },
-    });
+        accountCode: statementCode,
+        counterAccountCode: stopajCode,
+        cariRequired: false,
+        personelRequired: false,
+        accountingScenario: "FINANS",
+        missingHesapCategory: "",
+        warning: stopajWarn.join(" | "),
+        vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.STOPAJ,
+        faizStopajiMeta: {
+          ...(stopajRow.faizStopajiMeta || {}),
+          lifecycleConfirmed: true,
+          rate: bundle.rate,
+          autoFilled193: true,
+        },
+        matchedRule: {
+          source: "vadeliMevduatLifecycle",
+          islem: "FAIZ_STOPAJI",
+          anahtar: "faiz-stopaj",
+          transactionType: BANK_TRANSACTION_TYPE.FAIZ_STOPAJI,
+        },
+      });
+    } else {
+      stopajWarn.push(
+        stopajResolved.ambiguous
+          ? "Birden fazla 193 adayı — stopaj hesabı seçilmeli"
+          : "193 peşin vergi hesabı bulunamadı — seçim gerekli"
+      );
+      patchRow(stopajRow, {
+        transactionType: BANK_TRANSACTION_TYPE.FAIZ_STOPAJI,
+        accountCode: statementCode,
+        counterAccountCode: "",
+        cariRequired: false,
+        personelRequired: false,
+        accountingScenario: "FINANS",
+        missingHesapCategory: MISSING_HESAP_CATEGORY.FAIZ_STOPAJI_HESAP,
+        warning: stopajWarn.join(" | "),
+        vadeliLifecycleRole: VADELI_LIFECYCLE_ROLE.STOPAJ,
+        faizStopajiMeta: {
+          ...(stopajRow.faizStopajiMeta || {}),
+          lifecycleConfirmed: true,
+          rate: bundle.rate,
+          autoFilled193: false,
+          stopajAmbiguous: Boolean(stopajResolved.ambiguous),
+        },
+        matchedRule: {
+          source: "vadeliMevduatLifecycle",
+          islem: "FAIZ_STOPAJI",
+          anahtar: "faiz-stopaj",
+          transactionType: BANK_TRANSACTION_TYPE.FAIZ_STOPAJI,
+        },
+      });
+    }
   }
 
   const memoryRecords = buildVadeliLifecycleMemoryRecords({
@@ -1072,7 +1639,7 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     stopajCode,
   });
 
-  return {
+  return finish({
     movements: list,
     applied: true,
     bundle: {
@@ -1080,10 +1647,14 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
       faizId: movementId(bundle.faiz),
       stopajId: movementId(bundle.stopaj),
       closeId: movementId(bundle.close),
+      faizIds: faizRows.map(movementId),
+      stopajIds: stopajRows.map(movementId),
+      mode: bundle.mode || "single_period",
       principal: bundle.principal,
       faizAmount: bundle.faizAmount,
       stopajAmount: bundle.stopajAmount,
       closing: bundle.closing,
+      expected: bundle.expected,
       statementCode,
       vadesizCode: vadesiz.ok ? vadesiz.code : "",
       vadesizOk: vadesiz.ok,
@@ -1093,5 +1664,5 @@ export function applyVadeliMevduatLifecycle(movements = [], context = {}) {
     },
     memoryRecords,
     unresolvedReason: vadesiz.ok ? "" : vadesiz.reason || "vadesiz_unresolved",
-  };
+  });
 }

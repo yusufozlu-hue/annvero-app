@@ -28,6 +28,7 @@ import { isSelectableCariLeafAccount } from "@/src/utils/cariCounterpartyExtract
 import { isCreditCardAccountCode } from "@/src/utils/creditCardAccountResolver";
 import { fetchActiveAccountPlan } from "@/src/utils/accountPlanApi";
 import { mergeAccountPlanRows } from "@/src/utils/accountPlanMerge";
+import { normalizeParserText } from "@/src/utils/textNormalize";
 import dynamic from "next/dynamic";
 
 const CariGroupTransactionPanel = dynamic(
@@ -149,13 +150,18 @@ function GroupCard({
   const [hydrating, setHydrating] = useState(false);
   const [selectedCode, setSelectedCode] = useState(group.suggestedAccount || "");
   const [selectedName, setSelectedName] = useState(group.suggestedName || "");
-  const [learnNext, setLearnNext] = useState(() =>
-    shouldDefaultCariAutoLearn({
+  const [learnNext, setLearnNext] = useState(() => {
+    if (group.vadeliOnboardingStep === "STATEMENT_102") return true;
+    if (group.vadeliOnboardingStep === "VADESIZ_COUNTER") return false;
+    if (group.vadeliOnboardingStep === "FAIZ_STOPAJI_193") {
+      return group.learnAllowedDefault !== false;
+    }
+    return shouldDefaultCariAutoLearn({
       accountCode: group.suggestedAccount || "",
       duplicateAccounts: group.duplicateAccounts,
       partyName: group.partyName || "",
-    })
-  );
+    });
+  });
   /** Varsayılan: tüm aktif hesap planı (4.166+); tercih listesine kullanıcı geçebilir. */
   const [searchAll, setSearchAll] = useState(true);
   const [query, setQuery] = useState("");
@@ -267,6 +273,15 @@ function GroupCard({
     if (group.virmanCandidate || hydratedGroup.virmanCandidate) {
       return undefined;
     }
+    if (
+      group.vadeliAccountGroup ||
+      hydratedGroup.vadeliAccountGroup ||
+      group.faizStopajiGroup ||
+      hydratedGroup.faizStopajiGroup ||
+      group.hideCariSearch
+    ) {
+      return undefined;
+    }
     let cancelled = false;
     const timer = setTimeout(async () => {
       setServerSearchLoading(true);
@@ -324,6 +339,47 @@ function GroupCard({
         vendorMessage: hydratedGroup.vendorMessage || "",
       };
     }
+    if (
+      group.vadeliAccountGroup ||
+      hydratedGroup.vadeliAccountGroup ||
+      group.faizStopajiGroup ||
+      hydratedGroup.faizStopajiGroup ||
+      group.hideCariSearch ||
+      hydratedGroup.hideCariSearch
+    ) {
+      const prefixes = hydratedGroup.preferredPrefixes ||
+        (group.faizStopajiGroup || hydratedGroup.faizStopajiGroup
+          ? ["193"]
+          : ["102"]);
+      const q = normalizeParserText(query);
+      const base = (hydratedGroup.candidates || []).length
+        ? hydratedGroup.candidates
+        : (searchablePlans || [])
+            .map((p) => ({
+              code: String(p.accountCode || p.code || "").trim(),
+              name: String(p.accountName || p.name || "").trim(),
+              confidence: 0,
+            }))
+            .filter((c) => {
+              const code = c.code;
+              if (!code || !code.includes(".")) return false;
+              return prefixes.some(
+                (pref) => code === pref || code.startsWith(`${pref}.`)
+              );
+            });
+      const filtered = q
+        ? base.filter((c) =>
+            normalizeParserText(`${c.code} ${c.name}`).includes(q)
+          )
+        : base;
+      return {
+        candidates: filtered.slice(0, expandedSearch ? 40 : 12),
+        vendorMessage:
+          hydratedGroup.selectionHint ||
+          hydratedGroup.vendorMessage ||
+          "",
+      };
+    }
     if (!expandedSearch && !query) {
       return {
         candidates: hydratedGroup.candidates || [],
@@ -347,6 +403,9 @@ function GroupCard({
     expandedSearch,
     group.virmanCandidate,
     group.creditCardGroup,
+    group.vadeliAccountGroup,
+    group.faizStopajiGroup,
+    group.hideCariSearch,
     hydratedGroup,
     query,
     searchAll,
@@ -375,6 +434,25 @@ function GroupCard({
   const isTaxObligationCard = Boolean(
     group.taxObligationGroup || hydratedGroup.taxObligationGroup
   );
+  const isVadeliAccountCard = Boolean(
+    group.vadeliAccountGroup || hydratedGroup.vadeliAccountGroup
+  );
+  const isFaizStopajiCard = Boolean(
+    group.faizStopajiGroup || hydratedGroup.faizStopajiGroup
+  );
+  const isGlLeafCard = isVadeliAccountCard || isFaizStopajiCard;
+
+  const codeAllowedForCard = (code = "") => {
+    const c = String(code || "").trim();
+    if (!c || !c.includes(".")) return false;
+    if (isCreditCardCard) return isCreditCardAccountCode(c);
+    if (isVadeliAccountCard) return c === "102" || c.startsWith("102.");
+    if (isFaizStopajiCard) return c === "193" || c.startsWith("193.");
+    return (
+      isAccountAllowedForDirection(c, hydratedGroup.direction) &&
+      !(hydratedGroup.foreignVendor && isExpenseAccountCode(c))
+    );
+  };
 
   const canApply =
     !isVirmanCandidateCard &&
@@ -383,18 +461,15 @@ function GroupCard({
     isSelectableCariLeafAccount(selectedCode) &&
     selectedApplyCount > 0 &&
     !isResolved &&
-    (isCreditCardCard
-      ? isCreditCardAccountCode(selectedCode)
-      : isAccountAllowedForDirection(selectedCode, hydratedGroup.direction) &&
-        !(
-          hydratedGroup.foreignVendor && isExpenseAccountCode(selectedCode)
-        ));
+    codeAllowedForCard(selectedCode);
 
-  const learnEnabled = canEnableCariAutoLearn({
-    confidence: hydratedGroup.confidence,
-    accountCode: selectedCode,
-    duplicateAccounts: hydratedGroup.duplicateAccounts,
-  });
+  const learnEnabled = isGlLeafCard
+    ? Boolean(selectedCode) && codeAllowedForCard(selectedCode)
+    : canEnableCariAutoLearn({
+        confidence: hydratedGroup.confidence,
+        accountCode: selectedCode,
+        duplicateAccounts: hydratedGroup.duplicateAccounts,
+      });
 
   const showCandidateLoading =
     hydrating ||
@@ -421,6 +496,7 @@ function GroupCard({
             {!isResolved &&
             !isVirmanCandidateCard &&
             !isTaxObligationCard &&
+            !isGlLeafCard &&
             typeof onToggleBulkSelect === "function" ? (
               <label className="mr-1 flex items-center gap-1.5 text-[11px] text-slate-400">
                 <input
@@ -439,6 +515,16 @@ function GroupCard({
             <span className="rounded-md border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
               {hydratedGroup.directionLabel}
             </span>
+            {isVadeliAccountCard ? (
+              <span className="rounded-md border border-violet-700/50 bg-violet-950/40 px-2 py-0.5 text-[11px] text-violet-100">
+                Vadeli 102
+              </span>
+            ) : null}
+            {isFaizStopajiCard ? (
+              <span className="rounded-md border border-indigo-700/50 bg-indigo-950/40 px-2 py-0.5 text-[11px] text-indigo-100">
+                Stopaj 193
+              </span>
+            ) : null}
             {isCreditCardCard ? (
               <span className="rounded-md border border-cyan-700/50 bg-cyan-950/40 px-2 py-0.5 text-[11px] text-cyan-100">
                 Kredi kartı ****{hydratedGroup.lastFourDigits || "????"}
@@ -641,6 +727,58 @@ function GroupCard({
         </div>
       ) : null}
 
+      {!isResolved && isGlLeafCard ? (
+        <div className="mt-4 rounded-xl border border-violet-800/40 bg-violet-950/20 px-4 py-3 text-sm text-violet-50">
+          <p className="font-semibold">
+            {hydratedGroup.partyName ||
+              (isFaizStopajiCard
+                ? "Faiz stopajı hesabı seçilmeli"
+                : "Vadeli mevduat hesabı eşleştirilmedi")}
+          </p>
+          {(hydratedGroup.statementBankName ||
+            hydratedGroup.statementAccountMasked) &&
+          hydratedGroup.vadeliOnboardingStep === "STATEMENT_102" ? (
+            <div className="mt-2 rounded-lg border border-violet-700/40 bg-slate-950/40 px-3 py-2 text-xs text-violet-100/90">
+              <p>
+                Banka:{" "}
+                <span className="font-semibold text-white">
+                  {hydratedGroup.statementBankName || "—"}
+                </span>
+              </p>
+              <p className="mt-0.5">
+                Hesap:{" "}
+                <span className="font-semibold text-white">
+                  {hydratedGroup.statementAccountMasked || "—"}
+                </span>
+              </p>
+            </div>
+          ) : null}
+          {hydratedGroup.onboardingQuestion ? (
+            <p className="mt-2 text-sm font-medium text-white">
+              {hydratedGroup.onboardingQuestion}
+            </p>
+          ) : null}
+          <p className="mt-1 text-xs leading-relaxed text-violet-100/85">
+            {hydratedGroup.selectionHint ||
+              hydratedGroup.vendorMessage ||
+              (isFaizStopajiCard
+                ? "Hesap planından yalnız 193 alt hesabı seçilebilir. Cari arama kapalıdır."
+                : "Hesap planından yalnız 102 alt hesabı seçilebilir. Cari arama kapalıdır.")}
+          </p>
+          {hydratedGroup.createAccountHref &&
+          !(liveSearch.candidates || []).length &&
+          !(hydratedGroup.candidates || []).length ? (
+            <a
+              href={hydratedGroup.createAccountHref}
+              className="mt-3 inline-flex rounded-xl border border-sky-600/50 bg-sky-950/40 px-3 py-2 text-xs font-semibold text-sky-100 hover:bg-sky-900/50"
+            >
+              {hydratedGroup.createAccountLabel ||
+                "Firma kartında hesap tanımla"}
+            </a>
+          ) : null}
+        </div>
+      ) : null}
+
       {!isResolved && !isVirmanCandidateCard && !isTaxObligationCard ? (
         <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
           <div className="min-w-0">
@@ -662,20 +800,28 @@ function GroupCard({
                   setQuery("");
                   setExpandedSearch(false);
                 }}
-                placeholder="Hesap kodu, ad, unvan, IBAN ara…"
+                placeholder={
+                  isVadeliAccountCard
+                    ? "102 alt hesabı ara…"
+                    : isFaizStopajiCard
+                      ? "193 alt hesabı ara…"
+                      : "Hesap kodu, ad, unvan, IBAN ara…"
+                }
                 className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white placeholder:text-slate-500"
               />
-              <button
-                type="button"
-                onClick={() => {
-                  setSearchAll((v) => !v);
-                  setExpandedSearch(true);
-                  ensureCandidates();
-                }}
-                className="rounded-lg border border-slate-700 px-2.5 py-2 text-[11px] font-semibold text-slate-300 hover:bg-slate-900"
-              >
-                {searchAll ? "Tercih listesi" : "Tüm plan"}
-              </button>
+              {!isGlLeafCard ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchAll((v) => !v);
+                    setExpandedSearch(true);
+                    ensureCandidates();
+                  }}
+                  className="rounded-lg border border-slate-700 px-2.5 py-2 text-[11px] font-semibold text-slate-300 hover:bg-slate-900"
+                >
+                  {searchAll ? "Tercih listesi" : "Tüm plan"}
+                </button>
+              ) : null}
             </div>
             <GroupCandidateList
               candidates={liveSearch.candidates || []}
@@ -734,20 +880,36 @@ function GroupCard({
                 onChange={(e) => setLearnNext(e.target.checked)}
                 className="rounded border-slate-600"
               />
-              Bu firma için öğren
+              {hydratedGroup.learnLabel || "Bu firma için öğren"}
             </label>
-            {learnNext && learnEnabled ? (
+            {hydratedGroup.vadeliOnboardingStep === "VADESIZ_COUNTER" ? (
+              <p className="text-[11px] text-amber-100/80">
+                Tek kesin aday olsa bile kalıcı kayıt için kutuyu işaretleyin;
+                onaysız öğrenilmez.
+              </p>
+            ) : null}
+            {learnNext && learnEnabled && !isGlLeafCard ? (
               <p className="text-[11px] text-slate-500">
                 Bu dosyada ~{selectedApplyCount} satır · kalıp:{" "}
                 {hydratedGroup.partyName || "—"} · kapsam:{" "}
                 {hydratedGroup.directionLabel || "—"} / aktif firma
               </p>
-            ) : (
+            ) : null}
+            {isGlLeafCard && learnNext && learnEnabled ? (
+              <p className="text-[11px] text-slate-500">
+                {hydratedGroup.vadeliOnboardingStep === "STATEMENT_102"
+                  ? "Bu firmanın tüm VakıfBank TL vadeli hesapları aynı 102’ye bağlanır; hesap numaraları alias olarak saklanır."
+                  : hydratedGroup.vadeliOnboardingStep === "FAIZ_STOPAJI_193"
+                    ? `${selectedApplyCount} stopaj hareketine uygulanır; firma hafızasına yazılır.`
+                    : "Seçim uygulandıktan sonra isteğe bağlı öğrenilir."}
+              </p>
+            ) : null}
+            {!learnNext && !isGlLeafCard ? (
               <p className="text-[11px] text-slate-500">
                 Mükerrer cari veya parent hesapta öğrenme kapalıdır. Düşük güvenli
                 öneri onayınız olmadan kaydedilmez.
               </p>
-            )}
+            ) : null}
             <button
               type="button"
               disabled={!canApply || applyingId === hydratedGroup.id}
@@ -759,19 +921,32 @@ function GroupCard({
                   ),
                   accountCode: selectedCode,
                   accountName: selectedName,
-                  learn: Boolean(learnNext && learnEnabled),
+                  learn: Boolean(
+                    learnNext &&
+                      learnEnabled &&
+                      // Vadesiz: kullanıcı kutuyu açıkça işaretlemeden öğrenme yok
+                      (hydratedGroup.vadeliOnboardingStep !==
+                        "VADESIZ_COUNTER" ||
+                        learnNext)
+                  ),
                 })
               }
               className="mt-1 w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {applyingId === hydratedGroup.id
                 ? "Uygulanıyor…"
-                : formatCariApplyButtonLabel(selectedApplyCount)}
+                : formatCariApplyButtonLabel(
+                    selectedApplyCount,
+                    hydratedGroup
+                  )}
             </button>
             <p className="text-[11px] text-slate-500">
               {isCreditCardCard
                 ? "Yalnız 309/409 kart hesapları uygulanır. Öğrenme açıkken aynı kart sonraki aylarda otomatik tanınır."
-                : "Onayınız olmadan hesap uygulanmaz. Yalnız seçili satırlar güncellenir; gelen/giden yönü korunur."}
+                : isGlLeafCard
+                  ? hydratedGroup.selectionHint ||
+                    "Onayınız olmadan hesap uygulanmaz. İlgili muhasebe bacağı güncellenir."
+                  : "Onayınız olmadan hesap uygulanmaz. Yalnız seçili satırlar güncellenir; gelen/giden yönü korunur."}
             </p>
             {isCreditCardCard ? (
               <a
@@ -779,6 +954,15 @@ function GroupCard({
                 className="mt-1 inline-flex text-center text-[11px] font-semibold text-sky-300 hover:text-sky-200"
               >
                 Firma kartına kredi kartı olarak kaydet / düzenle
+              </a>
+            ) : null}
+            {isGlLeafCard && hydratedGroup.createAccountHref ? (
+              <a
+                href={hydratedGroup.createAccountHref}
+                className="mt-1 inline-flex text-center text-[11px] font-semibold text-sky-300 hover:text-sky-200"
+              >
+                {hydratedGroup.createAccountLabel ||
+                  "Firma kartında banka hesabı tanımla"}
               </a>
             ) : null}
           </div>
@@ -861,6 +1045,14 @@ export default function CariMissingResolutionCenter({
     () => snapshot?.taxObligationGroups || [],
     [snapshot?.taxObligationGroups]
   );
+  const vadeliAccountGroups = useMemo(
+    () => snapshot?.vadeliAccountGroups || [],
+    [snapshot?.vadeliAccountGroups]
+  );
+  const faizStopajiGroups = useMemo(
+    () => snapshot?.faizStopajiGroups || [],
+    [snapshot?.faizStopajiGroups]
+  );
   const selectedCompany = selectedCompanyProp || snapshot?.selectedCompany || null;
   // loading + snapshot yokken plan cache kurma — 4k hesap index’i her render’da
   // main thread’i kilitleyip “Cari grupları hazırlanıyor”da sonsuz beklemeye yol açıyordu.
@@ -894,6 +1086,8 @@ export default function CariMissingResolutionCenter({
           taxObligationGroups,
           creditCardGroups,
           virmanCandidateGroups,
+          vadeliAccountGroups,
+          faizStopajiGroups,
         },
         resolvedSet
       ),
@@ -902,6 +1096,8 @@ export default function CariMissingResolutionCenter({
       taxObligationGroups,
       creditCardGroups,
       virmanCandidateGroups,
+      vadeliAccountGroups,
+      faizStopajiGroups,
       resolvedSet,
     ]
   );
@@ -919,10 +1115,14 @@ export default function CariMissingResolutionCenter({
       snapshot.taxObligationGroupCount ?? "",
       snapshot.creditCardGroupCount ?? "",
       snapshot.virmanCandidateGroupCount ?? "",
+      snapshot.vadeliAccountGroupCount ?? "",
+      snapshot.faizStopajiGroupCount ?? "",
       (snapshot.groups || []).map((g) => g.id).join(","),
       (snapshot.taxObligationGroups || []).map((g) => g.id).join(","),
       (snapshot.creditCardGroups || []).map((g) => g.id).join(","),
       (snapshot.virmanCandidateGroups || []).map((g) => g.id).join(","),
+      (snapshot.vadeliAccountGroups || []).map((g) => g.id).join(","),
+      (snapshot.faizStopajiGroups || []).map((g) => g.id).join(","),
     ].join("|");
   }, [snapshot, resolutionCompanyKey, loading]);
 
@@ -980,6 +1180,8 @@ export default function CariMissingResolutionCenter({
         virmanCandidateGroups,
         creditCardGroups,
         taxObligationGroups,
+        vadeliAccountGroups,
+        faizStopajiGroups,
       }),
     [
       groups,
@@ -987,6 +1189,8 @@ export default function CariMissingResolutionCenter({
       virmanCandidateGroups,
       creditCardGroups,
       taxObligationGroups,
+      vadeliAccountGroups,
+      faizStopajiGroups,
       filter,
       query,
       resolvedSet,
@@ -1074,7 +1278,7 @@ export default function CariMissingResolutionCenter({
             </button>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-8">
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-10">
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-3 py-2">
               <p className="text-[11px] uppercase tracking-wide text-slate-500">
                 Toplam eksik
@@ -1097,6 +1301,22 @@ export default function CariMissingResolutionCenter({
               </p>
               <p className="text-lg font-semibold text-white">
                 {metric(snapshot?.groupCount)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-violet-800/40 bg-violet-950/20 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-violet-200/70">
+                Vadeli mevduat
+              </p>
+              <p className="text-lg font-semibold text-violet-100">
+                {metric(snapshot?.vadeliAccountMissingCount)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-indigo-800/40 bg-indigo-950/20 px-3 py-2">
+              <p className="text-[11px] uppercase tracking-wide text-indigo-200/70">
+                Faiz stopajı
+              </p>
+              <p className="text-lg font-semibold text-indigo-100">
+                {metric(snapshot?.faizStopajiMissingCount)}
               </p>
             </div>
             <div className="rounded-xl border border-cyan-800/40 bg-cyan-950/20 px-3 py-2">
@@ -1262,6 +1482,8 @@ export default function CariMissingResolutionCenter({
                   [CARI_RESOLUTION_FILTERS.INCOMING, "Gelen cariler"],
                   [CARI_RESOLUTION_FILTERS.OUTGOING, "Giden cariler"],
                   [CARI_RESOLUTION_FILTERS.FOREIGN, "Yabancı satıcılar"],
+                  [CARI_RESOLUTION_FILTERS.VADELI_ACCOUNTS, "Vadeli mevduat"],
+                  [CARI_RESOLUTION_FILTERS.FAIZ_STOPAJI, "Faiz stopajı"],
                   [CARI_RESOLUTION_FILTERS.CREDIT_CARDS, "Kredi Kartları"],
                   [CARI_RESOLUTION_FILTERS.TAX_OBLIGATIONS, "Vergi / SGK"],
                   [CARI_RESOLUTION_FILTERS.VIRMAN_CANDIDATES, "Virman adayları"],

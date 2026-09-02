@@ -16,5 +16,8 @@ export {
   consumeCanonicalHydrateReanalyze,
   markHydrateReanalyzeConsumed,
   shouldFollowExistingJobOnConflict,
+  isLiveReanalyzeFlight,
+  healStaleReanalyzeFlights,
+  prepareReanalyzeClaimGuards,
   __resetReanalyzeOrchestrationForTests,
 } from "@/src/utils/bankReanalyzeOrchestration";

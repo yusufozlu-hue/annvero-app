@@ -32,6 +32,7 @@ import {
   looksLikeVakifBankBrand,
   applyVakifStatementPostParse,
   classifyVakifPdfDocument,
+  parseVakifPdfLayout,
 } from "@/src/utils/bankPdf/vakifPdfLayout.js";
 
 export { reconcileStatementBalances } from "@/src/utils/bankBalanceReconcile.js";
@@ -1256,6 +1257,28 @@ export async function parseBankStatementPdf(bytes, options = {}) {
   let parsed;
   if (extractZiraatParsed && (extractZiraatParsed.transactions || []).length) {
     parsed = extractZiraatParsed;
+  } else if (
+    (bankHint === "VAKIFBANK" || looksLikeVakifBankBrand(workingText)) &&
+    bankHint !== "ZIRAAT"
+  ) {
+    const vakif = parseVakifPdfLayout({
+      text: workingText,
+      pagesItems: extractPagesItems,
+      context: {
+        ...options,
+        sourceFileHash,
+        selectedBank: "VAKIFBANK",
+      },
+    });
+    if ((vakif.transactions || []).length > 0) {
+      parsed = vakif;
+    } else {
+      parsed = parsePdfMovementLines(workingText, {
+        ...options,
+        sourceFileHash,
+        selectedBank: "VAKIFBANK",
+      });
+    }
   } else if (
     (bankHint === "ZIRAAT" || looksLikeZiraatPdfLayout(workingText)) &&
     bankHint !== "VAKIFBANK" &&

@@ -100,6 +100,10 @@ export const BANK_TRANSACTION_TYPE = {
   VADELI_ACILIS: "VADELI_ACILIS",
   /** Vadeli mevduat kapanışı — karşı hesap aynı banka VADESIZ 102 */
   VADELI_KAPANIS: "VADELI_KAPANIS",
+  /** Vade sonunda vadeli→vadeli dönüş (virman değil) */
+  VADELI_VADE_DONUSU: "VADELI_VADE_DONUSU",
+  /** Anapara yenileme vadeli→vadeli (virman değil) */
+  VADELI_ANAPARA_YENILEME: "VADELI_ANAPARA_YENILEME",
   NAKIT_CEKME: "NAKIT_CEKME",
   /** @deprecated alias → NAKIT_CEKME */
   NAKIT_CEKIM: "NAKIT_CEKIM",
@@ -185,6 +189,8 @@ export const FINANCE_TYPES = new Set([
   BANK_TRANSACTION_TYPE.FAIZ_STOPAJI,
   BANK_TRANSACTION_TYPE.VADELI_ACILIS,
   BANK_TRANSACTION_TYPE.VADELI_KAPANIS,
+  BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU,
+  BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME,
   BANK_TRANSACTION_TYPE.NAKIT_CEKME,
   BANK_TRANSACTION_TYPE.NAKIT_CEKIM,
   BANK_TRANSACTION_TYPE.NAKIT_YATIRMA,
@@ -975,6 +981,18 @@ export function missingCategoryForTransactionType(transactionType = "") {
   if (isKasaType(type)) return "Kasa hesabı 100 eksik";
   if (isVergiSgkType(type)) return "Vergi/SGK türü çözülemedi";
   if (isVirmanType(type)) return "Virman hesabı bulunamadı";
+  if (type === BANK_TRANSACTION_TYPE.FAIZ_STOPAJI) {
+    return "Faiz stopajı hesabı seçilmeli";
+  }
+  if (
+    type === BANK_TRANSACTION_TYPE.VADELI_ACILIS ||
+    type === BANK_TRANSACTION_TYPE.VADELI_KAPANIS ||
+    type === BANK_TRANSACTION_TYPE.VADELI_VADE_DONUSU ||
+    type === BANK_TRANSACTION_TYPE.VADELI_ANAPARA_YENILEME ||
+    type === BANK_TRANSACTION_TYPE.FAIZ_GELIRI
+  ) {
+    return "Vadeli mevduat hesabı eşleştirilmedi";
+  }
   if (isFinanceType(type)) return "Finans işlem türü çözülemedi";
   if (isPersonelRequiredForType(type)) return "Personel bulunamadı";
   if (

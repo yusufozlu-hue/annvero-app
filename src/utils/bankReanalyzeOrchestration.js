@@ -208,6 +208,112 @@ export function markHydrateReanalyzeConsumed(key) {
 }
 
 /**
+ * Tamamlanmış / hataya düşmüş / promise'siz uçuşlar canlı sayılmaz.
+ */
+export function isLiveReanalyzeFlight(flight = null) {
+  if (!flight || typeof flight !== "object") return false;
+  const status = String(flight.status || "");
+  if (status !== "running" && status !== "pending") return false;
+  if (flight.promise == null) return false;
+  return true;
+}
+
+/**
+ * Firma için stale uçuşları temizle; canlı busy bilgisini döndür.
+ */
+export function healStaleReanalyzeFlights({
+  companyId = "",
+  activeFlightKey = "",
+} = {}) {
+  let healed = 0;
+  const prefix = `${String(companyId || "").trim()}|`;
+  for (const [key, flight] of [...globalFlights.entries()]) {
+    if (
+      companyId &&
+      !key.startsWith(prefix) &&
+      key !== String(activeFlightKey || "")
+    ) {
+      continue;
+    }
+    const status = String(flight?.status || "");
+    if (status === "completed" || status === "failed" || status === "idle") {
+      globalFlights.delete(key);
+      healed += 1;
+      continue;
+    }
+    if (
+      (status === "running" || status === "pending") &&
+      flight?.promise == null
+    ) {
+      globalFlights.delete(key);
+      healed += 1;
+    }
+  }
+  const active = activeFlightKey
+    ? globalFlights.get(String(activeFlightKey))
+    : null;
+  const live =
+    isLiveReanalyzeFlight(active) ||
+    [...globalFlights.values()].some((f) => isLiveReanalyzeFlight(f));
+  return { healed, isLiveBusy: live };
+}
+
+/**
+ * claim öncesi: ölü kilit + ölü uçuş temizliği.
+ */
+export function prepareReanalyzeClaimGuards({
+  lockRef,
+  isReanalyzing = false,
+  pipelineRunning = false,
+  reactJobBusy = false,
+  bankJobBlocking = false,
+  flightKey = "",
+  companyId = "",
+  activeFlightKey = "",
+  resetBankJobState = null,
+} = {}) {
+  const flightHeal = healStaleReanalyzeFlights({
+    companyId,
+    activeFlightKey: activeFlightKey || flightKey,
+  });
+  let healedOrphanLock = false;
+  let healedBankJob = false;
+
+  if (
+    bankJobBlocking &&
+    !pipelineRunning &&
+    !reactJobBusy &&
+    !flightHeal.isLiveBusy
+  ) {
+    if (typeof resetBankJobState === "function") {
+      resetBankJobState();
+      healedBankJob = true;
+    }
+  }
+
+  if (
+    lockRef?.current &&
+    !isReanalyzing &&
+    !pipelineRunning &&
+    !reactJobBusy &&
+    !flightHeal.isLiveBusy
+  ) {
+    lockRef.current = false;
+    healedOrphanLock = true;
+  }
+
+  return {
+    healedOrphanLock,
+    healedBankJob,
+    healedFlights: flightHeal.healed,
+    isLiveBusy:
+      Boolean(pipelineRunning) ||
+      Boolean(reactJobBusy) ||
+      flightHeal.isLiveBusy,
+  };
+}
+
+/**
  * UI: buton ne göstersin?
  * @returns {'hidden'|'loading'|'retry'|'ready'}
  */
@@ -237,16 +343,33 @@ export function claimReanalyzeClick({
   setIsReanalyzing,
   flightKey = "",
   owner = "manual",
+  companyId = "",
+  activeFlightKey = "",
+  bankJobBlocking = false,
+  reactJobBusy = false,
+  resetBankJobState = null,
 } = {}) {
-  let healedOrphanLock = false;
+  const prep = prepareReanalyzeClaimGuards({
+    lockRef,
+    isReanalyzing,
+    pipelineRunning,
+    reactJobBusy: reactJobBusy || (isJobBusy && !pipelineRunning),
+    bankJobBlocking: bankJobBlocking || Boolean(isJobBusy),
+    flightKey,
+    companyId,
+    activeFlightKey,
+    resetBankJobState,
+  });
+  let healedOrphanLock = prep.healedOrphanLock || prep.healedBankJob;
+
   if (
     lockRef?.current &&
     !isReanalyzing &&
     !pipelineRunning &&
-    !isJobBusy
+    !prep.isLiveBusy
   ) {
     const existing = flightKey ? globalFlights.get(String(flightKey)) : null;
-    if (!existing || existing.status !== "running") {
+    if (!isLiveReanalyzeFlight(existing)) {
       lockRef.current = false;
       healedOrphanLock = true;
     }
@@ -255,34 +378,63 @@ export function claimReanalyzeClick({
   if (flightKey) {
     const joined = claimOrJoinReanalyzeFlight(flightKey, { owner });
     if (joined.action === "join") {
-      if (typeof setIsReanalyzing === "function") setIsReanalyzing(true);
-      if (lockRef) lockRef.current = true;
-      return {
-        ok: false,
-        reason: "join_in_flight",
-        healedOrphanLock,
-        flight: joined.flight,
-      };
+      if (!isLiveReanalyzeFlight(joined.flight)) {
+        clearReanalyzeFlight(flightKey);
+        // stale join → fresh start below
+      } else {
+        if (typeof setIsReanalyzing === "function") setIsReanalyzing(true);
+        if (lockRef) lockRef.current = true;
+        return {
+          ok: false,
+          reason: "join_in_flight",
+          healedOrphanLock,
+          flight: joined.flight,
+          isLiveBusy: true,
+        };
+      }
     }
   }
 
   if (lockRef?.current || isReanalyzing) {
-    if (flightKey) {
-      // claimOrJoin start etti ama lokal kilit başka uçuşta — geri al
-      clearReanalyzeFlight(flightKey);
+    const existing = flightKey ? globalFlights.get(String(flightKey)) : null;
+    if (
+      !isReanalyzing &&
+      !prep.isLiveBusy &&
+      !isLiveReanalyzeFlight(existing)
+    ) {
+      // Ölü lokal kilit (UI idle) — iyileştir ve devam
+      if (lockRef) lockRef.current = false;
+      healedOrphanLock = true;
+    } else {
+      if (flightKey && !isLiveReanalyzeFlight(existing)) {
+        clearReanalyzeFlight(flightKey);
+      }
+      return {
+        ok: false,
+        reason: isLiveReanalyzeFlight(existing) ? "join_in_flight" : "in_flight",
+        healedOrphanLock,
+        isLiveBusy: true,
+        flight: existing || undefined,
+      };
     }
-    return { ok: false, reason: "in_flight", healedOrphanLock };
   }
 
   lockRef.current = true;
   if (typeof setIsReanalyzing === "function") setIsReanalyzing(true);
 
-  if (isJobBusy || pipelineRunning) {
+  const stillBusy = prep.isLiveBusy || Boolean(pipelineRunning);
+  if (stillBusy) {
     if (flightKey) clearReanalyzeFlight(flightKey);
-    return { ok: false, reason: "job_busy", healedOrphanLock };
+    return {
+      ok: false,
+      reason: "job_busy",
+      healedOrphanLock,
+      isLiveBusy: true,
+    };
   }
 
-  return { ok: true, healedOrphanLock };
+  // Stale isJobBusy / bankJobState healed → continue
+  return { ok: true, healedOrphanLock, isLiveBusy: false };
 }
 
 export function releaseReanalyzeClick({

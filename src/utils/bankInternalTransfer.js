@@ -20,7 +20,9 @@ import { resolve102BankAccount } from "@/src/utils/companyCenter";
 import { normalizeParserText } from "@/src/utils/textNormalize";
 import {
   findBankByLucaCode,
+  getBankAccountType,
   isVadeliToVadeliTransfer,
+  isVadesizToVadesizTransfer,
 } from "@/src/utils/vadeliMevduatLifecycle";
 
 export const BANK_INTERNAL_TRANSFER = "BANK_INTERNAL_TRANSFER";
@@ -74,6 +76,8 @@ export const VIRMAN_RECLASS_PROTECTED_TYPES = new Set([
   "FAIZ_STOPAJI",
   "VADELI_ACILIS",
   "VADELI_KAPANIS",
+  "VADELI_VADE_DONUSU",
+  "VADELI_ANAPARA_YENILEME",
 ]);
 
 function isVirmanTypeLocal(transactionType = "") {
@@ -606,7 +610,32 @@ export function resolveVirman102Pair({
       counterAccountCode: "",
       complete: false,
       legs: null,
-      missingReason: "Vadeli hesaplar arasında virman yapılamaz",
+      missingReason: "Vadeli hesaplar arasında virman yapılamaz — inceleme",
+      vadeliToVadeliReview: true,
+    };
+  }
+
+  // BANKA_ICI_VIRMAN yalnız açık VADESIZ↔VADESIZ. VADELİ bacak (açılış/kapanış
+  // veya belirsiz) asla otomatik virman / aday olmaz.
+  const sourceType = getBankAccountType(sourceBankRow);
+  const targetType = getBankAccountType(targetBankRow);
+  if (sourceType === "VADELI" || targetType === "VADELI") {
+    return {
+      ...emptyVerdict({
+        status: VIRMAN_STATUS.NONE,
+        reasons: ["vadeli_leg_not_virman"],
+        label: "Vadeli hesap hareketi virman sayılmaz",
+      }),
+      source102,
+      target102: "",
+      counterAccountCode: "",
+      complete: false,
+      legs: null,
+      missingReason:
+        sourceType === "VADELI" && targetType === "VADELI"
+          ? "Vadeli hesaplar arasında virman yapılamaz — inceleme"
+          : "",
+      vadeliToVadeliReview: sourceType === "VADELI" && targetType === "VADELI",
     };
   }
   if (source102 && target102 && source102 === target102) {
@@ -646,13 +675,19 @@ export function resolveVirman102Pair({
     }
   }
 
+  const targetForComplete =
+    targetBankRow ||
+    (target102 ? findBankByLucaCode(company, target102) : null);
+
+  // Kesin virman yalnız açık VADESIZ↔VADESIZ 102.
   const complete = Boolean(
     source102 &&
       target102 &&
       source102.startsWith("102") &&
       target102.startsWith("102") &&
       source102 !== target102 &&
-      verdict.definiteEvidence
+      verdict.definiteEvidence &&
+      isVadesizToVadesizTransfer(sourceBankRow, targetForComplete)
   );
 
   const dir = String(direction || "").toUpperCase();
@@ -784,6 +819,18 @@ export function isOwnAccountVirmanTransfer(row = {}, context = {}) {
 }
 
 export function isVirmanCandidateTransfer(row = {}, context = {}) {
+  const tx = String(row.transactionType || context.transactionType || "");
+  const scenario = String(row.accountingScenario || "");
+  if (
+    tx.startsWith("VADELI_") ||
+    tx === "FAIZ_GELIRI" ||
+    tx === "FAIZ_STOPAJI" ||
+    scenario === "VADELI_LIFECYCLE" ||
+    row.vadeliLifecycleRole ||
+    row.vadeliLifecycleMeta?.vadeliToVadeliReview
+  ) {
+    return false;
+  }
   if (row.virmanCandidate === true) return true;
   const note = `${row.kontrolNotu || ""} ${row.uyari || ""} ${row.warning || ""}`;
   if (/Virman adayı/i.test(note)) return true;

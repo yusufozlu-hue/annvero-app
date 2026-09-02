@@ -12,11 +12,14 @@ import {
   persistCariResolutionLearnWithReadback,
 } from "@/src/utils/accountMemoryV2";
 import { persistUserConfirmedAccountingMemory } from "@/src/utils/accountingMemoryV1";
-import { analyzeMissingHesapRows } from "@/src/utils/previewExportValidation";
+import {
+  analyzeMissingHesapRows,
+} from "@/src/utils/previewExportValidation";
 import {
   createLearningMemoryRecordDetailed,
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
+import { shouldApplyVadeliOnboardingRow } from "@/src/utils/vadeliResolutionOnboarding";
 
 /**
  * Production’da asla true olmamalı. Yalnız birim testleri `__testOnly.skipServerPersist` verir.
@@ -98,17 +101,26 @@ export async function runCariResolutionGroupApply({
   let updated = 0;
   const nextLuca = (lucaRows || []).map((item) => {
     if (!targetIds.has(item.id)) return item;
+    if (!shouldApplyVadeliOnboardingRow(item, group)) return item;
     const missing =
       !String(item.hesapKodu || "").trim() || item.riskDurumu === "HESAP_EKSIK";
-    if (!missing) return item;
+    if (!missing && !group.allowOverwriteFilled) return item;
     const itemDir =
       typeof resolveMemoryLearnContext === "function"
         ? resolveMemoryLearnContext(item).direction
         : String(item.direction || "").trim().toUpperCase();
-    if (group.direction && itemDir && group.direction !== itemDir) {
+    if (
+      group.direction &&
+      itemDir &&
+      group.direction !== itemDir &&
+      !group.vadeliOnboardingStep
+    ) {
       return item;
     }
     updated += 1;
+    const applyNote = group.vadeliOnboardingStep
+      ? `Çözüm Merkezi: ${group.vadeliOnboardingStep}`
+      : "Çözüm Merkezi: cari gruba uygulandı";
     return {
       ...item,
       hesapKodu: code,
@@ -119,10 +131,12 @@ export async function runCariResolutionGroupApply({
           .replace(/Hesap eşleşmesi bulunamadı/gi, "")
           .replace(/Kural bulunamadı/gi, "")
           .replace(/Cari hesap bulunamadı[^.|]*/gi, "")
+          .replace(/Vadeli mevduat hesabı eşleştirilmedi/gi, "")
+          .replace(/Faiz stopajı hesabı seçilmeli/gi, "")
           .replace(/\s+\|\s+/g, " | ")
           .replace(/^\s*\|\s*|\s*\|\s*$/g, "")
           .trim(),
-        "Çözüm Merkezi: cari gruba uygulandı",
+        applyNote,
       ]
         .filter(Boolean)
         .join(" | "),
