@@ -606,12 +606,27 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     "";
   const statementResolve = resolveStatementBankAccount({
     company: selectedCompany,
+    companyId: selectedCompanyId,
     accountNumber: statementHint,
     iban: statementIban,
     bankName: selectedBank,
     currency: rawRow.currency || rawRow.paraBirimi || context.currency || "TL",
     accountType: context.statementAccountType || "",
     lucaHint: context.statementLucaHint || "",
+    accountPlan: companyPlans,
+    learningMemory: activeLearningMemory || learningMemory,
+    documentResolutions,
+    sourceDocumentId: context.canonicalSourceId || context.sourceId || "",
+    sourceMovementId: String(
+      rawRow.sourceMovementId ||
+        rawRow.sourceRowId ||
+        rawRow.id ||
+        rawRow._movementId ||
+        ""
+    ).trim(),
+    direction,
+    transactionType,
+    description,
   });
   // Bilinmeyen vadeli hesapta eski 102'ye sessiz banka-adı fallback yok.
   // Kesin eşleşme yoksa boş bırak; lifecycle "Vadeli mevduat hesabı eşleştirilmedi" üretir.
