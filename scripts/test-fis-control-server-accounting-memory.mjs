@@ -409,7 +409,104 @@ test("16. Fiş Kontrol wiring: showMemoryOption açık + server adapter", () => 
   assert.match(page, /showMemoryOption=\{true\}/);
   assert.match(page, /Bu firma için öğren/);
   assert.match(page, /FIS_KONTROL_LEARN_MSG/);
+  assert.match(page, /saveToMemory:\s*false/);
+  assert.match(page, /draftRow\.saveToMemory === true/);
   assert.doesNotMatch(page, /saveAccountMemoryV2Decision\s*\(/);
+});
+
+test("17. ilk açılış / draft builder checkbox false", async () => {
+  const { buildStandardLucaRowEditDraft } = await import(
+    "@/src/utils/previewRowEdit.js"
+  );
+  const draft = buildStandardLucaRowEditDraft({
+    hesapKodu: "102.10.V001",
+    fisNo: "1",
+  });
+  assert.equal(draft.saveToMemory, false);
+  assert.equal(draft.learnForCompany, false);
+});
+
+test("18. openEdit / firma değişimi / payload reset checkbox false (wiring)", () => {
+  const page = fs.readFileSync(
+    path.join(root, "app/(annvero)/muhasebe/fis-kontrol/page.jsx"),
+    "utf8"
+  );
+  // openEdit her seferinde false zorlar
+  assert.match(
+    page,
+    /setDraftRow\(\{[\s\S]*buildStandardLucaRowEditDraft\(row\)[\s\S]*saveToMemory:\s*false[\s\S]*learnForCompany:\s*false/
+  );
+  // firma değişiminde edit session temizlenir
+  assert.match(
+    page,
+    /selectedCompanyId[\s\S]*setEditingRowId\(null\)[\s\S]*setDraftRow\(null\)/
+  );
+  // yeni payload / sonuçta edit session temizlenir
+  assert.match(
+    page,
+    /applyNormalizedPayload[\s\S]*setEditingRowId\(null\)[\s\S]*setDraftRow\(null\)/
+  );
+  // cancelEdit draft'ı null'lar → panel kapanınca state yok
+  assert.match(page, /const cancelEdit = \(\) => \{[\s\S]*setDraftRow\(null\)/);
+});
+
+test("19. learn=false → server/local memory çağrısı yok", async () => {
+  let created = 0;
+  const result = await persistFisKontrolAccountingDecision({
+    learnForCompany: false,
+    companyId: "mare",
+    currentRow: makeRow(),
+    updatedRow: makeRow({ hesapKodu: "320.01.USER" }),
+    draft: { saveToMemory: false, originalAccountCode: "102.10.V001" },
+    accountPlanCodes: PLAN,
+    existingServerRows: [],
+    createRecord: async () => {
+      created += 1;
+      return { data: { id: "x" }, error: null };
+    },
+    fetchExisting: async () => ({ data: [] }),
+  });
+  assert.equal(result.skipped, true);
+  assert.equal(result.rejectReason, "remember_not_checked");
+  assert.equal(created, 0);
+  assert.equal(result.message, FIS_KONTROL_LEARN_MSG.EDIT_ONLY);
+});
+
+test("20. learn=true → server başarıdan sonra learned/persisted", async () => {
+  const api = makeCreateStore();
+  const result = await persistFisKontrolAccountingDecision({
+    learnForCompany: true,
+    companyId: "mare",
+    currentRow: makeRow(),
+    updatedRow: makeRow({ hesapKodu: "320.01.USER" }),
+    draft: { saveToMemory: true, originalAccountCode: "102.10.V001" },
+    accountPlanCodes: PLAN,
+    existingServerRows: [],
+    createRecord: api.createRecord,
+    updateRecord: api.updateRecord,
+    fetchExisting: async () => ({ data: [] }),
+  });
+  assert.equal(Boolean(result.persisted || result.learned), true);
+  assert.equal(result.message, FIS_KONTROL_LEARN_MSG.SAVED);
+  assert.equal(api.rows.length, 1);
+});
+
+test("21. server fail → satır düzeltmesi korunur, öğrenme başarısı yok", async () => {
+  const result = await persistFisKontrolAccountingDecision({
+    learnForCompany: true,
+    companyId: "mare",
+    currentRow: makeRow(),
+    updatedRow: makeRow({ hesapKodu: "320.01.USER" }),
+    draft: { saveToMemory: true, originalAccountCode: "102.10.V001" },
+    accountPlanCodes: PLAN,
+    existingServerRows: [],
+    createRecord: async () => ({ data: null, error: "fail" }),
+    fetchExisting: async () => ({ data: [] }),
+  });
+  assert.equal(result.persisted, false);
+  assert.equal(result.learned, false);
+  assert.notEqual(result.toastKind, "saved");
+  assert.equal(result.message, FIS_KONTROL_LEARN_MSG.EDIT_MEMORY_FAILED);
 });
 
 test("source_module FIS_KONTROL güvenli payload'da", async () => {

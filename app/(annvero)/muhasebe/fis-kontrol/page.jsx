@@ -167,12 +167,16 @@ export default function FisKontrolPage() {
     if (!normalized) {
       setPayload(null);
       setRows([]);
+      setEditingRowId(null);
+      setDraftRow(null);
+      setEditSaving(false);
       return;
     }
     setPayload(normalized.pending);
     setRows(normalized.normalizedRows);
     setEditingRowId(null);
     setDraftRow(null);
+    setEditSaving(false);
     setHydrateEmptyMessage("");
   }, []);
 
@@ -359,6 +363,9 @@ export default function FisKontrolPage() {
       setPayload(null);
       setRows([]);
       setAnalysis({ rows: [], issues: [], summary: {} });
+      setEditingRowId(null);
+      setDraftRow(null);
+      setEditSaving(false);
       loadPendingData();
     });
     return () => {
@@ -588,8 +595,13 @@ export default function FisKontrolPage() {
   };
 
   const openEdit = (row) => {
+    // Her düzenleme oturumu taze draft — önceki satırın learn state'i taşınmaz
     setEditingRowId(row.id);
-    setDraftRow(buildStandardLucaRowEditDraft(row));
+    setDraftRow({
+      ...buildStandardLucaRowEditDraft(row),
+      saveToMemory: false,
+      learnForCompany: false,
+    });
   };
 
   const patchDraftField = (rowId, field, value) => {
@@ -608,8 +620,8 @@ export default function FisKontrolPage() {
     const currentRow = rows.find((row) => row.id === editingRowId);
     if (!currentRow) return;
 
-    const learnForCompany =
-      draftRow.learnForCompany !== false && draftRow.saveToMemory !== false;
+    // Opt-in: yalnız açıkça işaretlenmişse firma hafızasına yaz
+    const learnForCompany = draftRow.saveToMemory === true;
     const updatedRow = finalizeStandardLucaRow(
       applyStandardLucaRowEditDraft(currentRow, draftRow)
     );
