@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import { annveroInputClass } from "@/src/styles/annveroDesign";
 import { useWindowedRows } from "@/src/hooks/useWindowedRows";
 
@@ -97,6 +97,8 @@ export default function AnnveroEditableDataTable({
   onCancelEdit,
   onCommitEdit,
   renderRowActions,
+  /** Aktif düzenleme satırının hemen altına panel/expand içeriği */
+  renderExpandedRow = null,
   bulkToolbar = null,
   searchPlaceholder = "Hızlı ara...",
   pageSize = 25,
@@ -331,44 +333,60 @@ export default function AnnveroEditableDataTable({
               displayRows.map((row, index) => {
                 const id = resolveRowKey(row, index);
                 const draft = drafts[id] || drafts[row[rowKey]];
-                const isEditing = editingRowId === id || editingRowId === row[rowKey];
+                const isEditing =
+                  editingRowId != null &&
+                  String(editingRowId) !== "" &&
+                  (String(editingRowId) === String(id) ||
+                    String(editingRowId) === String(row[rowKey] ?? ""));
                 const selectable = isRowSelectable ? isRowSelectable(row) : true;
+                const colSpan =
+                  visibleColumns.length +
+                  (onToggleSelect ? 1 : 0) +
+                  (renderRowActions ? 1 : 0);
                 return (
-                  <tr
-                    key={id}
-                    className={`border-t border-slate-800/80 hover:bg-white/[0.02] ${isEditing ? "bg-indigo-950/20" : ""}`}
-                    style={enableVirtualScroll ? { height: virtualRowHeight } : undefined}
-                  >
-                    {onToggleSelect ? (
-                      <td className="px-3 py-3">
-                        {selectable ? (
-                          <input
-                            type="checkbox"
-                            checked={selectedIds.includes(row[rowKey])}
-                            onChange={() => onToggleSelect(row[rowKey])}
+                  <Fragment key={id}>
+                    <tr
+                      className={`border-t border-slate-800/80 hover:bg-white/[0.02] ${isEditing ? "bg-indigo-950/20" : ""}`}
+                      style={enableVirtualScroll ? { height: virtualRowHeight } : undefined}
+                    >
+                      {onToggleSelect ? (
+                        <td className="px-3 py-3">
+                          {selectable ? (
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.includes(row[rowKey])}
+                              onChange={() => onToggleSelect(row[rowKey])}
+                            />
+                          ) : null}
+                        </td>
+                      ) : null}
+                      {visibleColumns.map((col) => (
+                        <td key={col.key} className="px-4 py-3 text-slate-200">
+                          <EditableCell
+                            column={col}
+                            row={row}
+                            rowId={row[rowKey]}
+                            draft={draft}
+                            isEditing={isEditing || col.alwaysEdit}
+                            error={validationErrors[row[rowKey]]}
+                            onChange={(field, value) => onDraftChange?.(row[rowKey], field, value)}
+                            onFocus={() => onStartEdit?.(row[rowKey])}
+                            onKeyDown={(e) => handleKeyDown(e, row[rowKey], col.editKey || col.key)}
                           />
-                        ) : null}
-                      </td>
+                        </td>
+                      ))}
+                      {renderRowActions ? (
+                        <td className="px-4 py-3">{renderRowActions(row, { draft, isEditing })}</td>
+                      ) : null}
+                    </tr>
+                    {renderExpandedRow && isEditing ? (
+                      <tr className="border-t border-indigo-900/40 bg-slate-950/80">
+                        <td colSpan={colSpan} className="px-4 py-4">
+                          {renderExpandedRow(row, { draft, isEditing, rowId: id })}
+                        </td>
+                      </tr>
                     ) : null}
-                    {visibleColumns.map((col) => (
-                      <td key={col.key} className="px-4 py-3 text-slate-200">
-                        <EditableCell
-                          column={col}
-                          row={row}
-                          rowId={row[rowKey]}
-                          draft={draft}
-                          isEditing={isEditing || col.alwaysEdit}
-                          error={validationErrors[row[rowKey]]}
-                          onChange={(field, value) => onDraftChange?.(row[rowKey], field, value)}
-                          onFocus={() => onStartEdit?.(row[rowKey])}
-                          onKeyDown={(e) => handleKeyDown(e, row[rowKey], col.editKey || col.key)}
-                        />
-                      </td>
-                    ))}
-                    {renderRowActions ? (
-                      <td className="px-4 py-3">{renderRowActions(row, { draft, isEditing })}</td>
-                    ) : null}
-                  </tr>
+                  </Fragment>
                 );
               })
             ) : (

@@ -15,6 +15,8 @@ export const SAFE_LEARNING_MEMORY_COLUMNS = [
   "bank_name",
   "amount",
   "status",
+  // Mevcut kolon (007a) — migration yok; istemci spoof'u API sanitize ile sınırlı
+  "source_module",
 ];
 
 function firstValue(source = {}, keys = []) {
@@ -89,6 +91,11 @@ export function buildSafeLearningMemoryPayload(input = {}) {
   assignIfPresent(payload, "bank_name", firstValue(input, ["bank_name", "bankName"]));
   assignIfPresent(payload, "amount", firstValue(input, ["amount"]));
   assignIfPresent(payload, "status", firstValue(input, ["status"]));
+  assignIfPresent(
+    payload,
+    "source_module",
+    firstValue(input, ["source_module", "sourceModule"])
+  );
 
   return payload;
 }

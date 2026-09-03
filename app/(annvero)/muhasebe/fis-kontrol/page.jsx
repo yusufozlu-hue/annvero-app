@@ -12,7 +12,6 @@ import { logParserJobError } from "@/src/utils/parserJobLogger";
 import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
 import { runFisKontrolWorker } from "@/src/utils/workerParserBridge";
 import { useCompanyList } from "../hooks/useCompanyList";
-import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/previewRowEdit";
 import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
 import {
   assertLucaTransferHydrateBinding,
@@ -38,6 +37,8 @@ import {
 import {
   applyStandardLucaRowEditDraft,
   buildStandardLucaRowEditDraft,
+  DOCUMENT_TYPE_OPTIONS,
+  resolveStandardLucaEditRowId,
 } from "@/src/utils/previewRowEdit";
 import {
   buildStandardLucaTransferPayload,
@@ -45,7 +46,11 @@ import {
   finalizeStandardLucaRow,
   isStandardLucaPayload,
 } from "@/src/utils/standardLucaRow";
-import { saveAccountMemoryV2Decision } from "@/src/utils/accountMemoryV2";
+import {
+  persistFisKontrolAccountingDecision,
+  FIS_KONTROL_LEARN_MSG,
+} from "@/src/utils/fisKontrolAccountingMemory";
+import { loadAccountPlansFromStorage } from "@/src/utils/companyCenter";
 
 const FILTER_OPTIONS = [
   { id: "all", label: "Tümü" },
@@ -118,7 +123,8 @@ function normalizeIncomingPayload(pending) {
 }
 
 export default function FisKontrolPage() {
-  const { getCompanyDisplayName, selectedCompanyId } = useCompanyList();
+  const { getCompanyDisplayName, selectedCompanyId, selectedCompany } =
+    useCompanyList();
   const searchParams = useSearchParams();
   const urlCompanyId = String(searchParams.get("companyId") || "").trim();
   const urlSource = String(searchParams.get("source") || "").trim().toLowerCase();
@@ -131,6 +137,7 @@ export default function FisKontrolPage() {
   const [search, setSearch] = useState("");
   const [editingRowId, setEditingRowId] = useState(null);
   const [draftRow, setDraftRow] = useState(null);
+  const [editSaving, setEditSaving] = useState(false);
   const [toast, setToast] = useState(null);
   const [analysis, setAnalysis] = useState({ rows: [], issues: [], summary: {} });
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -161,12 +168,16 @@ export default function FisKontrolPage() {
     if (!normalized) {
       setPayload(null);
       setRows([]);
+      setEditingRowId(null);
+      setDraftRow(null);
+      setEditSaving(false);
       return;
     }
     setPayload(normalized.pending);
     setRows(normalized.normalizedRows);
     setEditingRowId(null);
     setDraftRow(null);
+    setEditSaving(false);
     setHydrateEmptyMessage("");
   }, []);
 
@@ -353,6 +364,9 @@ export default function FisKontrolPage() {
       setPayload(null);
       setRows([]);
       setAnalysis({ rows: [], issues: [], summary: {} });
+      setEditingRowId(null);
+      setDraftRow(null);
+      setEditSaving(false);
       loadPendingData();
     });
     return () => {
@@ -494,7 +508,10 @@ export default function FisKontrolPage() {
         label: "Hesap",
         editable: true,
         editKey: "hesapKodu",
-        editDisplay: (row) => (editingRowId === row.id ? null : row.hesapKodu || "—"),
+        editDisplay: (row) =>
+          String(editingRowId) === String(resolveStandardLucaEditRowId(row))
+            ? null
+            : row.hesapKodu || "—",
       },
       {
         key: "aciklama",
@@ -502,7 +519,9 @@ export default function FisKontrolPage() {
         editable: true,
         editKey: "fisAciklama",
         editDisplay: (row) =>
-          editingRowId === row.id ? null : row.detayAciklama || row.fisAciklama || "—",
+          String(editingRowId) === String(resolveStandardLucaEditRowId(row))
+            ? null
+            : row.detayAciklama || row.fisAciklama || "—",
       },
       {
         key: "borc",
@@ -581,13 +600,41 @@ export default function FisKontrolPage() {
     setRows(nextRows);
   };
 
-  const openEdit = (row) => {
-    setEditingRowId(row.id);
-    setDraftRow(buildStandardLucaRowEditDraft(row));
+  const openEdit = (row, index = 0) => {
+    // Her düzenleme oturumu taze draft — önceki satırın learn state'i taşınmaz
+    const rowId = resolveStandardLucaEditRowId(row, index);
+    const sourceRow =
+      rows.find((item) => String(item.id) === String(rowId)) ||
+      rows.find(
+        (item) =>
+          row?.identityKey &&
+          item.identityKey &&
+          String(item.identityKey) === String(row.identityKey)
+      ) ||
+      row;
+
+    if (
+      sourceRow &&
+      rows.includes(sourceRow) &&
+      (sourceRow.id === undefined ||
+        sourceRow.id === null ||
+        String(sourceRow.id).trim() === "")
+    ) {
+      setRows((prev) =>
+        prev.map((item) => (item === sourceRow ? { ...item, id: rowId } : item))
+      );
+    }
+
+    setEditingRowId(rowId);
+    setDraftRow({
+      ...buildStandardLucaRowEditDraft({ ...sourceRow, id: rowId }),
+      saveToMemory: false,
+      learnForCompany: false,
+    });
   };
 
   const patchDraftField = (rowId, field, value) => {
-    if (rowId !== editingRowId) return;
+    if (String(rowId) !== String(editingRowId)) return;
     setDraftRow((prev) => (prev ? { ...prev, [field]: value } : prev));
   };
 
@@ -596,73 +643,84 @@ export default function FisKontrolPage() {
     setDraftRow(null);
   };
 
-  const saveEdit = () => {
-    if (!editingRowId || !draftRow) return;
+  const saveEdit = async () => {
+    if (!editingRowId || !draftRow || editSaving) return;
 
-    const currentRow = rows.find((row) => row.id === editingRowId);
+    const currentRow =
+      rows.find((row) => String(row.id) === String(editingRowId)) ||
+      rows.find(
+        (row, index) => resolveStandardLucaEditRowId(row, index) === String(editingRowId)
+      );
     if (!currentRow) return;
 
-    const learnForCompany =
-      draftRow.learnForCompany !== false && draftRow.saveToMemory !== false;
+    // Opt-in: yalnız açıkça işaretlenmişse firma hafızasına yaz
+    const learnForCompany = draftRow.saveToMemory === true;
     const updatedRow = finalizeStandardLucaRow(
       applyStandardLucaRowEditDraft(currentRow, draftRow)
     );
 
-    if (learnForCompany) {
-      const companyId =
-        selectedCompanyId ||
-        payload?.firmaId ||
-        payload?.companyId ||
-        updatedRow.firmaId ||
-        "";
-      if (companyId && updatedRow.hesapKodu) {
-        try {
-          saveAccountMemoryV2Decision(
-            {
-              companyId,
-              accountCode: updatedRow.hesapKodu,
-              accountName: updatedRow.hesapAdi,
-              analysisKey: updatedRow.analysisKey || "",
-              normalizedDescription:
-                updatedRow.detayAciklama ||
-                updatedRow.fisAciklama ||
-                updatedRow.aciklama ||
-                "",
-              direction: updatedRow.direction || "",
-              documentType: updatedRow.belgeTuru || "",
-              belgeTuru: updatedRow.belgeTuru || "",
-              transactionType: updatedRow.transactionType || "",
-              source: "user-learn",
-              fisAciklama: updatedRow.fisAciklama,
-              detayAciklama: updatedRow.detayAciklama,
-            },
-            {
-              firmaId: companyId,
-              companyId,
-              kaynakAdi: updatedRow.kaynakAdi || payload?.kaynakAdi || "",
-              source: "user-learn",
-            }
-          );
-        } catch {
-          // öğrenme başarısız olsa da satır kaydı sürer; içerik loglanmaz
-        }
-      }
-    }
-
     const nextRows = rows.map((row) =>
-      row.id === editingRowId
-        ? { ...updatedRow, id: row.id, manuallyEdited: true, hafizaEslesme: learnForCompany }
+      String(row.id) === String(editingRowId)
+        ? {
+            ...updatedRow,
+            id: row.id || editingRowId,
+            manuallyEdited: true,
+            // Canonical öğrenme rozeti yalnız server başarı sonrası
+            hafizaEslesme: false,
+          }
         : row
     );
 
+    // Satır düzeltmesi her zaman uygulanır (hafıza başarısız olsa bile)
     persistRows(nextRows);
-    showToast(
-      learnForCompany
-        ? "Satır güncellendi · bu firma için öğrenildi"
-        : "Satır güncellendi",
-      "success"
-    );
-    cancelEdit();
+
+    if (!learnForCompany) {
+      showToast(FIS_KONTROL_LEARN_MSG.EDIT_ONLY, "success");
+      cancelEdit();
+      return;
+    }
+
+    setEditSaving(true);
+    try {
+      const memoryResult = await persistFisKontrolAccountingDecision({
+        learnForCompany: true,
+        companyId:
+          selectedCompanyId ||
+          payload?.firmaId ||
+          payload?.companyId ||
+          updatedRow.firmaId ||
+          "",
+        company: selectedCompany,
+        currentRow,
+        updatedRow,
+        draft: draftRow,
+        payload,
+        accountPlans: loadAccountPlansFromStorage(),
+        autoAnalysis: false,
+      });
+
+      if (memoryResult?.persisted || memoryResult?.toastKind === "saved") {
+        const learnedRows = nextRows.map((row) =>
+          String(row.id) === String(editingRowId)
+            ? { ...row, hafizaEslesme: true, accountMemoryServerPersisted: true }
+            : row
+        );
+        persistRows(learnedRows);
+        showToast(FIS_KONTROL_LEARN_MSG.SAVED, "success");
+      } else if (memoryResult?.skipped && memoryResult?.rejectReason === "remember_not_checked") {
+        showToast(FIS_KONTROL_LEARN_MSG.EDIT_ONLY, "success");
+      } else if (memoryResult?.skipped) {
+        // Kapı reddi (plan/direction vb.) — satır kaydı durur, canonical öğrenme yok
+        showToast(FIS_KONTROL_LEARN_MSG.EDIT_MEMORY_FAILED, "error");
+      } else {
+        showToast(FIS_KONTROL_LEARN_MSG.EDIT_MEMORY_FAILED, "error");
+      }
+    } catch {
+      showToast(FIS_KONTROL_LEARN_MSG.EDIT_MEMORY_FAILED, "error");
+    } finally {
+      setEditSaving(false);
+      cancelEdit();
+    }
   };
 
   const exportControlReport = () => {
@@ -917,12 +975,19 @@ export default function FisKontrolPage() {
               columns={fisKontrolColumns}
               rows={filteredRows}
               rowKey="id"
+              getRowKey={(row, index) => resolveStandardLucaEditRowId(row, index)}
               drafts={tableDrafts}
               editingRowId={editingRowId}
               onDraftChange={patchDraftField}
               onStartEdit={(rowId) => {
-                const row = filteredRows.find((item) => item.id === rowId);
-                if (row) openEdit(row);
+                const index = filteredRows.findIndex(
+                  (item) => resolveStandardLucaEditRowId(item) === String(rowId)
+                );
+                const row =
+                  index >= 0
+                    ? filteredRows[index]
+                    : filteredRows.find((item) => String(item.id) === String(rowId));
+                if (row) openEdit(row, index >= 0 ? index : 0);
               }}
               onCancelEdit={cancelEdit}
               onCommitEdit={saveEdit}
@@ -931,29 +996,45 @@ export default function FisKontrolPage() {
               searchPlaceholder="Fiş, hesap, açıklama ara..."
               exportFilename="fis-kontrol.csv"
               showToolbar={false}
-              renderRowActions={(row) => (
+              renderRowActions={(row, { isEditing }) => (
                 <button
                   type="button"
-                  onClick={() => openEdit(row)}
-                  className="rounded-lg border border-indigo-700 px-3 py-1.5 text-xs font-semibold text-indigo-200 hover:bg-indigo-950"
+                  data-testid="fis-kontrol-row-edit"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (isEditing) {
+                      cancelEdit();
+                      return;
+                    }
+                    openEdit(row);
+                  }}
+                  className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
+                    isEditing
+                      ? "border-indigo-500 bg-indigo-950 text-indigo-100"
+                      : "border-indigo-700 text-indigo-200 hover:bg-indigo-950"
+                  }`}
                 >
-                  {editingRowId === row.id ? "Detay" : "Düzenle"}
+                  Düzenle
                 </button>
               )}
+              renderExpandedRow={() =>
+                editingRowId && draftRow ? (
+                  <div data-testid="fis-kontrol-edit-panel">
+                    <PreviewVoucherDetailPanel
+                      variant="standardLuca"
+                      draft={draftRow}
+                      onChange={setDraftRow}
+                      onSave={saveEdit}
+                      onCancel={cancelEdit}
+                      isSaving={editSaving}
+                      showMemoryOption={true}
+                      memoryLabel="Bu firma için öğren"
+                    />
+                  </div>
+                ) : null
+              }
             />
-
-            {editingRowId && draftRow ? (
-              <div className="mt-4 rounded-xl border border-gray-800 bg-gray-950/70 p-4">
-                <PreviewVoucherDetailPanel
-                  variant="standardLuca"
-                  draft={draftRow}
-                  onChange={setDraftRow}
-                  onSave={saveEdit}
-                  onCancel={cancelEdit}
-                  showMemoryOption={false}
-                />
-              </div>
-            ) : null}
           </div>
         </>
       )}

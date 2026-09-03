@@ -148,6 +148,27 @@ export function buildElektrawebEditDraft(row) {
   };
 }
 
+/**
+ * Fiş Kontrol / StandardLuca düzenleme oturumu için stabil satır kimliği.
+ * Eksik id panel koşulunu (`editingRowId && draft`) kırar; fallback üretilir.
+ */
+export function resolveStandardLucaEditRowId(row = {}, index = 0) {
+  const candidates = [
+    row?.id,
+    row?.rowId,
+    row?.identityKey,
+    row?._kontrol?.identityKey,
+    row?._kontrol?.rowIndex != null ? `row-${row._kontrol.rowIndex}` : "",
+  ];
+  for (const candidate of candidates) {
+    if (candidate !== undefined && candidate !== null && String(candidate).trim() !== "") {
+      return String(candidate);
+    }
+  }
+  const safeIndex = Number.isFinite(Number(index)) ? Number(index) : 0;
+  return `sl-edit-${safeIndex + 1}`;
+}
+
 export function buildStandardLucaRowEditDraft(row) {
   return {
     fisNo: row.fisNo ?? "",
@@ -163,11 +184,11 @@ export function buildStandardLucaRowEditDraft(row) {
     detayAciklama: row.detayAciklama || row.aciklama || "",
     borc: row.borc ?? "",
     alacak: row.alacak ?? "",
-    controlNote: row.kontrolNotu || "",
+    controlNote: row.kontrolNotu || row._kontrol?.kontrolNotu || "",
     originalAccountCode: row.hesapKodu || "",
-    /** Varsayılan açık: bu firma için öğren */
-    saveToMemory: true,
-    learnForCompany: true,
+    /** Varsayılan kapalı: kullanıcı açıkça “Bu firma için öğren” seçmeli */
+    saveToMemory: false,
+    learnForCompany: false,
   };
 }
 

@@ -212,6 +212,8 @@ export function buildServerAccountingMemoryPayload({
   accountPlanFingerprint = "",
   createdBy = "",
   auditReason = "user_confirmed_firm_learn",
+  sourceModule = "",
+  accountingScenario = "",
 } = {}) {
   const firmaId = String(companyId || "").trim();
   const code = String(accountCode || "").trim();
@@ -220,15 +222,6 @@ export function buildServerAccountingMemoryPayload({
   const cur = normalizeCurrency(currency);
   const bank = canonicalizeBankId(bankId || bankName) || String(bankName || "").trim();
   const localKeyRaw = String(analysisKey || descriptionOrKey || "").trim();
-  const localKeySafe = (() => {
-    if (!localKeyRaw) return "";
-    if (localKeyRaw.startsWith("cm:") || localKeyRaw.startsWith("bsa|")) {
-      return localKeyRaw;
-    }
-    // Ham açıklama PII taşıyabilir — meta'da yalnız strip edilmiş kısa özet
-    const stripped = stripSensitiveDescriptionTokens(localKeyRaw);
-    return stripped.slice(0, 80);
-  })();
   const fp = buildSafeDescriptionFingerprint(localKeyRaw);
   const signature = buildAccountingMemorySignature({
     bankId: bank,
@@ -237,12 +230,31 @@ export function buildServerAccountingMemoryPayload({
     currency: cur,
     descriptionFingerprint: fp,
   });
+  const localKeySafe = (() => {
+    if (!localKeyRaw) return "";
+    if (localKeyRaw.startsWith("cm:") || localKeyRaw.startsWith("bsa|")) {
+      return localKeyRaw;
+    }
+    // Ham açıklama PII taşıyabilir — meta'da yalnız strip edilmiş kısa özet
+    const stripped = stripSensitiveDescriptionTokens(localKeyRaw);
+    const remnantPii =
+      /\bTR\d{2}/i.test(stripped) ||
+      /\d{10,}/.test(stripped) ||
+      /@/.test(stripped) ||
+      /\d+[.,]\d{2}/.test(stripped);
+    if (remnantPii || !stripped.trim()) {
+      return signature;
+    }
+    return stripped.slice(0, 80);
+  })();
   const canon =
     String(canonicalAnalysisKey || "").trim() ||
-    buildCariMemoryCanonicalKey(localKeyRaw, dir);
+    buildCariMemoryCanonicalKey(localKeySafe || signature, dir);
 
   if (!firmaId || !code || !dir || !bank) return null;
 
+  const moduleTag = String(sourceModule || "").trim().toUpperCase();
+  const scenarioTag = String(accountingScenario || "").trim();
   const userCorrection = JSON.stringify({
     schemaVersion: ACCOUNTING_MEMORY_SCHEMA_VERSION,
     source: ACCOUNTING_MEMORY_SOURCE,
@@ -261,6 +273,8 @@ export function buildServerAccountingMemoryPayload({
     createdBy: String(createdBy || "").trim() || null,
     auditReason,
     counterAccountCode: String(counterAccountCode || "").trim() || null,
+    sourceModule: moduleTag || null,
+    accountingScenario: scenarioTag || null,
   });
 
   return buildSafeLearningMemoryPayload({
@@ -275,6 +289,8 @@ export function buildServerAccountingMemoryPayload({
     user_correction: userCorrection,
     learned_at: nowIso(),
     status: "active",
+    // Kolon mevcut (007a); SAFE allowlist dışındaysa düşer — user_correction yedek
+    source_module: moduleTag || undefined,
   });
 }
 
@@ -525,6 +541,9 @@ export async function persistUserConfirmedAccountingMemory({
   updateRecord = null,
   rememberForCompany = true,
   skipLocalSave = false,
+  auditReason = "user_confirmed_firm_learn",
+  sourceModule = "",
+  accountingScenario = "",
 } = {}) {
   if (!rememberForCompany) {
     return {
@@ -580,6 +599,13 @@ export async function persistUserConfirmedAccountingMemory({
     accountPlanFingerprint,
     // createdBy client’tan güvenilmez — server oturumu yazar; burada yalnız cache meta
     createdBy: "",
+    auditReason,
+    sourceModule:
+      sourceModule ||
+      seedRow?.sourceModule ||
+      (source === "fis-kontrol" ? "FIS_KONTROL" : ""),
+    accountingScenario:
+      accountingScenario || seedRow?.accountingScenario || "",
   });
   if (!payload) {
     return {
