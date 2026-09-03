@@ -9,6 +9,7 @@ export default function PreviewVoucherDetailPanel({
   isSaving = false,
   variant = "default",
   showMemoryOption = true,
+  memoryLabel = "",
 }) {
   if (!draft) return null;
 
@@ -16,10 +17,11 @@ export default function PreviewVoucherDetailPanel({
     onChange({ ...draft, [field]: value });
   };
 
-  const memoryLabel =
-    variant === "standardLuca"
+  const resolvedMemoryLabel =
+    String(memoryLabel || "").trim() ||
+    (variant === "standardLuca"
       ? "Bu düzeltmeyi öğrenen hafızaya kaydet"
-      : "Bu düzeltmeyi öğrenen hesap hafızasına kaydet";
+      : "Bu düzeltmeyi öğrenen hesap hafızasına kaydet");
 
   return (
     <div className="rounded-xl border border-indigo-700/50 bg-slate-950 p-4">
@@ -231,7 +233,7 @@ export default function PreviewVoucherDetailPanel({
           checked={!!draft.saveToMemory}
           onChange={(event) => updateField("saveToMemory", event.target.checked)}
         />
-        {memoryLabel}
+        {resolvedMemoryLabel}
       </label>
       ) : null}
 
