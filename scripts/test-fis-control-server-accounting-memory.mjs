@@ -434,7 +434,7 @@ test("18. openEdit / firma değişimi / payload reset checkbox false (wiring)", 
   // openEdit her seferinde false zorlar
   assert.match(
     page,
-    /setDraftRow\(\{[\s\S]*buildStandardLucaRowEditDraft\(row\)[\s\S]*saveToMemory:\s*false[\s\S]*learnForCompany:\s*false/
+    /setDraftRow\(\{[\s\S]*buildStandardLucaRowEditDraft\([\s\S]*saveToMemory:\s*false[\s\S]*learnForCompany:\s*false/
   );
   // firma değişiminde edit session temizlenir
   assert.match(
@@ -507,6 +507,152 @@ test("21. server fail → satır düzeltmesi korunur, öğrenme başarısı yok"
   assert.equal(result.learned, false);
   assert.notEqual(result.toastKind, "saved");
   assert.equal(result.message, FIS_KONTROL_LEARN_MSG.EDIT_MEMORY_FAILED);
+});
+
+test("22. satır aksiyonu Düzenle → openEdit + expanded panel (wiring)", () => {
+  const page = fs.readFileSync(
+    path.join(root, "app/(annvero)/muhasebe/fis-kontrol/page.jsx"),
+    "utf8"
+  );
+  const table = fs.readFileSync(
+    path.join(root, "src/components/AnnveroEditableDataTable.jsx"),
+    "utf8"
+  );
+  assert.match(page, /onClick=\{[\s\S]*openEdit\(row\)/);
+  assert.match(page, />\s*Düzenle\s*</);
+  assert.doesNotMatch(page, /editingRowId === row\.id \? "Detay"/);
+  assert.match(page, /renderExpandedRow=/);
+  assert.match(page, /data-testid="fis-kontrol-edit-panel"/);
+  assert.match(page, /resolveStandardLucaEditRowId/);
+  assert.match(table, /renderExpandedRow/);
+  assert.match(table, /renderExpandedRow && isEditing/);
+});
+
+test("23. openEdit session: editingRowId + draft + checkbox false + cancel", async () => {
+  const {
+    buildStandardLucaRowEditDraft,
+    resolveStandardLucaEditRowId,
+  } = await import("@/src/utils/previewRowEdit.js");
+
+  // Simulate openEdit session state machine (no React)
+  let editingRowId = null;
+  let draftRow = null;
+  const openEdit = (row, index = 0) => {
+    const rowId = resolveStandardLucaEditRowId(row, index);
+    editingRowId = rowId;
+    draftRow = {
+      ...buildStandardLucaRowEditDraft({ ...row, id: rowId }),
+      saveToMemory: false,
+      learnForCompany: false,
+    };
+  };
+  const cancelEdit = () => {
+    editingRowId = null;
+    draftRow = null;
+  };
+
+  const rowA = { id: "a-1", hesapKodu: "102.01", fisNo: "1" };
+  const rowB = { id: "b-2", hesapKodu: "120.01", fisNo: "1" };
+
+  assert.doesNotThrow(() => openEdit(rowA));
+  assert.equal(editingRowId, "a-1");
+  assert.ok(draftRow);
+  assert.equal(draftRow.saveToMemory, false);
+  assert.equal(Boolean(editingRowId && draftRow), true); // panel render gate
+
+  openEdit(rowB);
+  assert.equal(editingRowId, "b-2");
+  assert.equal(draftRow.saveToMemory, false);
+  assert.notEqual(draftRow.accountCode, "102.01");
+
+  cancelEdit();
+  assert.equal(editingRowId, null);
+  assert.equal(draftRow, null);
+});
+
+test("24. eksik row.id → stabil kimlik; panel gate açılır", async () => {
+  const {
+    buildStandardLucaRowEditDraft,
+    resolveStandardLucaEditRowId,
+  } = await import("@/src/utils/previewRowEdit.js");
+
+  const orphan = {
+    fisNo: "3",
+    hesapKodu: "642.01",
+    _kontrol: { rowIndex: 7, identityKey: "abc123" },
+  };
+  const rowId = resolveStandardLucaEditRowId(orphan, 6);
+  assert.ok(rowId);
+  assert.notEqual(rowId, "undefined");
+  const draft = {
+    ...buildStandardLucaRowEditDraft({ ...orphan, id: rowId }),
+    saveToMemory: false,
+  };
+  assert.equal(Boolean(rowId && draft), true);
+  assert.equal(draft.saveToMemory, false);
+
+  const totallyBare = {};
+  const fallbackId = resolveStandardLucaEditRowId(totallyBare, 0);
+  assert.equal(fallbackId, "sl-edit-1");
+});
+
+test("25. 24 satırlık MARE benzeri payload: ilk ve son satır edit paneli açılır", async () => {
+  const { bankMovementsToStandardLucaRows, ensureStandardLucaRowIds, finalizeStandardLucaRow } =
+    await import("@/src/utils/standardLucaRow.js");
+  const { analyzeStandardLucaRows } = await import("@/src/utils/fisKontrolMerkezi.js");
+  const {
+    buildStandardLucaRowEditDraft,
+    resolveStandardLucaEditRowId,
+  } = await import("@/src/utils/previewRowEdit.js");
+
+  const movements = Array.from({ length: 12 }, (_, i) => ({
+    id: `mare-${i}`,
+    date: "15.01.2026",
+    direction: i % 2 === 0 ? "GIRIS" : "CIKIS",
+    amount: 1000 + i,
+    accountCode: "102.10.V001",
+    counterAccountCode: "120.01.001",
+    documentType: "DK",
+    lucaDescription: `MARE hareket ${i}`,
+    description: `MARE hareket ${i}`,
+    bankName: "MARE",
+    warning: "",
+  }));
+
+  const lucaRows = ensureStandardLucaRowIds(
+    bankMovementsToStandardLucaRows(movements, {
+      firmaId: "mare-co",
+      kaynakAdi: "MARE",
+    }).map((row) => finalizeStandardLucaRow({ ...row, firmaId: "mare-co" }))
+  );
+  assert.equal(lucaRows.length, 24);
+
+  const analysis = analyzeStandardLucaRows(lucaRows, { firmaId: "mare-co" });
+  assert.equal(analysis.rows.length, 24);
+
+  const first = analysis.rows[0];
+  const last = analysis.rows[23];
+  const firstId = resolveStandardLucaEditRowId(first, 0);
+  const lastId = resolveStandardLucaEditRowId(last, 23);
+  assert.ok(firstId);
+  assert.ok(lastId);
+  assert.notEqual(firstId, lastId);
+
+  const firstDraft = {
+    ...buildStandardLucaRowEditDraft({ ...first, id: firstId }),
+    saveToMemory: false,
+  };
+  const lastDraft = {
+    ...buildStandardLucaRowEditDraft({ ...last, id: lastId }),
+    saveToMemory: false,
+  };
+  assert.equal(Boolean(firstId && firstDraft), true);
+  assert.equal(Boolean(lastId && lastDraft), true);
+  assert.equal(firstDraft.saveToMemory, false);
+  assert.equal(lastDraft.saveToMemory, false);
+  assert.doesNotThrow(() =>
+    buildStandardLucaRowEditDraft(analysis.rows.find((r) => !r.id) || first)
+  );
 });
 
 test("source_module FIS_KONTROL güvenli payload'da", async () => {
