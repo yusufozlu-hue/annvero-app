@@ -52,6 +52,12 @@ import {
   findAccountMemoryMatchInRecords,
 } from "@/src/utils/accountMemoryV1";
 import {
+  consumeFirmAccountingMemory,
+  mapServerAccountingRowToV2,
+  BANK_STATEMENT_ACCOUNTING_DOC,
+  ACCOUNTING_MEMORY_LUCA_LEG,
+} from "@/src/utils/accountingMemoryV1";
+import {
   createEmptyMemoryTelemetry,
   resolveAccountMemoryV2Decision,
   MEMORY_MATCH_TIER,
@@ -1000,7 +1006,131 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       !counterAccountCode &&
       !virmanDetect.shouldReclassify
     ) {
-    const learningStarted = Date.now();
+      const userLearnedStarted = Date.now();
+      let userLearnedReviewRequired = false;
+      try {
+        let memoryIndexOrRecords =
+          accountMemoryV2Index && accountMemoryV2Index.byAnalysisKey
+            ? accountMemoryV2Index
+            : Array.isArray(accountMemoryRecords)
+              ? accountMemoryRecords
+              : [];
+
+        // Hydrate gecikmesinde fail-soft: learningMemory BSA satırlarından index kur
+        const indexEmpty =
+          (memoryIndexOrRecords?.byAnalysisKey &&
+            memoryIndexOrRecords.byAnalysisKey.size === 0) ||
+          (Array.isArray(memoryIndexOrRecords) &&
+            memoryIndexOrRecords.length === 0);
+        if (indexEmpty && Array.isArray(learningMemory) && learningMemory.length) {
+          const mapped = learningMemory
+            .map(mapServerAccountingRowToV2)
+            .filter(Boolean)
+            .filter(
+              (r) =>
+                r.isActive !== false &&
+                r.serverPersisted === true &&
+                String(r.documentType || "").toUpperCase() ===
+                  BANK_STATEMENT_ACCOUNTING_DOC
+            );
+          if (mapped.length) memoryIndexOrRecords = mapped;
+        }
+
+        const planCodes = Array.isArray(companyPlans)
+          ? companyPlans
+              .map((p) => p.code || p.accountCode || "")
+              .filter(Boolean)
+          : null;
+
+        const bank = selectedBank || rawRow.banka || rawRow.bankName || "";
+        const memoryCurrency =
+          rawRow.currency ||
+          rawRow.paraBirimi ||
+          context.currency ||
+          context.paraBirimi ||
+          "TRY";
+
+        const userLearnedHit = consumeFirmAccountingMemory({
+          companyId: selectedCompanyId || selectedCompany?.id || "",
+          company: selectedCompany,
+          bankId: bank,
+          bankName: bank,
+          direction,
+          transactionType,
+          currency: memoryCurrency,
+          descriptionOrKey: description,
+          analysisKey: description,
+          accountMemoryIndex: memoryIndexOrRecords,
+          accountPlanCodes: planCodes,
+          statementAccountType: String(
+            context.statementAccountType || ""
+          ).toUpperCase(),
+          allowAuto: true,
+          lucaLeg: ACCOUNTING_MEMORY_LUCA_LEG.COUNTER,
+        });
+
+        if (
+          userLearnedHit?.mode === "auto" &&
+          userLearnedHit?.record &&
+          String(userLearnedHit.record.documentType || "").toUpperCase() ===
+            BANK_STATEMENT_ACCOUNTING_DOC &&
+          userLearnedHit.lucaLeg === ACCOUNTING_MEMORY_LUCA_LEG.COUNTER
+        ) {
+          // Counter-leg: yalnız karşı hesap; statement 102’ye dokunma
+          const learnedGl = String(
+            userLearnedHit.record.accountCode || ""
+          ).trim();
+          matchedRule = {
+            source: "userLearnedServer",
+            islem: "HAFIZA",
+            anahtar:
+              userLearnedHit.signature ||
+              userLearnedHit.record.analysisKey ||
+              "",
+          };
+          matchedMemoryId = userLearnedHit.record.id || null;
+          accountCode = bankLucaBase || accountCode || "";
+          counterAccountCode = learnedGl;
+          lucaDescription = buildFallbackLucaDescription({
+            ...rawRow,
+            yon: direction,
+            aciklama: description,
+          });
+
+          if (counterAccountCode || !cariRequired) {
+            appendWarning(warnings, MEMORY_MATCH_LABEL);
+          }
+          if (analysisStats) {
+            analysisStats.userLearnedAutoApplied =
+              (analysisStats.userLearnedAutoApplied || 0) + 1;
+          }
+        } else if (
+          userLearnedHit &&
+          (userLearnedHit.mode === "conflict" ||
+            userLearnedHit.mode === "review" ||
+            userLearnedHit.mode === "suggest")
+        ) {
+          // Sessiz SYSTEM_RULE ezmesi yok — üst-eşleşen USER_LEARNED review ister
+          userLearnedReviewRequired = true;
+          appendWarning(
+            warnings,
+            userLearnedHit.message ||
+              userLearnedHit.rejectReason ||
+              "Öğrenen hafızada otomatik uygulanmayan karar var."
+          );
+          if (analysisStats) {
+            analysisStats.userLearnedReview =
+              (analysisStats.userLearnedReview || 0) + 1;
+          }
+        }
+      } catch {
+        // Fail-soft: parser akışı bozulmasın
+      } finally {
+        addTiming("userLearnedMs", userLearnedStarted);
+      }
+
+      if (!userLearnedReviewRequired && !counterAccountCode) {
+      const learningStarted = Date.now();
     const memoryMatch = findLearningMemoryMatch(learningMemory, description, {
       bankName: rawRow.banka || rawRow.bankName || selectedBank,
       seriesPrefix: extractSeriesPrefix(
@@ -1238,6 +1368,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       }
       addTiming("ruleMatchMs", ruleStarted);
     }
+      }
     } // !firmMemoryApplied
 
     // Cari yalnızca transactionType gerektiriyorsa; virman satırına asla cari önerme

@@ -300,12 +300,19 @@ function resolveUserLearnedCandidate({
   learningMemory = null,
   accountPlan = null,
   productType = "",
+  lucaLeg = "bank",
 } = {}) {
   const firmaId = String(companyId || company?.id || "").trim();
   if (!firmaId) return { kind: "none" };
 
   const index = buildLearningMemoryIndex(learningMemory, firmaId);
   if (!index) return { kind: "none" };
+
+  const requestedLeg =
+    String(lucaLeg || "").toLowerCase() === "counter" ||
+    String(lucaLeg || "").toLowerCase() === "counter_leg"
+      ? "counter"
+      : "statement";
 
   const hit = consumeFirmAccountingMemory({
     companyId: firmaId,
@@ -321,6 +328,7 @@ function resolveUserLearnedCandidate({
     company,
     statementAccountType: productType,
     allowAuto: true,
+    lucaLeg: requestedLeg,
   });
 
   if (
@@ -332,6 +340,21 @@ function resolveUserLearnedCandidate({
       reason: hit.rejectReason || "conflicting_user_memory",
       evidence: buildSafeEvidence({
         signature: hit.signature || null,
+      }),
+    };
+  }
+
+  if (hit?.mode === "review" || hit?.reviewRequired) {
+    return {
+      kind: "review",
+      accountCode: compactCode(hit?.record?.accountCode || "") || null,
+      counterAccountCode: compactCode(hit?.record?.counterAccountCode || "") || null,
+      scopeKey: hit.signature || hit?.record?.canonicalAnalysisKey || null,
+      confidence: Number(hit?.record?.confidence) || 0,
+      reason: hit.rejectReason || "user_memory_review",
+      evidence: buildSafeEvidence({
+        signature: hit.signature || null,
+        lucaLeg: hit.lucaLeg || null,
       }),
     };
   }
@@ -365,6 +388,7 @@ function resolveUserLearnedCandidate({
       signature: hit.signature || null,
       tier: hit?.record?.tier || null,
       serverPersisted: Boolean(hit?.record?.serverPersisted),
+      lucaLeg: hit.lucaLeg || requestedLeg,
     }),
   };
 }
@@ -547,6 +571,7 @@ export function resolveAccountingDecision({
           learningMemory,
           accountPlan,
           productType,
+          lucaLeg,
         }),
     },
     {

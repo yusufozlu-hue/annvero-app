@@ -8,6 +8,7 @@
 import {
   persistUserConfirmedAccountingMemory,
   BANK_STATEMENT_ACCOUNTING_DOC,
+  resolveAccountingMemoryLucaLeg,
 } from "@/src/utils/accountingMemoryV1";
 import {
   createLearningMemoryRecordDetailed,
@@ -320,8 +321,10 @@ export async function persistFisKontrolAccountingDecision({
     seedRow: {
       accountingScenario,
       sourceModule: FIS_KONTROL_SOURCE_MODULE,
-      lucaLeg:
-        Number(row.borc) > 0 ? "debit" : Number(row.alacak) > 0 ? "credit" : "",
+      lucaLeg: resolveAccountingMemoryLucaLeg({
+        accountCode: code,
+        allowInfer: true,
+      }).leg,
     },
     existingServerRows: serverRows,
     createRecord,
@@ -332,6 +335,10 @@ export async function persistFisKontrolAccountingDecision({
     auditReason: "fis_kontrol_user_confirmed",
     sourceModule: FIS_KONTROL_SOURCE_MODULE,
     accountingScenario,
+    lucaLeg: resolveAccountingMemoryLucaLeg({
+      accountCode: code,
+      allowInfer: true,
+    }).leg,
   });
 
   if (result?.persisted || result?.learned) {

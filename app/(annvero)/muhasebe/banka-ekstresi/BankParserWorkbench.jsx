@@ -111,12 +111,19 @@ import {
   mapLearningMemoryRecordToItem,
 } from "@/src/utils/bankLearningMemory";
 import {
-  fetchLearningMemoryForCompany,
   createLearningMemoryRecord,
   createLearningMemoryRecordDetailed,
   updateLearningMemoryRecord,
   recordLearningMemoryUsage,
 } from "@/src/utils/learningMemory";
+import {
+  clearAccountingLearningMemorySession,
+  loadAccountingLearningMemoryForCompany,
+  ensureAccountingLearningMemoryForCompany,
+  getAccountingLearningMemoryEpoch,
+  bumpAccountingLearningMemoryEpoch,
+  peekAccountingLearningMemorySession,
+} from "@/src/utils/accountingLearningMemorySession";
 import { queueUnrecognizedTransactions } from "@/src/utils/transactionMemoryApi";
 import {
   applyStandardLucaRowEditDraft,
@@ -557,6 +564,11 @@ export default function BankParserWorkbench() {
   const [accountPlans, setAccountPlans] = useState({});
   const [ruleEngine, setRuleEngine] = useState({});
   const [learningMemory, setLearningMemory] = useState([]);
+  /** Server BSA learning_memory — analiz öncesi await için */
+  const [learningMemoryReady, setLearningMemoryReady] = useState(false);
+  const learningMemoryEpochRef = useRef(0);
+  const learningMemoryCompanyRef = useRef("");
+  const learningMemoryPromiseRef = useRef(null);
   /** accountMemoryV2 localStorage — effect hydrate sonrası true; boş hafızayla parse yok */
   const [accountMemoryReady, setAccountMemoryReady] = useState(false);
   const accountMemorySnapRef = useRef({
@@ -968,6 +980,14 @@ export default function BankParserWorkbench() {
 
   useEffect(() => {
     const handleCompanyChange = () => {
+      // Firma değişimi: oturum learning_memory cache’ini temizle (tenant izolasyonu)
+      bumpAccountingLearningMemoryEpoch();
+      learningMemoryEpochRef.current = getAccountingLearningMemoryEpoch();
+      learningMemoryCompanyRef.current = "";
+      learningMemoryPromiseRef.current = null;
+      clearAccountingLearningMemorySession();
+      setLearningMemory([]);
+      setLearningMemoryReady(false);
       pipelineRunIdRef.current += 1;
       abortRef.current?.abort();
       setIsParsing(false);
@@ -1077,20 +1097,114 @@ export default function BankParserWorkbench() {
 
   useEffect(() => {
     if (!selectedCompanyId) {
+      bumpAccountingLearningMemoryEpoch();
+      learningMemoryEpochRef.current = getAccountingLearningMemoryEpoch();
+      learningMemoryCompanyRef.current = "";
+      learningMemoryPromiseRef.current = null;
+      clearAccountingLearningMemorySession();
       setLearningMemory([]);
+      setLearningMemoryReady(true);
       return;
     }
 
+    const companyId = String(selectedCompanyId).trim();
+    const epoch = getAccountingLearningMemoryEpoch();
+    learningMemoryEpochRef.current = epoch;
+    learningMemoryCompanyRef.current = companyId;
+    setLearningMemoryReady(false);
+
     let cancelled = false;
-    fetchLearningMemoryForCompany(selectedCompanyId).then((rows) => {
-      if (cancelled) return;
-      setLearningMemory(rows || []);
-      hydrateFirmAccountingMemoryCache(rows || [], selectedCompanyId);
-    });
+    const promise = loadAccountingLearningMemoryForCompany(companyId, {
+      expectedEpoch: epoch,
+    })
+      .then((rows) => {
+        // Stale: firma değişti veya yeni epoch — B’ye A yanıtı sızmasın
+        if (
+          cancelled ||
+          learningMemoryEpochRef.current !== epoch ||
+          learningMemoryCompanyRef.current !== companyId
+        ) {
+          return [];
+        }
+        const list = Array.isArray(rows) ? rows : [];
+        setLearningMemory(list);
+        hydrateFirmAccountingMemoryCache(list, companyId);
+        setLearningMemoryReady(true);
+        return list;
+      })
+      .catch(() => {
+        // Fetch fail-soft: boş hafıza; parser akışı devam eder; stale yok
+        if (
+          cancelled ||
+          learningMemoryEpochRef.current !== epoch ||
+          learningMemoryCompanyRef.current !== companyId
+        ) {
+          return [];
+        }
+        setLearningMemory([]);
+        hydrateFirmAccountingMemoryCache([], companyId);
+        setLearningMemoryReady(true);
+        return [];
+      });
+
+    learningMemoryPromiseRef.current = promise;
     return () => {
       cancelled = true;
     };
   }, [selectedCompanyId]);
+
+  /**
+   * Analiz öncesi: companyId için learning_memory yüklemesini deterministik bekle.
+   * Fetch fail → boş; stale epoch → uygula/hydrate etme.
+   */
+  const awaitLearningMemoryBeforeAnalysis = async (companyId = "") => {
+    const id = String(companyId || selectedCompanyId || "").trim();
+    if (!id) {
+      setLearningMemory([]);
+      setLearningMemoryReady(true);
+      return [];
+    }
+    const epoch = learningMemoryEpochRef.current || getAccountingLearningMemoryEpoch();
+    if (
+      learningMemoryCompanyRef.current === id &&
+      learningMemoryPromiseRef.current
+    ) {
+      await learningMemoryPromiseRef.current;
+    } else {
+      learningMemoryCompanyRef.current = id;
+      learningMemoryEpochRef.current = epoch;
+      const promise = ensureAccountingLearningMemoryForCompany(id, {
+        expectedEpoch: epoch,
+      });
+      learningMemoryPromiseRef.current = promise.then((ensured) => ensured.rows || []);
+      const ensured = await promise;
+      if (
+        ensured.stale ||
+        learningMemoryEpochRef.current !== epoch ||
+        learningMemoryCompanyRef.current !== id
+      ) {
+        return [];
+      }
+      const list = ensured.rows || [];
+      setLearningMemory(list);
+      hydrateFirmAccountingMemoryCache(list, id);
+      setLearningMemoryReady(true);
+      return list;
+    }
+    if (
+      learningMemoryEpochRef.current !== epoch ||
+      learningMemoryCompanyRef.current !== id
+    ) {
+      return [];
+    }
+    // Session peek — closure state’e güvenme
+    const peeked = peekAccountingLearningMemorySession(id);
+    const list = Array.isArray(peeked) ? peeked : [];
+    setLearningMemory(list);
+    hydrateFirmAccountingMemoryCache(list, id);
+    setLearningMemoryReady(true);
+    return list;
+  };
 
   const companyPlans = useMemo(
     () => getAccountPlanForCompany(accountPlans, selectedCompanyId),
@@ -4252,6 +4366,10 @@ export default function BankParserWorkbench() {
     if (!movementsRef.current.length) {
       throw new Error("Önce ön izleme oluşturun.");
     }
+
+    // BSA learning_memory hydrate tamamlanmadan analiz yok (race kapatma)
+    await awaitLearningMemoryBeforeAnalysis(selectedCompanyId);
+    assertPipelineSignal(signal, isRunActive, runId);
 
     const {
       runAccountingAnalysisOnMovementsAsync,
@@ -8200,13 +8318,16 @@ export default function BankParserWorkbench() {
                 isParsing ||
                 isPreparingLuca ||
                 isApplyingCoreAll ||
-                pipelineMode === "auto"
+                pipelineMode === "auto" ||
+                (Boolean(selectedCompanyId) && !learningMemoryReady)
               }
               className="rounded-xl border border-indigo-600/60 bg-indigo-950 px-6 py-3 font-semibold text-indigo-100 transition hover:bg-indigo-900 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isAnalyzing
                 ? parserJob.detail || parserJob.stage || "Analiz ediliyor…"
-                : "Muhasebe Analizini Başlat"}
+                : selectedCompanyId && !learningMemoryReady
+                  ? "Hafıza yükleniyor…"
+                  : "Muhasebe Analizini Başlat"}
             </button>
 
             <button
