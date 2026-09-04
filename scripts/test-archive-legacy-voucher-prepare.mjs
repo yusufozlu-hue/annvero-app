@@ -170,10 +170,17 @@ await test("preview FAIL repro: 4 movements, no legs → prepare CTA, page-open 
     ),
     "utf8"
   );
-  // Page-open must not auto-run accounting for missing legs
-  assert.match(workbench, /LEGACY_ARCHIVE_NEEDS_PREPARE/);
-  assert.match(workbench, /otomatik accounting YOK/);
+  // Clean-open: page-open auto accounting yok; prepare on-demand handler korunur.
+  // LEGACY_ARCHIVE_NEEDS_PREPARE sözleşmesi archiveLegacyVoucherPrepare + bound result'ta.
   assert.match(workbench, /handlePrepareLegacyArchiveAndGoToFisKontrol/);
+  assert.match(workbench, /sayfa açılışı accounting çalıştırmaz/);
+  assert.match(
+    fs.readFileSync(
+      path.join(root, "src/utils/archiveLegacyVoucherPrepare.js"),
+      "utf8"
+    ),
+    /LEGACY_ARCHIVE_NEEDS_PREPARE/
+  );
   assert.doesNotMatch(
     workbench,
     /if \(!hasLegs && movementsRef\.current\.length > 0\) \{\s*try \{\s*const \{\s*runAccountingAnalysisOnMovementsAsync/

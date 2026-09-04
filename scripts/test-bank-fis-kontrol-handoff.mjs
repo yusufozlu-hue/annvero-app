@@ -589,14 +589,300 @@ await test("archive hydrate: meta-only lucaReady must not enable handoff", () =>
     ),
     "utf8"
   );
-  assert.match(workbench, /materializedLucaRowCount/);
-  assert.match(workbench, /LEGACY_ARCHIVE_NEEDS_PREPARE/);
+  const reuse = fs.readFileSync(
+    path.join(root, "src/utils/canonicalHydrateReuse.js"),
+    "utf8"
+  );
+  const oneClick = fs.readFileSync(
+    path.join(
+      root,
+      "app/(annvero)/muhasebe/banka-ekstresi/BankOneClickExperience.jsx"
+    ),
+    "utf8"
+  );
+  // Clean-open (5ad52c0): Workbench auto-hydrate yok.
+  // materializedLucaRowCount → buildCanonicalHydrateBoundResult girdisi;
+  // UI/payload sözleşmesi lucaRowCount = StandardLucaRows.length.
+  assert.match(reuse, /materializedLucaRowCount/);
+  assert.match(reuse, /legacyArchiveNeedsPrepare/);
+  assert.match(workbench, /lucaRowCount:\s*lucaRef\.current\.length/);
   assert.match(workbench, /handlePrepareLegacyArchiveAndGoToFisKontrol/);
-  assert.match(workbench, /otomatik accounting YOK/);
+  assert.match(workbench, /sayfa açılışı accounting çalıştırmaz/);
+  assert.match(oneClick, /result\.lucaRowCount/);
   assert.doesNotMatch(
     workbench,
     /alert\("Önce ön izleme oluşturup Luca satırlarını hazırlayın\."\)/
   );
+});
+
+const {
+  bankMovementToStandardLucaRows,
+  bankMovementsToStandardLucaRows,
+} = await import("@/src/utils/standardLucaRow.js");
+
+const {
+  buildCanonicalHydrateBoundResult,
+} = await import("@/src/utils/canonicalHydrateReuse.js");
+
+function dualLegMovement(i, overrides = {}) {
+  return {
+    amount: 1000 + i,
+    direction: i % 2 === 0 ? "CIKIS" : "GIRIS",
+    accountCode: "102.01.037",
+    counterAccountCode: "120.01.001",
+    description: `mov-${i}`,
+    lucaDescription: `mov-${i}`,
+    date: "15.01.2026",
+    _accountingAnalyzed: true,
+    ...overrides,
+  };
+}
+
+function completedMetaJob(lucaMetaCount) {
+  return {
+    id: "job-meta",
+    metadata: {
+      luca_row_count: lucaMetaCount,
+      movement_count: Math.floor(lucaMetaCount / 2),
+      output_gate_code: "OUTPUT_READY",
+      terminal_status: "completed",
+    },
+  };
+}
+
+await test("12 hareket → 24 StandardLucaRows → lucaRowCount 24", () => {
+  const movements = Array.from({ length: 12 }, (_, i) => dualLegMovement(i));
+  const rows = bankMovementsToStandardLucaRows(movements, { firmaId: COMPANY_A });
+  assert.equal(rows.length, 24);
+  const payload = buildStandardLucaTransferPayload({
+    firmaId: COMPANY_A,
+    companyName: "Alpha",
+    kaynakTipi: KAYNAK_TIPI.BANKA,
+    kaynakAdi: "VAKIFBANK",
+    source: "bank",
+    runId: "run-12-24",
+    movementCount: movements.length,
+    rows,
+  });
+  assert.equal(payload.lucaRowCount, 24);
+  assert.equal(payload.lucaRowCount, payload.rows.length);
+  assert.equal(payload.movementCount, 12);
+  const bound = buildCanonicalHydrateBoundResult({
+    job: completedMetaJob(24),
+    movementCount: 12,
+    materializedLucaRowCount: rows.length,
+    archivedHydrateResult: true,
+  });
+  assert.equal(bound.lucaRowCount, 24);
+  assert.equal(bound.lucaReadyHint, true);
+});
+
+await test("payload lucaRowCount daima rows.length ile eşit", () => {
+  const rows = mareAnonymousRows();
+  const payload = buildStandardLucaTransferPayload({
+    firmaId: COMPANY_A,
+    companyName: "Alpha",
+    kaynakTipi: KAYNAK_TIPI.BANKA,
+    source: "bank",
+    runId: "run-eq",
+    movementCount: 4,
+    rows,
+  });
+  assert.equal(payload.lucaRowCount, rows.length);
+  assert.equal(payload.lucaRowCount, 8);
+});
+
+await test("boş sonuç → lucaRowCount 0", () => {
+  const payload = buildStandardLucaTransferPayload({
+    firmaId: COMPANY_A,
+    companyName: "Alpha",
+    kaynakTipi: KAYNAK_TIPI.BANKA,
+    source: "bank",
+    runId: "run-empty",
+    movementCount: 0,
+    rows: [],
+  });
+  assert.equal(payload.lucaRowCount, 0);
+  const bound = buildCanonicalHydrateBoundResult({
+    job: completedMetaJob(8),
+    materializedLucaRowCount: 0,
+    archivedHydrateResult: true,
+  });
+  assert.equal(bound.lucaRowCount, 0);
+  assert.equal(bound.lucaReadyHint, false);
+  assert.equal(bound.expectedLucaRowCount, 8);
+});
+
+await test("reanalysis sonrası sayaç stale metadata ile şişmez", () => {
+  const first = buildCanonicalHydrateBoundResult({
+    job: completedMetaJob(24),
+    materializedLucaRowCount: 24,
+  });
+  assert.equal(first.lucaRowCount, 24);
+  // Yeni materialize 8 satır — meta hâlâ 24 olsa bile bound 8
+  const second = buildCanonicalHydrateBoundResult({
+    job: completedMetaJob(24),
+    materializedLucaRowCount: 8,
+  });
+  assert.equal(second.lucaRowCount, 8);
+  assert.equal(second.expectedLucaRowCount, 24);
+  assert.notEqual(second.lucaRowCount, second.expectedLucaRowCount);
+});
+
+await test("archive hydrate: materialized sayaç korunur; meta-only açmaz", () => {
+  const metaOnly = buildCanonicalHydrateBoundResult({
+    job: completedMetaJob(24),
+    archivedHydrateResult: true,
+    movementCount: 12,
+    // materializedLucaRowCount yok → metadata ile gate açılmaz
+  });
+  assert.equal(metaOnly.lucaRowCount, 0);
+  assert.equal(metaOnly.lucaReadyHint, false);
+  assert.equal(metaOnly.expectedLucaRowCount, 24);
+
+  const withRows = buildCanonicalHydrateBoundResult({
+    job: completedMetaJob(24),
+    archivedHydrateResult: true,
+    movementCount: 12,
+    materializedLucaRowCount: 24,
+  });
+  assert.equal(withRows.lucaRowCount, 24);
+  assert.equal(withRows.lucaReadyHint, true);
+});
+
+await test("duplicate aktarım aynı runId — ikinci payload/source üretilmez", () => {
+  const movements = Array.from({ length: 12 }, (_, i) => dualLegMovement(i));
+  const rows = bankMovementsToStandardLucaRows(movements, { firmaId: COMPANY_A });
+  const fp = buildLucaTransferContentFingerprint(rows);
+  const runId = `bank-fis-${COMPANY_A.slice(0, 8)}-${fp}`;
+  const p1 = buildStandardLucaTransferPayload({
+    firmaId: COMPANY_A,
+    companyName: "Alpha",
+    kaynakTipi: KAYNAK_TIPI.BANKA,
+    source: "bank",
+    runId,
+    movementCount: 12,
+    rows,
+  });
+  const p2 = buildStandardLucaTransferPayload({
+    firmaId: COMPANY_A,
+    companyName: "Alpha",
+    kaynakTipi: KAYNAK_TIPI.BANKA,
+    source: "bank",
+    runId,
+    movementCount: 12,
+    rows,
+  });
+  assert.equal(p1.runId, p2.runId);
+  assert.equal(p1.lucaRowCount, 24);
+  assert.equal(p2.lucaRowCount, 24);
+  assert.equal(
+    buildLucaTransferStorageKey("bank", COMPANY_A, p1.runId),
+    buildLucaTransferStorageKey("bank", COMPANY_A, p2.runId)
+  );
+});
+
+await test("Fiş Kontrol handoff 12→24 satır dengeli 24/0/0", () => {
+  const movements = Array.from({ length: 12 }, (_, i) => dualLegMovement(i));
+  const rows = bankMovementsToStandardLucaRows(movements, { firmaId: COMPANY_A });
+  assert.equal(rows.length, 24);
+  const analysis = analyzeStandardLucaRows(rows, { firmaId: COMPANY_A });
+  assert.equal(analysis.rows.length, 24);
+  assert.equal(analysis.summary.totalFis, 12);
+  const stage = runVoucherControlStage(rows, { companyId: COMPANY_A });
+  assert.equal(stage.passed, 24);
+  assert.equal(stage.warnings, 0);
+  assert.equal(stage.errors, 0);
+  const payload = buildStandardLucaTransferPayload({
+    firmaId: COMPANY_A,
+    companyName: "Alpha",
+    kaynakTipi: KAYNAK_TIPI.BANKA,
+    source: "bank",
+    runId: "handoff-24",
+    movementCount: 12,
+    rows,
+  });
+  assert.equal(payload.rows.length, 24);
+  assert.equal(payload.lucaRowCount, 24);
+});
+
+await test("eksik/review hareket: sayaç yalnız materialize edilen satırlar", () => {
+  const ready = dualLegMovement(1);
+  const zeroAmount = dualLegMovement(2, { amount: 0 }); // materialize edilmez
+  const missingCounter = dualLegMovement(3, {
+    counterAccountCode: "",
+    accountCode: "102.01.037",
+  });
+  const rows = [];
+  [ready, zeroAmount, missingCounter].forEach((m, i) => {
+    rows.push(...bankMovementToStandardLucaRows(m, i + 1, { firmaId: COMPANY_A }));
+  });
+  // zeroAmount → 0 satır; ready+missingCounter → 2+2 = 4 (hardcode 6 değil)
+  assert.equal(rows.length, 4);
+  const payload = buildStandardLucaTransferPayload({
+    firmaId: COMPANY_A,
+    companyName: "Alpha",
+    kaynakTipi: KAYNAK_TIPI.BANKA,
+    source: "bank",
+    runId: "partial",
+    movementCount: 3,
+    rows,
+  });
+  assert.equal(payload.lucaRowCount, rows.length);
+  assert.notEqual(payload.lucaRowCount, 3 * 2);
+});
+
+await test("MARE VakıfBank hesapları değişmez (102.01.037 / V001 / 642 / 193)", () => {
+  const movements = [
+    {
+      amount: 1000000,
+      direction: "CIKIS",
+      accountCode: "102.01.037",
+      counterAccountCode: "102.10.V001",
+      description: "open",
+      lucaDescription: "open",
+      _accountingAnalyzed: true,
+    },
+    {
+      amount: 33931.4,
+      direction: "GIRIS",
+      accountCode: "102.01.037",
+      counterAccountCode: "642.01.001",
+      description: "faiz",
+      lucaDescription: "faiz",
+      _accountingAnalyzed: true,
+    },
+    {
+      amount: 5938,
+      direction: "CIKIS",
+      accountCode: "102.01.037",
+      counterAccountCode: "193.01.001",
+      description: "stopaj",
+      lucaDescription: "stopaj",
+      _accountingAnalyzed: true,
+    },
+    {
+      amount: 1027993.4,
+      direction: "GIRIS",
+      accountCode: "102.01.037",
+      counterAccountCode: "102.10.V001",
+      description: "close",
+      lucaDescription: "close",
+      _accountingAnalyzed: true,
+    },
+  ];
+  const rows = bankMovementsToStandardLucaRows(movements, {
+    firmaId: COMPANY_A,
+    bankAccounts: [{ bankName: "VAKIFBANK", lucaCode: "102.01.037" }],
+  });
+  assert.equal(rows.length, 8);
+  const codes = [...new Set(rows.map((r) => r.hesapKodu))].sort();
+  assert.deepEqual(codes, [
+    "102.01.037",
+    "102.10.V001",
+    "193.01.001",
+    "642.01.001",
+  ].sort());
 });
 
 if (failed > 0) {
