@@ -27,11 +27,85 @@ export const BANK_STATEMENT_ACCOUNTING_DOC = "BANK_STATEMENT_ACCOUNTING";
 export const ACCOUNTING_MEMORY_SCHEMA_VERSION = 1;
 export const ACCOUNTING_MEMORY_SOURCE = "user_confirmed";
 
+/** Luca bacağı — statement (102 banka) vs counter (karşı hesap). */
+export const ACCOUNTING_MEMORY_LUCA_LEG = {
+  STATEMENT: "statement",
+  COUNTER: "counter",
+};
+
 export const ACCOUNTING_MEMORY_PERSIST_WARNING =
   "Hesap uygulandı; kalıcı firma hafızası yazılamadı. Bu oturumda devam edilir, sonraki ekstrede yeniden öğretilmesi gerekebilir.";
 
 const SIGNATURE_PREFIX = "bsa";
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 saat
+
+function compactAccountCode(value = "") {
+  return String(value || "").trim().replace(/\s+/g, "");
+}
+
+export function isStatementBankAccountCode(code = "") {
+  return /^102(\.|$)/.test(compactAccountCode(code));
+}
+
+/**
+ * Luca bacağını belirle.
+ * explicit: user_correction.lucaLeg / signature
+ * inferred: yalnız güvenilir 102 vs non-102
+ * unknown: otomatik uygulama yok
+ */
+export function resolveAccountingMemoryLucaLeg({
+  lucaLeg = "",
+  accountCode = "",
+  allowInfer = true,
+} = {}) {
+  const raw = String(lucaLeg || "")
+    .trim()
+    .toLowerCase();
+  if (
+    raw === ACCOUNTING_MEMORY_LUCA_LEG.STATEMENT ||
+    raw === "bank" ||
+    raw === "statement_leg" ||
+    raw === "bank_leg"
+  ) {
+    return {
+      leg: ACCOUNTING_MEMORY_LUCA_LEG.STATEMENT,
+      confidence: "explicit",
+    };
+  }
+  if (
+    raw === ACCOUNTING_MEMORY_LUCA_LEG.COUNTER ||
+    raw === "counter_leg" ||
+    raw === "karsi"
+  ) {
+    return {
+      leg: ACCOUNTING_MEMORY_LUCA_LEG.COUNTER,
+      confidence: "explicit",
+    };
+  }
+  // Eski debit/credit seedRow değerleri bacak bilgisini taşımaz
+  if (!allowInfer) {
+    return { leg: "", confidence: "unknown" };
+  }
+  const code = compactAccountCode(accountCode);
+  if (!code) return { leg: "", confidence: "unknown" };
+  if (isStatementBankAccountCode(code)) {
+    return {
+      leg: ACCOUNTING_MEMORY_LUCA_LEG.STATEMENT,
+      confidence: "inferred",
+    };
+  }
+  return {
+    leg: ACCOUNTING_MEMORY_LUCA_LEG.COUNTER,
+    confidence: "inferred",
+  };
+}
+
+export function normalizeAccountingMemoryLucaLeg(value = "") {
+  return resolveAccountingMemoryLucaLeg({
+    lucaLeg: value,
+    allowInfer: false,
+  }).leg;
+}
 
 /** IBAN / tutar / uzun hesap no / e-posta — fingerprint’e girmez */
 const SENSITIVE_TOKEN_RE =
@@ -90,8 +164,9 @@ export function buildSafeDescriptionFingerprint(text = "") {
 }
 
 /**
- * İmza: banka + yön + tip + para birimi + güvenli fingerprint.
+ * İmza: banka + yön + tip + para birimi + [lucaLeg] + güvenli fingerprint.
  * companyId imzada değil (tenant ayrı kolon); tutar/tarih/IBAN/dosya yok.
+ * lucaLeg verilirse statement/counter ayrı kayıtlardır (birbirini ezmez).
  */
 export function buildAccountingMemorySignature({
   bankId = "",
@@ -99,23 +174,49 @@ export function buildAccountingMemorySignature({
   transactionType = "",
   currency = "TRY",
   descriptionFingerprint = "",
+  lucaLeg = "",
 } = {}) {
   const bank = canonicalizeBankId(bankId) || "UNKNOWN_BANK";
   const dir = normalizeDirection(direction) || "NA";
   const type = normalizeTransactionType(transactionType);
   const cur = normalizeCurrency(currency);
   const fp = String(descriptionFingerprint || "").trim() || "fp:00000000";
+  const leg = normalizeAccountingMemoryLucaLeg(lucaLeg);
+  if (leg) {
+    return `${SIGNATURE_PREFIX}|${bank}|${dir}|${type}|${cur}|${leg}|${fp}`;
+  }
   return `${SIGNATURE_PREFIX}|${bank}|${dir}|${type}|${cur}|${fp}`;
 }
 
 export function parseAccountingMemorySignature(keyword = "") {
   const parts = String(keyword || "").split("|");
   if (parts[0] !== SIGNATURE_PREFIX || parts.length < 6) return null;
+  const maybeLeg = String(parts[5] || "").toLowerCase();
+  if (
+    parts.length >= 7 &&
+    (maybeLeg === ACCOUNTING_MEMORY_LUCA_LEG.STATEMENT ||
+      maybeLeg === ACCOUNTING_MEMORY_LUCA_LEG.COUNTER ||
+      maybeLeg === "bank")
+  ) {
+    const leg =
+      maybeLeg === "bank"
+        ? ACCOUNTING_MEMORY_LUCA_LEG.STATEMENT
+        : maybeLeg;
+    return {
+      bankId: parts[1] || "",
+      direction: parts[2] || "",
+      transactionType: parts[3] || "",
+      currency: parts[4] || "TRY",
+      lucaLeg: leg,
+      descriptionFingerprint: parts.slice(6).join("|"),
+    };
+  }
   return {
     bankId: parts[1] || "",
     direction: parts[2] || "",
     transactionType: parts[3] || "",
     currency: parts[4] || "TRY",
+    lucaLeg: "",
     descriptionFingerprint: parts.slice(5).join("|"),
   };
 }
@@ -214,6 +315,7 @@ export function buildServerAccountingMemoryPayload({
   auditReason = "user_confirmed_firm_learn",
   sourceModule = "",
   accountingScenario = "",
+  lucaLeg = "",
 } = {}) {
   const firmaId = String(companyId || "").trim();
   const code = String(accountCode || "").trim();
@@ -223,12 +325,19 @@ export function buildServerAccountingMemoryPayload({
   const bank = canonicalizeBankId(bankId || bankName) || String(bankName || "").trim();
   const localKeyRaw = String(analysisKey || descriptionOrKey || "").trim();
   const fp = buildSafeDescriptionFingerprint(localKeyRaw);
+  const resolvedLeg = resolveAccountingMemoryLucaLeg({
+    lucaLeg,
+    accountCode: code,
+    allowInfer: true,
+  });
+  const leg = resolvedLeg.leg || "";
   const signature = buildAccountingMemorySignature({
     bankId: bank,
     direction: dir,
     transactionType: type,
     currency: cur,
     descriptionFingerprint: fp,
+    lucaLeg: leg,
   });
   const localKeySafe = (() => {
     if (!localKeyRaw) return "";
@@ -275,6 +384,9 @@ export function buildServerAccountingMemoryPayload({
     counterAccountCode: String(counterAccountCode || "").trim() || null,
     sourceModule: moduleTag || null,
     accountingScenario: scenarioTag || null,
+    // Backward-compatible metadata — migration yok
+    lucaLeg: leg || null,
+    lucaLegConfidence: leg ? resolvedLeg.confidence : "unknown",
   });
 
   return buildSafeLearningMemoryPayload({
@@ -325,12 +437,19 @@ export function mapServerAccountingRowToV2(row = {}) {
     meta.descriptionFingerprint ||
     parsed?.descriptionFingerprint ||
     fingerprintCariMemoryKey(row.keyword || "");
+  const resolvedLeg = resolveAccountingMemoryLucaLeg({
+    lucaLeg: meta.lucaLeg || parsed?.lucaLeg || "",
+    accountCode,
+    allowInfer: true,
+  });
+  const lucaLeg = resolvedLeg.leg || "";
   const signature = buildAccountingMemorySignature({
     bankId,
     direction,
     transactionType,
     currency,
     descriptionFingerprint: fp,
+    lucaLeg,
   });
   // Hot path: cm:* korunur; aksi halde imza (PII-safe) analysisKey olur
   const metaKey = String(meta.analysisKey || "").trim();
@@ -370,6 +489,12 @@ export function mapServerAccountingRowToV2(row = {}) {
     bankId,
     bankName: bankId,
     currency,
+    lucaLeg,
+    lucaLegConfidence: lucaLeg
+      ? meta.lucaLeg
+        ? "explicit"
+        : resolvedLeg.confidence
+      : "unknown",
     descriptionFingerprint: fp,
     accountPlanFingerprint: meta.accountPlanFingerprint || "",
     confidence: Number(meta.confidence) || 95,
@@ -544,6 +669,7 @@ export async function persistUserConfirmedAccountingMemory({
   auditReason = "user_confirmed_firm_learn",
   sourceModule = "",
   accountingScenario = "",
+  lucaLeg = "",
 } = {}) {
   if (!rememberForCompany) {
     return {
@@ -606,6 +732,13 @@ export async function persistUserConfirmedAccountingMemory({
       (source === "fis-kontrol" ? "FIS_KONTROL" : ""),
     accountingScenario:
       accountingScenario || seedRow?.accountingScenario || "",
+    lucaLeg:
+      lucaLeg ||
+      seedRow?.lucaLeg ||
+      resolveAccountingMemoryLucaLeg({
+        accountCode,
+        allowInfer: true,
+      }).leg,
   });
   if (!payload) {
     return {
@@ -842,6 +975,7 @@ export function consumeFirmAccountingMemory({
   allowAuto = true,
   cacheUserId = "",
   currentUserId = "",
+  lucaLeg = "",
 } = {}) {
   // Kullanıcı değiştiyse cache uygulanmaz
   if (
@@ -862,13 +996,33 @@ export function consumeFirmAccountingMemory({
   const dir = normalizeDirection(direction);
   const type = normalizeTransactionType(transactionType);
   const cur = normalizeCurrency(currency);
-  const fp = buildSafeDescriptionFingerprint(analysisKey || descriptionOrKey);
+  const requestedLeg = normalizeAccountingMemoryLucaLeg(lucaLeg);
+  // analysisKey bazen direkt BSA imzası (bsa|...) olarak gelebilir.
+  // Bu durumda imzanın içindeki fp değerini kullan; aksi halde
+  // “imza metninden fp üretmek” yanlış signature üretir.
+  let fp = buildSafeDescriptionFingerprint(analysisKey || descriptionOrKey);
+  const parsedFromAnalysisKey = parseAccountingMemorySignature(
+    String(analysisKey || "")
+  );
+  if (parsedFromAnalysisKey?.descriptionFingerprint) {
+    fp = parsedFromAnalysisKey.descriptionFingerprint;
+  }
   const signature = buildAccountingMemorySignature({
     bankId: bank,
     direction: dir,
     transactionType: type,
     currency: cur,
     descriptionFingerprint: fp,
+    lucaLeg: requestedLeg,
+  });
+  // Legacy imza (leg yok) — yalnız bacak doğrulanınca kullanılır
+  const legacySignature = buildAccountingMemorySignature({
+    bankId: bank,
+    direction: dir,
+    transactionType: type,
+    currency: cur,
+    descriptionFingerprint: fp,
+    lucaLeg: "",
   });
   const localKey = String(analysisKey || descriptionOrKey || "").trim();
 
@@ -888,13 +1042,85 @@ export function consumeFirmAccountingMemory({
       { allowAuto }
     );
 
+  const isTerminalHit = (h) =>
+    h &&
+    (h.mode === "conflict" ||
+      h.mode === "auto" ||
+      h.mode === "review" ||
+      (h.mode === "suggest" &&
+        (h.rejectReason === "luca_leg_unknown" ||
+          h.decisionCode === MEMORY_DECISION_CODE.CONFLICT ||
+          h.decisionCode === MEMORY_DECISION_CODE.CORE_OVERRIDE)));
+
   let hit = tryResolve(signature);
-  if (!hit?.record && localKey && localKey !== signature) {
-    hit = tryResolve(localKey);
+  if (!isTerminalHit(hit) && requestedLeg && legacySignature !== signature) {
+    const legacyHit = tryResolve(legacySignature);
+    if (isTerminalHit(legacyHit) || (!isTerminalHit(hit) && legacyHit?.mode === "auto")) {
+      hit = legacyHit;
+    }
   }
-  if (!hit?.record && localKey) {
+  if (!requestedLeg) {
+    // Tercih yok: yeni (statement/counter) + legacy imzaları dene
+    // fuzzy suggest exact auto’yu engellemesin
+    for (const leg of [
+      ACCOUNTING_MEMORY_LUCA_LEG.STATEMENT,
+      ACCOUNTING_MEMORY_LUCA_LEG.COUNTER,
+      "",
+    ]) {
+      if (isTerminalHit(hit) && hit.mode === "auto") break;
+      if (hit?.mode === "conflict") break;
+      const sig = buildAccountingMemorySignature({
+        bankId: bank,
+        direction: dir,
+        transactionType: type,
+        currency: cur,
+        descriptionFingerprint: fp,
+        lucaLeg: leg,
+      });
+      if (sig === signature && hit) continue;
+      const next = tryResolve(sig);
+      if (!next) continue;
+      if (next.mode === "auto" || next.mode === "conflict") {
+        hit = next;
+        if (next.mode === "conflict") break;
+        if (next.mode === "auto") break;
+      } else if (
+        next.mode === "review" &&
+        (!hit || hit.mode === "none" || hit.mode === "suggest")
+      ) {
+        hit = next;
+      } else if (
+        !hit ||
+        hit.mode === "none" ||
+        (hit.mode === "suggest" && next.mode === "suggest")
+      ) {
+        // exact analysis miss → keep looking; only keep suggest as last resort
+        if (!isTerminalHit(hit)) hit = next;
+      }
+    }
+  }
+  if (!isTerminalHit(hit) && localKey && localKey !== signature) {
+    const localHit = tryResolve(localKey);
+    if (
+      localHit?.mode === "auto" ||
+      localHit?.mode === "conflict" ||
+      (!isTerminalHit(hit) && localHit?.mode === "review")
+    ) {
+      hit = localHit;
+    }
+  }
+  if (!isTerminalHit(hit) && localKey) {
     const canon = buildCariMemoryCanonicalKey(localKey, dir);
-    if (canon && canon !== localKey) hit = tryResolve(canon);
+    if (canon && canon !== localKey) {
+      const canonHit = tryResolve(canon);
+      if (
+        canonHit?.mode === "auto" ||
+        canonHit?.mode === "conflict" ||
+        (!isTerminalHit(hit) && canonHit?.mode === "review")
+      ) {
+        hit = canonHit;
+      }
+    }
   }
 
   if (!hit?.record) {
@@ -909,6 +1135,51 @@ export function consumeFirmAccountingMemory({
   }
 
   const rec = hit.record;
+  // Explicit unknown (legacy / crafted) → sessiz auto yok
+  if (
+    String(rec.lucaLegConfidence || "").toLowerCase() === "unknown" &&
+    !normalizeAccountingMemoryLucaLeg(rec.lucaLeg || "")
+  ) {
+    return {
+      mode: "review",
+      autoApply: false,
+      record: rec,
+      signature,
+      rejectReason: "luca_leg_unknown",
+      reviewRequired: true,
+      message:
+        "Öğrenen hafıza bacağı belirsiz; otomatik uygulanmadı.",
+    };
+  }
+  const recordLegInfo = resolveAccountingMemoryLucaLeg({
+    lucaLeg: rec.lucaLeg || "",
+    accountCode: rec.accountCode || "",
+    allowInfer: String(rec.lucaLegConfidence || "").toLowerCase() !== "unknown",
+  });
+  // Bacak belirlenemeyen legacy → sessiz auto yok
+  if (!recordLegInfo.leg) {
+    return {
+      mode: "review",
+      autoApply: false,
+      record: rec,
+      signature,
+      rejectReason: "luca_leg_unknown",
+      reviewRequired: true,
+      message:
+        "Öğrenen hafıza bacağı belirsiz; otomatik uygulanmadı.",
+    };
+  }
+  // İstenen bacak varsa yanlış bacak kaydı uygulanmaz
+  if (requestedLeg && recordLegInfo.leg !== requestedLeg) {
+    return {
+      mode: "none",
+      autoApply: false,
+      record: null,
+      signature,
+      rejectReason: "luca_leg_mismatch",
+    };
+  }
+
   // Banka / yön / para birimi sıkı
   if (rec.bankId && bank && canonicalizeBankId(rec.bankId) !== canonicalizeBankId(bank)) {
     return {
@@ -985,6 +1256,7 @@ export function consumeFirmAccountingMemory({
       decisionSource: "Öğrenen Hafıza",
       reviewRequired: true,
       reason: `Hard kural engeli: ${hard.reasons.join(", ")}`,
+      lucaLeg: recordLegInfo.leg,
     };
   }
 
@@ -1004,6 +1276,13 @@ export function consumeFirmAccountingMemory({
     decisionSource: "Öğrenen Hafıza",
     confidence: hit.confidence ?? rec.confidence,
     matchedSignal: "exact_user_confirmed_signature",
+    lucaLeg: recordLegInfo.leg,
+    lucaLegConfidence: recordLegInfo.confidence,
+    record: {
+      ...rec,
+      lucaLeg: recordLegInfo.leg,
+      lucaLegConfidence: recordLegInfo.confidence,
+    },
   };
 }
 

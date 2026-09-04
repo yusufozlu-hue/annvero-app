@@ -395,6 +395,7 @@ test("15. server kaydı USER_LEARNED olarak resolver'a verilebilir", async () =>
     direction: "GIRIS",
     transactionType: "FAIZ_GELIRI",
     learningMemory: api.rows,
+    lucaLeg: "counter",
   });
   assert.equal(decision.source, ACCOUNTING_DECISION_SOURCE.USER_LEARNED);
   assert.equal(decision.accountCode, "320.01.USER");

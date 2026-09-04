@@ -92,14 +92,21 @@ function makeLearningRow({
   transactionType = "FAIZ_GELIRI",
   currency = "TRY",
   description = "FAIZ GELIR ODEME",
+  lucaLeg = "",
 } = {}) {
   const fp = buildSafeDescriptionFingerprint(description);
+  const leg =
+    lucaLeg ||
+    (/^102(\.|$)/.test(String(accountCode || "").trim())
+      ? "statement"
+      : "counter");
   const signature = buildAccountingMemorySignature({
     bankId,
     direction,
     transactionType,
     currency,
     descriptionFingerprint: fp,
+    lucaLeg: leg,
   });
   return {
     id: `lm-${signature.slice(-8)}`,
@@ -117,6 +124,8 @@ function makeLearningRow({
       direction,
       currency,
       bankId,
+      lucaLeg: leg,
+      lucaLegConfidence: "explicit",
       canonicalAnalysisKey: signature,
     }),
   };
@@ -267,6 +276,7 @@ test("7. user learned sistem kuralını ezer", () => {
     systemCandidates: [
       { accountCode: "642.01.001", confidence: 50, scopeKey: "sys-faiz" },
     ],
+    lucaLeg: "counter",
   });
   assert.equal(hit.source, ACCOUNTING_DECISION_SOURCE.USER_LEARNED);
   assert.equal(hit.accountCode, "320.01.USER");
