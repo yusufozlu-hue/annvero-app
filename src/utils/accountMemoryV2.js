@@ -21,6 +21,7 @@ import {
   VIRMAN_TYPES,
 } from "@/src/utils/bankTransactionType";
 import { isForbiddenVadeliMemorySuggestion } from "@/src/utils/vadeliMevduatLifecycle";
+import { shouldSkipOutputResolveTrusted } from "@/src/utils/accountingDecisionTrust";
 import {
   MEMORY_AUTO_APPLY_MIN_CONFIDENCE,
   MEMORY_AUTO_DISABLE_CORRECTION_RATIO,
@@ -1868,6 +1869,15 @@ export function applyAccountMemoryV2RecordsToRows(
 
   const nextRows = rows.map((row) => {
     if (String(row.hesapKodu || "").trim()) return row;
+    // Faz 4: yalnız doğrulanmış accountingDecision zarfında skip
+    if (
+      shouldSkipOutputResolveTrusted(row, {
+        companyId: companyId,
+        firmaId: companyId,
+      })
+    ) {
+      return row;
+    }
 
     // Luca satırlarında direction genelde yok. borc/alacak ile çıkarmak YANLIŞ:
     // GİRİŞ hareketinin cari bacağı alacaklıdır → CIKIS sanılır, GIRIS hafızası kaçırılır.

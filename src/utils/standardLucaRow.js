@@ -22,6 +22,10 @@ import {
 } from "@/src/utils/companyCenter";
 import { formatDateTR, parseDateTR } from "@/src/utils/formatDateTR";
 import { parseMoneyTR } from "@/src/utils/parseMoneyTR";
+import {
+  shouldSkipOutputResolve,
+  stampBankMaterializedLucaRow,
+} from "@/src/utils/outputAccountingDecisionFacade";
 
 export const STANDARD_LUCA_ROW_FORMAT = "standard-luca-row-v1";
 
@@ -293,6 +297,9 @@ export function finalizeStandardLucaRow(row) {
     kontrolNotu: String(row.kontrolNotu || "").trim(),
     hafizaEslesme: Boolean(row.hafizaEslesme),
     manuallyEdited: Boolean(row.manuallyEdited),
+    ...(row.accountingDecision && typeof row.accountingDecision === "object"
+      ? { accountingDecision: row.accountingDecision }
+      : {}),
     ...(row.hafizaGuvenSkoru !== undefined && row.hafizaGuvenSkoru !== null
       ? { hafizaGuvenSkoru: Number(row.hafizaGuvenSkoru) }
       : {}),
@@ -463,6 +470,23 @@ export function enrichElektrawebStandardLucaRow(row, context = {}) {
       []
   );
 
+  // Faz 4: dondurulmuş karar / manuel satır → Elektra matcher yeniden çözmez
+  if (
+    shouldSkipOutputResolve(baseRow, {
+      companyId: context.companyId || context.firmaId || baseRow.firmaId || "",
+      firmaId: context.companyId || context.firmaId || baseRow.firmaId || "",
+    })
+  ) {
+    return {
+      ...baseRow,
+      riskPuani: row.riskPuani,
+      riskler: row.riskler || [],
+      risk: row.risk,
+      durum: row.durum,
+      riskSeviyesi: row.riskSeviyesi,
+    };
+  }
+
   if (!accountPlan.length) {
     return {
       ...baseRow,
@@ -586,7 +610,7 @@ function buildBankLucaLine({
     lineRole ||
     (Number(borc) > 0 ? "borc" : Number(alacak) > 0 ? "alacak" : "empty");
 
-  return finalizeStandardLucaRow({
+  const baseLine = finalizeStandardLucaRow({
     id: `${movement.id}-${hesapKodu}-${borc}-${alacak}`,
     firmaId: context.firmaId || "",
     kaynakTipi: KAYNAK_TIPI.BANKA,
@@ -635,6 +659,17 @@ function buildBankLucaLine({
     missingHesapCategory: movement.missingHesapCategory || "",
     vadeliLifecycleRole: movement.vadeliLifecycleRole || "",
     matchedMemoryId: movement.matchedMemoryId || null,
+  });
+
+  // Faz 4: materialize anında karar zarfı — Luca/Elektra yeniden resolve etmez
+  return stampBankMaterializedLucaRow(baseLine, {
+    bankAccountCode: movement.accountCode || "",
+    counterAccountCode: movement.counterAccountCode || "",
+    source: movement.matchedMemoryId ? "USER_LEARNED" : "SYSTEM_RULE",
+    matchedMemoryId: movement.matchedMemoryId || null,
+    requiresReview: Boolean(movement.missingHesapCategory) && !hesapKodu,
+    reason: "bank_materialize",
+    companyId: context.firmaId || movement.firmaId || "",
   });
 }
 
@@ -905,6 +940,10 @@ export function stripStandardLucaRow(row) {
     riskDurumu: row.riskDurumu,
     kontrolNotu: row.kontrolNotu,
     hafizaEslesme: row.hafizaEslesme,
+    manuallyEdited: Boolean(row.manuallyEdited),
+    ...(row.accountingDecision && typeof row.accountingDecision === "object"
+      ? { accountingDecision: row.accountingDecision }
+      : {}),
     _movementId: row._movementId,
     sourceMovementId: row.sourceMovementId || row._movementId,
     sourceRowIndex: row.sourceRowIndex,

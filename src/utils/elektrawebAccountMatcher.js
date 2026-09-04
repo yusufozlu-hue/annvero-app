@@ -10,6 +10,7 @@ import {
 } from "@/src/utils/cariAccountMatcher";
 import { extractSeriesPrefix, MEMORY_MATCH_LABEL } from "@/src/utils/previewRowEdit";
 import { normalizeParserText } from "@/src/utils/textNormalize";
+import { shouldSkipOutputResolveTrusted } from "@/src/utils/accountingDecisionTrust";
 
 export const ESLESME_YONTEMI = {
   OGRENEN_HAFIZA: "Öğrenen Hafıza",
@@ -415,6 +416,30 @@ export function matchAccountCode(
       kontrolNotu: String(row.kontrolNotu || "").trim(),
       debug,
     });
+  }
+
+  // Faz 4: doğrulanmış accountingDecision → yeniden keyword/kural/cari çözümü yok
+  if (
+    shouldSkipOutputResolveTrusted(row, {
+      companyId: companyMappings.companyId || row.firmaId || "",
+      firmaId: companyMappings.companyId || row.firmaId || "",
+    })
+  ) {
+    const frozenCode = String(
+      row.hesapKodu || row.accountingDecision?.accountCode || ""
+    ).trim();
+    if (frozenCode) {
+      return buildMatchSuccess({
+        hesapKodu: frozenCode,
+        eslesmeYontemi: row.eslesmeYontemi || "accounting_decision",
+        hafizaEslesme: Boolean(row.hafizaEslesme),
+        kontrolNotu: String(row.kontrolNotu || "").trim(),
+        debug,
+      });
+    }
+    if (row.accountingDecision?.requiresReview) {
+      return buildMatchFailure(debug, "accounting_decision_requires_review");
+    }
   }
 
   const existingCode = String(row.hesapKodu || "").trim();

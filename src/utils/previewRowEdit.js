@@ -1,5 +1,6 @@
 import { buildElektrawebCombinedSearchText } from "@/src/utils/elektrawebAccountMatcher";
 import { normalizeParserText } from "@/src/utils/textNormalize";
+import { stampManualAccountingDecision } from "@/src/utils/outputAccountingDecisionFacade";
 
 export const DOCUMENT_TYPE_OPTIONS = [
   "EA",
@@ -200,7 +201,7 @@ export function applyStandardLucaRowEditDraft(row, draft) {
   const fisNoRaw = String(draft.fisNo ?? "").trim();
   const parsedFisNo = Number(fisNoRaw);
 
-  return {
+  const edited = {
     ...row,
     fisNo: fisNoRaw === "" ? "" : Number.isNaN(parsedFisNo) ? fisNoRaw : parsedFisNo,
     fisTarihi: String(draft.fisTarihi || "").trim(),
@@ -220,6 +221,8 @@ export function applyStandardLucaRowEditDraft(row, draft) {
     riskDurumu: hesapKodu ? "" : "HESAP_EKSIK",
     manuallyEdited: true,
   };
+
+  return stampManualAccountingDecision(edited);
 }
 
 export function buildStandardLucaLearningMemoryPayload(originalRow, draft, companyId) {

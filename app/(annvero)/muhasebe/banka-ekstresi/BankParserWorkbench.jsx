@@ -1751,6 +1751,117 @@ export default function BankParserWorkbench() {
     );
   };
 
+  const exportElektraweb = async (ignoreWarnings = false, options = {}) => {
+    if (isExporting) return;
+
+    const allowPartialMissing = Boolean(options.allowPartialMissing);
+    const allRows = lucaRef.current;
+    if (!lucaReady || !allRows.length) {
+      showToast("Önce “Luca Satırlarını Hazırla” ile satırları oluşturun.", "error");
+      return;
+    }
+
+    const missingReport = analyzeMissingHesapRows(allRows);
+    setMissingHesapReport(missingReport);
+
+    if (missingReport.missingCount > 0 && !allowPartialMissing) {
+      setExportValidation({
+        hasBlockingErrors: true,
+        globalErrors: [buildMissingHesapSummaryText(missingReport)],
+        blockingMessages: (missingReport.categories || []).map(
+          (item) => `${item.category}: ${item.count} satır`
+        ),
+        missingReport,
+        errorCategoryCounts: { eksikHesap: missingReport.missingCount },
+      });
+      showToast(
+        `${missingReport.missingCount} eksik hesap satırı var. İnceleyin veya kısmi export seçin.`,
+        "error"
+      );
+      return;
+    }
+
+    const readyRows = allowPartialMissing
+      ? allRows.filter((row) => {
+          const hesap = String(row?.hesapKodu || "").trim();
+          if (!hesap) return false;
+          if (row?.riskDurumu === "HESAP_EKSIK") return false;
+          return true;
+        })
+      : allRows;
+
+    if (allowPartialMissing && !readyRows.length) {
+      showToast("Fişe hazır satır yok. Önce hesap eşleşmelerini tamamlayın.", "error");
+      return;
+    }
+
+    const { runId, signal } = beginPipelineRun();
+    setIsExporting(true);
+    parserJob.begin({
+      stage: "Elektraweb",
+      detail: "Elektraweb Excel hazırlanıyor",
+    });
+
+    try {
+      const { exportElektrawebFromStandardLucaRows } = await import(
+        "@/src/utils/elektrawebOutputAdapter"
+      );
+      const result = await exportElektrawebFromStandardLucaRows(readyRows, {
+        companyId: selectedCompanyId,
+        bankName: selectedBank,
+        filePrefix: `${String(selectedBank || "banka").toLowerCase()}_elektraweb`,
+        ignoreWarnings,
+        onValidationFail: setExportValidation,
+        signal,
+      });
+
+      if (!isRunActive(runId) || signal.aborted || result?.reason === "cancelled") {
+        return;
+      }
+
+      if (!result?.ok) {
+        if (result?.reason === "warnings" && result?.needsConfirm) {
+          const confirmed = window.confirm(
+            buildExportWarningConfirmMessage(result.validation)
+          );
+          if (confirmed) {
+            setIsExporting(false);
+            await exportElektraweb(true, options);
+          }
+          return;
+        }
+        showToast(
+          result?.message || "Elektraweb export tamamlanamadı.",
+          "error"
+        );
+        parserJob.markError(
+          new Error(result?.message || "Elektraweb export hatası")
+        );
+        return;
+      }
+
+      setExportValidation(null);
+      setCompletedSteps((prev) => ({ ...prev, excel: true }));
+      parserJob.markSuccess(
+        `Elektraweb çıktısı: ${result.rowCount || readyRows.length} satır`
+      );
+      showToast(
+        `Elektraweb çıktısı hazır (${result.rowCount || readyRows.length} satır).`,
+        "success"
+      );
+    } catch (error) {
+      if (error?.name === "AbortError" || signal.aborted || !isRunActive(runId)) {
+        return;
+      }
+      console.error("[banka-ekstresi] elektraweb export failed", error);
+      parserJob.markError(error);
+      showToast(error?.message || "Elektraweb export hatası.", "error");
+    } finally {
+      if (isRunActive(runId)) setIsExporting(false);
+      bankJobStateRef.current = createInitialBankJobState();
+    }
+  };
+
   const exportExcel = async (ignoreWarnings = false, options = {}) => {
     if (isExporting) return;
 
@@ -8162,7 +8273,7 @@ export default function BankParserWorkbench() {
               isExporting={isExporting}
               lucaReady={lucaReady}
               onDownloadExcel={() => exportExcel()}
-              onDownloadElektra={() => exportExcel()}
+              onDownloadElektra={() => exportElektraweb()}
               onReviewMissing={handleReviewMissingAccounts}
               onPartialExport={handlePartialExportConfirm}
               onGoToLucaProducer={handleGoToLucaProducer}
