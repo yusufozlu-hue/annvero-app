@@ -42,6 +42,7 @@ export async function exportStandardLucaExcel(rows = [], options = {}) {
     ignoreWarnings = false,
     signal,
     onProgress,
+    sheetName = "Luca Fiş",
   } = options;
 
   if (!rows.length) {
@@ -135,7 +136,10 @@ export async function exportStandardLucaExcel(rows = [], options = {}) {
       ]);
 
       const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Luca Fisleri");
+      const safeSheet = String(sheetName || "Luca Fisleri")
+        .replace(/[\\/?*[\]]/g, " ")
+        .slice(0, 31) || "Luca Fisleri";
+      XLSX.utils.book_append_sheet(workbook, worksheet, safeSheet);
       XLSX.writeFile(workbook, `${fileSuffix}.xlsx`);
 
       await yieldToMain();

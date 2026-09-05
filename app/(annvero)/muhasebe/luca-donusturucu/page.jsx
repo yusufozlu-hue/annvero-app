@@ -47,6 +47,7 @@ import {
   applyAccountMemoryV1ToRows,
   saveAccountMemoryFromEdit,
 } from "@/src/utils/accountMemoryV1";
+import { applyOutputAccountingDecisionsToRows } from "@/src/utils/outputAccountingDecisionFacade";
 import { buildExportWarningConfirmMessage } from "@/src/utils/previewExportValidation";
 import {
   logParserError,
@@ -325,8 +326,16 @@ export default function LucaDonusturucuPage() {
       sourceType,
   });
 
-  const applyPreviewAccountMemory = (rows) =>
-    applyAccountMemoryV1ToRows(rows, getAccountMemoryContext(rows));
+  const applyPreviewAccountMemory = (rows) => {
+    const ctx = getAccountMemoryContext(rows);
+    // Faz 4: dondurulmuş kararlar korunur; yalnız metadata-less satırlar resolve/fill
+    const withDecisions = applyOutputAccountingDecisionsToRows(rows, {
+      firmaId: selectedCompanyId,
+      companyId: selectedCompanyId,
+      bankName: ctx.kaynakAdi,
+    });
+    return applyAccountMemoryV1ToRows(withDecisions, ctx);
+  };
 
   useEffect(() => {
     const refreshLocalCompanyData = () => {

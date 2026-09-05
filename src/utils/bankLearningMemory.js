@@ -1,6 +1,7 @@
 import { normalizeParserText } from "@/src/utils/textNormalize";
 import { finalizeStandardLucaRow, KAYNAK_TIPI } from "@/src/utils/standardLucaRow";
 import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
+import { shouldSkipOutputResolve } from "@/src/utils/outputAccountingDecisionFacade";
 
 export const LEARNING_MEMORY_APPLIED_LABEL = "Öğrenen hafızadan eşleşti";
 
@@ -257,6 +258,15 @@ export function applyLearningMemoryToStandardLucaRows(
   if (!rows.length || !learningMemory.length) return rows;
 
   return rows.map((row) => {
+    if (
+      shouldSkipOutputResolve(row, {
+        companyId: context.firmaId || context.companyId || row.firmaId || "",
+        firmaId: context.firmaId || context.companyId || row.firmaId || "",
+      })
+    ) {
+      return row;
+    }
+
     const match = findBankLucaLearningMemoryMatch(row, learningMemory, context);
     if (!match) return row;
 
