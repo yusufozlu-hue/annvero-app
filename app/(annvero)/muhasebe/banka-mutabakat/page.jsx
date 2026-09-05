@@ -7,7 +7,11 @@ import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import BankaMutabakatV2Workspace from "./components/BankaMutabakatV2Workspace";
 import { getCompanyDisplayName } from "@/src/utils/companies";
-import { normalizeCompanyRecord, savePendingLucaRows } from "@/src/utils/companyCenter";
+import { normalizeCompanyRecord } from "@/src/utils/companyCenter";
+import {
+  publishBankaMutabakatTransfer,
+  buildLucaProducerHref,
+} from "@/src/utils/canonicalFisControlTransfer";
 import {
   applyManualMatchToAnalysis,
   approveMutabakatMatch,
@@ -25,10 +29,6 @@ import {
 } from "@/src/utils/bankaMutabakat";
 import { V2_FILTER, persistReconciliationMatch } from "@/src/utils/bankaMutabakatV2";
 import { saveMutabakatManualMatch } from "@/src/utils/mutabakatMatchMemory";
-import {
-  buildStandardLucaTransferPayload,
-  KAYNAK_TIPI,
-} from "@/src/utils/standardLucaRow";
 
 const inputClassName =
   "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-white outline-none focus:border-indigo-500";
@@ -283,7 +283,7 @@ export default function BankaMutabakatPage() {
     showToast("Eşleşme kaldırıldı", "success");
   };
 
-  const handleCreateVoucher = (bankPanelItem) => {
+  const handleCreateVoucher = async (bankPanelItem) => {
     const bankRow = bankPanelItem?.rawRow;
     if (!bankRow) return;
 
@@ -302,18 +302,25 @@ export default function BankaMutabakatPage() {
       return;
     }
 
-    savePendingLucaRows(
-      buildStandardLucaTransferPayload({
-        firmaId: selectedCompanyId,
-        companyName: getCompanyDisplayName(selectedCompany),
-        kaynakTipi: KAYNAK_TIPI.BANKA,
-        kaynakAdi: selectedBank,
-        rows: lucaRows,
-      })
-    );
+    const saved = await publishBankaMutabakatTransfer({
+      companyId: selectedCompanyId,
+      companyName: getCompanyDisplayName(selectedCompany),
+      bankName: selectedBank,
+      rows: lucaRows,
+    });
+    if (!saved.ok) {
+      showToast("Fiş aktarımı kaydedilemedi", "error");
+      return;
+    }
 
     showToast("Fiş Luca dönüştürücüye aktarıldı", "success");
-    router.push("/muhasebe/luca-donusturucu");
+    router.push(
+      buildLucaProducerHref({
+        companyId: selectedCompanyId,
+        runId: saved.runId,
+        source: "bank",
+      })
+    );
   };
 
   const downloadMutabakatReport = (mode = "all") => {

@@ -16,13 +16,15 @@ import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEn
 import {
   assertLucaTransferHydrateBinding,
   clearAllLucaTransferDatasets,
-  clearPendingLucaRows,
   deleteLucaTransferDataset,
-  loadLucaTransferDataset,
-  loadPendingLucaRows,
   resolveAuthUserIdForTransfer,
-  savePendingLucaRows,
 } from "@/src/utils/companyCenter";
+import {
+  migrateLegacyPendingOnce,
+  readCanonicalTransferSnapshot,
+  reviseCanonicalTransferFromEdit,
+  markCanonicalTransferConsumed,
+} from "@/src/utils/canonicalFisControlTransfer";
 import {
   analyzeStandardLucaRows,
   buildFisKontrolExcelRows,
@@ -219,15 +221,16 @@ export default function FisKontrolPage() {
     }
 
     if (urlSource || urlRunId || urlCompany) {
-      const transferred = await loadLucaTransferDataset({
-        source: transferSource,
+      // Canonical facade — IDB/pending doğrudan UI’da yok
+      const canonical = await readCanonicalTransferSnapshot({
         companyId: activeCompanyId,
+        source: transferSource,
         runId: urlRunId,
         authUserId,
         urlCompanyId: urlCompany || activeCompanyId,
-        strictBinding: true,
-        purgeOnReject: true,
       });
+
+      const transferred = canonical.ok ? canonical.snapshot : null;
 
       if (!transferred) {
         setHydrateEmptyMessage(
@@ -270,32 +273,55 @@ export default function FisKontrolPage() {
       }
       hydratedRunKeyRef.current = runKey;
       applyNormalizedPayload(normalizeIncomingPayload(transferred));
+      await markCanonicalTransferConsumed(transferred, {
+        consumer: "fis_kontrol",
+        companyId: activeCompanyId,
+      });
       return;
     }
 
-    // Legacy pending — yalnız aynı firma + oturum; aksi halde temizle
-    const pending = loadPendingLucaRows();
-    if (!pending?.rows?.length || !isStandardLucaPayload(pending)) {
-      applyNormalizedPayload(null);
+    // Legacy pending — tek seferlik canonical migrate; paralel ikinci okuma yok
+    const migrated = await migrateLegacyPendingOnce({
+      companyId: activeCompanyId,
+      authUserId,
+    });
+    if (migrated.requiresReview && !migrated.migrated) {
       setHydrateEmptyMessage(
-        "Aktarım verisi bulunamadı. Banka Parser’dan “Fiş Kontrol’e Git” ile gönderin."
-      );
-      return;
-    }
-
-    const pendingFirma = String(pending.firmaId || pending.companyId || "").trim();
-    if (!pendingFirma || pendingFirma !== activeCompanyId) {
-      clearPendingLucaRows();
-      setHydrateEmptyMessage(
-        "Önceki firmanın bekleyen fişleri temizlendi. Aktif firma için Banka Parser’dan yeniden gönderin."
+        "Eski aktarım kaydı bozuk veya güvenli değil. Banka Parser’dan yeniden gönderin."
       );
       applyNormalizedPayload(null);
-      processedKeysRef.current = new Set();
-      hydratedRunKeyRef.current = "";
+      return;
+    }
+    if (migrated.migrated && migrated.snapshot) {
+      const runKey = `canonical:${migrated.snapshot.companyId}:${migrated.snapshot.runId}:${authUserId}`;
+      if (hydratedRunKeyRef.current === runKey) return;
+      hydratedRunKeyRef.current = runKey;
+      applyNormalizedPayload(normalizeIncomingPayload(migrated.snapshot));
+      await markCanonicalTransferConsumed(migrated.snapshot, {
+        consumer: "fis_kontrol",
+        companyId: activeCompanyId,
+      });
       return;
     }
 
-    applyNormalizedPayload(normalizeIncomingPayload(pending));
+    const canonical = await readCanonicalTransferSnapshot({
+      companyId: activeCompanyId,
+      source: "bank",
+      authUserId,
+      urlCompanyId: activeCompanyId,
+    });
+    if (canonical.ok && canonical.snapshot) {
+      const runKey = `canonical:${canonical.snapshot.companyId}:${canonical.snapshot.runId}:${authUserId}`;
+      if (hydratedRunKeyRef.current === runKey) return;
+      hydratedRunKeyRef.current = runKey;
+      applyNormalizedPayload(normalizeIncomingPayload(canonical.snapshot));
+      return;
+    }
+
+    applyNormalizedPayload(null);
+    setHydrateEmptyMessage(
+      "Aktarım verisi bulunamadı. Banka Parser’dan “Fiş Kontrol’e Git” ile gönderin."
+    );
   }, [
     selectedCompanyId,
     urlCompanyId,
@@ -582,21 +608,32 @@ export default function FisKontrolPage() {
     [analysis.issues]
   );
 
-  const persistRows = (nextRows) => {
+  const persistRows = async (nextRows) => {
     if (!payload) return;
 
-    const nextPayload = buildStandardLucaTransferPayload({
-      firmaId: payload.firmaId || payload.companyId,
-      companyName:
-        payload.companyName ||
-        getCompanyDisplayName({ id: payload.companyId, name: payload.companyName }),
-      kaynakTipi: payload.kaynakTipi,
-      kaynakAdi: payload.kaynakAdi,
-      rows: nextRows,
+    // Faz 6: düzenleme canonical revision üretir; pending’e ikinci kopya yazılmaz
+    const revised = await reviseCanonicalTransferFromEdit({
+      baseSnapshot: payload,
+      nextRows,
+      companyId: payload.firmaId || payload.companyId || selectedCompanyId,
+      authUserId: payload.authUserId || "",
     });
 
-    savePendingLucaRows(nextPayload);
-    setPayload(nextPayload);
+    if (revised.ok && revised.snapshot) {
+      setPayload(revised.snapshot);
+      setRows(nextRows);
+      hydratedRunKeyRef.current = `canonical:${revised.snapshot.companyId}:${revised.snapshot.runId}:edit`;
+      return;
+    }
+
+    // Revision conflict → sessiz overwrite yok; mevcut UI satırlarını koru
+    if (revised.code === "REVISION_CONFLICT") {
+      setHydrateEmptyMessage(
+        "Başka bir sekmede bu aktarım güncellendi. Sayfayı yenileyip tekrar deneyin."
+      );
+      return;
+    }
+
     setRows(nextRows);
   };
 

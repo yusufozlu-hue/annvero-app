@@ -35,12 +35,16 @@ import {
   loadRuleEngineFromStorage,
   normalizeCompanyRecord,
   saveAccountPlansToStorage,
-  saveLucaTransferDataset,
-  buildLucaTransferContentFingerprint,
-  buildFisKontrolTransferHref,
   resolveAuthUserIdForTransfer,
+  buildFisKontrolTransferHref,
   setCompanyAccountPlan,
 } from "@/src/utils/companyCenter";
+import {
+  publishBankParserTransfer,
+  publishArchivePrepareTransfer,
+  publishLucaProducerTransfer,
+  buildLucaProducerHref,
+} from "@/src/utils/canonicalFisControlTransfer";
 import { loadAccountingRulesFromStorage } from "@/src/utils/accountingRuleEngine";
 import {
   buildStandardLucaTransferPayload,
@@ -3181,21 +3185,15 @@ export default function BankParserWorkbench() {
       return;
     }
 
-    const runId = `bank-${selectedCompanyId.slice(0, 8)}-${Date.now()}`;
-    const payload = buildStandardLucaTransferPayload({
-      firmaId: selectedCompanyId,
+    const saved = await publishLucaProducerTransfer({
+      companyId: selectedCompanyId,
       companyName: getCompanyDisplayName(selectedCompany),
-      kaynakTipi: KAYNAK_TIPI.BANKA,
-      kaynakAdi: selectedBank,
-      source: "bank",
-      bankId: selectedBank,
       bankName: selectedBank,
-      runId,
-      movementCount: movementsRef.current.length,
       rows: lucaRef.current,
+      movementCount: movementsRef.current.length,
+      sourceId: String(canonicalSourceIdRef.current || "").trim(),
+      source: "bank",
     });
-
-    const saved = await saveLucaTransferDataset(payload);
     if (!saved.ok) {
       alert(
         "Banka Parser aktarımı kaydedilemedi. Lütfen tekrar deneyin veya Excel’i buradan indirip Luca’ya yükleyin."
@@ -3207,9 +3205,11 @@ export default function BankParserWorkbench() {
     setExportValidation(null);
     logStandardLucaReport("banka-transfer", lucaRef.current);
     router.push(
-      `/muhasebe/luca-donusturucu?source=bank&companyId=${encodeURIComponent(
-        selectedCompanyId
-      )}&runId=${encodeURIComponent(runId)}`
+      buildLucaProducerHref({
+        companyId: selectedCompanyId,
+        runId: saved.runId,
+        source: "bank",
+      })
     );
   };
 
@@ -3236,8 +3236,6 @@ export default function BankParserWorkbench() {
     fisKontrolNavLockRef.current = true;
     setFisKontrolNavigating(true);
     try {
-      const contentFp = buildLucaTransferContentFingerprint(lucaRef.current);
-      const runId = `bank-fis-${selectedCompanyId.slice(0, 8)}-${contentFp}`;
       const authUserId = await resolveAuthUserIdForTransfer();
       if (!authUserId) {
         showToast(
@@ -3246,23 +3244,16 @@ export default function BankParserWorkbench() {
         );
         return;
       }
-      const payload = buildStandardLucaTransferPayload({
-        firmaId: selectedCompanyId,
+      // Faz 6: tek canonical snapshot — çift tıklamada aynı transferId/revision
+      const saved = await publishBankParserTransfer({
+        companyId: selectedCompanyId,
         companyName: getCompanyDisplayName(selectedCompany),
-        kaynakTipi: KAYNAK_TIPI.BANKA,
-        kaynakAdi: selectedBank,
-        source: "bank",
-        bankId: selectedBank,
         bankName: selectedBank,
-        runId,
-        movementCount: movementsRef.current.length,
         rows: lucaRef.current,
+        movementCount: movementsRef.current.length,
+        sourceId: String(canonicalSourceIdRef.current || "").trim(),
+        authUserId,
       });
-      payload.authUserId = authUserId;
-      payload.contentFingerprint = contentFp;
-      payload.sourceId = String(canonicalSourceIdRef.current || "").trim();
-
-      const saved = await saveLucaTransferDataset(payload);
       if (!saved.ok) {
         showToast(
           "Fiş Kontrol aktarımı kaydedilemedi. Banka Parser sonucunuz korunur; lütfen tekrar deneyin.",
@@ -3271,11 +3262,13 @@ export default function BankParserWorkbench() {
         return;
       }
 
-      const href = buildFisKontrolTransferHref({
-        companyId: selectedCompanyId,
-        runId: saved.runId || runId,
-        source: "bank",
-      });
+      const href =
+        saved.href ||
+        buildFisKontrolTransferHref({
+          companyId: selectedCompanyId,
+          runId: saved.runId,
+          source: "bank",
+        });
       router.push(href);
     } finally {
       fisKontrolNavLockRef.current = false;
@@ -3356,27 +3349,29 @@ export default function BankParserWorkbench() {
           rows,
           movementCount,
         }) => {
-          const contentFp = buildLucaTransferContentFingerprint(rows);
-          const runId = `bank-fis-${String(companyId).slice(0, 8)}-${contentFp}`;
           if (!authUserId) {
             return { ok: false, error: "auth_required" };
           }
-          const payload = buildStandardLucaTransferPayload({
-            firmaId: companyId,
+          // Canonical facade — aynı fingerprint+revision ikinci transfer üretmez
+          const saved = await publishArchivePrepareTransfer({
+            companyId,
             companyName: getCompanyDisplayName(selectedCompany),
-            kaynakTipi: KAYNAK_TIPI.BANKA,
-            kaynakAdi: selectedBank,
-            source: "bank",
-            bankId: selectedBank,
             bankName: selectedBank,
-            runId,
-            movementCount,
             rows,
+            movementCount,
+            sourceId,
+            authUserId,
           });
-          payload.authUserId = authUserId;
-          payload.contentFingerprint = contentFp;
-          payload.sourceId = sourceId;
-          return saveLucaTransferDataset(payload);
+          if (!saved.ok) {
+            return { ok: false, error: saved.code || "canonical_write_failed" };
+          }
+          return {
+            ok: true,
+            runId: saved.runId,
+            transferId: saved.transferId,
+            revision: saved.revision,
+            deduped: Boolean(saved.deduped),
+          };
         },
         buildHref: ({ companyId, runId }) =>
           buildFisKontrolTransferHref({

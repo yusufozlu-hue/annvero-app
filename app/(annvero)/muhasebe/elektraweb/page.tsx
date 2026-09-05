@@ -11,12 +11,15 @@ import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
   normalizeCompanyRecord,
-  saveLucaTransferDataset,
   loadAccountPlansFromStorage,
   getCompanyAccountPlansWithDiagnostics,
   logElektrawebAccountPlanDiagnostics,
   normalizeAccountPlanForMatching,
 } from "@/src/utils/companyCenter";
+import {
+  publishElektrawebLucaTransfer,
+  buildLucaProducerHref,
+} from "@/src/utils/canonicalFisControlTransfer";
 import {
   buildElektrawebCompanyMappings,
   buildElektrawebCombinedSearchText,
@@ -25,7 +28,6 @@ import { fetchLearningMemoryForCompany } from "@/src/utils/learningMemory";
 import { loadAccountingRulesFromStorage } from "@/src/utils/accountingRuleEngine";
 import {
   buildElektrawebPreviewRows,
-  buildStandardLucaTransferPayload,
   getStandardLucaMissingBadges,
   logElektrawebPreviewDiagnostics,
   logStandardLucaReport,
@@ -311,21 +313,13 @@ export default function ElektrawebPage() {
       return;
     }
 
-    const runId = `elektraweb-${String(selectedCompanyId).slice(0, 8)}-${Date.now()}`;
-    const payload = buildStandardLucaTransferPayload({
-      firmaId: selectedCompanyId,
+    const saved = await publishElektrawebLucaTransfer({
+      companyId: selectedCompanyId,
       companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
-      kaynakTipi: "ELEKTRAWEB",
-      kaynakAdi: "ELEKTRAWEB",
-      source: "elektraweb",
-      runId,
-      movementCount: 0,
-      bankId: "",
-      bankName: "",
+      bankName: "ELEKTRAWEB",
       rows: standardLucaRows,
+      movementCount: 0,
     });
-
-    const saved = await saveLucaTransferDataset(payload);
     if (!saved.ok) {
       alert(
         "Elektraweb aktarımı kaydedilemedi. Lütfen tekrar deneyin veya Excel’i buradan indirip Luca’ya yükleyin."
@@ -336,9 +330,11 @@ export default function ElektrawebPage() {
     logStandardLucaReport("elektraweb-transfer", standardLucaRows.map(stripStandardLucaRow));
 
     router.push(
-      `/muhasebe/luca-donusturucu?source=elektraweb&companyId=${encodeURIComponent(
-        selectedCompanyId
-      )}&runId=${encodeURIComponent(runId)}`
+      buildLucaProducerHref({
+        companyId: selectedCompanyId,
+        runId: saved.runId,
+        source: "elektraweb",
+      })
     );
   };
 

@@ -9,18 +9,20 @@ import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
   countCompanyRules,
-  countPendingLucaRowsForCompany,
   formatDateTime,
   getAccountPlanForCompany,
   getAccountPlanUploadedAt,
   getCompanyRulesUpdatedAt,
   loadAccountPlansFromStorage,
-  loadLucaTransferDataset,
   loadRuleEngineFromStorage,
   normalizeAccountPlanForMatching,
   normalizeCompanyRecord,
   resolve102BankAccount,
 } from "@/src/utils/companyCenter";
+import {
+  readCanonicalTransferSnapshot,
+  countCanonicalRowsForCompany,
+} from "@/src/utils/canonicalFisControlTransfer";
 import { buildElektrawebCompanyMappings } from "@/src/utils/elektrawebAccountMatcher";
 import { fetchLearningMemoryForCompany, createLearningMemoryRecord } from "@/src/utils/learningMemory";
 import {
@@ -209,13 +211,15 @@ export default function LucaDonusturucuPage() {
     }
 
     (async () => {
-      const pending = await loadLucaTransferDataset({
+      const loaded = await readCanonicalTransferSnapshot({
         source: urlSource === SOURCE_TYPES.BANKA ? "bank" : "elektraweb",
         companyId,
         runId: urlRunId,
       });
 
       if (cancelled) return;
+
+      const pending = loaded.ok ? loaded.snapshot : null;
 
       if (!pending?.rows?.length) {
         setHasTransferredRows(false);
@@ -480,7 +484,7 @@ export default function LucaDonusturucuPage() {
   );
 
   const pendingRowCount = useMemo(
-    () => countPendingLucaRowsForCompany(selectedCompanyId),
+    () => countCanonicalRowsForCompany(selectedCompanyId),
     [selectedCompanyId, accountPlans, rawRows]
   );
 

@@ -7,9 +7,10 @@ import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
 import { useCompanyList } from "../hooks/useCompanyList";
 import AnnveroDateInput from "@/src/components/AnnveroDateInput";
 import {
-  loadPendingLucaRows,
-  savePendingLucaRows,
-} from "@/src/utils/companyCenter";
+  loadRowsForAiKontrol,
+  persistAiKontrolRows,
+  getCanonicalSnapshotForCompanySync,
+} from "@/src/utils/canonicalFisControlTransfer";
 import {
   AI_RISK,
   analyzeAiKontrolRows,
@@ -97,11 +98,40 @@ export default function AiKontrolPage() {
 
   const activeCompanyId = selectedCompanyId || getPayloadCompanyId(payload);
 
-  const loadData = useCallback(() => {
-    const pending = loadPendingLucaRows();
+  const loadData = useCallback(async () => {
     const history = loadAccountHistoryFromStorage();
+    const companyHint = selectedCompanyId || "";
+    const loaded = await loadRowsForAiKontrol({ companyId: companyHint });
 
-    if (!pending?.rows?.length || !isStandardLucaPayload(pending)) {
+    if (!loaded.ok || !loaded.snapshot?.rows?.length) {
+      // Canonical yoksa güvenli boş — pending’e düşme
+      const syncSnap = companyHint
+        ? getCanonicalSnapshotForCompanySync(companyHint)
+        : null;
+      if (!syncSnap?.rows?.length || !isStandardLucaPayload(syncSnap)) {
+        setPayload(null);
+        setRows([]);
+        setAccountHistory(history);
+        return;
+      }
+      const companyId = getPayloadCompanyId(syncSnap) || companyHint;
+      const normalizedRows = ensureStandardLucaRowIds(
+        syncSnap.rows.map((row) =>
+          finalizeStandardLucaRow({
+            ...row,
+            firmaId: row.firmaId || companyId,
+          })
+        )
+      );
+      setPayload(syncSnap);
+      setRows(normalizedRows);
+      setAccountHistory(history);
+      if (!selectedCompanyId && companyId) setSelectedCompanyId(companyId);
+      return;
+    }
+
+    const pending = loaded.snapshot;
+    if (!isStandardLucaPayload(pending)) {
       setPayload(null);
       setRows([]);
       setAccountHistory(history);
@@ -183,8 +213,20 @@ export default function AiKontrolPage() {
       rows: nextRows,
     });
 
-    savePendingLucaRows(nextPayload);
-    setPayload(nextPayload);
+    void persistAiKontrolRows({
+      baseSnapshot: payload,
+      nextRows,
+      companyId,
+      companyName: payload.companyName,
+      kaynakTipi: payload.kaynakTipi,
+      kaynakAdi: payload.kaynakAdi,
+    }).then((saved) => {
+      if (saved?.ok && saved.snapshot) {
+        setPayload(saved.snapshot);
+      } else {
+        setPayload({ ...nextPayload, ...payload, rows: nextRows });
+      }
+    });
     setRows(nextRows);
 
     const nextHistory = updateAccountHistoryFromRows(nextRows, companyId, accountHistory);

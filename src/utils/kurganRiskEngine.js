@@ -9,7 +9,7 @@ import {
   resolveRiskLevelFromRatio,
 } from "@/src/config/kurganRiskDefaults";
 import { loadDeclarationAccrualRecords } from "@/src/utils/beyannameTahakkukEngine";
-import { loadPendingLucaRows } from "@/src/utils/companyCenter";
+import { getCanonicalRowsForCompanySync } from "@/src/utils/canonicalFisControlTransfer";
 import { formatDateTR } from "@/src/utils/formatDateTR";
 import { parseMoneyTR } from "@/src/utils/parseMoneyTR";
 import { normalizeParserText } from "@/src/utils/textNormalize";
@@ -725,9 +725,9 @@ export function mergeSavedStatuses(findings = [], savedFindings = []) {
 }
 
 export function collectKurganDataSources({ companyId = "" } = {}) {
-  const pendingLuca = loadPendingLucaRows();
-  const lucaRows = (pendingLuca?.rows || []).filter(
-    (row) => !companyId || row.firmaId === companyId
+  // Canonical memory — pending okunmaz; yoksa güvenli boş
+  const lucaRows = getCanonicalRowsForCompanySync(companyId).filter(
+    (row) => !companyId || row.firmaId === companyId || !row.firmaId
   );
   const declarationRecords = loadDeclarationAccrualRecords().filter(
     (record) => !companyId || record.companyId === companyId
