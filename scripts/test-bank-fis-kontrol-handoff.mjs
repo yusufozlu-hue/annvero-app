@@ -176,28 +176,32 @@ await test("eski FAIL: workbench yalnız router.push ile satır yazmıyordu", ()
     "utf8"
   );
   assert.match(workbench, /handleGoToFisKontrol/);
-  assert.match(workbench, /saveLucaTransferDataset/);
-  assert.match(workbench, /buildLucaTransferContentFingerprint/);
+  assert.match(workbench, /publishBankParserTransfer/);
+  assert.match(workbench, /publishArchivePrepareTransfer/);
+  assert.match(workbench, /publishLucaProducerTransfer/);
   assert.match(workbench, /buildFisKontrolTransferHref/);
+  assert.doesNotMatch(workbench, /saveLucaTransferDataset\(/);
+  assert.doesNotMatch(workbench, /bank-\$\{.*Date\.now/);
   assert.doesNotMatch(
     workbench,
     /onGoToFisKontrol=\{\(\)\s*=>\s*\{\s*if \(pipelineResult\?\.fisKontrolHref\)/
   );
 });
 
-await test("wiring: Fiş Kontrol page IndexedDB hydrate + tenant clear", () => {
+await test("wiring: Fiş Kontrol page canonical hydrate + tenant clear", () => {
   const page = fs.readFileSync(
     path.join(root, "app/(annvero)/muhasebe/fis-kontrol/page.jsx"),
     "utf8"
   );
-  assert.match(page, /loadLucaTransferDataset/);
+  assert.match(page, /readCanonicalTransferSnapshot/);
   assert.match(page, /assertLucaTransferHydrateBinding/);
-  assert.match(page, /clearPendingLucaRows/);
+  assert.match(page, /migrateLegacyPendingOnce/);
   assert.match(page, /clearAllLucaTransferDatasets/);
-  assert.match(page, /strictBinding:\s*true/);
   assert.match(page, /useSearchParams/);
   assert.match(page, /hydrateEmptyMessage/);
   assert.match(page, /SIGNED_OUT/);
+  assert.doesNotMatch(page, /loadLucaTransferDataset\(/);
+  assert.doesNotMatch(page, /savePendingLucaRows\(/);
   assert.doesNotMatch(page, /console\.(log|debug|info)\([^)]*rows/);
   assert.doesNotMatch(page, /console\.(log|debug|info)\([^)]*transferred/);
 });
@@ -379,9 +383,10 @@ await test("workbench authUserId + sourceId handoff zorunlu", () => {
     "utf8"
   );
   assert.match(workbench, /resolveAuthUserIdForTransfer/);
-  assert.match(workbench, /payload\.authUserId/);
-  assert.match(workbench, /payload\.contentFingerprint/);
-  assert.match(workbench, /payload\.sourceId/);
+  assert.match(workbench, /publishBankParserTransfer/);
+  assert.match(workbench, /authUserId/);
+  assert.match(workbench, /sourceId/);
+  assert.match(workbench, /publishArchivePrepareTransfer/);
 });
 
 await test("MARE anonim: 4 fiş / 8 satır dengeli → Geçti", () => {

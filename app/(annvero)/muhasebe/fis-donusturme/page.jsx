@@ -19,8 +19,11 @@ import {
   loadRuleEngineFromStorage,
   normalizeAccountPlanForMatching,
   normalizeCompanyRecord,
-  savePendingLucaRows,
 } from "@/src/utils/companyCenter";
+import {
+  publishFisDonusturmeTransfer,
+  buildLucaProducerHref,
+} from "@/src/utils/canonicalFisControlTransfer";
 import {
   formatAccountingRuleTemplate,
   loadAccountingRulesFromStorage,
@@ -926,7 +929,7 @@ export default function FisDonusturmePage() {
     XLSX.writeFile(workbook, "hata_raporu.xlsx");
   };
 
-  const handleTransferToLuca = () => {
+  const handleTransferToLuca = async () => {
     if (!standardLucaRows.length) {
       showToast("Önce dönüştürme yapın.", "error");
       return;
@@ -936,17 +939,25 @@ export default function FisDonusturmePage() {
       return;
     }
 
-    savePendingLucaRows(
-      buildStandardLucaTransferPayload({
-        firmaId: selectedCompanyId,
-        companyName: getCompanyDisplayName(selectedCompany),
-        kaynakTipi: sourceMeta.kaynakTipi,
-        kaynakAdi: sourceMeta.label,
-        rows: standardLucaRows,
+    const saved = await publishFisDonusturmeTransfer({
+      companyId: selectedCompanyId,
+      companyName: getCompanyDisplayName(selectedCompany),
+      bankName: sourceMeta.label,
+      rows: standardLucaRows,
+      source: "bank",
+    });
+    if (!saved.ok) {
+      showToast("Luca aktarımı kaydedilemedi.", "error");
+      return;
+    }
+
+    router.push(
+      buildLucaProducerHref({
+        companyId: selectedCompanyId,
+        runId: saved.runId,
+        source: "bank",
       })
     );
-
-    router.push("/muhasebe/luca-donusturucu");
   };
 
   const formatAmount = (value) =>
