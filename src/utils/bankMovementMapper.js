@@ -584,6 +584,8 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
   /** Stage trace — firm memory kararı (davranışa etki yok) */
   let firmDecisionForTrace = null;
   let firmAnalysisKeyForTrace = "";
+  /** Faz 5 — USER_LEARNED review freeze (legacy cascade alt tier yok) */
+  let userLearnedReviewRequired = false;
 
   // İşlem türü — cari/personelden ÖNCE
   const typeResolution = resolveBankTransactionType(description, direction, {
@@ -1007,7 +1009,7 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
       !virmanDetect.shouldReclassify
     ) {
       const userLearnedStarted = Date.now();
-      let userLearnedReviewRequired = false;
+      userLearnedReviewRequired = false;
       try {
         let memoryIndexOrRecords =
           accountMemoryV2Index && accountMemoryV2Index.byAnalysisKey
@@ -1160,7 +1162,13 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
         selectedCompany?.bankAccounts || []
       ) || { accountCode: bankLucaBase || "", counterAccountCode: "" };
 
-      accountCode = memoryAccounts?.accountCode || bankLucaBase || "";
+      // Faz 5: keyword LM statement bacağını merkezi statement kararının üstüne yazamaz
+      const statementLocked = Boolean(statementResolve?.ok && bankLucaBase);
+      if (!statementLocked) {
+        accountCode = memoryAccounts?.accountCode || bankLucaBase || "";
+      } else {
+        accountCode = bankLucaBase || accountCode;
+      }
       counterAccountCode = memoryAccounts?.counterAccountCode || "";
       // Cari gereken türde öğrenilmiş 770/gider → yok say, cari ara
       if (
@@ -1666,6 +1674,16 @@ export function mapParsedRowToStandardMovement(rawRow, context) {
     lucaDescription,
     warning: warnings.join(" | "),
     matchedMemoryId,
+    // Faz 5 provenance — materialize stamp doğru tier yazar
+    decisionSource: matchedMemoryId
+      ? "USER_LEARNED"
+      : matchedRule?.source || "",
+    decisionScopeKey: matchedMemoryId
+      ? `mem:${String(matchedMemoryId).slice(0, 24)}`
+      : matchedRule?.anahtar
+        ? String(matchedRule.anahtar).slice(0, 64)
+        : null,
+    decisionRequiresReview: Boolean(userLearnedReviewRequired),
     ...(cariStageTraceFp ? { _cariStageTraceFp: cariStageTraceFp } : {}),
     accountSuggestions,
     accountPlanMissing:

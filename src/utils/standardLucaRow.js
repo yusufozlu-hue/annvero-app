@@ -661,13 +661,38 @@ function buildBankLucaLine({
     matchedMemoryId: movement.matchedMemoryId || null,
   });
 
-  // Faz 4: materialize anında karar zarfı — Luca/Elektra yeniden resolve etmez
+  // Faz 4/5: materialize anında karar zarfı — Luca/Elektra yeniden resolve etmez
+  const stampSource = (() => {
+    if (movement.matchedMemoryId) return "USER_LEARNED";
+    const raw = String(movement.decisionSource || "").trim();
+    if (!raw) return "SYSTEM_RULE";
+    const upper = raw.toUpperCase();
+    if (
+      upper === "DOCUMENT_ONLY" ||
+      upper === "EXACT_ACCOUNT" ||
+      upper === "BANK_PRODUCT_CURRENCY" ||
+      upper === "USER_LEARNED" ||
+      upper === "SYSTEM_RULE" ||
+      upper === "NONE"
+    ) {
+      return upper;
+    }
+    if (raw === "documentResolution") return "DOCUMENT_ONLY";
+    if (raw === "firmaHafizaV2" || raw === "userLearnedServer") {
+      return "USER_LEARNED";
+    }
+    return "SYSTEM_RULE";
+  })();
+
   return stampBankMaterializedLucaRow(baseLine, {
     bankAccountCode: movement.accountCode || "",
     counterAccountCode: movement.counterAccountCode || "",
-    source: movement.matchedMemoryId ? "USER_LEARNED" : "SYSTEM_RULE",
+    source: stampSource,
+    scopeKey: movement.decisionScopeKey || null,
     matchedMemoryId: movement.matchedMemoryId || null,
-    requiresReview: Boolean(movement.missingHesapCategory) && !hesapKodu,
+    requiresReview:
+      Boolean(movement.decisionRequiresReview) ||
+      (Boolean(movement.missingHesapCategory) && !hesapKodu),
     reason: "bank_materialize",
     companyId: context.firmaId || movement.firmaId || "",
   });
