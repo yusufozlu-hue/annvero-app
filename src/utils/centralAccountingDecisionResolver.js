@@ -45,6 +45,44 @@ const SOURCE_PRIORITY = Object.freeze({
   [ACCOUNTING_DECISION_SOURCE.NONE]: 0,
 });
 
+/** Faz 5 — test/dev resolve çağrı sayacı (PII yok; production UI yok). */
+let _resolveCallTracking = false;
+let _resolveCallCount = 0;
+const _resolveCallLog = [];
+
+export function beginAccountingResolveCallTracking() {
+  _resolveCallTracking = true;
+  _resolveCallCount = 0;
+  _resolveCallLog.length = 0;
+}
+
+export function endAccountingResolveCallTracking() {
+  _resolveCallTracking = false;
+}
+
+export function resetAccountingResolveCallCount() {
+  _resolveCallCount = 0;
+  _resolveCallLog.length = 0;
+}
+
+export function getAccountingResolveCallCount() {
+  return _resolveCallCount;
+}
+
+export function getAccountingResolveCallLog() {
+  return _resolveCallLog.slice();
+}
+
+function noteResolveCall(meta = {}) {
+  if (!_resolveCallTracking) return;
+  _resolveCallCount += 1;
+  _resolveCallLog.push({
+    n: _resolveCallCount,
+    lucaLeg: meta.lucaLeg || null,
+    sourceHint: meta.sourceHint || null,
+  });
+}
+
 function compactCode(value = "") {
   return String(value || "").trim().replace(/\s+/g, "");
 }
@@ -509,6 +547,11 @@ export function resolveAccountingDecision({
   systemCandidates = null,
   lucaLeg = "bank",
 } = {}) {
+  noteResolveCall({
+    lucaLeg,
+    sourceHint: systemCandidates ? "with_system_candidates" : "tiers_only",
+  });
+
   const validationContext = {
     company,
     accountPlan,

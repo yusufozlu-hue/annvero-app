@@ -37,6 +37,7 @@ import {
   recordCariStageLucaBuilt,
 } from "@/src/utils/cariStageTrace";
 import { applySmartBankSuggestionsToRows } from "@/src/utils/bankSmartSuggestions";
+import { applyPostMaterializeConsumersSinglePass } from "@/src/utils/centralAccountingDecisionSinglePass";
 import { applyDeclarationAccrualDistributionToRows } from "@/src/utils/beyannameTahakkukEngine";
 import {
   mapParsedRowsWithCoreFallback,
@@ -423,33 +424,18 @@ export function buildBankParserResultFromNormalizedRows({
     kaynakAdi: selectedBank,
   });
 
-  const learningRows = applyLearningMemoryToStandardLucaRows(
-    ensureStandardLucaRowIds(baseRows),
+  // Faz 5: materialize sonrası tüketiciler tek geçiş; güvenilir zarfta LM/V2/smart no-op
+  const consumed = applyPostMaterializeConsumersSinglePass(baseRows, {
     learningMemory,
-    {
-      firmaId: selectedCompanyId,
-      kaynakTipi: KAYNAK_TIPI.BANKA,
-      kaynakAdi: selectedBank,
-    }
-  );
-
-  const memoryRows = applyAccountMemoryV1RecordsToRows(
-    learningRows,
     accountMemoryRecords,
-    {
-      firmaId: selectedCompanyId,
-      kaynakAdi: selectedBank,
-    }
-  );
-
-  const smartRows = applySmartBankSuggestionsToRows(memoryRows, {
     companyPlans,
     selectedBank,
     selectedCompanyId,
+    firmaId: selectedCompanyId,
   });
 
   const declarationResult = applyDeclarationAccrualDistributionToRows(
-    smartRows,
+    consumed.rows,
     declarationAccrualRecords,
     {
       companyId: selectedCompanyId,
@@ -485,6 +471,7 @@ export function buildBankParserResultFromNormalizedRows({
       parserName: resolveParserName(selectedBank, sourceType),
       annveroCoreEnabled: isAnnveroCoreEnabled(),
       coreSummary,
+      singlePassConsumersSkipped: Boolean(consumed.consumersSkipped),
     },
   };
 }

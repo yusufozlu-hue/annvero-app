@@ -1,6 +1,7 @@
 import { normalizeParserText, normalizeBankAnalysisKey, resolveLucaRowBankDirection } from "@/src/utils/textNormalize";
 import { finalizeStandardLucaRow } from "@/src/utils/standardLucaRow";
 import { isLikelyBankGlAccount } from "@/src/utils/transactionMemoryEngine";
+import { shouldSkipOutputResolveTrusted } from "@/src/utils/accountingDecisionTrust";
 import {
   buildStandardLucaDescription,
   STANDARD_MASRAF_DESCRIPTION,
@@ -1416,8 +1417,21 @@ export function findSmartBankSuggestion(row = {}, context = {}) {
 
 export function applySmartBankSuggestionsToRows(rows = [], context = {}) {
   if (!rows.length) return rows;
+  const companyId = String(
+    context.selectedCompanyId || context.firmaId || context.companyId || ""
+  ).trim();
 
   return rows.map((row) => {
+    // Faz 5: doğrulanmış accountingDecision zarfı → smart suggest hesap/bacak ezmez
+    if (
+      shouldSkipOutputResolveTrusted(row, {
+        companyId: companyId || row.firmaId || "",
+        firmaId: companyId || row.firmaId || "",
+      })
+    ) {
+      return row;
+    }
+
     const existingAccount = String(row.hesapKodu || "").trim();
     if (existingAccount && isLikelyBankGlAccount(existingAccount)) return row;
     if (row.hafizaEslesme && existingAccount) return row;
