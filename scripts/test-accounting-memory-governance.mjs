@@ -38,6 +38,9 @@ const {
 const {
   runAtomicGovernanceMutationTx,
   runMigration037Preflight,
+  runMigration037LegacyCatchup,
+  simulateMigration037Apply,
+  CATCHUP_008_009_COLUMNS,
   assertUniqueActiveInvariant,
   canHaveTwoActivesDifferentLegs,
   invokeLearningMemoryGovernanceRpc,
@@ -1345,5 +1348,224 @@ describe("Faz7 merge-blocker extras", () => {
     );
     assert.match(govRoute, /ACTOR_REQUIRED/);
     assert.match(govRoute, /401/);
+  });
+});
+
+describe("Faz7 production catch-up (self-contained 037)", () => {
+  const legacyFive = () => [
+    {
+      id: "p1",
+      company_id: "C1",
+      keyword: "k1",
+      account_code: "102.01.001",
+      document_type: "DK",
+      source_module: "banka",
+      usage_count: 2,
+      is_active: true,
+      deleted_at: null,
+      created_at: "2026-01-01",
+    },
+    {
+      id: "p2",
+      company_id: "C1",
+      keyword: "k2",
+      account_code: "320.01",
+      document_type: "DK",
+      source_module: "manual",
+      usage_count: 0,
+      is_active: true,
+      deleted_at: null,
+    },
+    {
+      id: "p3",
+      company_id: "C2",
+      keyword: "k3",
+      account_code: "102.02",
+      document_type: "DK",
+      source_module: "banka",
+      usage_count: 1,
+      is_active: true,
+      deleted_at: null,
+    },
+    {
+      id: "p4",
+      company_id: "C2",
+      keyword: "k4",
+      account_code: "600.01",
+      document_type: "DK",
+      source_module: "manual",
+      usage_count: 0,
+      is_active: false,
+      deleted_at: null,
+    },
+    {
+      id: "p5",
+      company_id: "C3",
+      keyword: "k5",
+      account_code: "770.01",
+      document_type: "FT",
+      source_module: "elektraweb",
+      usage_count: 3,
+      is_active: true,
+      deleted_at: null,
+    },
+  ];
+
+  it("SQL static: catch-up prerequisites before governance; no companion 038; atomic file", () => {
+    const mig = fs.readFileSync(
+      path.join(root, "supabase/migrations/037_accounting_memory_governance.sql"),
+      "utf8"
+    );
+    const catchupIdx = mig.indexOf("Legacy schema catch-up prerequisites");
+    const govColIdx = mig.indexOf("Additive governance columns");
+    assert.ok(catchupIdx > 0);
+    assert.ok(govColIdx > catchupIdx);
+    assert.match(mig, /add column if not exists status text not null default 'active'/i);
+    assert.match(mig, /add column if not exists match_count integer not null default 0/i);
+    assert.match(mig, /add column if not exists clean_description text/i);
+    assert.match(mig, /add column if not exists raw_description text/i);
+    assert.match(mig, /add column if not exists bank_name text/i);
+    assert.match(mig, /add column if not exists amount numeric/i);
+    assert.match(mig, /idx_learning_memory_company_status/);
+    assert.match(mig, /idx_learning_memory_bank_name/);
+    assert.match(mig, /set status = 'deleted'/i);
+    assert.match(mig, /set status = 'passive'/i);
+    assert.doesNotMatch(mig, /\bCOMMIT\s*;/i);
+    assert.doesNotMatch(mig, /accounting_correction_records/);
+    assert.equal(
+      fs.existsSync(
+        path.join(root, "supabase/migrations/038_learning_memory_pre037_catchup.sql")
+      ),
+      false
+    );
+  });
+
+  it("legacy production fixture: columns + backfill + row identity preserved", () => {
+    const rows = legacyFive();
+    const out = runMigration037LegacyCatchup(rows);
+    assert.equal(out.rows.length, 5);
+    assert.equal(out.hardDeletes, 0);
+    for (const col of CATCHUP_008_009_COLUMNS) {
+      assert.ok(out.columns.includes(col), `missing ${col}`);
+    }
+    assert.ok(out.indexes.includes("idx_learning_memory_company_status"));
+    assert.equal(out.rows.find((r) => r.id === "p4").status, "passive");
+    assert.equal(out.rows.find((r) => r.id === "p1").status, "active");
+    assert.equal(out.rows.find((r) => r.id === "p1").match_count, 0);
+    assert.equal(out.rows.find((r) => r.id === "p1").keyword, "k1");
+    assert.equal(out.rows.find((r) => r.id === "p1").account_code, "102.01.001");
+    assert.equal(out.rows.find((r) => r.id === "p1").company_id, "C1");
+    assert.equal(out.rows.find((r) => r.id === "p1").clean_description, null);
+  });
+
+  it("legacy soft-deleted → status deleted; descriptions not invented", () => {
+    const out = runMigration037LegacyCatchup([
+      {
+        id: "d1",
+        company_id: "C1",
+        keyword: "keep-kw",
+        account_code: "102.01",
+        is_active: true,
+        deleted_at: "2026-01-02T00:00:00Z",
+      },
+    ]);
+    assert.equal(out.rows[0].status, "deleted");
+    assert.equal(out.rows[0].keyword, "keep-kw");
+    assert.equal(out.rows[0].raw_description, null);
+  });
+
+  it("full apply on legacy non-BSA: sim effect 0, rowCount stable", () => {
+    const rows = legacyFive();
+    const applied = simulateMigration037Apply(rows);
+    assert.equal(applied.ok, true);
+    assert.equal(applied.rowCount, 5);
+    assert.equal(applied.hardDeletes, 0);
+    assert.equal(applied.preflight.hardDeletes, 0);
+    const reviewOrSuperseded = applied.rows.filter((r) =>
+      ["review", "superseded"].includes(r.status)
+    );
+    // p4 was inactive → passive via catch-up; no BSA review/supersede
+    assert.equal(reviewOrSuperseded.length, 0);
+    assert.equal(applied.rows.filter((r) => r.status === "passive").length, 1);
+    assert.ok(applied.rows.every((r) => r.governance_ready === true));
+    assert.ok(assertUniqueActiveInvariant(applied.rows).ok);
+  });
+
+  it("already-modern staging fixture catch-up is no-op", () => {
+    const modern = [
+      {
+        id: "m1",
+        company_id: "C1",
+        keyword: "bsa|x",
+        account_code: "102.01",
+        document_type: "BANK_STATEMENT_ACCOUNTING",
+        status: "active",
+        is_active: true,
+        deleted_at: null,
+        match_count: 4,
+        clean_description: "keep-clean",
+        raw_description: "keep-raw",
+        luca_leg: "statement",
+        governance_ready: true,
+        revision: 3,
+      },
+    ];
+    const out = runMigration037LegacyCatchup(modern, {
+      modernSchema: true,
+      indexes: ["idx_learning_memory_company_status", "idx_learning_memory_bank_name"],
+    });
+    assert.equal(out.changed, false);
+    assert.equal(out.idempotent, true);
+    assert.equal(out.rows[0].match_count, 4);
+    assert.equal(out.rows[0].clean_description, "keep-clean");
+    assert.equal(out.rows[0].revision, 3);
+  });
+
+  it("second catch-up / apply is idempotent", () => {
+    const first = simulateMigration037Apply(legacyFive());
+    const second = simulateMigration037Apply(first.rows, { modernSchema: true });
+    assert.equal(second.ok, true);
+    assert.equal(second.rowCount, 5);
+    const catchup2 = runMigration037LegacyCatchup(first.rows, {
+      modernSchema: true,
+      indexes: first.catchup.indexes,
+    });
+    assert.equal(catchup2.idempotent, true);
+    const pf2 = runMigration037Preflight(first.rows);
+    assert.equal(pf2.idempotent, true);
+  });
+
+  it("intentional mid-migration failure → full rollback", () => {
+    const rows = legacyFive();
+    const failed = simulateMigration037Apply(rows, { failAfter: "catchup" });
+    assert.equal(failed.ok, false);
+    assert.equal(failed.rolledBack, true);
+    assert.equal(failed.rowCount, 5);
+    assert.equal(failed.rows[0].status, undefined);
+    assert.equal(failed.rows[0].keyword, "k1");
+    assert.match(failed.error, /simulated_037_fail_after_catchup/);
+  });
+
+  it("privilege contract remains least-privilege after catch-up section", () => {
+    const mig = fs.readFileSync(
+      path.join(root, "supabase/migrations/037_accounting_memory_governance.sql"),
+      "utf8"
+    );
+    assert.match(mig, /revoke all privileges on table public\.learning_memory from public/i);
+    assert.match(
+      mig,
+      /revoke all privileges on table public\.learning_memory from anon, authenticated/i
+    );
+    assert.match(mig, /grant select on table public\.learning_memory to authenticated/i);
+    assert.match(
+      mig,
+      /grant select, insert, update, delete on table public\.learning_memory to service_role/i
+    );
+    assert.doesNotMatch(mig, /grant all on table public\.learning_memory to service_role/i);
+    assert.match(mig, /revoke all privileges on table public\.audit_events from public/i);
+    assert.match(
+      mig,
+      /grant execute on function public\.learning_memory_governance_mutate[\s\S]*to service_role/i
+    );
   });
 });

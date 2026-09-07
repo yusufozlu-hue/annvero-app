@@ -10,9 +10,64 @@
 -- Old index note: uq_learning_memory_active_bsa_keyword is NOT created in any repo migration
 -- (searched 015+). No DROP — additive create of uq_learning_memory_active_signature_leg only.
 -- Canonical unique: company_id + keyword(signature) + coalesce(luca_leg,'') WHERE active.
+--
+-- Self-contained catch-up: production may still be ~007a+015 (missing 008/009 cols).
+-- Prerequisites are inlined here (NOT a separate 038) so filename order cannot skip them.
+-- One migration file = one transaction (Supabase); mid-file failure rolls back all steps.
+-- Staging already-modern schema: ADD IF NOT EXISTS + guarded backfill = no-op.
 
 -- ---------------------------------------------------------------------------
--- 1) Additive columns
+-- 0) Legacy schema catch-up prerequisites (008 / 009 contracts, exact types)
+-- ---------------------------------------------------------------------------
+do $$
+begin
+  if to_regclass('public.learning_memory') is null then
+    raise exception '037: learning_memory missing (catch-up prerequisites)';
+  end if;
+end $$;
+
+-- 008_transaction_memory.sql — learning_memory genişletme (exact)
+alter table public.learning_memory
+  add column if not exists raw_description text,
+  add column if not exists clean_description text,
+  add column if not exists cari_name text,
+  add column if not exists user_correction text,
+  add column if not exists learned_at timestamptz;
+
+-- 009_learning_memory_match_usage.sql — exact types/defaults
+alter table public.learning_memory
+  add column if not exists bank_name text,
+  add column if not exists amount numeric,
+  add column if not exists status text not null default 'active',
+  add column if not exists match_count integer not null default 0,
+  add column if not exists last_matched_at timestamptz;
+
+-- Backfill only corrects rows that received DEFAULT 'active' while soft-deleted / inactive.
+-- Never rewrite company_id, keyword, account_code. Never overwrite non-null descriptions.
+-- Never invent clean/raw from keyword. match_count keeps 009 default 0 (safe start).
+do $$
+begin
+  update public.learning_memory
+  set status = 'deleted'
+  where deleted_at is not null
+    and coalesce(status, 'active') = 'active';
+
+  update public.learning_memory
+  set status = 'passive'
+  where deleted_at is null
+    and coalesce(is_active, true) = false
+    and coalesce(status, 'active') = 'active';
+end $$;
+
+-- 009 indexes (idempotent)
+create index if not exists idx_learning_memory_company_status
+  on public.learning_memory (company_id, status);
+
+create index if not exists idx_learning_memory_bank_name
+  on public.learning_memory (company_id, bank_name);
+
+-- ---------------------------------------------------------------------------
+-- 1) Additive governance columns
 -- ---------------------------------------------------------------------------
 alter table public.learning_memory
   add column if not exists revision integer not null default 1;

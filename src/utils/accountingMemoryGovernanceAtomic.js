@@ -256,6 +256,177 @@ export function runMigration037Preflight(rows = []) {
   return { rows: next, changed, idempotent, hardDeletes };
 }
 
+/** Columns present on production ~007a+015 (no 008/009). */
+export const LEGACY_PROD_LM_COLUMNS = Object.freeze([
+  "id",
+  "company_id",
+  "keyword",
+  "account_code",
+  "account_name",
+  "counter_account_code",
+  "counter_account_name",
+  "document_type",
+  "transaction_type",
+  "description_format",
+  "source_module",
+  "usage_count",
+  "is_active",
+  "last_used_at",
+  "created_at",
+  "updated_at",
+  "deleted_at",
+  "deleted_by",
+]);
+
+/** 008+009 columns added by 037 catch-up prerequisites. */
+export const CATCHUP_008_009_COLUMNS = Object.freeze([
+  "raw_description",
+  "clean_description",
+  "cari_name",
+  "user_correction",
+  "learned_at",
+  "bank_name",
+  "amount",
+  "status",
+  "match_count",
+  "last_matched_at",
+]);
+
+/**
+ * Simulate 037 §0 catch-up on in-memory legacy rows (no hard delete).
+ * Mirrors SQL: ADD IF NOT EXISTS semantics + status backfill guards.
+ */
+export function runMigration037LegacyCatchup(rows = [], options = {}) {
+  const modernSchema = options.modernSchema === true;
+  let next = rows.map((r) => ({ ...r }));
+  let changed = false;
+  const indexes = new Set(options.indexes || []);
+
+  if (!modernSchema) {
+    for (const r of next) {
+      for (const col of CATCHUP_008_009_COLUMNS) {
+        if (!(col in r) || r[col] === undefined) {
+          changed = true;
+          if (col === "status") r.status = "active";
+          else if (col === "match_count") r.match_count = 0;
+          else r[col] = r[col] ?? null;
+        }
+      }
+    }
+  }
+
+  next = next.map((r) => {
+    if (r.deleted_at && (r.status == null || r.status === "active")) {
+      changed = true;
+      return { ...r, status: "deleted" };
+    }
+    if (
+      !r.deleted_at &&
+      r.is_active === false &&
+      (r.status == null || r.status === "active")
+    ) {
+      changed = true;
+      return { ...r, status: "passive" };
+    }
+    return r;
+  });
+
+  // Identity + non-null descriptions must be preserved
+  for (let i = 0; i < rows.length; i += 1) {
+    const before = rows[i];
+    const after = next[i];
+    if (
+      before.company_id !== after.company_id ||
+      before.keyword !== after.keyword ||
+      before.account_code !== after.account_code
+    ) {
+      throw new Error("catch-up must not rewrite identity fields");
+    }
+    if (
+      before.clean_description != null &&
+      before.clean_description !== after.clean_description
+    ) {
+      throw new Error("catch-up must not overwrite clean_description");
+    }
+    if (
+      before.raw_description != null &&
+      before.raw_description !== after.raw_description
+    ) {
+      throw new Error("catch-up must not overwrite raw_description");
+    }
+  }
+
+  if (!indexes.has("idx_learning_memory_company_status")) {
+    indexes.add("idx_learning_memory_company_status");
+    changed = true;
+  }
+  if (!indexes.has("idx_learning_memory_bank_name")) {
+    indexes.add("idx_learning_memory_bank_name");
+    changed = true;
+  }
+
+  return {
+    rows: next,
+    changed,
+    idempotent: !changed,
+    hardDeletes: 0,
+    indexes: [...indexes],
+    columns: [
+      ...LEGACY_PROD_LM_COLUMNS,
+      ...CATCHUP_008_009_COLUMNS,
+    ],
+  };
+}
+
+/**
+ * Full 037 apply simulator (catch-up → governance preflight).
+ * failAfter: 'catchup' | null — intentional mid-migration failure → rollback.
+ */
+export function simulateMigration037Apply(rows = [], options = {}) {
+  const snapshot = rows.map((r) => ({ ...r }));
+  const failAfter = options.failAfter || null;
+  const modernSchema = options.modernSchema === true;
+
+  try {
+    const catchup = runMigration037LegacyCatchup(snapshot, {
+      modernSchema,
+      indexes: options.indexes,
+    });
+    if (failAfter === "catchup") {
+      throw new Error("simulated_037_fail_after_catchup");
+    }
+    const preflight = runMigration037Preflight(catchup.rows);
+    // Additive governance defaults (like ADD COLUMN IF NOT EXISTS)
+    const withGov = preflight.rows.map((r) => ({
+      ...r,
+      revision: r.revision ?? 1,
+      supersedes_id: r.supersedes_id ?? null,
+      parent_revision_id: r.parent_revision_id ?? null,
+      reason_code: r.reason_code ?? null,
+      luca_leg: r.luca_leg ?? null,
+      governance_ready: true,
+    }));
+    return {
+      ok: true,
+      rolledBack: false,
+      rows: withGov,
+      catchup,
+      preflight: { ...preflight, rows: withGov },
+      rowCount: withGov.length,
+      hardDeletes: 0,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      rolledBack: true,
+      rows: snapshot,
+      rowCount: snapshot.length,
+      hardDeletes: 0,
+      error: String(err?.message || err),
+    };
+  }
+}
+
 export function assertUniqueActiveInvariant(rows = []) {
   const seen = new Map();
   for (const r of rows) {
