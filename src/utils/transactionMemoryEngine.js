@@ -503,7 +503,8 @@ export function findLearningSuggestion(candidate = {}, learningMemory = []) {
 
   for (const record of learningMemory) {
     if (record?.is_active === false) continue;
-    if (["passive", "deleted"].includes(String(record?.status || "active").toLowerCase())) {
+    const status = String(record?.status || "active").toLowerCase();
+    if (["passive", "deleted", "superseded", "review", "conflict"].includes(status)) {
       continue;
     }
     if (companyId && record.company_id && record.company_id !== companyId) continue;

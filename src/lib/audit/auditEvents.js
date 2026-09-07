@@ -32,6 +32,10 @@ export const AUDIT_ACTIONS = {
   EXPORT: "export",
   IMPORT: "import",
   LOGIN: "login",
+  DEACTIVATE: "deactivate",
+  REACTIVATE: "reactivate",
+  CONFLICT_RESOLVE: "conflict_resolve",
+  ROLLBACK: "rollback",
 };
 
 export const AUDIT_EVENTS_TABLE = "audit_events";
