@@ -201,10 +201,22 @@ begin
   $sql$;
 end $$;
 
-revoke all on table public.learning_memory from anon;
-revoke insert, update, delete on table public.learning_memory from authenticated;
+-- Least-privilege ACL (036 / 033 ile aynı dar sözleşme).
+-- TRUNCATE RLS bypass eder; authenticated/anon üzerinde bırakılamaz.
+-- service_role: ALL yok — yalnız SELECT/INSERT/UPDATE/DELETE (TRUNCATE yok).
+revoke all privileges on table public.learning_memory from public;
+revoke all privileges on table public.learning_memory from anon, authenticated;
 grant select on table public.learning_memory to authenticated;
-grant all on table public.learning_memory to service_role;
+
+revoke all privileges on table public.learning_memory from service_role;
+grant select, insert, update, delete on table public.learning_memory to service_role;
+
+-- audit_events: client yalnız SELECT (tenant scoped policy); yazma service_role/RPC.
+revoke all privileges on table public.audit_events from public;
+revoke all privileges on table public.audit_events from anon, authenticated;
+grant select on table public.audit_events to authenticated;
+revoke all privileges on table public.audit_events from service_role;
+grant select, insert on table public.audit_events to service_role;
 
 -- ---------------------------------------------------------------------------
 -- 6) Atomic governance RPC (mutation + audit same transaction)

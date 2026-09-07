@@ -1101,7 +1101,17 @@ describe("Faz7 merge-blocker extras", () => {
       path.join(root, "supabase/migrations/037_accounting_memory_governance.sql"),
       "utf8"
     );
-    assert.match(mig, /revoke insert, update, delete on table public.learning_memory from authenticated/i);
+    assert.match(
+      mig,
+      /revoke all privileges on table public\.learning_memory from anon, authenticated/i
+    );
+    assert.match(mig, /grant select on table public\.learning_memory to authenticated/i);
+    assert.match(
+      mig,
+      /grant select, insert, update, delete on table public\.learning_memory to service_role/i
+    );
+    assert.doesNotMatch(mig, /grant all on table public\.learning_memory to service_role/i);
+    assert.match(mig, /revoke all privileges on table public\.learning_memory from public/i);
     assert.match(mig, /drop policy if exists "learning_memory_insert_authenticated"/);
     assert.match(mig, /drop policy if exists "learning_memory_update_authenticated"/);
     assert.match(mig, /drop policy if exists "learning_memory_delete_authenticated"/);
