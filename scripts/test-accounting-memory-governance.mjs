@@ -370,6 +370,9 @@ describe("Faz7 accounting memory governance", () => {
     assert.equal(resolved.ok, true);
     assert.equal(resolved.record.status, MEMORY_GOVERNANCE_STATUS.ACTIVE);
     assert.equal(resolved.record.revision, 2);
+    assert.notEqual(resolved.record.memoryId, a.memoryId);
+    const source = __listGovernanceTestRecords().find((r) => r.memoryId === a.memoryId);
+    assert.equal(source.status, MEMORY_GOVERNANCE_STATUS.REVIEW);
     const other = __listGovernanceTestRecords().find((r) => r.memoryId === b.memoryId);
     assert.equal(other.status, MEMORY_GOVERNANCE_STATUS.SUPERSEDED);
   });
@@ -390,8 +393,10 @@ describe("Faz7 accounting memory governance", () => {
     assert.equal(rev.ok, true);
     assert.equal(rev.record.revision, 2);
     assert.equal(rev.record.accountCode, STOPAJ);
+    assert.notEqual(rev.record.memoryId, base.memoryId);
     assert.equal(rev.superseded.status, MEMORY_GOVERNANCE_STATUS.SUPERSEDED);
     assert.equal(rev.superseded.accountCode, FAIZ);
+    assert.equal(rev.superseded.memoryId, base.memoryId);
   });
 
   it("13) deactivate → kayıt silinmez", async () => {
@@ -429,6 +434,9 @@ describe("Faz7 accounting memory governance", () => {
     assert.equal(result.ok, true);
     assert.equal(result.record.status, MEMORY_GOVERNANCE_STATUS.ACTIVE);
     assert.equal(result.record.revision, 3);
+    assert.notEqual(result.record.memoryId, base.memoryId);
+    assert.equal(result.sourceUnchanged.memoryId, base.memoryId);
+    assert.equal(result.sourceUnchanged.status, MEMORY_GOVERNANCE_STATUS.PASSIVE);
   });
 
   it("15) rollback → eski veri değiştirilmez, yeni active revision", async () => {
@@ -568,6 +576,8 @@ describe("Faz7 accounting memory governance", () => {
       },
     });
     assert.equal(assertAuditHasNoPii(event), true);
+    assert.match(event.before.accountFingerprint, /^fp_/);
+    assert.equal(event.before.accountCode, undefined);
     const dirty = {
       ...event,
       note: "TR12 0000 0000 0000 0000 0000 00",
@@ -737,6 +747,7 @@ describe("Faz7 accounting memory governance", () => {
     assert.match(mig, /uq_learning_memory_active_signature_leg/);
     assert.match(mig, /learning_memory_governance_mutate/);
     assert.match(mig, /migration_037_preflight_conflict/);
+    assert.doesNotMatch(mig, /drop index if exists public\.uq_learning_memory_active_bsa_keyword/i);
   });
 });
 
@@ -1031,6 +1042,7 @@ describe("Faz7 merge-blocker extras", () => {
     });
     assert.equal(react.ok, true);
     assert.equal(react.record.status, MEMORY_GOVERNANCE_STATUS.ACTIVE);
+    assert.notEqual(react.record.memoryId, base.memoryId);
   });
 
   it("pasif keyword consumer’da uygulanmaz", () => {
@@ -1072,11 +1084,13 @@ describe("Faz7 merge-blocker extras", () => {
       memoryId: "does-not-exist",
       companyId: COMPANY_A,
       expectedRevision: 1,
+      actorId: "u1",
     });
     const cross = await deactivateGovernanceRecord({
       memoryId: b.memoryId,
       companyId: COMPANY_A,
       expectedRevision: 1,
+      actorId: "u1",
     });
     assert.equal(missing.code, "NOT_FOUND");
     assert.equal(cross.code, "NOT_FOUND");
@@ -1142,5 +1156,184 @@ describe("Faz7 merge-blocker extras", () => {
     );
     assert.match(panel, /MIGRATION_REQUIRED/);
     assert.match(panel, /Sahte başarı gösterilmez/);
+  });
+
+  it("SQL: monotonic rev5 rollback rev1 → yeni rev6", async () => {
+    const old = seedGovernanceTestRecord({
+      companyId: COMPANY_A,
+      accountCode: FAIZ,
+      signature: SIG,
+      status: MEMORY_GOVERNANCE_STATUS.SUPERSEDED,
+      revision: 1,
+      cleanDescription: "clean-orig",
+      rawDescription: "raw-orig",
+    });
+    seedGovernanceTestRecord({
+      companyId: COMPANY_A,
+      accountCode: STOPAJ,
+      signature: SIG,
+      status: MEMORY_GOVERNANCE_STATUS.ACTIVE,
+      revision: 5,
+    });
+    const rolled = await rollbackGovernanceRecord({
+      targetMemoryId: old.memoryId,
+      companyId: COMPANY_A,
+      expectedRevision: 1,
+      actorId: "u1",
+    });
+    assert.equal(rolled.ok, true);
+    assert.equal(rolled.record.revision, 6);
+    assert.equal(rolled.record.accountCode, FAIZ);
+    assert.equal(rolled.record.cleanDescription, "clean-orig");
+    assert.equal(rolled.record.rawDescription, "raw-orig");
+    assert.equal(rolled.sourceUnchanged.revision, 1);
+    assert.equal(rolled.sourceUnchanged.status, MEMORY_GOVERNANCE_STATUS.SUPERSEDED);
+  });
+
+  it("SQL: reactivate/resolve kaynak satırı değiştirmez", async () => {
+    const passive = seedGovernanceTestRecord({
+      companyId: COMPANY_A,
+      accountCode: FAIZ,
+      signature: SIG,
+      status: MEMORY_GOVERNANCE_STATUS.PASSIVE,
+      revision: 2,
+      cleanDescription: "keep-me",
+    });
+    const re = await reactivateGovernanceRecord({
+      memoryId: passive.memoryId,
+      companyId: COMPANY_A,
+      expectedRevision: 2,
+      actorId: "u1",
+    });
+    assert.equal(re.sourceUnchanged.cleanDescription, "keep-me");
+    assert.equal(re.sourceUnchanged.status, MEMORY_GOVERNANCE_STATUS.PASSIVE);
+
+    const a = seedGovernanceTestRecord({
+      companyId: COMPANY_A,
+      accountCode: FAIZ,
+      signature: `${SIG}|c2`,
+      lucaLeg: "counter",
+      status: MEMORY_GOVERNANCE_STATUS.REVIEW,
+      conflictState: true,
+    });
+    const b = seedGovernanceTestRecord({
+      companyId: COMPANY_A,
+      accountCode: STOPAJ,
+      signature: `${SIG}|c2`,
+      lucaLeg: "counter",
+      status: MEMORY_GOVERNANCE_STATUS.REVIEW,
+      conflictState: true,
+    });
+    const resolved = await resolveGovernanceConflict({
+      companyId: COMPANY_A,
+      signature: `${SIG}|c2`,
+      lucaLeg: "counter",
+      chosenMemoryId: a.memoryId,
+      expectedRevision: 1,
+      actorId: "u1",
+    });
+    assert.equal(resolved.sourceUnchanged.memoryId, a.memoryId);
+    assert.equal(resolved.sourceUnchanged.status, MEMORY_GOVERNANCE_STATUS.REVIEW);
+    assert.notEqual(resolved.record.memoryId, a.memoryId);
+    void b;
+  });
+
+  it("SQL: karma governance_ready duplicate preflight temizlenir", () => {
+    const rows = [
+      {
+        id: "m1",
+        company_id: COMPANY_A,
+        keyword: SIG,
+        luca_leg: "counter",
+        account_code: FAIZ,
+        status: "active",
+        is_active: true,
+        document_type: BANK_STATEMENT_ACCOUNTING_DOC,
+        governance_ready: true,
+        updated_at: "2026-09-01T10:00:00.000Z",
+      },
+      {
+        id: "m2",
+        company_id: COMPANY_A,
+        keyword: SIG,
+        luca_leg: "counter",
+        account_code: STOPAJ,
+        status: "active",
+        is_active: true,
+        document_type: BANK_STATEMENT_ACCOUNTING_DOC,
+        governance_ready: false,
+        updated_at: "2026-09-02T10:00:00.000Z",
+      },
+    ];
+    const out = runMigration037Preflight(rows);
+    assert.equal(out.hardDeletes, 0);
+    assert.ok(out.rows.every((r) => r.status === "review"));
+    assert.ok(out.rows.every((r) => r.governance_ready === true));
+    const again = runMigration037Preflight(out.rows);
+    assert.equal(again.changed, false);
+    assert.equal(again.idempotent, true);
+  });
+
+  it("SQL: boş actor mutation reddi + audit fail rollback", async () => {
+    const base = seedGovernanceTestRecord({
+      companyId: COMPANY_A,
+      accountCode: FAIZ,
+      signature: SIG,
+    });
+    const noActor = await deactivateGovernanceRecord({
+      memoryId: base.memoryId,
+      companyId: COMPANY_A,
+      expectedRevision: 1,
+      actorId: "",
+    });
+    assert.equal(noActor.code, "ACTOR_REQUIRED");
+    const auditFail = await runAtomicGovernanceMutationTx({
+      action: "deactivate",
+      companyId: COMPANY_A,
+      memoryId: base.memoryId,
+      expectedRevision: 1,
+      actorId: "u1",
+      forceAuditFail: true,
+    });
+    assert.equal(auditFail.rolledBack, true);
+    assert.equal(
+      __listGovernanceTestRecords().find((r) => r.memoryId === base.memoryId).status,
+      MEMORY_GOVERNANCE_STATUS.ACTIVE
+    );
+  });
+
+  it("SQL static: producer service_role + no DROP old index + fingerprint audit", () => {
+    const mig = fs.readFileSync(
+      path.join(root, "supabase/migrations/037_accounting_memory_governance.sql"),
+      "utf8"
+    );
+    assert.doesNotMatch(mig, /drop index if exists public\.uq_learning_memory_active_bsa_keyword/i);
+    assert.match(mig, /coalesce\(max\(revision\), 0\) \+ 1/);
+    assert.match(mig, /accountFingerprint/);
+    assert.match(mig, /v_row\.clean_description/);
+    assert.match(mig, /v_row\.raw_description/);
+    assert.doesNotMatch(mig, /v_row\.keyword, v_row\.keyword, v_row\.keyword/);
+    assert.match(mig, /ACTOR_REQUIRED/);
+    assert.match(mig, /for update/);
+    // reactivate inserts new row; does not set source status=active in-place
+    assert.match(mig, /elsif v_action = 'reactivate' then[\s\S]*insert into public\.learning_memory/);
+    assert.match(mig, /sourceUnchanged[\s\S]*reactivate/);
+
+    const apiGuard = fs.readFileSync(path.join(root, "src/lib/auth/apiGuard.js"), "utf8");
+    assert.match(apiGuard, /requireServiceRole:\s*true/);
+    const lmRoute = fs.readFileSync(
+      path.join(root, "app/api/learning-memory/route.js"),
+      "utf8"
+    );
+    assert.match(lmRoute, /requireAuthenticatedApi\("learning-memory:post"/);
+    assert.match(lmRoute, /service_role INSERT/);
+    assert.match(lmRoute, /ACTOR_REQUIRED/);
+
+    const govRoute = fs.readFileSync(
+      path.join(root, "app/api/accounting-memory-governance/route.js"),
+      "utf8"
+    );
+    assert.match(govRoute, /ACTOR_REQUIRED/);
+    assert.match(govRoute, /401/);
   });
 });

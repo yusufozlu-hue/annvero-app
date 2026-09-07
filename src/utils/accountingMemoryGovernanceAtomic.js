@@ -150,16 +150,7 @@ export async function invokeLearningMemoryGovernanceRpc(supabase, args = {}) {
   return data;
 }
 
-export function runMigration037Preflight(rows = [], { alreadyReady = false } = {}) {
-  if (alreadyReady || rows.every((r) => r.governance_ready)) {
-    return {
-      rows: rows.map((r) => ({ ...r, governance_ready: true })),
-      changed: false,
-      idempotent: true,
-      hardDeletes: 0,
-    };
-  }
-
+export function runMigration037Preflight(rows = []) {
   let next = rows.map((r) => ({ ...r }));
   let changed = false;
   const hardDeletes = 0;
@@ -174,7 +165,7 @@ export function runMigration037Preflight(rows = [], { alreadyReady = false } = {
 
   next = next.map((r) => {
     if (r.document_type !== "BANK_STATEMENT_ACCOUNTING") return r;
-    if (r.luca_leg) return r;
+    if (r.luca_leg || r.deleted_at) return r;
     const leg = inferLeg(r.account_code);
     if (!leg) return r;
     changed = true;
@@ -183,7 +174,7 @@ export function runMigration037Preflight(rows = [], { alreadyReady = false } = {
 
   next = next.map((r) => {
     if (r.document_type !== "BANK_STATEMENT_ACCOUNTING") return r;
-    if (r.status !== "active") return r;
+    if (r.status !== "active" || r.is_active === false || r.deleted_at) return r;
     if (r.luca_leg) return r;
     changed = true;
     return {
@@ -195,9 +186,10 @@ export function runMigration037Preflight(rows = [], { alreadyReady = false } = {
     };
   });
 
+  // Scan ALL actives regardless of governance_ready
   const groups = new Map();
   for (const r of next) {
-    if (r.status !== "active" || r.is_active === false) continue;
+    if (r.status !== "active" || r.is_active === false || r.deleted_at) continue;
     const key = [r.company_id, r.keyword, r.luca_leg || "", r.account_code].join("\u0001");
     const list = groups.get(key) || [];
     list.push(r);
@@ -226,7 +218,7 @@ export function runMigration037Preflight(rows = [], { alreadyReady = false } = {
 
   const conflictKeys = new Map();
   for (const r of next) {
-    if (r.status !== "active" || r.is_active === false) continue;
+    if (r.status !== "active" || r.is_active === false || r.deleted_at) continue;
     const key = [r.company_id, r.keyword, r.luca_leg || ""].join("\u0001");
     const set = conflictKeys.get(key) || new Set();
     set.add(r.account_code);
@@ -255,8 +247,13 @@ export function runMigration037Preflight(rows = [], { alreadyReady = false } = {
     });
   }
 
-  next = next.map((r) => ({ ...r, governance_ready: true }));
-  return { rows: next, changed, idempotent: false, hardDeletes };
+  const beforeReady = next.some((r) => !r.governance_ready);
+  next = next.map((r) => (r.governance_ready ? r : { ...r, governance_ready: true }));
+  if (beforeReady) changed = true;
+
+  const noActiveDupes = assertUniqueActiveInvariant(next).ok;
+  const idempotent = !changed && noActiveDupes && next.every((r) => r.governance_ready);
+  return { rows: next, changed, idempotent, hardDeletes };
 }
 
 export function assertUniqueActiveInvariant(rows = []) {
@@ -264,7 +261,7 @@ export function assertUniqueActiveInvariant(rows = []) {
   for (const r of rows) {
     if (r.status !== "active" || r.is_active === false || r.deleted_at) continue;
     const key = `${r.company_id}|${r.keyword}|${r.luca_leg || ""}`;
-    if (seen.has(key) && seen.get(key) !== r.account_code) {
+    if (seen.has(key)) {
       return { ok: false, key, codes: [seen.get(key), r.account_code] };
     }
     seen.set(key, r.account_code);

@@ -53,7 +53,7 @@ const REASON_TR = Object.freeze({
 });
 
 const PII_AUDIT_RE =
-  /\bTR\d{2}\s?\d{4}|IBAN|iban|\d{10,26}\b|hesap\s*no|account\s*number/i;
+  /\bTR\d{2}\s?\d{4}|IBAN|iban|\d{10,26}\b|hesap\s*no|account\s*number|raw_description|clean_description|userNote|user_note/i;
 
 /** Test store — Node ortamında API yokken governance mantığı */
 const testStore = {
@@ -61,6 +61,27 @@ const testStore = {
   audits: [],
   inflight: new Map(),
 };
+
+export function accountCodeFingerprint(accountCode = "") {
+  const raw = textId(accountCode);
+  // Deterministic non-crypto fingerprint for tests (mirrors SQL md5-prefix policy)
+  let h = 0;
+  for (let i = 0; i < raw.length; i += 1) {
+    h = (h * 31 + raw.charCodeAt(i)) >>> 0;
+  }
+  return `fp_${h.toString(16).padStart(8, "0")}_${raw.length}`;
+}
+
+function nextGroupRevision(companyId, signature, lucaLeg) {
+  let max = 0;
+  for (const r of testStore.records.values()) {
+    if (r.companyId !== companyId) continue;
+    if (r.signature !== signature) continue;
+    if ((r.lucaLeg || "") !== (lucaLeg || "")) continue;
+    max = Math.max(max, Number(r.revision) || 0);
+  }
+  return max + 1;
+}
 
 export function __resetAccountingMemoryGovernanceTestState() {
   testStore.records.clear();
@@ -273,6 +294,8 @@ function sanitizeCanonicalView(view, conflict = false) {
     updatedBy: view.updatedBy || null,
     reasonCode: textId(view.reasonCode),
     userNote: textId(view.userNote).slice(0, 200),
+    cleanDescription: textId(view.cleanDescription),
+    rawDescription: textId(view.rawDescription),
     usageCount: view.usageCount == null ? null : Number(view.usageCount) || 0,
     lastUsedAt: view.lastUsedAt || null,
     conflictState: Boolean(conflict || view.conflictState),
@@ -461,7 +484,7 @@ export function buildGovernanceAuditEvent({
     before: before
       ? {
           memoryId: before.memoryId,
-          accountCode: before.accountCode,
+          accountFingerprint: accountCodeFingerprint(before.accountCode),
           status: before.status,
           revision: before.revision,
           lucaLeg: before.lucaLeg,
@@ -470,7 +493,7 @@ export function buildGovernanceAuditEvent({
     after: after
       ? {
           memoryId: after.memoryId,
-          accountCode: after.accountCode,
+          accountFingerprint: accountCodeFingerprint(after.accountCode),
           status: after.status,
           revision: after.revision,
           lucaLeg: after.lucaLeg,
@@ -537,6 +560,8 @@ export function seedGovernanceTestRecord(partial = {}) {
     updatedAt: partial.updatedAt || nowIso(),
     reasonCode: partial.reasonCode || "",
     userNote: partial.userNote || "",
+    cleanDescription: partial.cleanDescription || "",
+    rawDescription: partial.rawDescription || "",
     usageCount: partial.usageCount == null ? 0 : partial.usageCount,
     lastUsedAt: partial.lastUsedAt || null,
     conflictState: Boolean(partial.conflictState),
@@ -585,23 +610,27 @@ export async function deactivateGovernanceRecord({
   }
 
   const work = (async () => {
+    if (!textId(actorId)) {
+      return { ok: false, code: "ACTOR_REQUIRED" };
+    }
     const record = store === "test" ? getTestRecord(memoryId) : null;
     const tenant = requireTenant(record, companyId);
     if (!tenant.ok) return tenant;
     const cas = checkCas(record, expectedRevision);
     if (!cas.ok) return cas;
 
+    const newRev = nextGroupRevision(record.companyId, record.signature, record.lucaLeg);
     const next = {
       ...record,
       status: MEMORY_GOVERNANCE_STATUS.PASSIVE,
-      revision: Number(record.revision) + 1,
+      revision: newRev,
       parentRevisionId: record.memoryId,
       updatedAt: nowIso(),
       updatedBy: textId(actorId) || null,
       reasonCode,
       conflictState: false,
     };
-    // Eski sürüm superseded olarak ayrı kayıt (tarihçe silinmez)
+    // Content snapshot preserved as superseded sibling (immutable history)
     const archived = {
       ...record,
       memoryId: newId("rev"),
@@ -650,13 +679,13 @@ export async function reactivateGovernanceRecord({
   actorId = "",
   reasonCode = MEMORY_GOVERNANCE_REASON.USER_REACTIVATE,
 } = {}) {
+  if (!textId(actorId)) return { ok: false, code: "ACTOR_REQUIRED" };
   const record = getTestRecord(memoryId);
   const tenant = requireTenant(record, companyId);
   if (!tenant.ok) return tenant;
   const cas = checkCas(record, expectedRevision);
   if (!cas.ok) return cas;
 
-  // Aynı signature+leg üzerindeki diğer active’leri superseded yap
   for (const other of testStore.records.values()) {
     if (other.memoryId === record.memoryId) continue;
     if (other.companyId !== record.companyId) continue;
@@ -671,17 +700,22 @@ export async function reactivateGovernanceRecord({
     }
   }
 
+  // Source unchanged — new active clone
   const next = {
     ...record,
+    memoryId: newId("mem"),
     status: MEMORY_GOVERNANCE_STATUS.ACTIVE,
-    revision: Number(record.revision) + 1,
+    revision: nextGroupRevision(record.companyId, record.signature, record.lucaLeg),
     parentRevisionId: record.memoryId,
+    supersedesId: record.memoryId,
     updatedAt: nowIso(),
     updatedBy: textId(actorId) || null,
     reasonCode,
     conflictState: false,
+    createdAt: nowIso(),
   };
   putTestRecord(next);
+  putTestRecord({ ...record });
   const audit = pushAudit(
     buildGovernanceAuditEvent({
       action: MEMORY_GOVERNANCE_ACTION.REACTIVATE,
@@ -695,7 +729,7 @@ export async function reactivateGovernanceRecord({
       reasonCode,
     })
   );
-  return { ok: true, record: next, audit };
+  return { ok: true, record: next, sourceUnchanged: getTestRecord(memoryId), audit };
 }
 
 /**
@@ -708,7 +742,10 @@ export async function reviseGovernanceRecord({
   actorId = "",
   nextAccountCode = "",
   reasonCode = MEMORY_GOVERNANCE_REASON.USER_EDIT,
+  cleanDescription = null,
+  rawDescription = null,
 } = {}) {
+  if (!textId(actorId)) return { ok: false, code: "ACTOR_REQUIRED" };
   const record = getTestRecord(memoryId);
   const tenant = requireTenant(record, companyId);
   if (!tenant.ok) return tenant;
@@ -718,7 +755,6 @@ export async function reviseGovernanceRecord({
   const accountCode = textId(nextAccountCode) || record.accountCode;
   const archived = {
     ...record,
-    memoryId: newId("rev"),
     status: MEMORY_GOVERNANCE_STATUS.SUPERSEDED,
     updatedAt: nowIso(),
     reasonCode: MEMORY_GOVERNANCE_REASON.SUPERSEDED_BY_LEARN,
@@ -727,15 +763,22 @@ export async function reviseGovernanceRecord({
 
   const next = {
     ...record,
+    memoryId: newId("mem"),
     accountCode,
+    // Clone descriptions unless explicitly revised
+    cleanDescription:
+      cleanDescription == null ? record.cleanDescription : textId(cleanDescription),
+    rawDescription:
+      rawDescription == null ? record.rawDescription : textId(rawDescription),
     status: MEMORY_GOVERNANCE_STATUS.ACTIVE,
-    revision: Number(record.revision) + 1,
+    revision: nextGroupRevision(record.companyId, record.signature, record.lucaLeg),
     parentRevisionId: record.memoryId,
-    supersedesId: archived.memoryId,
+    supersedesId: record.memoryId,
     updatedAt: nowIso(),
     updatedBy: textId(actorId) || null,
     reasonCode,
     conflictState: false,
+    createdAt: nowIso(),
   };
   putTestRecord(next);
   const audit = pushAudit(
@@ -765,6 +808,7 @@ export async function resolveGovernanceConflict({
   actorId = "",
   expectedRevision = null,
 } = {}) {
+  if (!textId(actorId)) return { ok: false, code: "ACTOR_REQUIRED" };
   const company = textId(companyId);
   const sig = textId(signature);
   const leg = textId(lucaLeg);
@@ -797,17 +841,22 @@ export async function resolveGovernanceConflict({
     });
   }
 
+  // Chosen source unchanged (stays review/historical); new active clone
   const next = {
     ...chosen,
+    memoryId: newId("mem"),
     status: MEMORY_GOVERNANCE_STATUS.ACTIVE,
-    revision: Number(chosen.revision) + 1,
+    revision: nextGroupRevision(chosen.companyId, chosen.signature, chosen.lucaLeg),
     parentRevisionId: chosen.memoryId,
+    supersedesId: chosen.memoryId,
     updatedAt: nowIso(),
     updatedBy: textId(actorId) || null,
     reasonCode: MEMORY_GOVERNANCE_REASON.CONFLICT_RESOLVE,
     conflictState: false,
+    createdAt: nowIso(),
   };
   putTestRecord(next);
+  putTestRecord({ ...chosen });
   const audit = pushAudit(
     buildGovernanceAuditEvent({
       action: MEMORY_GOVERNANCE_ACTION.CONFLICT_RESOLVE,
@@ -821,7 +870,13 @@ export async function resolveGovernanceConflict({
       reasonCode: MEMORY_GOVERNANCE_REASON.CONFLICT_RESOLVE,
     })
   );
-  return { ok: true, record: next, audit, deactivatedCount: siblings.length - 1 };
+  return {
+    ok: true,
+    record: next,
+    sourceUnchanged: getTestRecord(chosenMemoryId),
+    audit,
+    deactivatedCount: siblings.length - 1,
+  };
 }
 
 /**
@@ -833,6 +888,7 @@ export async function rollbackGovernanceRecord({
   expectedRevision = null,
   actorId = "",
 } = {}) {
+  if (!textId(actorId)) return { ok: false, code: "ACTOR_REQUIRED" };
   const target = getTestRecord(targetMemoryId);
   const tenant = requireTenant(target, companyId);
   if (!tenant.ok) return tenant;
@@ -904,9 +960,11 @@ export async function rollbackGovernanceRecord({
       ...fresh,
       memoryId: newId("mem"),
       status: MEMORY_GOVERNANCE_STATUS.ACTIVE,
-      revision: Number(fresh.revision) + 1,
+      revision: nextGroupRevision(fresh.companyId, fresh.signature, fresh.lucaLeg),
       parentRevisionId: fresh.memoryId,
       supersedesId: fresh.memoryId,
+      cleanDescription: fresh.cleanDescription,
+      rawDescription: fresh.rawDescription,
       updatedAt: nowIso(),
       updatedBy: textId(actorId) || null,
       reasonCode: MEMORY_GOVERNANCE_REASON.ROLLBACK,

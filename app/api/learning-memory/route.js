@@ -172,6 +172,13 @@ export async function GET(request) {
   return NextResponse.json({ data: rows.map(withLearningMemoryAliases) });
 }
 
+/**
+ * POST create/learn producer.
+ * Call chain: requireAuthenticatedApi → getApiSupabase(requireServiceRole:true)
+ * → service_role INSERT (RLS bypass). Authenticated client INSERT is revoked by 037;
+ * this route remains backward-compatible before/after migration because it never
+ * used the authenticated role for writes.
+ */
 export async function POST(request) {
   let body;
   try {
@@ -185,6 +192,14 @@ export async function POST(request) {
 
   const ctx = await requireAuthenticatedApi("learning-memory:post", TABLE, { companyId });
   if (ctx.error) return ctx.error;
+
+  const actorId = String(ctx.user?.id || ctx.access?.userId || "").trim();
+  if (!actorId) {
+    return NextResponse.json(
+      { ok: false, code: "ACTOR_REQUIRED", error: "Oturum aktörü doğrulanamadı." },
+      { status: 401 }
+    );
+  }
 
   if (!record?.keyword) {
     return NextResponse.json(
@@ -206,6 +221,9 @@ export async function POST(request) {
     companyId,
     { forCreate: true }
   );
+  // Lifecycle always active on create; client status spoof ignored
+  insertPayload.status = "active";
+  insertPayload.is_active = true;
 
   const { data, error } = await ctx.supabase
     .from(TABLE)

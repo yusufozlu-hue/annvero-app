@@ -78,6 +78,9 @@ function mapRpcFailure(result) {
   if (code === "NOT_FOUND") {
     return jsonError("Kayıt bulunamadı", 404, "NOT_FOUND");
   }
+  if (code === "ACTOR_REQUIRED") {
+    return jsonError("Oturum aktörü zorunlu", 401, "ACTOR_REQUIRED");
+  }
   return jsonError(result?.error || result?.message || "İşlem başarısız", 500, code || "RPC_FAILED");
 }
 
@@ -146,6 +149,13 @@ export async function POST(request) {
   if (ctx.error) return ctx.error;
 
   const actorId = String(ctx.user?.id || ctx.access?.userId || "").trim();
+  if (!actorId) {
+    return jsonError(
+      "Oturum aktörü doğrulanamadı; mutation yapılmadı.",
+      401,
+      "ACTOR_REQUIRED"
+    );
+  }
   const memoryId = String(safeBody.memoryId || safeBody.id || "").trim();
   const expectedRevision =
     safeBody.expectedRevision == null ? null : Number(safeBody.expectedRevision);
