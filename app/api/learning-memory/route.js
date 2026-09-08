@@ -13,7 +13,6 @@ import {
   AUDIT_ACTIONS,
   AUDIT_ENTITY_TYPES,
 } from "@/src/lib/audit/auditEvents";
-import { buildSoftDeletePatch } from "@/src/lib/softDelete";
 import {
   buildSafeLearningMemoryPayload,
   isLearningMemorySchemaError,
@@ -32,6 +31,24 @@ const ALLOWED_DOCUMENT_TYPES = new Set([
 
 const ALLOWED_STATUS = new Set(["active", "passive", "deleted"]);
 
+/** Lifecycle alanları yalnız governance RPC üzerinden değişir */
+const GOVERNANCE_LIFECYCLE_KEYS = new Set([
+  "status",
+  "is_active",
+  "isActive",
+  "deleted_at",
+  "deletedAt",
+  "revision",
+  "supersedes_id",
+  "supersedesId",
+  "parent_revision_id",
+  "parentRevisionId",
+  "reason_code",
+  "reasonCode",
+  "governance_ready",
+  "governanceReady",
+]);
+
 function withLearningMemoryAliases(row = {}) {
   return {
     ...row,
@@ -39,23 +56,40 @@ function withLearningMemoryAliases(row = {}) {
   };
 }
 
-function sanitizeClientLearningRecord(record = {}, companyId = "") {
+function hasGovernanceLifecycleMutation(record = {}) {
+  return Object.keys(record || {}).some((key) => GOVERNANCE_LIFECYCLE_KEYS.has(key));
+}
+
+function governanceRequiredResponse() {
+  return NextResponse.json(
+    {
+      ok: false,
+      code: "GOVERNANCE_REQUIRED",
+      error:
+        "Durum / pasife alma / etkinleştirme yalnız muhasebe hafızası governance API üzerinden yapılır. Kayıt değiştirilmedi.",
+    },
+    { status: 409 }
+  );
+}
+
+function sanitizeClientLearningRecord(record = {}, companyId = "", { forCreate = false } = {}) {
   const docType = String(record.document_type || record.documentType || "DK")
     .trim()
     .toUpperCase();
-  const status = String(record.status || "active")
-    .trim()
-    .toLowerCase();
+  // Create producer: yalnız active; PATCH yaşam döngüsü bu route’tan geçmez
+  const status = forCreate ? "active" : "active";
+  void ALLOWED_STATUS;
 
   // Client created_by / createdBy kabul edilmez — oturum audit katmanı yazar
   const safe = buildSafeLearningMemoryPayload({
     ...record,
     company_id: companyId,
     document_type: ALLOWED_DOCUMENT_TYPES.has(docType) ? docType : "DK",
-    status: ALLOWED_STATUS.has(status) ? status : "active",
+    status,
+    is_active: true,
   });
 
-  // user_correction içinden client createdBy spoof’unu temizle
+  // user_correction içinden client createdBy spoof’unu temizle + lifecycle spoof
   if (safe.user_correction) {
     try {
       const meta =
@@ -65,6 +99,10 @@ function sanitizeClientLearningRecord(record = {}, companyId = "") {
       if (meta && typeof meta === "object") {
         delete meta.createdBy;
         delete meta.created_by;
+        delete meta.updatedBy;
+        delete meta.updated_by;
+        delete meta.status;
+        delete meta.revision;
         safe.user_correction = JSON.stringify(meta);
       }
     } catch {
@@ -97,7 +135,11 @@ export async function GET(request) {
   query = scoped;
 
   if (!includeInactive) {
-    query = query.neq("status", "passive").neq("status", "deleted");
+    query = query
+      .neq("status", "passive")
+      .neq("status", "deleted")
+      .neq("status", "superseded")
+      .neq("status", "review");
     query = query.is("deleted_at", null);
   }
 
@@ -121,13 +163,22 @@ export async function GET(request) {
     : (data || []).filter(
         (row) =>
           row?.is_active !== false &&
-          !["passive", "deleted"].includes(String(row?.status || "active").toLowerCase()) &&
+          !["passive", "deleted", "superseded", "review", "conflict"].includes(
+            String(row?.status || "active").toLowerCase()
+          ) &&
           !row?.deleted_at
       );
 
   return NextResponse.json({ data: rows.map(withLearningMemoryAliases) });
 }
 
+/**
+ * POST create/learn producer.
+ * Call chain: requireAuthenticatedApi → getApiSupabase(requireServiceRole:true)
+ * → service_role INSERT (RLS bypass). Authenticated client INSERT is revoked by 037;
+ * this route remains backward-compatible before/after migration because it never
+ * used the authenticated role for writes.
+ */
 export async function POST(request) {
   let body;
   try {
@@ -141,6 +192,14 @@ export async function POST(request) {
 
   const ctx = await requireAuthenticatedApi("learning-memory:post", TABLE, { companyId });
   if (ctx.error) return ctx.error;
+
+  const actorId = String(ctx.user?.id || ctx.access?.userId || "").trim();
+  if (!actorId) {
+    return NextResponse.json(
+      { ok: false, code: "ACTOR_REQUIRED", error: "Oturum aktörü doğrulanamadı." },
+      { status: 401 }
+    );
+  }
 
   if (!record?.keyword) {
     return NextResponse.json(
@@ -159,8 +218,12 @@ export async function POST(request) {
       keyword: String(record.keyword).trim(),
       learned_at: record.learned_at || new Date().toISOString(),
     },
-    companyId
+    companyId,
+    { forCreate: true }
   );
+  // Lifecycle always active on create; client status spoof ignored
+  insertPayload.status = "active";
+  insertPayload.is_active = true;
 
   const { data, error } = await ctx.supabase
     .from(TABLE)
@@ -210,6 +273,10 @@ export async function PATCH(request) {
   const record = body?.record;
 
   if (record?.id) {
+    if (hasGovernanceLifecycleMutation(record)) {
+      return governanceRequiredResponse();
+    }
+
     const accessCheck = await requireRecordCompanyAccess(
       supabase,
       TABLE,
@@ -220,8 +287,16 @@ export async function PATCH(request) {
     if (!accessCheck.ok) return accessCheck.response;
 
     const payload = sanitizeClientLearningRecord(record, accessCheck.companyId);
-    // id güncellemede company_id değiştirilmez
+    // id güncellemede company_id / lifecycle değiştirilmez
     delete payload.company_id;
+    delete payload.status;
+    delete payload.is_active;
+    delete payload.deleted_at;
+    delete payload.revision;
+    delete payload.supersedes_id;
+    delete payload.parent_revision_id;
+    delete payload.reason_code;
+    delete payload.governance_ready;
     if (!Object.keys(payload).length) {
       return NextResponse.json({ data: null, skipped: true });
     }
@@ -314,47 +389,15 @@ export async function PATCH(request) {
   return NextResponse.json({ updated: results });
 }
 
-export async function DELETE(request) {
-  const id = request.nextUrl.searchParams.get("id");
-  if (!id) {
-    return NextResponse.json({ error: "Kayıt ID gerekli." }, { status: 400 });
-  }
-
-  const session = await requireApiSession();
-  if (session.error) return session.error;
-
-  const { supabase, guard } = getApiSupabase("learning-memory:delete", TABLE);
-  if (guard) return guard;
-
-  const accessCheck = await requireRecordCompanyAccess(
-    supabase,
-    TABLE,
-    "id",
-    id,
-    session.access
+export async function DELETE() {
+  // Faz 7: hard/soft delete route kapalı — pasife alma governance API’de
+  return NextResponse.json(
+    {
+      ok: false,
+      code: "DELETE_DISABLED",
+      error:
+        "Hafıza kaydı silinmez. Pasife alma için /api/accounting-memory-governance kullanın.",
+    },
+    { status: 405 }
   );
-  if (!accessCheck.ok) return accessCheck.response;
-
-  const softPatch = {
-    ...buildSoftDeletePatch(session.user),
-    status: "deleted",
-  };
-
-  const { error } = await supabase.from(TABLE).update(softPatch).eq("id", id);
-
-  if (error) {
-    console.error(error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  void writeAuditEvent({
-    ...buildAuditContextFromRequest(request, session),
-    companyId: accessCheck.companyId,
-    entityType: AUDIT_ENTITY_TYPES.LEARNING_MEMORY,
-    entityId: id,
-    action: AUDIT_ACTIONS.SOFT_DELETE,
-    afterState: softPatch,
-  });
-
-  return NextResponse.json({ ok: true });
 }

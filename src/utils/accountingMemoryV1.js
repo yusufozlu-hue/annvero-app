@@ -368,6 +368,7 @@ export function buildServerAccountingMemoryPayload({
     schemaVersion: ACCOUNTING_MEMORY_SCHEMA_VERSION,
     source: ACCOUNTING_MEMORY_SOURCE,
     status: "active",
+    revision: 1,
     direction: dir,
     currency: cur,
     bankId: bank,
@@ -471,7 +472,10 @@ export function mapServerAccountingRowToV2(row = {}) {
     status !== "passive" &&
     status !== "deleted" &&
     status !== "disabled" &&
-    status !== "superseded";
+    status !== "superseded" &&
+    status !== "review" &&
+    status !== "conflict" &&
+    meta.conflict !== true;
 
   return {
     id: `srv:${row.id || analysisKey}`,
@@ -832,19 +836,34 @@ export async function persistUserConfirmedAccountingMemory({
     } else if (existing?.id && existingCode && existingCode !== String(accountCode).trim()) {
       superseded = true;
       if (typeof updateRecord === "function") {
+        const prevMeta = parseUserCorrectionMeta(existing);
+        const prevRev = Math.max(1, Number(prevMeta.revision || 1));
         await updateRecord(existing.id, {
           status: "passive",
           user_correction: JSON.stringify({
-            ...parseUserCorrectionMeta(existing),
+            ...prevMeta,
             status: "superseded",
+            revision: prevRev,
             supersededAt: nowIso(),
             supersededByAccount: String(accountCode).trim(),
+            reasonCode: "superseded_by_learn",
           }),
         });
       }
       if (typeof createRecord === "function") {
         serverWriteAttempt = 1;
-        const result = await createRecord(payload);
+        const prevMeta = existing ? parseUserCorrectionMeta(existing) : {};
+        const nextPayload = {
+          ...payload,
+          user_correction: JSON.stringify({
+            ...JSON.parse(payload.user_correction || "{}"),
+            revision: Math.max(1, Number(prevMeta.revision || 1)) + 1,
+            parentRevisionId: existing?.id || "",
+            supersedesId: existing?.id || "",
+            reasonCode: "user_edit",
+          }),
+        };
+        const result = await createRecord(nextPayload);
         if (result?.error || !result?.data) {
           error = result?.error || "learning_memory yazılamadı.";
         } else {
@@ -1308,6 +1327,8 @@ export function mapServerAccountingRowToUiSafe(row = {}) {
     status = "disabled";
   } else if (statusRaw === "superseded") {
     status = "superseded";
+  } else if (statusRaw === "review" || statusRaw === "conflict" || meta.conflict === true) {
+    status = "review";
   }
 
   return {

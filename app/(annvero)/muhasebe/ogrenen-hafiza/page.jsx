@@ -23,6 +23,11 @@ import {
   fetchLearningMemoryForCompanyDetailed,
   updateLearningMemoryRecord,
 } from "@/src/utils/learningMemory";
+import {
+  deactivateAccountingMemoryRecord,
+  reactivateAccountingMemoryRecord,
+  formatGovernanceMutationError,
+} from "@/src/utils/accountingMemoryGovernanceClient";
 import AnnveroDataTable from "@/src/components/AnnveroDataTable";
 import AccountMemoryV2Panel from "../components/AccountMemoryV2Panel";
 
@@ -49,9 +54,24 @@ export default function OgrenenHafizaPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [toast, setToast] = useState(null);
   const loadGenRef = useRef(0);
+  const mutatingRef = useRef(false);
 
   const showToast = (message, type) => {
     setToast({ message, type });
+  };
+
+  const readRowRevision = (row) => {
+    const raw = row?.raw || row || {};
+    if (raw.revision != null) return Math.max(1, Number(raw.revision) || 1);
+    try {
+      const meta =
+        typeof raw.user_correction === "string"
+          ? JSON.parse(raw.user_correction || "{}")
+          : raw.user_correction || {};
+      return Math.max(1, Number(meta.revision || 1) || 1);
+    } catch {
+      return 1;
+    }
   };
 
   useEffect(() => {
@@ -234,20 +254,23 @@ export default function OgrenenHafizaPage() {
   };
 
   const saveEdit = async () => {
-    if (!editingRecordId || !editDraft) return;
+    if (!editingRecordId || !editDraft || mutatingRef.current) return;
 
     if (!String(editDraft.keyword || "").trim()) {
       showToast("Arama anahtarı boş olamaz", "error");
       return;
     }
 
+    mutatingRef.current = true;
     setIsSaving(true);
 
     try {
-      const ok = await updateLearningMemoryRecord(
-        editingRecordId,
-        buildLearningMemoryUpdatePayload(editDraft)
-      );
+      // Lifecycle alanları governance dışı PATCH’e gitmez
+      const payload = buildLearningMemoryUpdatePayload(editDraft);
+      delete payload.status;
+      delete payload.is_active;
+
+      const ok = await updateLearningMemoryRecord(editingRecordId, payload);
 
       if (!ok) {
         showToast("Kayıt güncellenemedi", "error");
@@ -259,42 +282,66 @@ export default function OgrenenHafizaPage() {
       await loadRecords();
     } finally {
       setIsSaving(false);
+      mutatingRef.current = false;
     }
   };
 
   const toggleActive = async (row) => {
-    const ok = await updateLearningMemoryRecord(row.id, {
-      status: row.isActive ? "passive" : "active",
-    });
+    if (mutatingRef.current) return;
+    mutatingRef.current = true;
+    try {
+      const base = {
+        companyId: companyFilter,
+        memoryId: row.id,
+        expectedRevision: readRowRevision(row),
+      };
+      const result = row.isActive
+        ? await deactivateAccountingMemoryRecord(base)
+        : await reactivateAccountingMemoryRecord(base);
 
-    if (!ok) {
-      showToast("Durum güncellenemedi", "error");
-      return;
+      if (!result.ok) {
+        showToast(formatGovernanceMutationError(result), "error");
+        await loadRecords();
+        return;
+      }
+
+      showToast(row.isActive ? "Kayıt pasife alındı" : "Kayıt etkinleştirildi", "success");
+      await loadRecords();
+    } finally {
+      mutatingRef.current = false;
     }
-
-    showToast(row.isActive ? "Kayıt pasif yapıldı" : "Kayıt aktif yapıldı", "success");
-    await loadRecords();
   };
 
-  const deleteRecord = async (row) => {
-    const confirmed = window.confirm("Bu hafıza kaydını silmek istediğinize emin misiniz?");
+  const deactivateRecord = async (row) => {
+    if (mutatingRef.current) return;
+    const confirmed = window.confirm(
+      "Bu kayıt silinmez; pasife alınır. Devam edilsin mi?"
+    );
     if (!confirmed) return;
 
-    const ok = await updateLearningMemoryRecord(row.id, {
-      status: "deleted",
-    });
+    mutatingRef.current = true;
+    try {
+      const result = await deactivateAccountingMemoryRecord({
+        companyId: companyFilter,
+        memoryId: row.id,
+        expectedRevision: readRowRevision(row),
+      });
 
-    if (!ok) {
-      showToast("Kayıt silinemedi", "error");
-      return;
+      if (!result.ok) {
+        showToast(formatGovernanceMutationError(result), "error");
+        await loadRecords();
+        return;
+      }
+
+      if (editingRecordId === row.id) {
+        closeEditPanel();
+      }
+
+      showToast("Kayıt pasife alındı (silinmedi)", "success");
+      await loadRecords();
+    } finally {
+      mutatingRef.current = false;
     }
-
-    if (editingRecordId === row.id) {
-      closeEditPanel();
-    }
-
-    showToast("Kayıt silindi", "success");
-    await loadRecords();
   };
 
   const memoryColumns = useMemo(
@@ -355,13 +402,15 @@ export default function OgrenenHafizaPage() {
             >
               {row.isActive ? "Pasif Yap" : "Aktif Yap"}
             </button>
-            {row.status !== "deleted" ? (
+            {row.status !== "deleted" &&
+            String(row.documentType || row.document_type || "").toUpperCase() !==
+              "BANK_STATEMENT_ACCOUNTING" ? (
               <button
                 type="button"
-                onClick={() => deleteRecord(row)}
-                className="rounded-lg border border-red-800/60 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-950/40"
+                onClick={() => deactivateRecord(row)}
+                className="rounded-lg border border-amber-800/60 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-950/40"
               >
-                Sil
+                Pasife Al
               </button>
             ) : null}
           </div>
@@ -499,7 +548,7 @@ export default function OgrenenHafizaPage() {
             <option value="TUMU">Tümü</option>
             <option value="active">Aktif</option>
             <option value="passive">Pasif</option>
-            <option value="deleted">Silindi</option>
+            <option value="review">İnceleme</option>
           </select>
         </label>
 
@@ -649,16 +698,6 @@ export default function OgrenenHafizaPage() {
                   ))}
                 </select>
               </Field>
-              <Field label="Durum">
-                <select
-                  value={createDraft.status}
-                  onChange={(event) => updateCreateField("status", event.target.value)}
-                  className={inputClassName}
-                >
-                  <option value="active">Aktif</option>
-                  <option value="passive">Pasif</option>
-                </select>
-              </Field>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -733,18 +772,10 @@ export default function OgrenenHafizaPage() {
                   className={inputClassName}
                 />
               </Field>
-              <Field label="Aktif/Pasif">
-                <select
-                  value={editDraft.status || "active"}
-                  onChange={(event) => updateDraftField("status", event.target.value)}
-                  className={inputClassName}
-                >
-                  <option value="active">Aktif</option>
-                  <option value="passive">Pasif</option>
-                  <option value="deleted">Silindi</option>
-                </select>
-              </Field>
             </div>
+            <p className="mt-2 text-xs text-gray-400">
+              Aktif/pasif durumu üstteki Firma Muhasebe Hafızası panelinden yönetilir.
+            </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
                 type="button"
