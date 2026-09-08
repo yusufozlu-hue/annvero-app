@@ -149,6 +149,15 @@ export default function OgrenenHafizaPage() {
     };
   }, [loadRecords]);
 
+  const handleGovernanceMutationComplete = useCallback(
+    async ({ companyId } = {}) => {
+      const currentCompanyId = String(companyFilter || "").trim();
+      if (!companyId || companyId !== currentCompanyId) return;
+      await loadRecords();
+    },
+    [companyFilter, loadRecords]
+  );
+
   const filteredRows = useMemo(
     () =>
       filterLearningMemoryRows(records, {
@@ -445,6 +454,7 @@ export default function OgrenenHafizaPage() {
       <AccountMemoryV2Panel
         selectedCompanyId={selectedCompanyId}
         getCompanyDisplayName={getCompanyDisplayName}
+        onMemoryChanged={handleGovernanceMutationComplete}
         companyLabel={
           companies.find((c) => c.id === selectedCompanyId)
             ? getCompanyDisplayName(

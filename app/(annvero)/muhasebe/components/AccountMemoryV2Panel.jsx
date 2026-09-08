@@ -38,6 +38,7 @@ export default function AccountMemoryV2Panel({
   selectedCompanyId = "",
   getCompanyDisplayName = () => "",
   companyLabel = "",
+  onMemoryChanged = null,
 }) {
   const [tabs, setTabs] = useState({ active: [], review: [], history: [] });
   const [stats, setStats] = useState({ active: 0, review: 0, history: 0, total: 0 });
@@ -52,6 +53,7 @@ export default function AccountMemoryV2Panel({
   const fetchGenRef = useRef(0);
   const companyIdRef = useRef(selectedCompanyId);
   const mutatingRef = useRef(false);
+  const mountedRef = useRef(false);
 
   const firmId = String(selectedCompanyId || "").trim();
   const firmName =
@@ -69,6 +71,15 @@ export default function AccountMemoryV2Panel({
     const t = setTimeout(() => setToast(null), 3200);
     return () => clearTimeout(t);
   }, [toast]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      fetchGenRef.current += 1;
+      companyIdRef.current = "";
+    };
+  }, []);
 
   const loadForCompany = useCallback(async (companyId) => {
     const id = String(companyId || "").trim();
@@ -88,6 +99,7 @@ export default function AccountMemoryV2Panel({
     setIsLoading(true);
     setLoadError("");
     setTabs({ active: [], review: [], history: [] });
+    setConfirmAction(null);
 
     try {
       const result = await fetchAccountingMemoryGovernance(id);
@@ -111,6 +123,20 @@ export default function AccountMemoryV2Panel({
     }
   }, []);
 
+  const refreshAfterMutation = useCallback(
+    async ({ companyId, action, result }) => {
+      if (!mountedRef.current || companyIdRef.current !== companyId) return;
+
+      await Promise.all([
+        loadForCompany(companyId),
+        typeof onMemoryChanged === "function"
+          ? Promise.resolve(onMemoryChanged({ companyId, action, result }))
+          : Promise.resolve(),
+      ]);
+    },
+    [loadForCompany, onMemoryChanged]
+  );
+
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
@@ -119,6 +145,9 @@ export default function AccountMemoryV2Panel({
     return () => {
       cancelled = true;
       fetchGenRef.current += 1;
+      if (companyIdRef.current === firmId) {
+        companyIdRef.current = "";
+      }
     };
   }, [firmId, loadForCompany]);
 
@@ -149,11 +178,12 @@ export default function AccountMemoryV2Panel({
     if (!confirmAction || busyId || !firmId || mutatingRef.current) return;
     mutatingRef.current = true;
     const { type, row } = confirmAction;
+    const mutationCompanyId = firmId;
     setBusyId(row.memoryId);
     try {
       let result;
       const base = {
-        companyId: firmId,
+        companyId: mutationCompanyId,
         memoryId: row.memoryId,
         expectedRevision: row.revision,
       };
@@ -170,13 +200,25 @@ export default function AccountMemoryV2Panel({
       }
 
       if (!result.ok) {
-        if (result.code === "MIGRATION_REQUIRED") {
-          setMigrationWarn(formatGovernanceMutationError(result));
-          showToast(formatGovernanceMutationError(result), "error");
-        } else {
-          showToast(formatGovernanceMutationError(result), "error");
+        if (
+          mountedRef.current &&
+          companyIdRef.current === mutationCompanyId
+        ) {
+          if (result.code === "MIGRATION_REQUIRED") {
+            setMigrationWarn(formatGovernanceMutationError(result));
+            showToast(formatGovernanceMutationError(result), "error");
+          } else {
+            showToast(formatGovernanceMutationError(result), "error");
+          }
+          await loadForCompany(mutationCompanyId);
         }
-        await loadForCompany(firmId);
+        return;
+      }
+
+      if (
+        !mountedRef.current ||
+        companyIdRef.current !== mutationCompanyId
+      ) {
         return;
       }
 
@@ -192,12 +234,21 @@ export default function AccountMemoryV2Panel({
         "success"
       );
       setConfirmAction(null);
-      await loadForCompany(firmId);
+      await refreshAfterMutation({
+        companyId: mutationCompanyId,
+        action: type,
+        result,
+      });
     } catch (err) {
-      showToast(err?.message || "İşlem başarısız; aktif kayıt korundu.", "error");
-      await loadForCompany(firmId);
+      if (
+        mountedRef.current &&
+        companyIdRef.current === mutationCompanyId
+      ) {
+        showToast(err?.message || "İşlem başarısız; aktif kayıt korundu.", "error");
+        await loadForCompany(mutationCompanyId);
+      }
     } finally {
-      setBusyId("");
+      if (mountedRef.current) setBusyId("");
       mutatingRef.current = false;
     }
   };
@@ -334,6 +385,7 @@ export default function AccountMemoryV2Panel({
               <th className="px-2 py-2">Bacak</th>
               <th className="px-2 py-2">Hesap</th>
               <th className="px-2 py-2">Durum</th>
+              <th className="px-2 py-2">Sürüm</th>
               <th className="px-2 py-2">Güven</th>
               <th className="px-2 py-2">Son değişiklik</th>
               <th className="px-2 py-2">Kaynak</th>
@@ -343,14 +395,14 @@ export default function AccountMemoryV2Panel({
           <tbody>
             {isLoading ? (
               <tr>
-                <td colSpan={9} className="px-2 py-6 text-center text-violet-300/70">
+                <td colSpan={10} className="px-2 py-6 text-center text-violet-300/70">
                   Sunucu kayıtları yükleniyor…
                 </td>
               </tr>
             ) : null}
             {!isLoading && !loadError && !rows.length ? (
               <tr>
-                <td colSpan={9} className="px-2 py-6 text-center text-violet-300/70">
+                <td colSpan={10} className="px-2 py-6 text-center text-violet-300/70">
                   {emptyMessage}
                 </td>
               </tr>
@@ -367,6 +419,9 @@ export default function AccountMemoryV2Panel({
                   <td className="px-2 py-2">{record.lucaLegLabel}</td>
                   <td className="px-2 py-2 font-mono">{record.accountCode}</td>
                   <td className="px-2 py-2">{record.statusLabel}</td>
+                  <td className="whitespace-nowrap px-2 py-2 font-mono">
+                    r{record.revision}
+                  </td>
                   <td className="px-2 py-2">{record.confidence}</td>
                   <td className="px-2 py-2">{formatTs(record.updatedAt)}</td>
                   <td className="px-2 py-2">{record.sourceLabel}</td>
@@ -419,9 +474,6 @@ export default function AccountMemoryV2Panel({
                         >
                           Bu sürüme dön
                         </button>
-                      ) : null}
-                      {tab === "history" ? (
-                        <span className="text-violet-400/80">r{record.revision}</span>
                       ) : null}
                     </div>
                   </td>
