@@ -59,16 +59,16 @@ for (const phrase of FORBIDDEN_LOCAL_MEMORY_UI_PHRASES) {
 }
 check(panelSrc.includes("Firma Muhasebe Hafızası"), "başlık: Firma Muhasebe Hafızası");
 check(
-  panelSrc.includes("Yetkili kayıtlar güvenli şekilde sunucuda tutulur"),
+  panelSrc.includes("BSA ve anahtar kelime kayıtları tek yönetim merkezinden yönetilir"),
   "server-authority copy"
 );
 check(
-  panelSrc.includes("fetchLearningMemoryForCompanyDetailed"),
+  panelSrc.includes("fetchAccountingMemoryGovernance"),
   "panel server fetch bağları"
 );
 check(
-  panelSrc.includes("hydrateFirmAccountingMemoryCache"),
-  "panel hydrate/reconcile"
+  !panelSrc.includes("hydrateFirmAccountingMemoryCache"),
+  "panel governance server-authority; local hydrate yok"
 );
 check(!panelSrc.includes("Tüm firmalar") && !panelSrc.includes("Tüm Firmalar"), "panel Tüm Firmalar yok");
 check(!panelSrc.includes("mergeAccountMemoryV2Records"), "local birleştir kaldırıldı");
