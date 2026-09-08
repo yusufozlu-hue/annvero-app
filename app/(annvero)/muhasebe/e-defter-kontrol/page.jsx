@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import {
@@ -55,10 +54,8 @@ import ParserJobProgress from "@/src/components/ParserJobProgress";
 import { useParserJob } from "@/src/hooks/useParserJob";
 import { logParserJobError } from "@/src/utils/parserJobLogger";
 import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
-import {
-  runEDefterXmlWorker,
-  runExcelSheetWorker,
-} from "@/src/utils/workerParserBridge";
+import { runEDefterXmlWorker } from "@/src/utils/workerParserBridge";
+import { parseExcelUploadFile } from "@/src/utils/readExcelSheetWithWorkerFallback";
 import { parseEDefterUploadBuffer } from "@/src/utils/eDefterXmlParser";
 import { DUPLICATE_EDEFTER_UI_MESSAGE } from "@/src/utils/eDefterSecurity";
 import {
@@ -79,6 +76,39 @@ import {
 
 const inputClassName =
   "w-full rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20";
+
+function FilePickerField({ id, label, accept, onChange, fileName = "" }) {
+  const nameId = `${id}-name`;
+  return (
+    <div className="min-w-0">
+      <span className="mb-1.5 block text-xs font-medium text-gray-400">{label}</span>
+      <div className="flex min-w-0 items-center gap-3 rounded-xl border border-white/10 bg-gray-950/80 p-2">
+        <input
+          id={id}
+          type="file"
+          accept={accept}
+          onChange={onChange}
+          aria-describedby={nameId}
+          className="peer sr-only"
+        />
+        <label
+          htmlFor={id}
+          className="shrink-0 cursor-pointer rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 peer-focus-visible:ring-2 peer-focus-visible:ring-cyan-300 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-gray-950"
+        >
+          Dosya Seç
+        </label>
+        <span
+          id={nameId}
+          className="min-w-0 flex-1 truncate text-sm text-gray-300"
+          title={fileName || "Dosya seçilmedi"}
+          data-testid={`${id}-file-name`}
+        >
+          {fileName || "Dosya seçilmedi"}
+        </span>
+      </div>
+    </div>
+  );
+}
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("tr-TR", {
@@ -173,6 +203,13 @@ export default function EDefterKontrolPage() {
   const [identityInfo, setIdentityInfo] = useState(null);
   const [identityUserConfirmed, setIdentityUserConfirmed] = useState(false);
   const [excelFileToken, setExcelFileToken] = useState("");
+  const [selectedFileNames, setSelectedFileNames] = useState({
+    xml: "",
+    muavin: "",
+    yevmiye: "",
+    mizan: "",
+    liste: "",
+  });
   const [identityPersistOnceKey, setIdentityPersistOnceKey] = useState("");
   const lastAnalysisRef = useRef(null);
 
@@ -440,23 +477,6 @@ export default function EDefterKontrolPage() {
     saveEDefterKontrolRecords(next);
   };
 
-  const readExcelSheetWithWorker = async (file) => {
-    const arrayBuffer = await file.arrayBuffer();
-    try {
-      const result = await runExcelSheetWorker({
-        workerUrl: PARSER_WORKER_URLS.excelSheet,
-        arrayBuffer,
-        mode: "rows",
-        onProgress: parserJob.onProgress,
-      });
-      return result.rows;
-    } catch {
-      const workbook = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-    }
-  };
-
   const handleXmlUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -496,6 +516,7 @@ export default function EDefterKontrolPage() {
         }
       }
 
+      setSelectedFileNames((current) => ({ ...current, xml: file.name }));
       if (parsed.duplicate) {
         setToast(parsed.duplicateMessage || DUPLICATE_EDEFTER_UI_MESSAGE);
         parserJob.markSuccess("Mükerrer — işlenmedi");
@@ -527,53 +548,81 @@ export default function EDefterKontrolPage() {
     }
   };
 
-  const handleMuavinUpload = async (event) => {
-    const file = event.target.files?.[0];
+  const handleExcelUpload = async (
+    event,
+    { kind, parseRows, setParsedRows, tokenPrefix, successMessage }
+  ) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
     if (!file) return;
+    parserJob.begin({ stage: `${successMessage.replace(" yüklendi.", "")} okunuyor`, detail: file.name });
     try {
-      setMuavinRows(parseMuavinSheet(await readExcelSheetWithWorker(file)));
-      setExcelFileToken(`muavin:${file.name}:${file.size}:${file.lastModified || 0}`);
+      const upload = await parseExcelUploadFile(file, {
+        parseRows,
+        workerUrl: PARSER_WORKER_URLS.excelSheet,
+        mode: "rows",
+        onProgress: parserJob.onProgress,
+        preferWorker: true,
+      });
+      setParsedRows(upload.rows);
+      setSelectedFileNames((current) => ({
+        ...current,
+        [kind]: upload.fileName,
+      }));
+      setExcelFileToken(`${tokenPrefix}:${file.name}:${file.size}:${file.lastModified || 0}`);
       resetIdentityUserConfirmation();
-      setToast("Muavin Excel yüklendi.");
+      parserJob.markSuccess(`${successMessage} ${upload.rows.length} satır.`);
+      setToast(successMessage);
     } catch (error) {
-      logExcelError(error.message || "Muavin Excel okunamadı.", { stack: error?.stack }, selectedCompanyId, {
+      logExcelError(error.message || `${successMessage.replace(" yüklendi.", "")} okunamadı.`, { stack: error?.stack }, selectedCompanyId, {
         fileName: file.name,
         errorType: SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
         module: "XML / e-Defter",
       });
-      setToast(error.message || "Muavin Excel okunamadı.");
+      parserJob.markError(error);
+      setToast(error.message || `${successMessage.replace(" yüklendi.", "")} okunamadı.`);
+    } finally {
+      input.value = "";
     }
-    event.target.value = "";
   };
 
+  const handleMuavinUpload = (event) =>
+    handleExcelUpload(event, {
+      kind: "muavin",
+      parseRows: parseMuavinSheet,
+      setParsedRows: setMuavinRows,
+      tokenPrefix: "muavin",
+      successMessage: "Muavin Excel yüklendi.",
+    });
+
   const handleYevmiyeUpload = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setYevmiyeRows(parseYevmiyeSheet(await readExcelSheetWithWorker(file)));
-    setExcelFileToken(`yevmiye:${file.name}:${file.size}:${file.lastModified || 0}`);
-    resetIdentityUserConfirmation();
-    setToast("Yevmiye Excel yüklendi.");
-    event.target.value = "";
+    await handleExcelUpload(event, {
+      kind: "yevmiye",
+      parseRows: parseYevmiyeSheet,
+      setParsedRows: setYevmiyeRows,
+      tokenPrefix: "yevmiye",
+      successMessage: "Yevmiye Excel yüklendi.",
+    });
   };
 
   const handleMizanUpload = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setMizanRows(parseMizanSheet(await readExcelSheetWithWorker(file)));
-    setExcelFileToken(`mizan:${file.name}:${file.size}:${file.lastModified || 0}`);
-    resetIdentityUserConfirmation();
-    setToast("Mizan Excel yüklendi.");
-    event.target.value = "";
+    await handleExcelUpload(event, {
+      kind: "mizan",
+      parseRows: parseMizanSheet,
+      setParsedRows: setMizanRows,
+      tokenPrefix: "mizan",
+      successMessage: "Mizan Excel yüklendi.",
+    });
   };
 
   const handleEdefterUpload = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setEdefterListeRows(parseEDefterListeSheet(await readExcelSheetWithWorker(file)));
-    setExcelFileToken(`liste:${file.name}:${file.size}:${file.lastModified || 0}`);
-    resetIdentityUserConfirmation();
-    setToast("E-defter liste Excel yüklendi.");
-    event.target.value = "";
+    await handleExcelUpload(event, {
+      kind: "liste",
+      parseRows: parseEDefterListeSheet,
+      setParsedRows: setEdefterListeRows,
+      tokenPrefix: "liste",
+      successMessage: "E-defter liste Excel yüklendi.",
+    });
   };
 
   const handleAnalyze = async () => {
@@ -1123,21 +1172,41 @@ export default function EDefterKontrolPage() {
       <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/70 p-5 shadow-xl shadow-black/20">
         <h2 className="mb-4 text-xl font-semibold">Dosya Yükleme</h2>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <Field label="Yevmiye / Kebir XML veya ZIP">
-            <input type="file" accept=".xml,.zip" onChange={handleXmlUpload} className={inputClassName} />
-          </Field>
-          <Field label="Muavin Excel">
-            <input type="file" accept=".xlsx,.xls" onChange={handleMuavinUpload} className={inputClassName} />
-          </Field>
-          <Field label="Yevmiye Excel">
-            <input type="file" accept=".xlsx,.xls" onChange={handleYevmiyeUpload} className={inputClassName} />
-          </Field>
-          <Field label="Mizan Excel">
-            <input type="file" accept=".xlsx,.xls" onChange={handleMizanUpload} className={inputClassName} />
-          </Field>
-          <Field label="E-defter Liste Excel">
-            <input type="file" accept=".xlsx,.xls" onChange={handleEdefterUpload} className={inputClassName} />
-          </Field>
+          <FilePickerField
+            id="edefter-xml-file"
+            label="Yevmiye / Kebir XML veya ZIP"
+            accept=".xml,.zip"
+            onChange={handleXmlUpload}
+            fileName={selectedFileNames.xml}
+          />
+          <FilePickerField
+            id="edefter-muavin-file"
+            label="Muavin Excel"
+            accept=".xlsx,.xls"
+            onChange={handleMuavinUpload}
+            fileName={selectedFileNames.muavin}
+          />
+          <FilePickerField
+            id="edefter-yevmiye-file"
+            label="Yevmiye Excel"
+            accept=".xlsx,.xls"
+            onChange={handleYevmiyeUpload}
+            fileName={selectedFileNames.yevmiye}
+          />
+          <FilePickerField
+            id="edefter-mizan-file"
+            label="Mizan Excel"
+            accept=".xlsx,.xls"
+            onChange={handleMizanUpload}
+            fileName={selectedFileNames.mizan}
+          />
+          <FilePickerField
+            id="edefter-liste-file"
+            label="E-defter Liste Excel"
+            accept=".xlsx,.xls"
+            onChange={handleEdefterUpload}
+            fileName={selectedFileNames.liste}
+          />
         </div>
         <p className="mt-3 text-xs text-gray-400">
           XML: {xmlRows.length} satır · Teknik bulgu: {technicalFindings.length} · Muavin: {muavinRows.length} ·

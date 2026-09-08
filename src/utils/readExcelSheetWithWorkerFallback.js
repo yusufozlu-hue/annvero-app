@@ -129,3 +129,37 @@ export async function readExcelSheetRowsFromFile(
     });
   }
 }
+
+/**
+ * UI upload contract: only a fully read and parsed workbook returns success.
+ * Worker failure remains internal when the main-thread fallback succeeds.
+ */
+export async function parseExcelUploadFile(
+  file,
+  {
+    parseRows,
+    ...readOptions
+  } = {}
+) {
+  if (typeof parseRows !== "function") {
+    throw Object.assign(new Error("Excel parser tanımlı değil."), {
+      code: EXCEL_READ_STAGE.FALLBACK_PARSE,
+      stage: EXCEL_READ_STAGE.FALLBACK_PARSE,
+    });
+  }
+
+  const sheetRows = await readExcelSheetRowsFromFile(file, readOptions);
+  const rows = parseRows(sheetRows);
+  if (!Array.isArray(rows)) {
+    throw Object.assign(new Error("Excel satırları işlenemedi."), {
+      code: EXCEL_READ_STAGE.FALLBACK_PARSE,
+      stage: EXCEL_READ_STAGE.FALLBACK_PARSE,
+    });
+  }
+
+  return {
+    status: "success",
+    rows,
+    fileName: String(file?.name || "").trim(),
+  };
+}
