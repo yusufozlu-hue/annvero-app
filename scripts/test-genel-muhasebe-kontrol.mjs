@@ -25,6 +25,7 @@ import {
   resultsAreParityEqual,
 } from "@/src/utils/eDefterAnalyzeContract.js";
 import {
+  buildGenelMuhasebePresentationSnapshot,
   buildGenelMuhasebeFindingsPresentation,
   buildVisibleGenelMuhasebeFindingsRows,
   countVisiblePresentationRows,
@@ -38,6 +39,7 @@ import {
   buildVoucherResultGroups,
   buildVisibleVoucherResultRows,
   selectVoucherPrimaryFinding,
+  VOUCHER_RESULT_VIEW,
 } from "@/src/utils/voucherResultGroups.js";
 import {
   GENEL_MUHASEBE_FINDING_TITLE_TR,
@@ -1072,12 +1074,8 @@ function hasIssueCode(rows, extras, code) {
     if (nonInfo.length === 1) {
       const only = nonInfo[0];
       console.log(
-        "REAL sole non-info",
-        only.code,
-        only.severity,
-        only.fisNo,
-        only.hesapKodu,
-        only.message
+        "REAL non-info aggregate",
+        JSON.stringify({ count: nonInfo.length, severity: only.severity })
       );
       assert(only.code === E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE, "p sole warning code");
       assert(only.fisNo === "00049", "p sole warning fis");
@@ -1992,7 +1990,7 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
     "utf8"
   );
-  assert(/buildVisibleGenelMuhasebeFindingsRows/.test(pageSrc), "y page uses visibleRows builder");
+  assert(/buildGenelMuhasebePresentationSnapshot/.test(pageSrc), "y page uses one presentation snapshot");
   assert(/data-testid="genel-muhasebe-fis-filter"/.test(pageSrc), "y filter test id");
 }
 
@@ -2108,7 +2106,8 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
     "utf8"
   );
-  assert(/const visibleRows = useMemo/.test(pageSrc), "z page defines visibleRows");
+  assert(/const presentationSnapshot = useMemo/.test(pageSrc), "z page defines one snapshot");
+  assert(/const visibleRows = presentationSnapshot\.visibleRows/.test(pageSrc), "z visibleRows comes from snapshot");
   assert(/visibleRows\.map\(/.test(pageSrc), "z tbody maps visibleRows");
   assert(/visibleRowsCount/.test(pageSrc), "z summary uses visibleRowsCount");
   assert(/fiş sonucu/.test(pageSrc), "z summary says fiş sonucu");
@@ -2272,7 +2271,7 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
       correctionResolved: false,
     },
   ]);
-  assert(appliedOverWarn.primaryKind === "applied", "aa priority APPLIED > unresolved warning");
+  assert(appliedOverWarn.primaryKind === "warning", "aa unresolved warning > applied row");
 
   const modalSrc = fs.readFileSync(
     path.resolve(
@@ -2284,6 +2283,93 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   assert(/voucher-findings-detail-close/.test(modalSrc), "aa modal close test id");
   assert(/Diğer kontroller/.test(modalSrc), "aa modal secondary section");
   assert(/MultiCounterpartDetailBody/.test(modalSrc), "aa modal reuses multi body");
+}
+
+// ab) Faz 8B — findings-first/all-vouchers, severity order, system warnings, filter reset
+{
+  const ledgerRows = Array.from({ length: 115 }, (_, index) => ({
+    id: `fixture-row-${index + 1}`,
+    kaynak: E_DEFTER_KAYNAK.YEVMIYE,
+    fisNo: String(index + 1).padStart(5, "0"),
+    tarih: "01.03.2026",
+    hesapKodu: "100.01",
+  }));
+  const findings = Array.from({ length: 94 }, (_, index) => ({
+    fisNo: String(index + 1).padStart(5, "0"),
+    tarih: "01.03.2026",
+    hesapKodu: "100.01",
+    severity:
+      index === 39
+        ? E_DEFTER_ISSUE_SEVERITY.UYARI
+        : E_DEFTER_ISSUE_SEVERITY.BILGI,
+    code:
+      index === 39
+        ? E_DEFTER_ISSUE_CODE.COUNTERPART_SAME_SIDE
+        : E_DEFTER_ISSUE_CODE.UNKNOWN_ISSUE,
+    message: index === 39 ? "anon warning" : "anon info",
+  }));
+  findings.push({
+    fisNo: "",
+    severity: E_DEFTER_ISSUE_SEVERITY.UYARI,
+    code: E_DEFTER_ISSUE_CODE.MUAVIN_YEVMIYE_MISMATCH,
+    message: "anon system warning",
+  });
+
+  const defaultSnapshot = buildGenelMuhasebePresentationSnapshot({
+    findingsCatalog: findings,
+    ledgerRows,
+    view: VOUCHER_RESULT_VIEW.FINDINGS,
+  });
+  const allSnapshot = buildGenelMuhasebePresentationSnapshot({
+    findingsCatalog: findings,
+    ledgerRows,
+    view: VOUCHER_RESULT_VIEW.ALL,
+  });
+  const filtered = buildGenelMuhasebePresentationSnapshot({
+    findingsCatalog: findings,
+    ledgerRows,
+    fisFilter: "1",
+    view: VOUCHER_RESULT_VIEW.FINDINGS,
+  });
+
+  assert(defaultSnapshot.counts.findings === 94, "ab default findings count 94");
+  assert(defaultSnapshot.visibleRows.length === 94, "ab default renders 94 findings");
+  assert(defaultSnapshot.counts.appropriate === 21, "ab appropriate count 21");
+  assert(defaultSnapshot.counts.total === 115, "ab total count 115");
+  assert(allSnapshot.visibleRows.length === 115, "ab all vouchers renders 115");
+  assert(
+    defaultSnapshot.visibleRows[0]?.primarySeverity === E_DEFTER_ISSUE_SEVERITY.UYARI,
+    "ab warning summary first visible voucher is warning"
+  );
+  assert(defaultSnapshot.systemWarnings.length === 1, "ab voucher-less warning in system area");
+  assert(
+    !defaultSnapshot.allGroups.some((group) => !String(group.fisNo || "").trim()),
+    "ab no fake voucher number"
+  );
+  assert(
+    filtered.visibleRows.length === 1 && filtered.visibleRows[0].fisNo === "00001",
+    "ab filter 1 only leading-zero voucher one"
+  );
+
+  const pageSrc = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/genel-muhasebe-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(/genel-muhasebe-view-findings/.test(pageSrc), "ab findings view control");
+  assert(/genel-muhasebe-view-all/.test(pageSrc), "ab all vouchers control");
+  assert(/genel-muhasebe-system-warnings/.test(pageSrc), "ab system warnings area");
+  assert(/genel-muhasebe-active-filter/.test(pageSrc), "ab active filter label");
+  assert(/genel-muhasebe-clear-filter/.test(pageSrc), "ab one-click filter clear");
+  assert(
+    /const resetPresentationState = useCallback[\s\S]*setFisFilter\(""\)[\s\S]*setShowDuzeltildiOnly\(false\)[\s\S]*setVoucherDetailGroup\(null\)/.test(
+      pageSrc
+    ),
+    "ab generation reset clears filter, corrected-only and detail"
+  );
+  assert(
+    /resetPresentationState\(\);[\s\S]*setBusy\(true\)/.test(pageSrc),
+    "ab new analysis resets presentation state"
+  );
 }
 
 if (failed) {

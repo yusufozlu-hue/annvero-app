@@ -3,8 +3,11 @@
  * Run: npm run test:excel-sheet-worker-fallback
  */
 import * as XLSX from "xlsx";
+import fs from "node:fs";
+import path from "node:path";
 import {
   EXCEL_READ_STAGE,
+  parseExcelUploadFile,
   readExcelSheetRowsFromFile,
 } from "@/src/utils/readExcelSheetWithWorkerFallback.js";
 
@@ -152,6 +155,76 @@ function makeXlsxFile(rows, name = "fixture.xlsx") {
   } catch (error) {
     assert(error.code === EXCEL_READ_STAGE.FALLBACK_PARSE, "empty file → EXCEL_FALLBACK_PARSE");
   }
+}
+
+// 5) E-Defter UI contract: worker failure + fallback success is success.
+{
+  const rows = [
+    ["Başlık"],
+    ...Array.from({ length: 545 }, (_, index) => [`anon-${index + 1}`]),
+  ];
+  const longName =
+    "çok-uzun-muavin-dosya-adı-dar-ekranda-taşmamalı-ve-kısalmalı.xlsx";
+  const file = makeXlsxFile(rows, longName);
+  const result = await parseExcelUploadFile(file, {
+    preferWorker: true,
+    workerUrl: "mock://excel-sheet",
+    runWorker: async () => {
+      throw Object.assign(new Error("Worker modülü yüklenemedi."), {
+        code: "WORKER_ONERROR",
+      });
+    },
+    parseRows: (sheetRows) => sheetRows.slice(1),
+  });
+  assert(result.status === "success", "worker fail + fallback success → success state");
+  assert(result.rows.length === 545, "fallback success → 545 parsed rows");
+  assert(result.fileName === longName, "fallback success → selected file name preserved");
+}
+
+// 6) Worker + fallback failure remains a real error.
+{
+  const emptyFile = {
+    name: "unreadable.xlsx",
+    async arrayBuffer() {
+      return new ArrayBuffer(0);
+    },
+  };
+  try {
+    await parseExcelUploadFile(emptyFile, {
+      preferWorker: true,
+      workerUrl: "mock://excel-sheet",
+      runWorker: async () => {
+        throw Object.assign(new Error("Worker modülü yüklenemedi."), {
+          code: "WORKER_ONERROR",
+        });
+      },
+      parseRows: (rows) => rows,
+    });
+    assert(false, "worker + fallback failure should reject");
+  } catch (error) {
+    assert(
+      error.code === EXCEL_READ_STAGE.FALLBACK_PARSE,
+      "worker + fallback failure → real error state"
+    );
+  }
+}
+
+// 7) Accessible custom picker keeps native text hidden and filename separate.
+{
+  const pageSource = fs.readFileSync(
+    path.resolve("app/(annvero)/muhasebe/e-defter-kontrol/page.jsx"),
+    "utf8"
+  );
+  assert(/function FilePickerField/.test(pageSource), "custom file picker component exists");
+  assert(/htmlFor=\{id\}/.test(pageSource), "file picker label/input relation");
+  assert(/className="peer sr-only"/.test(pageSource), "native file input visually hidden");
+  assert(/Dosya Seç/.test(pageSource), "single explicit file select label");
+  assert(/\{fileName \|\| "Dosya seçilmedi"\}/.test(pageSource), "unselected text separate");
+  assert(/min-w-0 flex-1 truncate/.test(pageSource), "long filename ellipsis contract");
+  assert(/title=\{fileName \|\| "Dosya seçilmedi"\}/.test(pageSource), "full filename remains discoverable");
+  assert(/parserJob\.markSuccess/.test(pageSource), "successful fallback clears error lifecycle");
+  assert(/parserJob\.markError\(error\)/.test(pageSource), "total failure marks real error");
+  assert(/setToast\(successMessage\)/.test(pageSource), "success toast is not overwritten by worker error");
 }
 
 if (failed) {

@@ -5,6 +5,7 @@
 import {
   E_DEFTER_ISSUE_CODE,
   E_DEFTER_ISSUE_SEVERITY,
+  E_DEFTER_KAYNAK,
 } from "@/src/config/eDefterKontrolDefaults";
 import {
   enrichFindingForUserPresentation,
@@ -22,7 +23,19 @@ const SEVERITY_PRIORITY = {
   HATA: 0,
   [E_DEFTER_ISSUE_SEVERITY.UYARI]: 1,
   [E_DEFTER_ISSUE_SEVERITY.BILGI]: 2,
+  UYGUN: 3,
 };
+
+export const VOUCHER_RESULT_VIEW = {
+  FINDINGS: "findings",
+  ALL: "all",
+};
+
+const LEDGER_VOUCHER_SOURCES = new Set([
+  E_DEFTER_KAYNAK.MUAVIN,
+  E_DEFTER_KAYNAK.YEVMIYE,
+  E_DEFTER_KAYNAK.YEVMIYE_XML,
+]);
 
 function compactFis(value = "") {
   return String(value ?? "").trim();
@@ -62,7 +75,9 @@ function sortFindingsBySeverity(catalog = []) {
 }
 
 function enrichCatalogItem(item, recordsByFingerprint) {
-  const record = resolveCorrectionRecordForFinding(item, recordsByFingerprint);
+  const record =
+    item?.correctionRecord ||
+    resolveCorrectionRecordForFinding(item, recordsByFingerprint);
   const enriched = enrichFindingWithCorrectionRecord(
     enrichFindingForUserPresentation({ kind: "single", ...item }),
     record
@@ -80,23 +95,12 @@ function compareUnresolvedWarnings(left, right) {
 }
 
 /**
- * Öncelik: APPLIED > çözülmemiş HATA/UYARI > bileşik fiş > diğer BİLGİ.
+ * Öncelik: çözülmemiş HATA/UYARI > APPLIED > bileşik fiş > diğer BİLGİ.
  */
 export function selectVoucherPrimaryFinding(findings = [], options = {}) {
   const list = Array.isArray(findings) ? findings : [];
   if (!list.length) {
     return { primary: null, secondaryFindings: [], primaryKind: "empty" };
-  }
-
-  const applied = list.filter((item) => item.correctionResolved);
-  if (applied.length) {
-    const sortedApplied = [...applied].sort(compareUnresolvedWarnings);
-    const primary = sortedApplied[0];
-    return {
-      primary,
-      secondaryFindings: list.filter((item) => item !== primary),
-      primaryKind: "applied",
-    };
   }
 
   const unresolved = list
@@ -113,6 +117,17 @@ export function selectVoucherPrimaryFinding(findings = [], options = {}) {
       primary,
       secondaryFindings: list.filter((item) => item !== primary),
       primaryKind: "warning",
+    };
+  }
+
+  const applied = list.filter((item) => item.correctionResolved);
+  if (applied.length) {
+    const sortedApplied = [...applied].sort(compareUnresolvedWarnings);
+    const primary = sortedApplied[0];
+    return {
+      primary,
+      secondaryFindings: list.filter((item) => item !== primary),
+      primaryKind: "applied",
     };
   }
 
@@ -166,6 +181,7 @@ export function buildVoucherResultGroups({
   findingsCatalog = [],
   correctionRecords = [],
   ledgerRows = [],
+  includeAppropriate = false,
 } = {}) {
   const catalog = Array.isArray(findingsCatalog) ? findingsCatalog : [];
   const correctionImpact = summarizeCorrectionPresentationImpact(
@@ -175,6 +191,21 @@ export function buildVoucherResultGroups({
   const recordsByFingerprint = correctionImpact.recordsByFingerprint;
 
   const byFis = new Map();
+  const voucherMeta = new Map();
+  if (includeAppropriate) {
+    for (const row of Array.isArray(ledgerRows) ? ledgerRows : []) {
+      const fisNo = compactFis(row?.fisNo);
+      if (!fisNo || !LEDGER_VOUCHER_SOURCES.has(row?.kaynak)) continue;
+      if (!voucherMeta.has(fisNo)) {
+        voucherMeta.set(fisNo, {
+          tarih: compactFis(row?.tarih),
+          hesapKodu: compactFis(row?.hesapKodu),
+        });
+      }
+      if (!byFis.has(fisNo)) byFis.set(fisNo, []);
+    }
+  }
+
   for (const raw of catalog) {
     const fisNo = compactFis(raw.fisNo);
     if (!fisNo) continue; // sistem/fişsiz bulgular ana tabloda fiş satırı üretmez
@@ -185,9 +216,40 @@ export function buildVoucherResultGroups({
   }
 
   const groups = [];
-  for (const [fisNo, findings] of [...byFis.entries()].sort((a, b) =>
-    String(a[0]).localeCompare(String(b[0]), "tr")
-  )) {
+  for (const [fisNo, findings] of byFis.entries()) {
+    if (!findings.length) {
+      const meta = voucherMeta.get(fisNo) || {};
+      groups.push({
+        kind: "voucher",
+        id: `voucher|${fisNo}`,
+        fisNo,
+        tarih: meta.tarih || "",
+        primaryFinding: null,
+        primaryKind: "appropriate",
+        primaryStatus: "Uygun",
+        primarySeverity: "UYGUN",
+        primaryAccount: "",
+        primaryMessage: "Bu fişte gösterilecek bulgu yok.",
+        primaryCode: "",
+        secondaryFindings: [],
+        findingCount: 0,
+        secondaryCount: 0,
+        findings: [],
+        multiDetail: null,
+        hasComposite: false,
+        correctionRecord: null,
+        correctionResolved: false,
+        displayTitle: "Uygun",
+        displayMessage: "Bu fişte gösterilecek bulgu yok.",
+        severity: "UYGUN",
+        code: "",
+        hesapKodu: "",
+        correctionStatusMessage: "",
+        correctionStatusLabel: "",
+      });
+      continue;
+    }
+
     const multiItems = findings.filter(
       (item) => item.code === E_DEFTER_ISSUE_CODE.MULTI_COUNTERPART
     );
@@ -255,28 +317,84 @@ export function buildVoucherResultGroups({
     });
   }
 
-  return groups;
+  return groups.sort((left, right) => {
+    const leftUnresolved = left.findings
+      .filter(
+        (item) =>
+          item.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI &&
+          !item.correctionResolved
+      )
+      .sort(compareUnresolvedWarnings)[0];
+    const rightUnresolved = right.findings
+      .filter(
+        (item) =>
+          item.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI &&
+          !item.correctionResolved
+      )
+      .sort(compareUnresolvedWarnings)[0];
+    const leftSeverity =
+      leftUnresolved?.severity ||
+      (left.primaryKind === "appropriate"
+        ? "UYGUN"
+        : E_DEFTER_ISSUE_SEVERITY.BILGI);
+    const rightSeverity =
+      rightUnresolved?.severity ||
+      (right.primaryKind === "appropriate"
+        ? "UYGUN"
+        : E_DEFTER_ISSUE_SEVERITY.BILGI);
+    const rankDiff =
+      severityPriority(leftSeverity) - severityPriority(rightSeverity);
+    if (rankDiff !== 0) return rankDiff;
+    return String(left.fisNo).localeCompare(String(right.fisNo), "tr", {
+      numeric: true,
+    });
+  });
 }
 
-/** Ana tablo görünür fiş satırları — filtre + düzeltildi filtresi. */
-export function buildVisibleVoucherResultRows({
+/** Aynı snapshot'tan Bulgular / Tüm fişler / görünür satırlar ve sayaçlar. */
+export function buildVoucherResultSnapshot({
   findingsCatalog = [],
   fisFilter = "",
   correctionRecords = [],
   ledgerRows = [],
   showDuzeltildiOnly = false,
+  view = VOUCHER_RESULT_VIEW.FINDINGS,
 } = {}) {
   const query = String(fisFilter ?? "");
-  const groups = buildVoucherResultGroups({
+  const findingGroups = buildVoucherResultGroups({
     findingsCatalog,
     correctionRecords,
     ledgerRows,
   });
-  const filtered = groups.filter((group) =>
+  const allGroups = buildVoucherResultGroups({
+    findingsCatalog,
+    correctionRecords,
+    ledgerRows,
+    includeAppropriate: true,
+  });
+  const selectedGroups =
+    view === VOUCHER_RESULT_VIEW.ALL ? allGroups : findingGroups;
+  let visibleRows = selectedGroups.filter((group) =>
     matchesVoucherNumberFilter(group.fisNo, query)
   );
-  if (!showDuzeltildiOnly) return filtered;
-  return filtered.filter((group) => group.correctionResolved);
+  if (showDuzeltildiOnly) {
+    visibleRows = visibleRows.filter((group) => group.correctionResolved);
+  }
+  return {
+    findingGroups,
+    allGroups,
+    visibleRows,
+    counts: {
+      findings: findingGroups.length,
+      appropriate: Math.max(0, allGroups.length - findingGroups.length),
+      total: allGroups.length,
+    },
+  };
+}
+
+/** Ana tablo görünür fiş satırları — görünüm + filtre + düzeltildi filtresi. */
+export function buildVisibleVoucherResultRows(options = {}) {
+  return buildVoucherResultSnapshot(options).visibleRows;
 }
 
 export function voucherResultRowRenderKey(item = {}, index = 0) {

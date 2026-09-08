@@ -12,9 +12,12 @@ import {
   resolveCorrectionRecordForFinding,
   summarizeCorrectionPresentationImpact,
 } from "@/src/utils/correctionRecords/correctionRecordPresentation";
-import { CORRECTION_RECORD_STATUS } from "@/src/utils/correctionRecords/correctionRecordTypes";
 import { buildMultiCounterpartVoucherDetail } from "@/src/utils/multiCounterpartDetail";
-import { buildVisibleVoucherResultRows } from "@/src/utils/voucherResultGroups";
+import {
+  buildVisibleVoucherResultRows,
+  buildVoucherResultSnapshot,
+  VOUCHER_RESULT_VIEW,
+} from "@/src/utils/voucherResultGroups";
 
 function isSyntheticSystemFindingRow(row = {}) {
   const id = String(row?.id || "");
@@ -64,6 +67,14 @@ function issueToSonuc(severity = "") {
   if (severity === E_DEFTER_ISSUE_SEVERITY.UYARI) return E_DEFTER_SONUC_SEVIYE.UYARI;
   if (severity === E_DEFTER_ISSUE_SEVERITY.BILGI) return E_DEFTER_SONUC_SEVIYE.BILGI;
   return E_DEFTER_SONUC_SEVIYE.UYGUN;
+}
+
+function isNonInfoFinding(item = {}) {
+  return (
+    item.severity !== E_DEFTER_ISSUE_SEVERITY.BILGI &&
+    item.severity !== E_DEFTER_ISSUE_SEVERITY.UYGUN &&
+    item.severity !== "UYGUN"
+  );
 }
 
 function normalizeFinding(raw = {}, source = "row") {
@@ -327,6 +338,79 @@ export function buildVisibleGenelMuhasebeFindingsRows(options = {}) {
   return buildVisibleVoucherResultRows(options);
 }
 
+/** Correction durumunu kataloğa işler; summary, sistem uyarıları ve tablo aynı snapshot'ı kullanır. */
+export function buildCorrectionAwareFindingsCatalog(catalog = [], correctionRecords = []) {
+  const correctionImpact = summarizeCorrectionPresentationImpact(
+    Array.isArray(catalog) ? catalog : [],
+    Array.isArray(correctionRecords) ? correctionRecords : []
+  );
+  return (Array.isArray(catalog) ? catalog : []).map((item) => {
+    const record = resolveCorrectionRecordForFinding(
+      item,
+      correctionImpact.recordsByFingerprint
+    );
+    return enrichFindingWithCorrectionRecord(
+      enrichFindingForUserPresentation({ kind: "single", ...item }),
+      record
+    );
+  });
+}
+
+/** Fişsiz unresolved non-info bulgular; sahte voucher kimliği oluşturmaz. */
+export function buildGenelMuhasebeSystemWarnings(correctionAwareCatalog = []) {
+  return sortFindingsBySeverity(
+    (Array.isArray(correctionAwareCatalog) ? correctionAwareCatalog : []).filter(
+      (item) =>
+        !String(item?.fisNo || "").trim() &&
+        isNonInfoFinding(item) &&
+        !item.correctionResolved
+    )
+  );
+}
+
+/** Kabul edilmiş tek analiz snapshot'ından correction-aware UI modeli. */
+export function buildGenelMuhasebePresentationSnapshot({
+  findingsCatalog = [],
+  correctionRecords = [],
+  ledgerRows = [],
+  fisFilter = "",
+  showDuzeltildiOnly = false,
+  view = VOUCHER_RESULT_VIEW.FINDINGS,
+} = {}) {
+  const correctionAwareCatalog = buildCorrectionAwareFindingsCatalog(
+    findingsCatalog,
+    correctionRecords
+  );
+  const unresolvedCatalog = correctionAwareCatalog.filter(
+    (item) => !isNonInfoFinding(item) || !item.correctionResolved
+  );
+  const correctionImpact = summarizeCorrectionPresentationImpact(
+    findingsCatalog,
+    correctionRecords
+  );
+  const summary = {
+    ...summarizeGenelMuhasebeFindingsCatalog(unresolvedCatalog),
+    duzeltildi: correctionImpact.duzeltildi,
+    exportedPending: correctionImpact.exportedPending,
+    incelemeGerekliRaw:
+      summarizeGenelMuhasebeFindingsCatalog(findingsCatalog).incelemeGerekli,
+  };
+  const voucherSnapshot = buildVoucherResultSnapshot({
+    findingsCatalog: correctionAwareCatalog,
+    correctionRecords: [],
+    ledgerRows,
+    fisFilter,
+    showDuzeltildiOnly,
+    view,
+  });
+  return {
+    correctionAwareCatalog,
+    summary,
+    systemWarnings: buildGenelMuhasebeSystemWarnings(correctionAwareCatalog),
+    ...voucherSnapshot,
+  };
+}
+
 /** Sonuç tablosu satır anahtarı — filtre değişiminde stale DOM kalmasın. */
 export function presentationRowRenderKey(item = {}, index = 0) {
   if (item?.kind === "voucher") {
@@ -355,32 +439,10 @@ export function presentationRowRenderKey(item = {}, index = 0) {
  * Motor ham özetine (summary.overallSonuc) dokunmaz — UI correction-aware özeti kullanır.
  */
 export function summarizeGenelMuhasebeFindingsWithCorrections(catalog = [], correctionRecords = []) {
-  const base = summarizeGenelMuhasebeFindingsCatalog(catalog);
-  const correctionImpact = summarizeCorrectionPresentationImpact(catalog, correctionRecords);
-
-  const unresolvedCatalog = [];
-  for (const item of catalog) {
-    if (item.severity === E_DEFTER_ISSUE_SEVERITY.BILGI) {
-      unresolvedCatalog.push(item);
-      continue;
-    }
-    const record = resolveCorrectionRecordForFinding(
-      item,
-      correctionImpact.recordsByFingerprint
-    );
-    if (record?.status === CORRECTION_RECORD_STATUS.APPLIED) {
-      continue;
-    }
-    unresolvedCatalog.push(item);
-  }
-
-  const corrected = summarizeGenelMuhasebeFindingsCatalog(unresolvedCatalog);
-  return {
-    ...corrected,
-    duzeltildi: correctionImpact.duzeltildi,
-    exportedPending: correctionImpact.exportedPending,
-    incelemeGerekliRaw: base.incelemeGerekli,
-  };
+  return buildGenelMuhasebePresentationSnapshot({
+    findingsCatalog: catalog,
+    correctionRecords,
+  }).summary;
 }
 
 /** Aktif presentation içindeki gruplu satır kimlikleri. */

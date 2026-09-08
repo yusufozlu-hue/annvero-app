@@ -23,13 +23,12 @@ import {
 } from "@/src/utils/eDefterAnalyzeContract";
 import { createGenelMuhasebeAnalyzeGate, buildAccountPlanCodeSet } from "@/src/utils/genelMuhasebeKontrolEngine";
 import {
-  buildVisibleGenelMuhasebeFindingsRows,
+  buildGenelMuhasebePresentationSnapshot,
   presentationRowRenderKey,
-  summarizeGenelMuhasebeFindingsWithCorrections,
 } from "@/src/utils/genelMuhasebeFindingsView";
 import {
-  buildVoucherResultGroups,
   countCompositeVoucherGroups,
+  VOUCHER_RESULT_VIEW,
 } from "@/src/utils/voucherResultGroups";
 import { formatTurkishMoney } from "@/src/utils/turkishNumberFormat";
 import CorrectionVoucherPanel from "./CorrectionVoucherPanel";
@@ -155,6 +154,7 @@ export default function GenelMuhasebeKontrolPage() {
   const [perfWarning, setPerfWarning] = useState("");
   const [showMuavinYevmiyeDiffs, setShowMuavinYevmiyeDiffs] = useState(false);
   const [fisFilter, setFisFilter] = useState("");
+  const [voucherView, setVoucherView] = useState(VOUCHER_RESULT_VIEW.FINDINGS);
   const [voucherDetailGroup, setVoucherDetailGroup] = useState(null);
   const [result, setResult] = useState(null);
   const [planStatus, setPlanStatus] = useState("unknown");
@@ -169,10 +169,18 @@ export default function GenelMuhasebeKontrolPage() {
   const runTokenRef = useRef(0);
   const abortRef = useRef(null);
 
+  const resetPresentationState = useCallback(() => {
+    setFisFilter("");
+    setVoucherView(VOUCHER_RESULT_VIEW.FINDINGS);
+    setShowDuzeltildiOnly(false);
+    setShowMuavinYevmiyeDiffs(false);
+    setVoucherDetailGroup(null);
+  }, []);
+
   const invalidateActive = useCallback((reason) => {
     runTokenRef.current += 1;
     setResult(null);
-    setVoucherDetailGroup(null);
+    resetPresentationState();
     setPerfWarning("");
     setProgressDetail("");
     bumpAnalyzeGeneration(reason);
@@ -182,7 +190,7 @@ export default function GenelMuhasebeKontrolPage() {
       /* ignore */
     }
     abortRef.current = null;
-  }, []);
+  }, [resetPresentationState]);
 
   const handleCompanyChange = useCallback(
     (nextId) => {
@@ -272,6 +280,7 @@ export default function GenelMuhasebeKontrolPage() {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    resetPresentationState();
     setBusy(true);
     setError("");
     setPerfWarning("");
@@ -349,6 +358,7 @@ export default function GenelMuhasebeKontrolPage() {
     period,
     planAccounts,
     planStatus,
+    resetPresentationState,
   ]);
 
   const summary = result?.summary;
@@ -360,51 +370,49 @@ export default function GenelMuhasebeKontrolPage() {
         : planStatus;
   const trimmedFisFilter = fisFilter.trim();
   const findingsCatalog = result?.findingsCatalog;
-  const ledgerRows = result?.rows || [];
+  const ledgerRows = useMemo(() => result?.rows || [], [result]);
 
-  // Tek final liste: özet sayaç + <tbody> yalnız visibleRows.
-  const visibleRows = useMemo(
+  // Tek correction-aware snapshot: summary, sistem uyarıları, sayaçlar ve tbody.
+  const presentationSnapshot = useMemo(
     () =>
-      buildVisibleGenelMuhasebeFindingsRows({
+      buildGenelMuhasebePresentationSnapshot({
         findingsCatalog,
-        fisFilter: trimmedFisFilter,
         correctionRecords,
         ledgerRows,
+        fisFilter: trimmedFisFilter,
         showDuzeltildiOnly,
+        view: voucherView,
       }),
-    [findingsCatalog, trimmedFisFilter, correctionRecords, showDuzeltildiOnly, ledgerRows]
-  );
-
-  const findingsWithCorrections = useMemo(() => {
-    if (!findingsCatalog?.length) return null;
-    return summarizeGenelMuhasebeFindingsWithCorrections(
+    [
       findingsCatalog,
-      correctionRecords
-    );
-  }, [findingsCatalog, correctionRecords]);
+      correctionRecords,
+      ledgerRows,
+      trimmedFisFilter,
+      showDuzeltildiOnly,
+      voucherView,
+    ]
+  );
+  const visibleRows = presentationSnapshot.visibleRows;
+  const findingsWithCorrections = findingsCatalog?.length
+    ? presentationSnapshot.summary
+    : null;
+  const systemWarnings = presentationSnapshot.systemWarnings;
+  const voucherCounts = presentationSnapshot.counts;
 
   const recordsByFingerprint = useMemo(
     () => indexCorrectionRecordsByFingerprint(correctionRecords),
     [correctionRecords]
   );
 
-  useEffect(() => {
-    setVoucherDetailGroup(null);
-  }, [trimmedFisFilter, findingsCatalog]);
-
   const findingsCatalogSize = findingsCatalog?.length || 0;
   const visibleRowsCount = visibleRows.length;
-  const allVoucherGroups = useMemo(
-    () =>
-      buildVoucherResultGroups({
-        findingsCatalog,
-        correctionRecords,
-        ledgerRows,
-      }),
-    [findingsCatalog, correctionRecords, ledgerRows]
+  const compositeVoucherCount = countCompositeVoucherGroups(
+    presentationSnapshot.findingGroups
   );
-  const compositeVoucherCount = countCompositeVoucherGroups(allVoucherGroups);
-  const findingsTableBodyKey = `findings-body|${trimmedFisFilter}|${showDuzeltildiOnly ? "1" : "0"}|${visibleRowsCount}`;
+  const activeFilterVoucher = trimmedFisFilter
+    ? visibleRows[0]?.fisNo || trimmedFisFilter
+    : "";
+  const findingsTableBodyKey = `findings-body|${voucherView}|${trimmedFisFilter}|${showDuzeltildiOnly ? "1" : "0"}|${visibleRowsCount}`;
 
   const openVoucherDetail = useCallback((group, event) => {
     event?.preventDefault?.();
@@ -644,6 +652,8 @@ export default function GenelMuhasebeKontrolPage() {
                 value={findingsWithCorrections?.overallSonuc ?? summary.overallSonuc}
               />
               <Stat label="Toplam fiş" value={summary.toplamFis} />
+              <Stat label="Bulgulu fiş" value={voucherCounts.findings} />
+              <Stat label="Uygun fiş" value={voucherCounts.appropriate} />
               <Stat
                 label="Hareket"
                 value={summary.hareketSatir ?? summary.toplamSatir}
@@ -764,6 +774,39 @@ export default function GenelMuhasebeKontrolPage() {
               <p className="text-sm text-slate-600">{summary.mizanMuavin.message}</p>
             ) : null}
 
+            {systemWarnings.length ? (
+              <section
+                className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3"
+                data-testid="genel-muhasebe-system-warnings"
+                aria-labelledby="genel-muhasebe-system-warnings-title"
+              >
+                <h2
+                  id="genel-muhasebe-system-warnings-title"
+                  className="font-semibold text-amber-950"
+                >
+                  Sistem Uyarıları
+                </h2>
+                <div className="mt-2 space-y-2">
+                  {systemWarnings.map((warning, index) => (
+                    <div
+                      key={`system-warning-${warning.code || "unknown"}-${index}`}
+                      className="text-sm text-amber-900"
+                      data-testid="genel-muhasebe-system-warning"
+                    >
+                      <span className="font-semibold">{warning.severity}</span>
+                      {" · "}
+                      <span>{warning.displayTitle || warning.titleTr || "İnceleme gerekli"}</span>
+                      {warning.displayMessage || warning.messageTr || warning.message ? (
+                        <p className="mt-0.5">
+                          {warning.displayMessage || warning.messageTr || warning.message}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
             <p className="text-xs text-slate-500">
               Yerel kontrol ·{" "}
               {result?.diagnostics?.execution === "worker"
@@ -773,7 +816,8 @@ export default function GenelMuhasebeKontrolPage() {
             </p>
 
             <div className="overflow-auto rounded-xl border border-slate-200 bg-white">
-              <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-3">
+              <div className="border-b border-slate-200 bg-slate-50 px-3 py-3">
+                <div className="flex flex-wrap items-end justify-between gap-3">
                 <div className="text-sm text-slate-700">
                   <span className="font-medium text-slate-900">Sonuç tablosu</span>
                   <span className="ml-2 text-slate-500">
@@ -782,17 +826,85 @@ export default function GenelMuhasebeKontrolPage() {
                     {trimmedFisFilter ? " gösteriliyor" : ""} · {compositeVoucherCount} bileşik fiş
                   </span>
                 </div>
-                <label className="block text-sm">
-                  <span className="mb-1 block text-xs text-slate-500">Fiş no filtre</span>
-                  <input
-                    className="w-40 rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
-                    value={fisFilter}
-                    onChange={(e) => setFisFilter(e.target.value)}
-                    placeholder=""
-                    aria-label="Fiş no filtre"
-                    data-testid="genel-muhasebe-fis-filter"
-                  />
-                </label>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div
+                      className="inline-flex rounded-lg border border-slate-300 bg-white p-0.5"
+                      aria-label="Fiş görünümü"
+                    >
+                      <button
+                        type="button"
+                        aria-pressed={voucherView === VOUCHER_RESULT_VIEW.FINDINGS}
+                        data-testid="genel-muhasebe-view-findings"
+                        className={`rounded-md px-3 py-1.5 text-sm ${
+                          voucherView === VOUCHER_RESULT_VIEW.FINDINGS
+                            ? "bg-teal-700 font-semibold text-white"
+                            : "text-slate-700"
+                        }`}
+                        onClick={() => {
+                          setVoucherView(VOUCHER_RESULT_VIEW.FINDINGS);
+                          setVoucherDetailGroup(null);
+                        }}
+                      >
+                        Bulgular ({voucherCounts.findings})
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={voucherView === VOUCHER_RESULT_VIEW.ALL}
+                        data-testid="genel-muhasebe-view-all"
+                        className={`rounded-md px-3 py-1.5 text-sm ${
+                          voucherView === VOUCHER_RESULT_VIEW.ALL
+                            ? "bg-teal-700 font-semibold text-white"
+                            : "text-slate-700"
+                        }`}
+                        onClick={() => {
+                          setVoucherView(VOUCHER_RESULT_VIEW.ALL);
+                          setVoucherDetailGroup(null);
+                        }}
+                      >
+                        Tüm fişler ({voucherCounts.total})
+                      </button>
+                    </div>
+                    <label className="block text-sm">
+                      <span className="mb-1 block text-xs text-slate-500">Fiş no filtre</span>
+                      <input
+                        className="w-40 rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
+                        value={fisFilter}
+                        onChange={(e) => {
+                          setFisFilter(e.target.value);
+                          setVoucherDetailGroup(null);
+                        }}
+                        placeholder=""
+                        aria-label="Fiş no filtre"
+                        data-testid="genel-muhasebe-fis-filter"
+                      />
+                    </label>
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                  <span data-testid="genel-muhasebe-voucher-counts">
+                    Bulgulu fiş: {voucherCounts.findings} · Uygun fiş:{" "}
+                    {voucherCounts.appropriate} · Toplam fiş: {voucherCounts.total}
+                  </span>
+                  {trimmedFisFilter ? (
+                    <span
+                      className="inline-flex items-center gap-2 rounded-full bg-amber-100 px-2.5 py-1 text-amber-900"
+                      data-testid="genel-muhasebe-active-filter"
+                    >
+                      Aktif filtre: Fiş {activeFilterVoucher}
+                      <button
+                        type="button"
+                        className="font-semibold underline"
+                        onClick={() => {
+                          setFisFilter("");
+                          setVoucherDetailGroup(null);
+                        }}
+                        data-testid="genel-muhasebe-clear-filter"
+                      >
+                        Temizle
+                      </button>
+                    </span>
+                  ) : null}
+                </div>
               </div>
               <table
                 className="min-w-full text-left text-sm"
@@ -840,34 +952,38 @@ export default function GenelMuhasebeKontrolPage() {
                           </td>
                           <td className="px-3 py-2">
                             <p>{item.primaryMessage || item.displayMessage || "—"}</p>
-                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-                              <button
-                                type="button"
-                                data-testid="voucher-detail-open"
-                                aria-haspopup="dialog"
-                                aria-expanded={Boolean(
-                                  voucherDetailGroup && voucherDetailGroup.fisNo === item.fisNo
-                                )}
-                                className="text-teal-700 hover:underline"
-                                onClick={(event) => openVoucherDetail(item, event)}
-                              >
-                                Ayrıntı
-                              </button>
-                              {secondaryCount > 0 ? (
+                            {item.findingCount > 0 ? (
+                              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
                                 <button
                                   type="button"
-                                  data-testid="voucher-secondary-open"
-                                  className="text-slate-600 hover:underline"
+                                  data-testid="voucher-detail-open"
+                                  aria-haspopup="dialog"
+                                  aria-expanded={Boolean(
+                                    voucherDetailGroup && voucherDetailGroup.fisNo === item.fisNo
+                                  )}
+                                  className="text-teal-700 hover:underline"
                                   onClick={(event) => openVoucherDetail(item, event)}
                                 >
-                                  {secondaryCount} ek bulgu
+                                  Ayrıntı
                                 </button>
-                              ) : null}
-                            </div>
-                            {item.correctionResolved
+                                {secondaryCount > 0 ? (
+                                  <button
+                                    type="button"
+                                    data-testid="voucher-secondary-open"
+                                    className="text-slate-600 hover:underline"
+                                    onClick={(event) => openVoucherDetail(item, event)}
+                                  >
+                                    {secondaryCount} ek bulgu
+                                  </button>
+                                ) : null}
+                              </div>
+                            ) : null}
+                            {item.findingCount > 0 && item.correctionResolved
                               ? renderCorrectionAction(item.primaryFinding || item)
                               : null}
-                            {!item.correctionResolved && item.primaryKind !== "composite"
+                            {item.findingCount > 0 &&
+                            !item.correctionResolved &&
+                            item.primaryKind !== "composite"
                               ? renderCorrectionAction(item.primaryFinding || item)
                               : null}
                           </td>

@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import { useCompanyList } from "../hooks/useCompanyList";
 import {
@@ -18,13 +17,6 @@ import {
 } from "@/src/config/eDefterKontrolDefaults";
 import { normalizeCompanyRecord } from "@/src/utils/companyCenter";
 import { extractCompanyVkn } from "@/src/utils/companyIdentity";
-import {
-  applyIdentityGateToSummary,
-  applyUserIdentityConfirmation,
-  buildIdentityConfirmationScope,
-  canOfferExcelIdentityConfirmation,
-  clearUserIdentityConfirmation,
-} from "@/src/utils/eDefterCompanyIdentityGate";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
   buildEDefterResultFingerprints,
@@ -55,10 +47,8 @@ import ParserJobProgress from "@/src/components/ParserJobProgress";
 import { useParserJob } from "@/src/hooks/useParserJob";
 import { logParserJobError } from "@/src/utils/parserJobLogger";
 import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
-import {
-  runEDefterXmlWorker,
-  runExcelSheetWorker,
-} from "@/src/utils/workerParserBridge";
+import { runEDefterXmlWorker } from "@/src/utils/workerParserBridge";
+import { parseExcelUploadFile } from "@/src/utils/readExcelSheetWithWorkerFallback";
 import { parseEDefterUploadBuffer } from "@/src/utils/eDefterXmlParser";
 import { DUPLICATE_EDEFTER_UI_MESSAGE } from "@/src/utils/eDefterSecurity";
 import {
@@ -79,6 +69,52 @@ import {
 
 const inputClassName =
   "w-full rounded-xl border border-white/10 bg-gray-950/80 px-3 py-2.5 text-sm text-white outline-none transition focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/20";
+
+const UNVERIFIED_EXCEL_NOTICE =
+  "Belgede vergi kimliği bulunamadı. Sonuçlar yalnız ön inceleme içindir; doğrulanmış veya onaylı sayılmaz.";
+
+function FilePickerField({ id, label, accept, onChange, onClear, fileName = "" }) {
+  const nameId = `${id}-name`;
+  return (
+    <div className="min-w-0">
+      <span className="mb-1.5 block text-xs font-medium text-gray-400">{label}</span>
+      <div className="flex min-w-0 items-center gap-3 rounded-xl border border-white/10 bg-gray-950/80 p-2">
+        <input
+          id={id}
+          type="file"
+          accept={accept}
+          onChange={onChange}
+          aria-describedby={nameId}
+          className="peer sr-only"
+        />
+        <label
+          htmlFor={id}
+          className="shrink-0 cursor-pointer rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 peer-focus-visible:ring-2 peer-focus-visible:ring-cyan-300 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-gray-950"
+        >
+          Dosya Seç
+        </label>
+        <span
+          id={nameId}
+          className="min-w-0 flex-1 truncate text-sm text-gray-300"
+          title={fileName || "Dosya seçilmedi"}
+          data-testid={`${id}-file-name`}
+        >
+          {fileName || "Dosya seçilmedi"}
+        </span>
+        {fileName && onClear ? (
+          <button
+            type="button"
+            onClick={onClear}
+            className="shrink-0 rounded-lg border border-white/10 px-2 py-1.5 text-xs font-semibold text-gray-300 hover:bg-white/10"
+            aria-label={`${label} dosyasını kaldır`}
+          >
+            Kaldır
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString("tr-TR", {
@@ -171,9 +207,14 @@ export default function EDefterKontrolPage() {
   const [persisting, setPersisting] = useState(false);
   const [lastPersistMeta, setLastPersistMeta] = useState(null);
   const [identityInfo, setIdentityInfo] = useState(null);
-  const [identityUserConfirmed, setIdentityUserConfirmed] = useState(false);
   const [excelFileToken, setExcelFileToken] = useState("");
-  const [identityPersistOnceKey, setIdentityPersistOnceKey] = useState("");
+  const [selectedFileNames, setSelectedFileNames] = useState({
+    xml: "",
+    muavin: "",
+    yevmiye: "",
+    mizan: "",
+    liste: "",
+  });
   const lastAnalysisRef = useRef(null);
 
   const fingerprintSessionRef = useRef(null);
@@ -182,6 +223,7 @@ export default function EDefterKontrolPage() {
   }
   const abortRef = useRef(null);
   const analyzeLockRef = useRef(false);
+  const analysisVersionRef = useRef(0);
   const prevCompanyRef = useRef(selectedCompanyId);
 
   const parserJob = useParserJob({
@@ -191,47 +233,52 @@ export default function EDefterKontrolPage() {
       companyName: selectedCompany ? getCompanyDisplayName(selectedCompany) : "",
     },
   });
+  const resetParserJob = parserJob.reset;
 
   const period = `${year}/${month}`;
-  const identityScopeKey = `${period}|${excelFileToken}|${String(uploadMeta?.fingerprint || "")}`;
-  const [trackedIdentityScopeKey, setTrackedIdentityScopeKey] = useState(identityScopeKey);
-  if (trackedIdentityScopeKey !== identityScopeKey) {
-    setTrackedIdentityScopeKey(identityScopeKey);
-    setIdentityUserConfirmed(false);
-    setIdentityPersistOnceKey("");
-    if (identityInfo && (identityInfo.userConfirmed || identityInfo.identityUserConfirmed)) {
-      setIdentityInfo(clearUserIdentityConfirmation(identityInfo));
-    }
-    if (summary?.identityUserConfirmed) {
-      setSummary((prev) => {
-        if (!prev?.identityUserConfirmed) return prev;
-        return applyIdentityGateToSummary(
-          prev,
-          clearUserIdentityConfirmation({
-            status: prev.identityStatus,
-            sourceKind: "excel",
-            reviewRequired: true,
-            userConfirmed: true,
-            verified: false,
-            allowExport: true,
-            allowPersist: true,
-            safeFingerprint: prev.identityFingerprint || "",
-          })
-        );
-      });
-    }
-  }
 
   const companyRecords = useMemo(
     () => records.filter((record) => !selectedCompanyId || record.companyId === selectedCompanyId),
     [records, selectedCompanyId]
   );
 
-  const clearAnalysisState = () => {
-    abortRef.current?.abort?.();
-    analyzeLockRef.current = false;
-    bumpAnalyzeGeneration("clear");
-    setAnalyzing(false);
+  const invalidateCurrentAnalysis = useCallback(
+    (reason = "input-change") => {
+      analysisVersionRef.current += 1;
+      abortRef.current?.abort?.();
+      abortRef.current = null;
+      analyzeLockRef.current = false;
+      const generation = bumpAnalyzeGeneration(reason);
+      setAnalyzing(false);
+      setXmlParsing(false);
+      setRows([]);
+      setSummary(null);
+      setGroupCounts([]);
+      setActiveGroup("");
+      setSearch("");
+      setRiskLevelFilter("Tümü");
+      setHataTuruFilter("Tümü");
+      setCozumFilter("Tümü");
+      setExpandedId("");
+      setShowAllDetails(false);
+      setDetailLimit(40);
+      setSelectedRunId("");
+      setSelectedRunDetail(null);
+      setSelectedRunFindings([]);
+      setPersistError("");
+      setPersistRetryPayload(null);
+      setLastPersistMeta(null);
+      lastAnalysisRef.current = null;
+      setIdentityInfo(null);
+      setToast("");
+      resetParserJob();
+      return { generation, version: analysisVersionRef.current };
+    },
+    [resetParserJob]
+  );
+
+  const clearAnalysisState = useCallback(() => {
+    invalidateCurrentAnalysis("company-change");
     setMuavinRows([]);
     setYevmiyeRows([]);
     setMizanRows([]);
@@ -240,52 +287,19 @@ export default function EDefterKontrolPage() {
     setTechnicalFindings([]);
     setUploadMeta(null);
     setPendingParsed(null);
-    setRows([]);
-    setSummary(null);
-    setGroupCounts([]);
-    setActiveGroup("");
-    setExpandedId("");
-    setShowAllDetails(false);
-    setDetailLimit(40);
     setHistoryRuns([]);
-    setSelectedRunId("");
-    setSelectedRunDetail(null);
-    setSelectedRunFindings([]);
-    setPersistError("");
-    setPersistRetryPayload(null);
-    setLastPersistMeta(null);
-    lastAnalysisRef.current = null;
-    setIdentityInfo(null);
-    setIdentityUserConfirmed(false);
     setExcelFileToken("");
-    setIdentityPersistOnceKey("");
+    setSelectedFileNames({
+      xml: "",
+      muavin: "",
+      yevmiye: "",
+      mizan: "",
+      liste: "",
+    });
     setRecords([]);
     clearEDefterUiCaches();
     fingerprintSessionRef.current = loadEDefterFingerprintSession();
-  };
-
-  const resetIdentityUserConfirmation = () => {
-    setIdentityUserConfirmed(false);
-    setIdentityPersistOnceKey("");
-    setIdentityInfo((prev) => {
-      if (!prev?.userConfirmed && !prev?.identityUserConfirmed) return prev;
-      return clearUserIdentityConfirmation(prev);
-    });
-    setSummary((prev) => {
-      if (!prev?.identityUserConfirmed) return prev;
-      const cleared = clearUserIdentityConfirmation({
-        status: prev.identityStatus,
-        sourceKind: "excel",
-        reviewRequired: true,
-        userConfirmed: true,
-        verified: false,
-        allowExport: true,
-        allowPersist: true,
-        safeFingerprint: prev.identityFingerprint || "",
-      });
-      return applyIdentityGateToSummary(prev, cleared);
-    });
-  };
+  }, [invalidateCurrentAnalysis]);
 
   const refreshHistory = async (companyId = selectedCompanyId) => {
     if (!companyId) {
@@ -350,7 +364,7 @@ export default function EDefterKontrolPage() {
     prevCompanyRef.current = selectedCompanyId;
     clearAnalysisState();
     setToast("Firma değişti — kontrol durumu ve önbellek temizlendi.");
-  }, [selectedCompanyId]);
+  }, [selectedCompanyId, clearAnalysisState]);
 
   useEffect(() => {
     return () => {
@@ -440,26 +454,15 @@ export default function EDefterKontrolPage() {
     saveEDefterKontrolRecords(next);
   };
 
-  const readExcelSheetWithWorker = async (file) => {
-    const arrayBuffer = await file.arrayBuffer();
-    try {
-      const result = await runExcelSheetWorker({
-        workerUrl: PARSER_WORKER_URLS.excelSheet,
-        arrayBuffer,
-        mode: "rows",
-        onProgress: parserJob.onProgress,
-      });
-      return result.rows;
-    } catch {
-      const workbook = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-    }
-  };
-
   const handleXmlUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    const { version } = invalidateCurrentAnalysis("xml-file-change");
+    setXmlRows([]);
+    setTechnicalFindings([]);
+    setUploadMeta(null);
+    setPendingParsed(null);
+    setSelectedFileNames((current) => ({ ...current, xml: "" }));
     setXmlParsing(true);
     parserJob.begin({ stage: "XML/ZIP okunuyor", detail: file.name });
     const controller = new AbortController();
@@ -476,7 +479,11 @@ export default function EDefterKontrolPage() {
           fileName: file.name,
           companyTaxId,
           knownFingerprints: known.values(),
-          onProgress: parserJob.onProgress,
+          onProgress: (progress) => {
+            if (version === analysisVersionRef.current) {
+              parserJob.onProgress(progress);
+            }
+          },
         });
         parsed = workerResult;
         if (Array.isArray(workerResult.knownFingerprints)) {
@@ -496,6 +503,8 @@ export default function EDefterKontrolPage() {
         }
       }
 
+      if (version !== analysisVersionRef.current) return;
+      setSelectedFileNames((current) => ({ ...current, xml: file.name }));
       if (parsed.duplicate) {
         setToast(parsed.duplicateMessage || DUPLICATE_EDEFTER_UI_MESSAGE);
         parserJob.markSuccess("Mükerrer — işlenmedi");
@@ -509,6 +518,7 @@ export default function EDefterKontrolPage() {
       parserJob.markSuccess(`${parsed.rows.length} XML satırı okundu`);
       setToast(`${parsed.rows.length} XML satırı, ${parsed.technicalFindings.length} teknik bulgu okundu.`);
     } catch (error) {
+      if (version !== analysisVersionRef.current) return;
       logParserJobError(error, {
         module: "XML / e-Defter",
         companyId: selectedCompanyId,
@@ -521,59 +531,118 @@ export default function EDefterKontrolPage() {
       parserJob.markError(error);
       setToast(error.message || "XML/ZIP okunamadı.");
     } finally {
-      setXmlParsing(false);
-      abortRef.current = null;
+      if (version === analysisVersionRef.current) {
+        setXmlParsing(false);
+        abortRef.current = null;
+      }
       event.target.value = "";
     }
   };
 
-  const handleMuavinUpload = async (event) => {
-    const file = event.target.files?.[0];
+  const handleExcelUpload = async (
+    event,
+    { kind, parseRows, setParsedRows, tokenPrefix, successMessage }
+  ) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
     if (!file) return;
+    const { version } = invalidateCurrentAnalysis(`${kind}-file-change`);
+    setParsedRows([]);
+    setSelectedFileNames((current) => ({ ...current, [kind]: "" }));
+    setExcelFileToken(`pending:${kind}:${Date.now()}`);
+    parserJob.begin({ stage: `${successMessage.replace(" yüklendi.", "")} okunuyor`, detail: file.name });
     try {
-      setMuavinRows(parseMuavinSheet(await readExcelSheetWithWorker(file)));
-      setExcelFileToken(`muavin:${file.name}:${file.size}:${file.lastModified || 0}`);
-      resetIdentityUserConfirmation();
-      setToast("Muavin Excel yüklendi.");
+      const upload = await parseExcelUploadFile(file, {
+        parseRows,
+        workerUrl: PARSER_WORKER_URLS.excelSheet,
+        mode: "rows",
+        onProgress: (progress) => {
+          if (version === analysisVersionRef.current) {
+            parserJob.onProgress(progress);
+          }
+        },
+        preferWorker: true,
+      });
+      if (version !== analysisVersionRef.current) return;
+      setParsedRows(upload.rows);
+      setSelectedFileNames((current) => ({
+        ...current,
+        [kind]: upload.fileName,
+      }));
+      setExcelFileToken(`${tokenPrefix}:${file.name}:${file.size}:${file.lastModified || 0}`);
+      parserJob.markSuccess(`${successMessage} ${upload.rows.length} satır.`);
+      setToast(successMessage);
     } catch (error) {
-      logExcelError(error.message || "Muavin Excel okunamadı.", { stack: error?.stack }, selectedCompanyId, {
+      if (version !== analysisVersionRef.current) return;
+      logExcelError(error.message || `${successMessage.replace(" yüklendi.", "")} okunamadı.`, { stack: error?.stack }, selectedCompanyId, {
         fileName: file.name,
         errorType: SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
         module: "XML / e-Defter",
       });
-      setToast(error.message || "Muavin Excel okunamadı.");
+      parserJob.markError(error);
+      setToast(error.message || `${successMessage.replace(" yüklendi.", "")} okunamadı.`);
+    } finally {
+      input.value = "";
     }
-    event.target.value = "";
   };
 
+  const handleFileClear = (kind) => {
+    invalidateCurrentAnalysis(`${kind}-file-clear`);
+    if (kind === "xml") {
+      setXmlRows([]);
+      setTechnicalFindings([]);
+      setUploadMeta(null);
+      setPendingParsed(null);
+    } else if (kind === "muavin") {
+      setMuavinRows([]);
+    } else if (kind === "yevmiye") {
+      setYevmiyeRows([]);
+    } else if (kind === "mizan") {
+      setMizanRows([]);
+    } else if (kind === "liste") {
+      setEdefterListeRows([]);
+    }
+    setSelectedFileNames((current) => ({ ...current, [kind]: "" }));
+    setExcelFileToken(`cleared:${kind}:${Date.now()}`);
+  };
+
+  const handleMuavinUpload = (event) =>
+    handleExcelUpload(event, {
+      kind: "muavin",
+      parseRows: parseMuavinSheet,
+      setParsedRows: setMuavinRows,
+      tokenPrefix: "muavin",
+      successMessage: "Muavin Excel yüklendi.",
+    });
+
   const handleYevmiyeUpload = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setYevmiyeRows(parseYevmiyeSheet(await readExcelSheetWithWorker(file)));
-    setExcelFileToken(`yevmiye:${file.name}:${file.size}:${file.lastModified || 0}`);
-    resetIdentityUserConfirmation();
-    setToast("Yevmiye Excel yüklendi.");
-    event.target.value = "";
+    await handleExcelUpload(event, {
+      kind: "yevmiye",
+      parseRows: parseYevmiyeSheet,
+      setParsedRows: setYevmiyeRows,
+      tokenPrefix: "yevmiye",
+      successMessage: "Yevmiye Excel yüklendi.",
+    });
   };
 
   const handleMizanUpload = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setMizanRows(parseMizanSheet(await readExcelSheetWithWorker(file)));
-    setExcelFileToken(`mizan:${file.name}:${file.size}:${file.lastModified || 0}`);
-    resetIdentityUserConfirmation();
-    setToast("Mizan Excel yüklendi.");
-    event.target.value = "";
+    await handleExcelUpload(event, {
+      kind: "mizan",
+      parseRows: parseMizanSheet,
+      setParsedRows: setMizanRows,
+      tokenPrefix: "mizan",
+      successMessage: "Mizan Excel yüklendi.",
+    });
   };
 
   const handleEdefterUpload = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setEdefterListeRows(parseEDefterListeSheet(await readExcelSheetWithWorker(file)));
-    setExcelFileToken(`liste:${file.name}:${file.size}:${file.lastModified || 0}`);
-    resetIdentityUserConfirmation();
-    setToast("E-defter liste Excel yüklendi.");
-    event.target.value = "";
+    await handleExcelUpload(event, {
+      kind: "liste",
+      parseRows: parseEDefterListeSheet,
+      setParsedRows: setEdefterListeRows,
+      tokenPrefix: "liste",
+      successMessage: "E-defter liste Excel yüklendi.",
+    });
   };
 
   const handleAnalyze = async () => {
@@ -589,31 +658,29 @@ export default function EDefterKontrolPage() {
       return;
     }
 
+    const { generation, version } = invalidateCurrentAnalysis("analyze-start");
     analyzeLockRef.current = true;
     setAnalyzing(true);
-    setPersistError("");
-    setPersistRetryPayload(null);
-    setLastPersistMeta(null);
-    setIdentityInfo(null);
-    setIdentityUserConfirmed(false);
-    setIdentityPersistOnceKey("");
     parserJob.begin({ stage: "e-Defter kontrolü", detail: "Tek tuş kontrol" });
     const startedAt = new Date().toISOString();
-    const generation = bumpAnalyzeGeneration("analyze-start");
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
       const result = await runEDefterAnalyzeJob(
         {
-          parsedUpload: pendingParsed || {
-            rows: xmlRows,
-            technicalFindings,
-            beratMeta: uploadMeta?.beratMeta || null,
-            packageMeta: uploadMeta?.packageMeta || {},
-            fingerprint: uploadMeta?.fingerprint || "",
-            duplicate: false,
-          },
+          parsedUpload:
+            pendingParsed ||
+            (xmlRows.length
+              ? {
+                  rows: xmlRows,
+                  technicalFindings,
+                  beratMeta: uploadMeta?.beratMeta || null,
+                  packageMeta: uploadMeta?.packageMeta || {},
+                  fingerprint: uploadMeta?.fingerprint || "",
+                  duplicate: false,
+                }
+              : null),
           muavinRows,
           yevmiyeRows,
           mizanRows,
@@ -641,6 +708,7 @@ export default function EDefterKontrolPage() {
         }
       );
 
+      if (version !== analysisVersionRef.current) return;
       if (result.duplicate) {
         setToast(result.duplicateMessage || DUPLICATE_EDEFTER_UI_MESSAGE);
         parserJob.markSuccess("Mükerrer");
@@ -655,6 +723,9 @@ export default function EDefterKontrolPage() {
       setDetailLimit(40);
       setIdentityInfo(result.identity || null);
 
+      const identityBlocksPersist =
+        result.identity && result.identity.allowPersist === false;
+
       const localRecord = buildEDefterUploadRecord({
         companyId: selectedCompanyId,
         year,
@@ -667,8 +738,10 @@ export default function EDefterKontrolPage() {
         warningCount: result.summary.uyariSayisi,
         uploadedAt: new Date().toISOString(),
       });
-      // Geçici UI cache — sunucu kaydı başarılı olunca temizlenir
-      persistRecord(localRecord);
+      // Kimliği doğrulanmamış ön inceleme hiçbir kayıt katmanına yazılmaz.
+      if (!identityBlocksPersist) {
+        persistRecord(localRecord);
+      }
 
       const journalRows = (result.rows || []).filter((row) =>
         [E_DEFTER_KAYNAK.YEVMIYE, E_DEFTER_KAYNAK.YEVMIYE_XML].includes(row.kaynak)
@@ -714,18 +787,10 @@ export default function EDefterKontrolPage() {
 
       parserJob.markSuccess(`${result.rows.length} kayıt · ${result.overallSonuc}`);
 
-      const identityBlocksPersist =
-        result.identity && result.identity.allowPersist === false;
-
       if (identityBlocksPersist) {
-        setToast(
-          result.identity?.safeMessage ||
-            "Kimlik doğrulanmadan kayıt yapılmaz. Analiz ekranda kaldı."
-        );
+        setToast(`${UNVERIFIED_EXCEL_NOTICE} Sonuçlar Kontrol Geçmişine kaydedilmedi.`);
       } else {
         try {
-          const persistKey = `${selectedCompanyId}|${payload.source_fingerprint}|${period}|${payload.engine_version}`;
-          setIdentityPersistOnceKey(persistKey);
           await persistAnalysisResult(payload);
           setToast(
             result.summary.edefterUygun
@@ -737,6 +802,7 @@ export default function EDefterKontrolPage() {
         }
       }
     } catch (error) {
+      if (version !== analysisVersionRef.current) return;
       logParserJobError(error, {
         module: "XML / e-Defter",
         companyId: selectedCompanyId,
@@ -748,8 +814,10 @@ export default function EDefterKontrolPage() {
       parserJob.markError(error);
       setToast(error?.message || "Analiz başarısız.");
     } finally {
-      analyzeLockRef.current = false;
-      setAnalyzing(false);
+      if (version === analysisVersionRef.current) {
+        analyzeLockRef.current = false;
+        setAnalyzing(false);
+      }
     }
   };
 
@@ -792,91 +860,6 @@ export default function EDefterKontrolPage() {
       setToast("Bulgu çözüm durumu güncellendi.");
     } catch (error) {
       setToast(error?.message || "Bulgu güncellenemedi.");
-    }
-  };
-
-  const identityConfirmScope = () =>
-    buildIdentityConfirmationScope({
-      companyId: selectedCompanyId,
-      fingerprint:
-        uploadMeta?.fingerprint ||
-        pendingParsed?.fingerprint ||
-        excelFileToken ||
-        lastAnalysisRef.current?.payload?.source_fingerprint ||
-        "",
-      period,
-    });
-
-  /**
-   * Excel kimlik onayı — ikinci analiz yok; yalnız mevcut sonuç + scope.
-   * Client onayı tenant yetkisi yerine geçmez; persist API membership korunur.
-   */
-  const handleIdentityConfirmChange = async (checked) => {
-    if (!canOfferExcelIdentityConfirmation(identityInfo)) {
-      setToast("Bu girdi için kullanıcı kimlik onayı kullanılamaz.");
-      return;
-    }
-    const scope = identityConfirmScope();
-    if (!checked) {
-      const cleared = clearUserIdentityConfirmation(identityInfo);
-      setIdentityUserConfirmed(false);
-      setIdentityPersistOnceKey("");
-      setIdentityInfo(cleared);
-      setSummary((prev) => applyIdentityGateToSummary(prev || {}, cleared));
-      setToast("Kimlik onayı kaldırıldı — kayıt/dışa aktarma kapalı.");
-      return;
-    }
-
-    const next = applyUserIdentityConfirmation(identityInfo, scope);
-    setIdentityUserConfirmed(true);
-    setIdentityInfo(next);
-    const base = lastAnalysisRef.current;
-    const updatedSummary = applyIdentityGateToSummary(
-      base?.result?.summary || summary || {},
-      next
-    );
-    setSummary(updatedSummary);
-
-    if (!base?.result || !next.allowPersist) {
-      setToast(next.safeMessage || "Firma kullanıcı tarafından doğrulandı");
-      return;
-    }
-
-    const payload = buildPersistPayloadFromAnalysis({
-      companyId: selectedCompanyId,
-      period,
-      engineVersion: E_DEFTER_ENGINE_VERSION,
-      fingerprints: base.fingerprints || {
-        source: base.payload?.source_fingerprint,
-        journal: base.payload?.journal_fingerprint,
-        ledger: base.payload?.ledger_fingerprint,
-      },
-      summary: updatedSummary,
-      rows: base.result.rows,
-      journalLedger: base.result.journalLedger,
-      documentTypes: base.documentTypes || [],
-      documentCount: updatedSummary.yuklenenDefterSayisi,
-      startedAt: base.startedAt,
-      completedAt: new Date().toISOString(),
-    });
-    lastAnalysisRef.current = {
-      ...base,
-      result: { ...base.result, summary: updatedSummary, identity: next },
-      payload,
-    };
-
-    const persistKey = `${scope.companyId}|${payload.source_fingerprint}|${scope.period}|${payload.engine_version}`;
-    if (identityPersistOnceKey === persistKey) {
-      setToast("Firma kullanıcı tarafından doğrulandı (kayıt zaten yapıldı).");
-      return;
-    }
-    setIdentityPersistOnceKey(persistKey);
-    try {
-      await persistAnalysisResult(payload);
-      setToast("Firma kullanıcı tarafından doğrulandı — sonuç kaydedildi.");
-    } catch {
-      /* toast already set; allow retry without re-analyze */
-      setIdentityPersistOnceKey("");
     }
   };
 
@@ -933,6 +916,10 @@ export default function EDefterKontrolPage() {
   };
 
   const handlePdf = () => {
+    if (identityInfo && identityInfo.allowExport === false) {
+      setToast(`${UNVERIFIED_EXCEL_NOTICE} PDF özeti oluşturulmadı.`);
+      return;
+    }
     const pdf = prepareEDefterPdfReport({
       summary: summary || {},
       meta: { appVersion: "web" },
@@ -1002,14 +989,16 @@ export default function EDefterKontrolPage() {
             <button
               type="button"
               onClick={handleExport}
-              className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-gray-200 hover:bg-white/10"
+              disabled={Boolean(identityInfo && identityInfo.allowExport === false)}
+              className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-gray-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Excel İndir
             </button>
             <button
               type="button"
               onClick={handlePdf}
-              className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-gray-400 hover:bg-white/10"
+              disabled={Boolean(identityInfo && identityInfo.allowExport === false)}
+              className="rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-gray-400 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
             >
               PDF Özeti
             </button>
@@ -1043,42 +1032,18 @@ export default function EDefterKontrolPage() {
           className={`mb-4 rounded-xl border px-4 py-3 text-sm ${
             identityInfo.verified || identityInfo.identityVerified
               ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-100"
-              : identityInfo.userConfirmed || identityInfo.identityUserConfirmed
-                ? "border-sky-500/40 bg-sky-950/40 text-sky-100"
-                : "border-amber-500/40 bg-amber-950/40 text-amber-100"
+              : "border-amber-500/40 bg-amber-950/40 text-amber-100"
           }`}
         >
           Kimlik: {identityInfo.status}
           {identityInfo.verified || identityInfo.identityVerified
             ? " — otomatik doğrulandı"
-            : identityInfo.userConfirmed || identityInfo.identityUserConfirmed
-              ? " — Firma kullanıcı tarafından doğrulandı"
-              : " — doğrulanmadı"}
-          . {identityInfo.safeMessage}
+            : " — Kimlik doğrulanmadı"}
+          .{" "}
+          {identityInfo.allowAnalyze && identityInfo.allowPersist === false
+            ? `${UNVERIFIED_EXCEL_NOTICE} Sonuçlar Kontrol Geçmişine kaydedilmedi.`
+            : identityInfo.safeMessage}
         </p>
-      ) : null}
-
-      {canOfferExcelIdentityConfirmation(identityInfo) ? (
-        <label className="mb-4 flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 bg-gray-900/60 px-4 py-3 text-sm text-white">
-          <input
-            type="checkbox"
-            className="mt-1 h-4 w-4 rounded border-white/20 bg-gray-950"
-            checked={Boolean(
-              identityUserConfirmed ||
-                identityInfo?.userConfirmed ||
-                identityInfo?.identityUserConfirmed
-            )}
-            onChange={(event) => handleIdentityConfirmChange(event.target.checked)}
-            disabled={analyzing || persisting}
-          />
-          <span>
-            Bu dosyanın seçili firmaya ait olduğunu onaylıyorum.
-            <span className="mt-1 block text-xs text-white/60">
-              Onay yalnız bu firma, dosya ve dönem için geçerlidir; yenilemede sıfırlanır.
-              Otomatik kimlik doğrulaması sayılmaz.
-            </span>
-          </span>
-        </label>
       ) : null}
 
       {summary && summary.edefterUygun === false ? (
@@ -1109,10 +1074,24 @@ export default function EDefterKontrolPage() {
             </select>
           </Field>
           <Field label="Yıl">
-            <input value={year} onChange={(event) => setYear(event.target.value)} className={inputClassName} />
+            <input
+              value={year}
+              onChange={(event) => {
+                invalidateCurrentAnalysis("year-change");
+                setYear(event.target.value);
+              }}
+              className={inputClassName}
+            />
           </Field>
           <Field label="Ay">
-            <input value={month} onChange={(event) => setMonth(event.target.value)} className={inputClassName} />
+            <input
+              value={month}
+              onChange={(event) => {
+                invalidateCurrentAnalysis("month-change");
+                setMonth(event.target.value);
+              }}
+              className={inputClassName}
+            />
           </Field>
           <Field label="Dönem">
             <input value={period} readOnly className={inputClassName} />
@@ -1123,21 +1102,46 @@ export default function EDefterKontrolPage() {
       <section className="mb-6 rounded-2xl border border-white/10 bg-gray-900/70 p-5 shadow-xl shadow-black/20">
         <h2 className="mb-4 text-xl font-semibold">Dosya Yükleme</h2>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <Field label="Yevmiye / Kebir XML veya ZIP">
-            <input type="file" accept=".xml,.zip" onChange={handleXmlUpload} className={inputClassName} />
-          </Field>
-          <Field label="Muavin Excel">
-            <input type="file" accept=".xlsx,.xls" onChange={handleMuavinUpload} className={inputClassName} />
-          </Field>
-          <Field label="Yevmiye Excel">
-            <input type="file" accept=".xlsx,.xls" onChange={handleYevmiyeUpload} className={inputClassName} />
-          </Field>
-          <Field label="Mizan Excel">
-            <input type="file" accept=".xlsx,.xls" onChange={handleMizanUpload} className={inputClassName} />
-          </Field>
-          <Field label="E-defter Liste Excel">
-            <input type="file" accept=".xlsx,.xls" onChange={handleEdefterUpload} className={inputClassName} />
-          </Field>
+          <FilePickerField
+            id="edefter-xml-file"
+            label="Yevmiye / Kebir XML veya ZIP"
+            accept=".xml,.zip"
+            onChange={handleXmlUpload}
+            onClear={() => handleFileClear("xml")}
+            fileName={selectedFileNames.xml}
+          />
+          <FilePickerField
+            id="edefter-muavin-file"
+            label="Muavin Excel"
+            accept=".xlsx,.xls"
+            onChange={handleMuavinUpload}
+            onClear={() => handleFileClear("muavin")}
+            fileName={selectedFileNames.muavin}
+          />
+          <FilePickerField
+            id="edefter-yevmiye-file"
+            label="Yevmiye Excel"
+            accept=".xlsx,.xls"
+            onChange={handleYevmiyeUpload}
+            onClear={() => handleFileClear("yevmiye")}
+            fileName={selectedFileNames.yevmiye}
+          />
+          <FilePickerField
+            id="edefter-mizan-file"
+            label="Mizan Excel"
+            accept=".xlsx,.xls"
+            onChange={handleMizanUpload}
+            onClear={() => handleFileClear("mizan")}
+            fileName={selectedFileNames.mizan}
+          />
+          <FilePickerField
+            id="edefter-liste-file"
+            label="E-defter Liste Excel"
+            accept=".xlsx,.xls"
+            onChange={handleEdefterUpload}
+            onClear={() => handleFileClear("liste")}
+            fileName={selectedFileNames.liste}
+          />
         </div>
         <p className="mt-3 text-xs text-gray-400">
           XML: {xmlRows.length} satır · Teknik bulgu: {technicalFindings.length} · Muavin: {muavinRows.length} ·

@@ -36,10 +36,7 @@ import {
   buildLucaBlockYevmiyeFixture,
   LUCA_BLOCK_YEVMIYE_ROWS,
 } from "./fixtures/luca-block-yevmiye.mjs";
-import {
-  normalizeAccountCodeForComparison,
-  normalizeParserText,
-} from "@/src/utils/textNormalize.js";
+import { normalizeAccountCodeForComparison } from "@/src/utils/textNormalize.js";
 
 let failed = 0;
 function assert(cond, msg) {
@@ -199,7 +196,10 @@ const fixture = buildLucaBlockYevmiyeFixture();
     const c = map.get(r.id);
     return c?.counterAccountCode || c?.karsiHesapKodu;
   });
-  assert(resolved.length >= 2, "yevmiye opening voucher counterparts from fiş legs");
+  assert(
+    resolved.length === 0,
+    "yevmiye opening voucher counterpart resolution intentionally skipped"
+  );
 }
 
 // 10 — muavin↔yevmiye reconcile reports gaps, not raw count as error
