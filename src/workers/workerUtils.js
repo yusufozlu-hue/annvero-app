@@ -13,9 +13,20 @@ export function yieldToWorker() {
   });
 }
 
+let progressContext = {};
+
+export function setWorkerProgressContext(context = {}) {
+  progressContext = {
+    requestId: context.requestId || "",
+    generation: context.generation ?? 0,
+    fileKind: context.fileKind || "",
+  };
+}
+
 export function postProgress(stage, detail = "", percent = null) {
   self.postMessage({
     type: "progress",
+    ...progressContext,
     stage,
     detail,
     percent,

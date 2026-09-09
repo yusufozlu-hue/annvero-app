@@ -10,7 +10,8 @@
 export const PARSER_WORKER_URLS = {
   bankExcel: new URL("../workers/bankParser.worker.js", import.meta.url),
   eDefterXml: new URL("../workers/eDefterXml.worker.js", import.meta.url),
-  excelSheet: new URL("../workers/excelSheet.worker.js", import.meta.url),
+  /** Classic deterministic bundle — workbook open + sheet extraction stays off-thread. */
+  excelSheet: "/workers/excelSheet.worker.js",
   riskAnalysis: new URL("../workers/riskAnalysis.worker.js", import.meta.url),
   fisKontrol: new URL("../workers/fisKontrol.worker.js", import.meta.url),
   /** Classic bundled worker — see scripts/bundle-edefter-analyze-worker.mjs */

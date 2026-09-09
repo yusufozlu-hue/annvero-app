@@ -38,6 +38,8 @@
     "test:luca-block-yevmiye-parser": "node --import ./scripts/_alias-loader.mjs ./scripts/test-luca-block-yevmiye-parser.mjs",
     "test:luca-mizan-parser": "node --import ./scripts/_alias-loader.mjs ./scripts/test-luca-mizan-parser.mjs",
     "test:excel-sheet-worker-fallback": "node --import ./scripts/_alias-loader.mjs ./scripts/test-excel-sheet-worker-fallback.mjs",
+    "test:parser-worker-pool": "node --import ./scripts/_alias-loader.mjs ./scripts/test-parser-worker-pool.mjs",
+    "benchmark:excel-worker-phase8c": "node --import ./scripts/_alias-loader.mjs ./scripts/benchmark-excel-worker-phase8c.mjs",
     "test:genel-muhasebe-preview-accept": "node --import ./scripts/_alias-loader.mjs ./scripts/test-genel-muhasebe-preview-accept.mjs",
     "test:edefter-persist": "node --import ./scripts/_alias-loader.mjs ./scripts/test-edefter-persist.mjs",
     "test:edefter-atomic-persist": "node --import ./scripts/_alias-loader.mjs ./scripts/test-edefter-atomic-persist.mjs",
