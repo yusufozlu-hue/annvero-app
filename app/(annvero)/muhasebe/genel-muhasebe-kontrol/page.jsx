@@ -93,9 +93,61 @@ function mizanMuavinLabel(summary) {
   return "—";
 }
 
-const LEDGER_FILE_INPUT_CLASS =
-  "block w-full cursor-pointer rounded-lg border-2 border-teal-500 bg-teal-50/50 px-3 py-2 text-sm text-slate-800 shadow-sm transition hover:border-teal-600 hover:bg-teal-50 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500/50 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-teal-700 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-white hover:file:bg-teal-800 focus:file:ring-2 focus:file:ring-teal-600";
 const GENERAL_LEDGER_PARSE_SCOPE = "general-ledger-control";
+
+function LedgerFilePicker({
+  id,
+  label,
+  file,
+  inputRef,
+  onChange,
+  onRemove,
+  removeLabel,
+  className = "",
+}) {
+  const fileName = String(file?.name || "").trim();
+  return (
+    <div className={`min-w-0 text-sm ${className}`}>
+      <span id={`${id}-field-label`} className="mb-1 block text-slate-600">
+        {label}
+      </span>
+      <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg border-2 border-teal-500 bg-teal-50/50 p-2 shadow-sm">
+        <input
+          ref={inputRef}
+          id={id}
+          type="file"
+          accept=".xlsx,.xls"
+          className="peer sr-only"
+          aria-labelledby={`${id}-field-label ${id}-select-label`}
+          onChange={onChange}
+        />
+        <label
+          id={`${id}-select-label`}
+          htmlFor={id}
+          className="cursor-pointer rounded-md bg-teal-700 px-3 py-1.5 font-semibold text-white transition hover:bg-teal-800 peer-focus:ring-2 peer-focus:ring-teal-600"
+        >
+          Dosya Seç
+        </label>
+        <span
+          className="min-w-0 truncate text-slate-700"
+          title={fileName || "Dosya seçilmedi"}
+        >
+          {fileName || "Dosya seçilmedi"}
+        </span>
+        {fileName ? (
+          <button
+            type="button"
+            className="rounded-md border border-slate-300 bg-white px-2 py-1.5 font-medium text-slate-700 hover:border-red-300 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500"
+            aria-label={removeLabel}
+            onClick={onRemove}
+          >
+            Kaldır
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function safeUserError(err) {
   const code = err?.code || "";
@@ -170,6 +222,9 @@ export default function GenelMuhasebeKontrolPage() {
   const runTokenRef = useRef(0);
   const abortRef = useRef(null);
   const mountedRef = useRef(true);
+  const muavinInputRef = useRef(null);
+  const yevmiyeInputRef = useRef(null);
+  const mizanInputRef = useRef(null);
 
   const resetPresentationState = useCallback(() => {
     setFisFilter("");
@@ -183,6 +238,7 @@ export default function GenelMuhasebeKontrolPage() {
     runTokenRef.current += 1;
     setResult(null);
     resetPresentationState();
+    setError("");
     setPerfWarning("");
     setProgressDetail("");
     setBusy(false);
@@ -284,7 +340,30 @@ export default function GenelMuhasebeKontrolPage() {
   }, []);
 
   const canStart = Boolean(
-    selectedCompanyId && (muavinFile || yevmiyeFile || mizanFile) && !busy
+    selectedCompanyId && muavinFile && yevmiyeFile && mizanFile && !busy
+  );
+
+  const handleRemoveFile = useCallback(
+    (fileKind) => {
+      if (fileKind === "muavin") {
+        setMuavinFile(null);
+        if (muavinInputRef.current) muavinInputRef.current.value = "";
+      } else if (fileKind === "yevmiye") {
+        setYevmiyeFile(null);
+        if (yevmiyeInputRef.current) yevmiyeInputRef.current.value = "";
+      } else if (fileKind === "mizan") {
+        setMizanFile(null);
+        if (mizanInputRef.current) mizanInputRef.current.value = "";
+      } else {
+        return;
+      }
+      cancelActiveParseJob("stale", {
+        scopeId: GENERAL_LEDGER_PARSE_SCOPE,
+        fileKind,
+      });
+      invalidateActive(`gm-${fileKind}-remove`);
+    },
+    [invalidateActive]
   );
 
   const handleAnalyze = useCallback(async () => {
@@ -650,42 +729,43 @@ export default function GenelMuhasebeKontrolPage() {
               placeholder="2026/05"
             />
           </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-slate-600">Muavin Excel</span>
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              className={LEDGER_FILE_INPUT_CLASS}
-              onChange={(e) => {
-                setMuavinFile(e.target.files?.[0] || null);
-                invalidateActive("gm-file-change");
-              }}
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-slate-600">Yevmiye Excel</span>
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              className={LEDGER_FILE_INPUT_CLASS}
-              onChange={(e) => {
-                setYevmiyeFile(e.target.files?.[0] || null);
-                invalidateActive("gm-file-change");
-              }}
-            />
-          </label>
-          <label className="block text-sm md:col-span-2">
-            <span className="mb-1 block text-slate-600">Mizan Excel</span>
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              className={LEDGER_FILE_INPUT_CLASS}
-              onChange={(e) => {
-                setMizanFile(e.target.files?.[0] || null);
-                invalidateActive("gm-file-change");
-              }}
-            />
-          </label>
+          <LedgerFilePicker
+            id="genel-muhasebe-muavin-file"
+            label="Muavin Excel"
+            file={muavinFile}
+            inputRef={muavinInputRef}
+            removeLabel="Muavin dosyasını kaldır"
+            onChange={(e) => {
+              setMuavinFile(e.target.files?.[0] || null);
+              invalidateActive("gm-file-change");
+            }}
+            onRemove={() => handleRemoveFile("muavin")}
+          />
+          <LedgerFilePicker
+            id="genel-muhasebe-yevmiye-file"
+            label="Yevmiye Excel"
+            file={yevmiyeFile}
+            inputRef={yevmiyeInputRef}
+            removeLabel="Yevmiye dosyasını kaldır"
+            onChange={(e) => {
+              setYevmiyeFile(e.target.files?.[0] || null);
+              invalidateActive("gm-file-change");
+            }}
+            onRemove={() => handleRemoveFile("yevmiye")}
+          />
+          <LedgerFilePicker
+            id="genel-muhasebe-mizan-file"
+            label="Mizan Excel"
+            file={mizanFile}
+            inputRef={mizanInputRef}
+            removeLabel="Mizan dosyasını kaldır"
+            className="md:col-span-2"
+            onChange={(e) => {
+              setMizanFile(e.target.files?.[0] || null);
+              invalidateActive("gm-file-change");
+            }}
+            onRemove={() => handleRemoveFile("mizan")}
+          />
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">

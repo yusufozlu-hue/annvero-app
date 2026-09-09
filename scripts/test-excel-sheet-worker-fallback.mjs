@@ -306,6 +306,72 @@ function makeXlsxFile(rows, name = "fixture.xlsx") {
     ),
     "unmount cancels only component-scoped parse jobs"
   );
+  assert(
+    (generalLedgerSource.match(/<LedgerFilePicker/g) || []).length === 3,
+    "three ledger files render three removable picker fields"
+  );
+  assert(
+    /fileName \? \([\s\S]*aria-label=\{removeLabel\}[\s\S]*Kaldır/.test(
+      generalLedgerSource
+    ),
+    "remove button is visible only when a file is selected"
+  );
+  assert(
+    /className="min-w-0 truncate text-slate-700"/.test(generalLedgerSource) &&
+      /title=\{fileName \|\| "Dosya seçilmedi"\}/.test(generalLedgerSource),
+    "selected filename truncates visually and keeps full title"
+  );
+  for (const label of [
+    "Muavin dosyasını kaldır",
+    "Yevmiye dosyasını kaldır",
+    "Mizan dosyasını kaldır",
+  ]) {
+    assert(
+      generalLedgerSource.includes(`removeLabel="${label}"`),
+      `${label} aria-label contract`
+    );
+  }
+  assert(
+    /selectedCompanyId && muavinFile && yevmiyeFile && mizanFile && !busy/.test(
+      generalLedgerSource
+    ),
+    "start remains disabled unless all three files are selected"
+  );
+  const removeHandler = generalLedgerSource.slice(
+    generalLedgerSource.indexOf("const handleRemoveFile"),
+    generalLedgerSource.indexOf("const handleAnalyze")
+  );
+  assert(
+    /fileKind === "muavin"[\s\S]*setMuavinFile\(null\)[\s\S]*muavinInputRef\.current\.value = ""/.test(
+      removeHandler
+    ),
+    "removing Muavin clears only Muavin file state and native input"
+  );
+  assert(
+    /fileKind === "yevmiye"[\s\S]*setYevmiyeFile\(null\)[\s\S]*yevmiyeInputRef\.current\.value = ""/.test(
+      removeHandler
+    ) &&
+      /fileKind === "mizan"[\s\S]*setMizanFile\(null\)[\s\S]*mizanInputRef\.current\.value = ""/.test(
+        removeHandler
+      ),
+    "Yevmiye and Mizan keep independent file/input cleanup"
+  );
+  assert(
+    /cancelActiveParseJob\("stale",[\s\S]*fileKind,[\s\S]*invalidateActive\(`gm-\$\{fileKind\}-remove`\)/.test(
+      removeHandler
+    ),
+    "remove cancels the scoped worker job and invalidates active generation"
+  );
+  assert(
+    !/readSheetRows|fallback/i.test(removeHandler),
+    "remove path cannot start worker fallback"
+  );
+  assert(
+    /setResult\(null\)[\s\S]*resetPresentationState\(\)[\s\S]*setError\(""\)[\s\S]*bumpAnalyzeGeneration\(reason\)[\s\S]*abortRef\.current\?\.abort/.test(
+      generalLedgerSource
+    ),
+    "remove invalidation clears result/filter/error and aborts stale work"
+  );
 }
 
 if (failed) {
