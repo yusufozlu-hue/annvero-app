@@ -204,6 +204,7 @@
       policyExpense: true
     },
     bankAccounts: [],
+    bankProductMappings: [],
     creditCards: [],
     cashAccounts: [],
     posMerchantAccounts: [],
@@ -325,6 +326,22 @@
       className: "bg-red-500/15 text-red-200 ring-1 ring-red-500/40"
     }
   };
+
+  // src/utils/accountingDecisionTrust.js
+  var ACCOUNTING_DECISION_TRUSTED_SOURCES = Object.freeze([
+    "DOCUMENT_ONLY",
+    "EXACT_ACCOUNT",
+    "BANK_PRODUCT_CURRENCY",
+    "USER_LEARNED",
+    "SYSTEM_RULE",
+    "NONE"
+  ]);
+  var ACCOUNTING_DECISION_TRUSTED_STAGES = Object.freeze([
+    "bank_materialize",
+    "output_facade",
+    "manual_edit",
+    "fis_kontrol"
+  ]);
 
   // src/utils/bankSmartSuggestions.js
   var SMART_SUGGESTION_CONFIDENCE = {
@@ -1662,6 +1679,47 @@
     iade: BANK_TRANSACTION_TYPE.BILINMEYEN
   };
 
+  // src/utils/bankProductAccountMapping.js
+  var BANK_ACCOUNT_MAPPING_SCOPE = Object.freeze({
+    EXACT_ACCOUNT: "EXACT_ACCOUNT",
+    BANK_PRODUCT_CURRENCY: "BANK_PRODUCT_CURRENCY"
+  });
+
+  // src/utils/bankIdentity.js
+  var CANONICAL_BANK_IDS = Object.freeze([
+    "VAKIFBANK",
+    "GARANTI",
+    "TEB",
+    "ZIRAAT",
+    "KUVEYTTURK"
+  ]);
+  var PARSER_BANK_IDS = Object.freeze([
+    "VAKIFBANK",
+    "GARANTI",
+    "TEB",
+    "ZIRAAT",
+    "KUVEYT"
+  ]);
+  var ALIAS_TO_CANONICAL = Object.freeze({
+    VAKIFBANK: "VAKIFBANK",
+    VAKIF: "VAKIFBANK",
+    VAKIFBANASI: "VAKIFBANK",
+    GARANTI: "GARANTI",
+    GARANTIBBVA: "GARANTI",
+    BBVA: "GARANTI",
+    TEB: "TEB",
+    TURKIYEEKONOMIBANKASI: "TEB",
+    TURKIYEEKONOMI: "TEB",
+    ZIRAAT: "ZIRAAT",
+    ZIRAATBANKASI: "ZIRAAT",
+    TCZIRAAT: "ZIRAAT",
+    TCZIRAATBANKASI: "ZIRAAT",
+    KUVEYTTURK: "KUVEYTTURK",
+    KUVEYTTURKKATILIM: "KUVEYTTURK",
+    KUVEYT: "KUVEYTTURK",
+    KUVEYTTURKATILIM: "KUVEYTTURK"
+  });
+
   // src/utils/formatDateTR.js
   function normalizeYear(yearPart) {
     const year = Number(yearPart);
@@ -1905,6 +1963,40 @@
     STOPAJ: "FAIZ_STOPAJI",
     VADE_DONUSU: "VADELI_VADE_DONUSU",
     ANAPARA_YENILEME: "VADELI_ANAPARA_YENILEME"
+  });
+
+  // src/utils/accountingMemoryV1.js
+  var CACHE_TTL_MS = 12 * 60 * 60 * 1e3;
+  var FORBIDDEN_LOCAL_MEMORY_UI_PHRASES = Object.freeze([
+    "Taray\u0131c\u0131 deposunda tutulur",
+    "Firma Karar Haf\u0131zas\u0131 V2",
+    "Bu filtrede V2 kay\u0131t yok"
+  ]);
+
+  // src/utils/centralAccountingDecisionResolver.js
+  var ACCOUNTING_DECISION_SOURCE = Object.freeze({
+    DOCUMENT_ONLY: "DOCUMENT_ONLY",
+    EXACT_ACCOUNT: "EXACT_ACCOUNT",
+    BANK_PRODUCT_CURRENCY: "BANK_PRODUCT_CURRENCY",
+    USER_LEARNED: "USER_LEARNED",
+    SYSTEM_RULE: "SYSTEM_RULE",
+    NONE: "NONE"
+  });
+  var SOURCE_PRIORITY = Object.freeze({
+    [ACCOUNTING_DECISION_SOURCE.DOCUMENT_ONLY]: 500,
+    [ACCOUNTING_DECISION_SOURCE.EXACT_ACCOUNT]: 400,
+    [ACCOUNTING_DECISION_SOURCE.BANK_PRODUCT_CURRENCY]: 300,
+    [ACCOUNTING_DECISION_SOURCE.USER_LEARNED]: 200,
+    [ACCOUNTING_DECISION_SOURCE.SYSTEM_RULE]: 100,
+    [ACCOUNTING_DECISION_SOURCE.NONE]: 0
+  });
+
+  // src/utils/outputAccountingDecisionFacade.js
+  var OUTPUT_RESOLVED_AT_STAGE = Object.freeze({
+    BANK_MATERIALIZE: "bank_materialize",
+    OUTPUT_FACADE: "output_facade",
+    MANUAL_EDIT: "manual_edit",
+    FIS_KONTROL: "fis_kontrol"
   });
 
   // src/utils/beyannameTahakkukEngine.js
@@ -5126,8 +5218,14 @@
     [E_DEFTER_ISSUE_SEVERITY.KRITIK]: 0,
     HATA: 0,
     [E_DEFTER_ISSUE_SEVERITY.UYARI]: 1,
-    [E_DEFTER_ISSUE_SEVERITY.BILGI]: 2
+    [E_DEFTER_ISSUE_SEVERITY.BILGI]: 2,
+    UYGUN: 3
   };
+  var LEDGER_VOUCHER_SOURCES = /* @__PURE__ */ new Set([
+    E_DEFTER_KAYNAK.MUAVIN,
+    E_DEFTER_KAYNAK.YEVMIYE,
+    E_DEFTER_KAYNAK.YEVMIYE_XML
+  ]);
 
   // src/utils/genelMuhasebeFindingsView.js
   function isSyntheticSystemFindingRow(row = {}) {
@@ -6232,9 +6330,18 @@
       setTimeout(resolve, 0);
     });
   }
+  var progressContext = {};
+  function setWorkerProgressContext(context = {}) {
+    progressContext = {
+      requestId: context.requestId || "",
+      generation: context.generation ?? 0,
+      fileKind: context.fileKind || ""
+    };
+  }
   function postProgress(stage, detail = "", percent = null) {
     self.postMessage({
       type: "progress",
+      ...progressContext,
       stage,
       detail,
       percent
@@ -6249,8 +6356,11 @@
   self.onmessage = async (event) => {
     const data = event.data || {};
     const requestId = data.requestId;
+    const generation = data.generation ?? 0;
+    const fileKind = data.fileKind || "analyze";
     const protocolVersion = Number(data.protocolVersion || 0);
     const payload = data.payload && typeof data.payload === "object" && !Array.isArray(data.payload) ? data.payload : data;
+    setWorkerProgressContext({ requestId, generation, fileKind });
     try {
       if (!requestId) {
         throw Object.assign(new Error("Analyze requestId zorunlu."), {
@@ -6262,7 +6372,9 @@
           type: "lifecycle",
           stage: "job-accepted",
           code: "WORKER_JOB_ACCEPTED",
-          requestId
+          requestId,
+          generation,
+          fileKind
         });
       } catch {
       }
@@ -6273,16 +6385,12 @@
       }
       const jobKind = resolveAnalyzeJobKind(payload?.jobKind || payload?.jobType);
       const analyzingLabel = jobKind === EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL ? "Genel muhasebe kontrol kurallar\u0131 \xE7al\u0131\u015F\u0131yor" : "e-Defter kontrol kurallar\u0131 \xE7al\u0131\u015F\u0131yor";
-      postProgress(WORKER_PARSE_STAGES.ANALYZING, analyzingLabel, 20);
+      postProgress(WORKER_PARSE_STAGES.ANALYZING, analyzingLabel);
       await yieldToWorker();
       const startedAt = Date.now();
       const raw = await executeEDefterAnalyzePayload(payload);
       const elapsedMs = Date.now() - startedAt;
-      postProgress(
-        WORKER_PARSE_STAGES.DONE,
-        `${Array.isArray(raw?.rows) ? raw.rows.length : 0} kay\u0131t kontrol edildi`,
-        100
-      );
+      postProgress(WORKER_PARSE_STAGES.DONE, "Muhasebe kontrol\xFC tamamland\u0131");
       const result = sanitizeAnalyzeResult(raw, {
         execution: "worker",
         engineInvocations: 1,
@@ -6293,13 +6401,17 @@
       self.postMessage({
         type: "success",
         requestId,
+        generation,
+        fileKind,
         result
       });
     } catch (error) {
       self.postMessage({
         type: "error",
         requestId,
-        error: error?.message || "Analiz ba\u015Far\u0131s\u0131z.",
+        generation,
+        fileKind,
+        error: "Muhasebe kontrol\xFC tamamlanamad\u0131.",
         code: error?.code || "ANALYZE_WORKER_FAILED"
       });
     }

@@ -11,7 +11,12 @@ import {
   resolveAnalyzeJobKind,
   sanitizeAnalyzeResult,
 } from "../utils/eDefterAnalyzeContract.js";
-import { postProgress, WORKER_PARSE_STAGES, yieldToWorker } from "./workerUtils.js";
+import {
+  postProgress,
+  setWorkerProgressContext,
+  WORKER_PARSE_STAGES,
+  yieldToWorker,
+} from "./workerUtils.js";
 
 /**
  * Bridge posts: { requestId, payload: CloneSafeAnalyzePayload, protocolVersion? }
@@ -26,11 +31,14 @@ try {
 self.onmessage = async (event) => {
   const data = event.data || {};
   const requestId = data.requestId;
+  const generation = data.generation ?? 0;
+  const fileKind = data.fileKind || "analyze";
   const protocolVersion = Number(data.protocolVersion || 0);
   const payload =
     data.payload && typeof data.payload === "object" && !Array.isArray(data.payload)
       ? data.payload
       : data;
+  setWorkerProgressContext({ requestId, generation, fileKind });
 
   try {
     if (!requestId) {
@@ -44,6 +52,8 @@ self.onmessage = async (event) => {
         stage: "job-accepted",
         code: "WORKER_JOB_ACCEPTED",
         requestId,
+        generation,
+        fileKind,
       });
     } catch {
       /* ignore */
@@ -60,18 +70,14 @@ self.onmessage = async (event) => {
         ? "Genel muhasebe kontrol kuralları çalışıyor"
         : "e-Defter kontrol kuralları çalışıyor";
 
-    postProgress(WORKER_PARSE_STAGES.ANALYZING, analyzingLabel, 20);
+    postProgress(WORKER_PARSE_STAGES.ANALYZING, analyzingLabel);
     await yieldToWorker();
 
     const startedAt = Date.now();
     const raw = await executeEDefterAnalyzePayload(payload);
     const elapsedMs = Date.now() - startedAt;
 
-    postProgress(
-      WORKER_PARSE_STAGES.DONE,
-      `${Array.isArray(raw?.rows) ? raw.rows.length : 0} kayıt kontrol edildi`,
-      100
-    );
+    postProgress(WORKER_PARSE_STAGES.DONE, "Muhasebe kontrolü tamamlandı");
 
     const result = sanitizeAnalyzeResult(raw, {
       execution: "worker",
@@ -85,13 +91,17 @@ self.onmessage = async (event) => {
     self.postMessage({
       type: "success",
       requestId,
+      generation,
+      fileKind,
       result,
     });
   } catch (error) {
     self.postMessage({
       type: "error",
       requestId,
-      error: error?.message || "Analiz başarısız.",
+      generation,
+      fileKind,
+      error: "Muhasebe kontrolü tamamlanamadı.",
       code: error?.code || "ANALYZE_WORKER_FAILED",
     });
   }

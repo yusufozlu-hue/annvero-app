@@ -9,6 +9,12 @@ let activeWorker = null;
 /** Settles the in-flight runParserWorker promise on cancel/timeout/replace. */
 let activeSettler = null;
 
+const WORKER_POOL_MAX_CONCURRENCY = 2;
+const workerPoolQueue = [];
+const workerPoolJobs = new Map();
+let workerPoolRunning = 0;
+let requestSequence = 0;
+
 const listeners = new Set();
 
 /** Observability for tests / diagnostics — not a second control path. */
@@ -18,6 +24,10 @@ export const parserWorkerRuntimeStats = {
   postMessages: 0,
   timeouts: 0,
   cancels: 0,
+  queued: 0,
+  peakWorkers: 0,
+  duplicateResponses: 0,
+  malformedResponses: 0,
   classicBootstraps: 0,
   classicBootstrapHtmlBlocked: 0,
 };
@@ -30,7 +40,7 @@ export const parserWorkerRuntimeStats = {
  * URL (allowed by worker-src 'self' blob:).
  *
  * @param {string|URL} workerUrl
- * @param {{ fetchImpl?: typeof fetch, createObjectURL?: typeof URL.createObjectURL }} [opts]
+ * @param {{ fetchImpl?: typeof fetch, createObjectURL?: typeof URL.createObjectURL, signal?: AbortSignal }} [opts]
  */
 export async function bootstrapClassicWorkerScriptUrl(workerUrl, opts = {}) {
   const href = String(workerUrl || "");
@@ -53,8 +63,12 @@ export async function bootstrapClassicWorkerScriptUrl(workerUrl, opts = {}) {
       credentials: "same-origin",
       cache: "no-cache",
       headers: { Accept: "text/javascript, application/javascript, */*;q=0.1" },
+      signal: opts.signal,
     });
   } catch (networkError) {
+    if (opts.signal?.aborted || networkError?.name === "AbortError") {
+      throw cancellationError("cancelled");
+    }
     throw Object.assign(
       new Error(networkError?.message || "Worker script fetch başarısız."),
       { code: "WORKER_SCRIPT_FETCH_FAILED" }
@@ -88,10 +102,7 @@ export async function bootstrapClassicWorkerScriptUrl(workerUrl, opts = {}) {
       status: response.status,
       contentType,
       bytes,
-      head: head.slice(0, 120),
-      href,
     };
-    console.warn("[workerParserBridge] classic bootstrap rejected script", err.detail);
     throw err;
   }
 
@@ -109,13 +120,6 @@ export async function bootstrapClassicWorkerScriptUrl(workerUrl, opts = {}) {
   const blob = new Blob([buffer], { type: "text/javascript" });
   const blobUrl = createObjectURL(blob);
   parserWorkerRuntimeStats.classicBootstraps += 1;
-  console.info("[workerParserBridge] classic bootstrap ok", {
-    href,
-    status: response.status,
-    contentType: contentType || "n/a",
-    bytes,
-    blobUrlPrefix: String(blobUrl).slice(0, 24),
-  });
 
   return {
     url: blobUrl,
@@ -164,7 +168,69 @@ function emit(event = {}) {
   });
 }
 
-export function cancelActiveParseJob(reason = "cancelled") {
+function matchesPoolSelector(job, selector = {}) {
+  if (!job) return false;
+  if (selector.requestId && job.requestId !== selector.requestId) return false;
+  if (selector.scopeId && job.scopeId !== selector.scopeId) return false;
+  if (
+    selector.generation != null &&
+    String(job.generation) !== String(selector.generation)
+  ) {
+    return false;
+  }
+  if (selector.fileKind && job.fileKind !== selector.fileKind) return false;
+  return true;
+}
+
+function cancellationError(reason) {
+  const timeout = reason === "timeout";
+  const stale = reason === "stale" || reason === "replaced";
+  return Object.assign(
+    new Error(
+      timeout
+        ? "Parser zaman aşımına uğradı."
+        : stale
+          ? "Parser işi geçersiz kılındı."
+          : "İşlem iptal edildi."
+    ),
+    {
+      code: timeout
+        ? "WORKER_TIMEOUT"
+        : stale
+          ? "WORKER_STALE"
+          : "WORKER_CANCELLED",
+      status: timeout ? "timeout" : stale ? "stale" : "cancelled",
+    }
+  );
+}
+
+function cancelPoolJob(job, reason) {
+  if (!job || job.settled) return false;
+  job.cancelled = true;
+  job.status = reason === "timeout" ? "timeout" : "cancelled";
+  parserWorkerRuntimeStats.cancels += reason === "timeout" ? 0 : 1;
+  job.finish?.("reject", cancellationError(reason));
+  return true;
+}
+
+/**
+ * Cancel request-aware jobs. Pass a selector for component/run scoped cleanup.
+ * The no-selector form is retained only for legacy callers.
+ */
+export function cancelActiveParseJob(reason = "cancelled", selector = {}) {
+  const hasSelector = Boolean(
+    selector?.requestId ||
+      selector?.scopeId ||
+      selector?.generation != null ||
+      selector?.fileKind
+  );
+  for (const job of [...workerPoolJobs.values()]) {
+    if (!hasSelector || matchesPoolSelector(job, selector)) {
+      cancelPoolJob(job, reason);
+    }
+  }
+  if (hasSelector) return;
+
   const settler = activeSettler;
   activeSettler = null;
   if (settler) {
@@ -215,6 +281,26 @@ export function cancelActiveParseJob(reason = "cancelled") {
       /* ignore */
     }
   }
+}
+
+export function cancelParserJobs(selector = {}, reason = "cancelled") {
+  return cancelActiveParseJob(reason, selector);
+}
+
+export function getWorkerPoolSnapshot() {
+  return {
+    maxConcurrency: WORKER_POOL_MAX_CONCURRENCY,
+    running: workerPoolRunning,
+    queued: workerPoolQueue.filter((job) => !job.settled).length,
+    jobs: [...workerPoolJobs.values()].map((job) => ({
+      requestId: job.requestId,
+      generation: job.generation,
+      fileKind: job.fileKind,
+      scopeId: job.scopeId,
+      jobType: job.jobType,
+      status: job.status,
+    })),
+  };
 }
 
 export function getActiveParseJob() {
@@ -348,6 +434,40 @@ function formatWorkerLoadFailureMessage(detail) {
   return "Worker modülü yüklenemedi (URL/bundle çözümleme hatası). Ana thread fallback kullanılacak.";
 }
 
+function makeWorkerRequestId() {
+  requestSequence += 1;
+  return `worker-${Date.now()}-${requestSequence}`;
+}
+
+function responseMatchesJob(message, job) {
+  if (message?.requestId !== job.requestId) return false;
+  if (job.strictResponseIdentity) {
+    return (
+      String(message?.generation) === String(job.generation) &&
+      message?.fileKind === job.fileKind
+    );
+  }
+  if (
+    message?.generation != null &&
+    String(message.generation) !== String(job.generation)
+  ) {
+    return false;
+  }
+  if (message?.fileKind && message.fileKind !== job.fileKind) return false;
+  return true;
+}
+
+function drainWorkerPool() {
+  while (
+    workerPoolRunning < WORKER_POOL_MAX_CONCURRENCY &&
+    workerPoolQueue.length
+  ) {
+    const job = workerPoolQueue.shift();
+    if (!job || job.settled || job.cancelled) continue;
+    job.start();
+  }
+}
+
 export function runParserWorker({
   workerUrl,
   payload = {},
@@ -355,275 +475,324 @@ export function runParserWorker({
   onProgress,
   timeoutMs = 120_000,
   jobType = "generic",
-  /**
-   * bankParser zero-import classic Worker: Turbopack media kopyası module
-   * evaluation (bare/`@/` import) yapamaz. Diğer worker'lar module kalır.
-   */
   classicWorker = false,
-  /**
-   * eDefterAnalyze public IIFE: fetch(+cookie) → validate → blob: Worker.
-   * Skipped when WorkerImpl is injected (unit/Node harness).
-   */
   classicScriptBootstrap = false,
-  /** Test harness injection — production uses global Worker. */
   WorkerImpl = typeof Worker !== "undefined" ? Worker : undefined,
-  /** Optional stable id (analyze bridge); otherwise generated. */
   requestId: requestIdOption,
-  /** Test injection for classic bootstrap. */
+  generation = 0,
+  fileKind = jobType,
+  scopeId = "global",
+  signal,
   fetchImpl,
   createObjectURL,
+  strictResponseIdentity = false,
 }) {
+  const requestId =
+    typeof requestIdOption === "string" && requestIdOption
+      ? requestIdOption
+      : makeWorkerRequestId();
+  const responseKey = `${requestId}::${generation}::${fileKind}`;
+
   return new Promise((resolve, reject) => {
-    cancelActiveParseJob("replaced");
-
-    const requestId =
-      typeof requestIdOption === "string" && requestIdOption
-        ? requestIdOption
-        : `job-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-
-    let worker;
-    let settled = false;
-    let revokeBlobUrl = null;
-    const settleOnce = (fn) => (value) => {
-      if (settled) return;
-      settled = true;
-      if (activeSettler?.requestId === requestId) activeSettler = null;
-      try {
-        revokeBlobUrl?.();
-      } catch {
-        /* ignore */
-      }
-      revokeBlobUrl = null;
-      fn(value);
-    };
-    const resolveOnce = settleOnce(resolve);
-    const rejectOnce = settleOnce(reject);
-
-    const cleanupWorker = () => {
-      try {
-        worker?.terminate();
-        parserWorkerRuntimeStats.terminates += 1;
-      } catch {
-        /* ignore */
-      }
-      if (activeWorker === worker) activeWorker = null;
-      if (activeJob?.id === requestId) activeJob = null;
-      if (activeSettler?.requestId === requestId) activeSettler = null;
-    };
-
-    const startWorker = (resolvedUrl) => {
-      try {
-        if (!resolvedUrl) {
-          throw new Error("Worker URL tanımsız.");
-        }
-        if (typeof WorkerImpl !== "function") {
-          throw Object.assign(new Error("Worker API kullanılamıyor."), {
-            code: "WORKER_UNAVAILABLE",
-          });
-        }
-        worker = classicWorker
-          ? new WorkerImpl(resolvedUrl)
-          : new WorkerImpl(resolvedUrl, { type: "module" });
-        parserWorkerRuntimeStats.constructs += 1;
-        console.info("[workerParserBridge] worker constructed", {
-          jobType,
-          requestId,
-          classicWorker: Boolean(classicWorker),
-          bootstrapped: Boolean(revokeBlobUrl),
-          workerUrl: String(workerUrl || ""),
-        });
-      } catch (constructError) {
-        const message =
-          constructError?.message ||
-          "Worker oluşturulamadı (new Worker başarısız).";
-        console.warn("[workerParserBridge] Worker construct failed", {
-          message,
-          workerUrl: String(workerUrl || ""),
-          code: constructError?.code || "WORKER_CONSTRUCT_FAILED",
-        });
-        const err = new Error(message);
-        err.code = constructError?.code || "WORKER_CONSTRUCT_FAILED";
-        if (constructError?.detail) err.detail = constructError.detail;
-        rejectOnce(err);
-        return;
-      }
-
-      activeWorker = worker;
-      activeJob = {
-        id: requestId,
-        type: jobType,
-        status: "running",
-        startedAt: Date.now(),
-      };
-
-      emit({ type: "start", jobId: requestId, jobType });
-
-      const timer = setTimeout(() => {
-        parserWorkerRuntimeStats.timeouts += 1;
-        emit({ type: "timeout", jobId: requestId, jobType });
-        cancelActiveParseJob("timeout");
-      }, timeoutMs);
-
-      activeSettler = {
-        requestId,
-        clearTimer: () => clearTimeout(timer),
-        reject: rejectOnce,
-      };
-
-      worker.onmessage = (event) => {
-        const message = event.data || {};
-        if (message.type === "lifecycle") {
-          console.info("[workerParserBridge] worker lifecycle", {
-            stage: message.stage,
-            code: message.code,
-            requestId: message.requestId || null,
-            jobType,
-          });
-          emit({
-            type: "lifecycle",
-            jobId: requestId,
-            jobType,
-            stage: message.stage,
-            code: message.code,
-          });
-          return;
-        }
-        if (message.type === "progress") {
-          onProgress?.(message);
-          emit({ type: "progress", jobId: requestId, jobType, ...message });
-          return;
-        }
-        if (message.requestId !== requestId) return;
-
-        clearTimeout(timer);
-        cleanupWorker();
-
-        if (message.type === "success" || message.type === "result") {
-          emit({ type: "done", jobId: requestId, jobType, result: message });
-          resolveOnce(message);
-          return;
-        }
-
-        if (message.type === "cancelled") {
-          emit({
-            type: "cancelled",
-            jobId: requestId,
-            jobType,
-            reason: message.reason || "cancelled",
-          });
-          rejectOnce(
-            Object.assign(new Error("İşlem iptal edildi."), {
-              code: "WORKER_CANCELLED",
-            })
-          );
-          return;
-        }
-
-        const errorText =
-          message.errorMessage || message.error || "Parser başarısız.";
-        emit({
-          type: "error",
-          jobId: requestId,
-          jobType,
-          error: errorText,
-          phase: message.phase || message.stage || null,
-        });
-        const err = new Error(errorText);
-        if (message.errorCode || message.code) {
-          err.code = message.errorCode || message.code;
-        }
-        if (message.errorName) err.name = message.errorName;
-        if (message.phase) err.phase = message.phase;
-        if (message.stack) err.stack = message.stack;
-        rejectOnce(err);
-      };
-
-      worker.onerror = (errorEvent) => {
-        clearTimeout(timer);
-        cleanupWorker();
-
-        const detail = serializeWorkerErrorEvent(errorEvent);
-        const message = formatWorkerLoadFailureMessage(detail);
-        // Managed fallback path — do not console.error ErrorEvent (Next overlay).
-        console.warn("[workerParserBridge] worker.onerror", {
-          ...detail,
-          workerUrl: String(workerUrl || ""),
-          resolvedMessage: message,
-        });
-
-        emit({ type: "error", jobId: requestId, jobType, error: message, detail });
-        const err = new Error(message);
-        err.code = "WORKER_ONERROR";
-        err.detail = detail;
-        rejectOnce(err);
-      };
-
-      worker.onmessageerror = (errorEvent) => {
-        clearTimeout(timer);
-        cleanupWorker();
-        const detail = serializeWorkerErrorEvent(errorEvent);
-        const message =
-          detail.message ||
-          detail.errorMessage ||
-          "Worker mesajı işlenemedi (structured clone / serializable olmayan veri).";
-        console.warn("[workerParserBridge] worker.onmessageerror", {
-          ...detail,
-          resolvedMessage: message,
-        });
-        emit({ type: "error", jobId: requestId, jobType, error: message, detail });
-        const err = new Error(message);
-        err.code = "WORKER_MESSAGE_ERROR";
-        rejectOnce(err);
-      };
-
-      try {
-        console.info("[workerParserBridge] postMessage", {
-          jobType,
-          requestId,
-          stage: "postMessage",
-        });
-        worker.postMessage({ requestId, ...payload }, transferables);
-        parserWorkerRuntimeStats.postMessages += 1;
-      } catch (postError) {
-        clearTimeout(timer);
-        cleanupWorker();
-        const message =
-          postError?.message ||
-          "Worker'a mesaj gönderilemedi (transferable / clone hatası).";
-        console.warn("[workerParserBridge] postMessage failed", { message });
-        const err = new Error(message);
-        err.code = "WORKER_POSTMESSAGE_FAILED";
-        rejectOnce(err);
-      }
-    };
-
-    const defaultWorker =
-      typeof Worker !== "undefined" ? Worker : undefined;
-    const useBootstrap =
-      classicWorker &&
-      classicScriptBootstrap &&
-      WorkerImpl === defaultWorker &&
-      typeof (fetchImpl || (typeof fetch !== "undefined" ? fetch : null)) ===
-        "function";
-
-    if (useBootstrap) {
-      bootstrapClassicWorkerScriptUrl(workerUrl, { fetchImpl, createObjectURL })
-        .then((boot) => {
-          revokeBlobUrl = boot.revoke;
-          startWorker(boot.url);
+    if (workerPoolJobs.has(responseKey)) {
+      reject(
+        Object.assign(new Error("Worker request anahtarı zaten kullanımda."), {
+          code: "WORKER_DUPLICATE_REQUEST",
         })
-        .catch((bootError) => {
-          const err = new Error(
-            bootError?.message || "Classic worker bootstrap başarısız."
-          );
-          err.code = bootError?.code || "WORKER_SCRIPT_FETCH_FAILED";
-          if (bootError?.detail) err.detail = bootError.detail;
-          rejectOnce(err);
-        });
+      );
       return;
     }
 
-    startWorker(workerUrl);
+    const job = {
+      requestId,
+      responseKey,
+      generation,
+      fileKind,
+      scopeId,
+      jobType,
+      status: "queued",
+      worker: null,
+      timer: null,
+      revokeBlobUrl: null,
+      bootstrapController: null,
+      abortHandler: null,
+      started: false,
+      settled: false,
+      cancelled: false,
+      strictResponseIdentity,
+      finish(mode, value) {
+        if (job.settled) {
+          parserWorkerRuntimeStats.duplicateResponses += 1;
+          return;
+        }
+        job.settled = true;
+        clearTimeout(job.timer);
+        job.timer = null;
+        try {
+          job.bootstrapController?.abort();
+        } catch {
+          /* ignore */
+        }
+        job.bootstrapController = null;
+        if (signal && job.abortHandler) {
+          signal.removeEventListener("abort", job.abortHandler);
+        }
+        if (job.worker) {
+          job.worker.onmessage = null;
+          job.worker.onerror = null;
+          job.worker.onmessageerror = null;
+          try {
+            job.worker.terminate();
+            parserWorkerRuntimeStats.terminates += 1;
+          } catch {
+            /* ignore */
+          }
+          job.worker = null;
+        }
+        try {
+          job.revokeBlobUrl?.();
+        } catch {
+          /* ignore */
+        }
+        job.revokeBlobUrl = null;
+        workerPoolJobs.delete(responseKey);
+        if (job.started) {
+          workerPoolRunning = Math.max(0, workerPoolRunning - 1);
+        }
+        if (mode === "resolve") resolve(value);
+        else reject(value);
+        queueMicrotask(drainWorkerPool);
+      },
+      async start() {
+        if (job.settled || job.cancelled) return;
+        job.started = true;
+        job.status = "running";
+        workerPoolRunning += 1;
+        parserWorkerRuntimeStats.peakWorkers = Math.max(
+          parserWorkerRuntimeStats.peakWorkers,
+          workerPoolRunning
+        );
+        emit({
+          type: "start",
+          jobId: requestId,
+          requestId,
+          generation,
+          fileKind,
+          scopeId,
+          jobType,
+        });
+
+        job.timer = setTimeout(() => {
+          if (job.settled) return;
+          parserWorkerRuntimeStats.timeouts += 1;
+          emit({
+            type: "timeout",
+            jobId: requestId,
+            requestId,
+            generation,
+            fileKind,
+            scopeId,
+            jobType,
+          });
+          job.finish("reject", cancellationError("timeout"));
+        }, timeoutMs);
+
+        let resolvedUrl = workerUrl;
+        const defaultWorker =
+          typeof Worker !== "undefined" ? Worker : undefined;
+        const useBootstrap =
+          classicWorker &&
+          classicScriptBootstrap &&
+          WorkerImpl === defaultWorker &&
+          typeof (fetchImpl || (typeof fetch !== "undefined" ? fetch : null)) ===
+            "function";
+        try {
+          if (useBootstrap) {
+            job.bootstrapController = new AbortController();
+            const boot = await bootstrapClassicWorkerScriptUrl(workerUrl, {
+              fetchImpl,
+              createObjectURL,
+              signal: job.bootstrapController.signal,
+            });
+            if (job.settled) {
+              boot.revoke();
+              return;
+            }
+            resolvedUrl = boot.url;
+            job.revokeBlobUrl = boot.revoke;
+          }
+          if (!resolvedUrl) {
+            throw Object.assign(new Error("Worker URL tanımsız."), {
+              code: "WORKER_UNAVAILABLE",
+            });
+          }
+          if (typeof WorkerImpl !== "function") {
+            throw Object.assign(new Error("Worker API kullanılamıyor."), {
+              code: "WORKER_UNAVAILABLE",
+            });
+          }
+          job.worker = classicWorker
+            ? new WorkerImpl(resolvedUrl)
+            : new WorkerImpl(resolvedUrl, { type: "module" });
+          parserWorkerRuntimeStats.constructs += 1;
+        } catch (error) {
+          const err = Object.assign(
+            new Error(error?.message || "Worker oluşturulamadı."),
+            { code: error?.code || "WORKER_CONSTRUCT_FAILED" }
+          );
+          job.finish("reject", err);
+          return;
+        }
+
+        job.worker.onmessage = (event) => {
+          const message = event?.data;
+          if (!message || typeof message !== "object") {
+            parserWorkerRuntimeStats.malformedResponses += 1;
+            job.finish(
+              "reject",
+              Object.assign(new Error("Worker yanıtı geçersiz."), {
+                code: "WORKER_PROTOCOL_ERROR",
+              })
+            );
+            return;
+          }
+          if (message.type === "lifecycle" && !message.requestId) {
+            emit({
+              ...message,
+              type: "lifecycle",
+              jobId: requestId,
+              jobType,
+              scopeId,
+            });
+            return;
+          }
+          if (!responseMatchesJob(message, job)) {
+            if (!job.strictResponseIdentity) return;
+            parserWorkerRuntimeStats.malformedResponses += 1;
+            job.finish(
+              "reject",
+              Object.assign(new Error("Worker yanıt kimliği eşleşmiyor."), {
+                code: "WORKER_PROTOCOL_ERROR",
+              })
+            );
+            return;
+          }
+
+          const scoped = {
+            ...message,
+            requestId,
+            generation,
+            fileKind,
+            scopeId,
+          };
+          if (message.type === "lifecycle") {
+            emit({ ...scoped, type: "lifecycle", jobId: requestId, jobType });
+            return;
+          }
+          if (message.type === "progress") {
+            onProgress?.(scoped);
+            emit({ ...scoped, type: "progress", jobId: requestId, jobType });
+            return;
+          }
+          if (message.type === "success" || message.type === "result") {
+            job.status = "done";
+            emit({
+              type: "done",
+              jobId: requestId,
+              jobType,
+              requestId,
+              generation,
+              fileKind,
+              scopeId,
+              result: message,
+            });
+            job.finish("resolve", scoped);
+            return;
+          }
+          if (message.type === "cancelled") {
+            job.finish("reject", cancellationError("cancelled"));
+            return;
+          }
+          if (message.type !== "error") {
+            parserWorkerRuntimeStats.malformedResponses += 1;
+            job.finish(
+              "reject",
+              Object.assign(new Error("Worker yanıt türü bilinmiyor."), {
+                code: "WORKER_PROTOCOL_ERROR",
+              })
+            );
+            return;
+          }
+          const errorText =
+            message.errorMessage || message.error || "Parser başarısız.";
+          const err = new Error(errorText);
+          err.code =
+            message.errorCode || message.code || "WORKER_PARSE_FAILED";
+          err.phase = message.phase || message.stage || null;
+          job.finish("reject", err);
+        };
+
+        job.worker.onerror = (errorEvent) => {
+          const detail = serializeWorkerErrorEvent(errorEvent);
+          console.warn("[workerParserBridge] worker.onerror", {
+            code: "WORKER_ONERROR",
+            type: detail.type,
+            errorName: detail.errorName,
+          });
+          const err = new Error(formatWorkerLoadFailureMessage(detail));
+          err.code = "WORKER_ONERROR";
+          job.finish("reject", err);
+        };
+
+        job.worker.onmessageerror = () => {
+          job.finish(
+            "reject",
+            Object.assign(new Error("Worker mesajı işlenemedi."), {
+              code: "WORKER_MESSAGE_ERROR",
+            })
+          );
+        };
+
+        try {
+          job.worker.postMessage(
+            { requestId, generation, fileKind, ...payload },
+            transferables
+          );
+          parserWorkerRuntimeStats.postMessages += 1;
+        } catch (error) {
+          job.finish(
+            "reject",
+            Object.assign(new Error("Worker'a mesaj gönderilemedi."), {
+              code: "WORKER_POSTMESSAGE_FAILED",
+              cause: error,
+            })
+          );
+        }
+      },
+    };
+
+    job.abortHandler = () => cancelPoolJob(job, "cancelled");
+    if (signal?.aborted) {
+      job.cancelled = true;
+      job.settled = true;
+      reject(cancellationError("cancelled"));
+      return;
+    }
+    signal?.addEventListener("abort", job.abortHandler, { once: true });
+    workerPoolJobs.set(responseKey, job);
+    workerPoolQueue.push(job);
+    parserWorkerRuntimeStats.queued += 1;
+    emit({
+      type: "queued",
+      jobId: requestId,
+      requestId,
+      generation,
+      fileKind,
+      scopeId,
+      jobType,
+      queueLength: workerPoolQueue.filter((item) => !item.settled).length,
+    });
+    drainWorkerPool();
   });
 }
 
@@ -708,6 +877,9 @@ export function runEDefterAnalyzeWorker({
   timeoutMs = 180_000,
   WorkerImpl,
   requestId,
+  generation = 0,
+  scopeId = "edefter-analyze",
+  signal,
 }) {
   // Keep nested `payload` so flatten postMessage({ requestId, ...payload })
   // yields { requestId, payload: analyzePayload } for eDefterAnalyze.worker.
@@ -727,6 +899,11 @@ export function runEDefterAnalyzeWorker({
     timeoutMs,
     WorkerImpl,
     requestId,
+    generation,
+    fileKind: "analysis",
+    scopeId,
+    signal,
+    strictResponseIdentity: true,
   });
 }
 
@@ -756,8 +933,14 @@ export function runExcelSheetWorker({
   mode = "rows",
   onProgress,
   timeoutMs = 90_000,
-  /** false = structured clone copy; ana thread buffer detach olmaz (fallback güvenli). */
-  transferArrayBuffer = false,
+  /** Backup clone must exist before this transfer is enabled. */
+  transferArrayBuffer = true,
+  requestId,
+  generation = 0,
+  fileKind = "excel",
+  scopeId = "excel",
+  signal,
+  WorkerImpl,
 }) {
   const resolvedWorkerUrl =
     workerUrl && typeof workerUrl === "object" && typeof workerUrl.href === "string"
@@ -767,9 +950,18 @@ export function runExcelSheetWorker({
   return runParserWorker({
     workerUrl: resolvedWorkerUrl,
     jobType: PARSER_JOB_TYPES.EXCEL_SHEET,
+    classicWorker: true,
+    classicScriptBootstrap: true,
     payload: { arrayBuffer, mode },
     transferables: transferArrayBuffer && arrayBuffer ? [arrayBuffer] : [],
     onProgress,
     timeoutMs,
+    requestId,
+    generation,
+    fileKind,
+    scopeId,
+    signal,
+    WorkerImpl,
+    strictResponseIdentity: true,
   });
 }

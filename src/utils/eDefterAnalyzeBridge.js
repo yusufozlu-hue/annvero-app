@@ -42,14 +42,32 @@ export function resetAnalyzeJobStats() {
 let activeRequestId = null;
 let activeGeneration = 0;
 let jobInFlight = false;
+const ANALYZE_WORKER_SCOPE = "edefter-analyze";
+
+const ANALYZE_INFRASTRUCTURE_FALLBACK_CODES = new Set([
+  "WORKER_ONERROR",
+  "WORKER_CONSTRUCT_FAILED",
+  "WORKER_UNAVAILABLE",
+  "WORKER_MESSAGE_ERROR",
+  "WORKER_POSTMESSAGE_FAILED",
+  "WORKER_SCRIPT_HTML",
+  "WORKER_SCRIPT_INVALID",
+  "WORKER_SCRIPT_FETCH_FAILED",
+  "WORKER_PROTOCOL_ERROR",
+  "ANALYZE_WORKER_EMPTY",
+  "ANALYZE_WORKER_SCHEMA",
+  "ANALYZE_REQUEST_ID_MISMATCH",
+  "ANALYZE_PROTOCOL_MISMATCH",
+]);
 
 /** Invalidate in-flight analyze jobs (company change / cancel / remount). */
 export function bumpAnalyzeGeneration(reason = "reset") {
+  void reason;
   activeGeneration += 1;
   activeRequestId = null;
   jobInFlight = false;
   try {
-    cancelActiveParseJob(reason);
+    cancelActiveParseJob("stale", { scopeId: ANALYZE_WORKER_SCOPE });
   } catch {
     /* ignore */
   }
@@ -102,6 +120,7 @@ export function resolveAnalyzeFallbackReasonCode(error = null) {
     "WORKER_SCRIPT_HTML",
     "WORKER_SCRIPT_INVALID",
     "WORKER_SCRIPT_FETCH_FAILED",
+    "WORKER_PROTOCOL_ERROR",
     "ANALYZE_WORKER_EMPTY",
     "ANALYZE_WORKER_SCHEMA",
     "ANALYZE_REQUEST_ID_MISMATCH",
@@ -223,6 +242,9 @@ export async function runEDefterAnalyzeJob(
           timeoutMs,
           WorkerImpl,
           requestId,
+          generation: jobGeneration,
+          scopeId: ANALYZE_WORKER_SCOPE,
+          signal,
         });
         assertNotStale();
 
@@ -256,6 +278,22 @@ export async function runEDefterAnalyzeJob(
         if (error?.code === "ANALYZE_STALE" || error?.code === "ANALYZE_CANCELLED") {
           throw error;
         }
+        if (error?.code === "WORKER_CANCELLED") {
+          throw Object.assign(new Error("Analiz iptal edildi."), {
+            code: "ANALYZE_CANCELLED",
+          });
+        }
+        if (error?.code === "WORKER_STALE") {
+          throw Object.assign(new Error("Eski analiz geçersiz kılındı."), {
+            code: "ANALYZE_STALE",
+          });
+        }
+        if (
+          error?.code === "WORKER_TIMEOUT" ||
+          !ANALYZE_INFRASTRUCTURE_FALLBACK_CODES.has(error?.code)
+        ) {
+          throw error;
+        }
         // Cancel/replace/stale must not consume the single fallback slot.
         assertNotStale();
         analyzeJobStats.fallbackAttempts += 1;
@@ -264,8 +302,6 @@ export async function runEDefterAnalyzeJob(
         if (typeof console !== "undefined") {
           console.warn("[eDefterAnalyzeBridge] worker→fallback", {
             fallbackReasonCode,
-            message: error?.message || "",
-            detail: error?.detail || null,
           });
         }
         const fallback = await runMainThreadAnalyze(input, {

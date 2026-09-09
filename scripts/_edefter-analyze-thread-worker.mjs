@@ -12,6 +12,11 @@ import {
 
 parentPort.on("message", async (data = {}) => {
   const requestId = data?.requestId;
+  const identity = {
+    requestId,
+    generation: data?.generation ?? 0,
+    fileKind: data?.fileKind || "analysis",
+  };
   const protocolVersion = Number(data?.protocolVersion || 0);
   const payload =
     data?.payload && typeof data.payload === "object" && !Array.isArray(data.payload)
@@ -22,7 +27,7 @@ parentPort.on("message", async (data = {}) => {
     if (!requestId) {
       parentPort.postMessage({
         type: "error",
-        requestId,
+        ...identity,
         error: "Analyze requestId zorunlu.",
         code: "ANALYZE_REQUEST_ID_MISSING",
       });
@@ -31,7 +36,7 @@ parentPort.on("message", async (data = {}) => {
     if (protocolVersion && protocolVersion !== EDEFTER_ANALYZE_PROTOCOL) {
       parentPort.postMessage({
         type: "error",
-        requestId,
+        ...identity,
         error: "Analyze worker protokol sürümü uyuşmuyor.",
         code: "ANALYZE_PROTOCOL_MISMATCH",
       });
@@ -40,7 +45,7 @@ parentPort.on("message", async (data = {}) => {
     if (!payload) {
       parentPort.postMessage({
         type: "error",
-        requestId,
+        ...identity,
         error: "Analyze payload zorunlu.",
         code: "ANALYZE_PAYLOAD_MISSING",
       });
@@ -55,11 +60,11 @@ parentPort.on("message", async (data = {}) => {
       elapsedMs: Math.round(performance.now() - started),
       thread: "worker_threads",
     });
-    parentPort.postMessage({ type: "success", requestId, result, ...result });
+    parentPort.postMessage({ type: "success", ...identity, result, ...result });
   } catch (error) {
     parentPort.postMessage({
       type: "error",
-      requestId,
+      ...identity,
       error: error?.message || "worker failed",
       code: error?.code || "ANALYZE_WORKER_FAILED",
     });

@@ -11,6 +11,7 @@
  */
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
@@ -33,6 +34,7 @@ import {
   runEDefterAnalyzeJob,
 } from "@/src/utils/eDefterAnalyzeBridge.js";
 import { runGenelMuhasebeKontrol } from "@/src/utils/genelMuhasebeKontrolEngine.js";
+import { readSheetRowsFromArrayBuffer } from "@/src/utils/excelBufferUtils.js";
 import {
   parserWorkerRuntimeStats,
   resetParserWorkerRuntimeStats,
@@ -87,6 +89,11 @@ class MockAnalyzeWorker {
     harness.postMessages += 1;
     harness.lastPosted = data;
     const requestId = data?.requestId;
+    const responseIdentity = {
+      requestId,
+      generation: data?.generation ?? 0,
+      fileKind: data?.fileKind || "analysis",
+    };
     const protocolVersion = Number(data?.protocolVersion || 0);
     const payload =
       data?.payload && typeof data.payload === "object" && !Array.isArray(data.payload)
@@ -100,11 +107,19 @@ class MockAnalyzeWorker {
         if (this._dead) return;
         if (harness.mode === "hang") return;
 
+        if (harness.mode === "infrastructure") {
+          this.onerror?.({
+            type: "error",
+            message: "synthetic worker bootstrap failure",
+          });
+          return;
+        }
+
         if (harness.mode === "error") {
           this.onmessage?.({
             data: {
               type: "error",
-              requestId,
+              ...responseIdentity,
               error: "synthetic worker failure",
               code: "ANALYZE_WORKER_FAILED",
             },
@@ -116,7 +131,7 @@ class MockAnalyzeWorker {
           this.onmessage?.({
             data: {
               type: "success",
-              requestId,
+              ...responseIdentity,
               result: { ok: true, summary: { edefterUygun: true } },
             },
           });
@@ -127,7 +142,7 @@ class MockAnalyzeWorker {
           this.onmessage?.({
             data: {
               type: "error",
-              requestId,
+              ...responseIdentity,
               error: "Analyze requestId zorunlu.",
               code: "ANALYZE_REQUEST_ID_MISSING",
             },
@@ -139,7 +154,7 @@ class MockAnalyzeWorker {
           this.onmessage?.({
             data: {
               type: "error",
-              requestId,
+              ...responseIdentity,
               error: "Analyze worker protokol sürümü uyuşmuyor.",
               code: "ANALYZE_PROTOCOL_MISMATCH",
             },
@@ -151,7 +166,7 @@ class MockAnalyzeWorker {
           this.onmessage?.({
             data: {
               type: "error",
-              requestId,
+              ...responseIdentity,
               error: "Analyze payload zorunlu.",
               code: "ANALYZE_PAYLOAD_MISSING",
             },
@@ -170,14 +185,14 @@ class MockAnalyzeWorker {
           });
           if (this._dead) return;
           this.onmessage?.({
-            data: { type: "success", requestId, result, ...result },
+            data: { type: "success", ...responseIdentity, result, ...result },
           });
         } catch (error) {
           if (this._dead) return;
           this.onmessage?.({
             data: {
               type: "error",
-              requestId,
+              ...responseIdentity,
               error: error?.message || "worker failed",
               code: error?.code || "ANALYZE_WORKER_FAILED",
             },
@@ -400,43 +415,49 @@ console.log("2) malformed worker response → fail-closed + single fallback");
   console.log("PASS malformed → one fallback");
 }
 
-console.log("3) worker error → single fallback");
+console.log("3) worker parse/engine error → fail closed, fallback=0");
 {
   resetAll("error");
   const input = makeInput(40);
   const generation = bumpAnalyzeGeneration("error");
-  const result = await runEDefterAnalyzeJob(input, {
-    preferWorker: true,
-    workerUrl: "mock://eDefterAnalyze.worker.js",
-    WorkerImpl: MockAnalyzeWorker,
-    generation,
-  });
-  assert.equal(analyzeJobStats.fallbackAttempts, 1);
-  assert.equal(analyzeJobStats.engineInvocations, 1);
-  assert.equal(analyzeJobStats.persistAllowed, 1);
-  assert.equal(result.diagnostics?.fallback, 1);
-  console.log("PASS worker error → one fallback");
+  await assert.rejects(
+    () =>
+      runEDefterAnalyzeJob(input, {
+        preferWorker: true,
+        workerUrl: "mock://eDefterAnalyze.worker.js",
+        WorkerImpl: MockAnalyzeWorker,
+        generation,
+      }),
+    (error) => error?.code === "ANALYZE_WORKER_FAILED"
+  );
+  assert.equal(analyzeJobStats.fallbackAttempts, 0);
+  assert.equal(analyzeJobStats.engineInvocations, 0);
+  assert.equal(analyzeJobStats.persistAllowed, 0);
+  console.log("PASS worker engine error → no fallback");
 }
 
-console.log("4) timeout → terminate + at most one fallback");
+console.log("4) timeout → terminate + no fallback");
 {
   resetAll("hang");
   harness.delayMs = 60_000;
   const input = makeInput(20);
   const generation = bumpAnalyzeGeneration("timeout");
-  const result = await runEDefterAnalyzeJob(input, {
-    preferWorker: true,
-    workerUrl: "mock://eDefterAnalyze.worker.js",
-    WorkerImpl: MockAnalyzeWorker,
-    generation,
-    timeoutMs: 40,
-  });
+  await assert.rejects(
+    () =>
+      runEDefterAnalyzeJob(input, {
+        preferWorker: true,
+        workerUrl: "mock://eDefterAnalyze.worker.js",
+        WorkerImpl: MockAnalyzeWorker,
+        generation,
+        timeoutMs: 40,
+      }),
+    (error) => error?.code === "WORKER_TIMEOUT"
+  );
   assert.equal(harness.constructs, 1);
   assert.ok(totalTerminates() >= 1);
-  assert.equal(analyzeJobStats.fallbackAttempts, 1);
-  assert.equal(analyzeJobStats.engineInvocations, 1);
-  assert.equal(result.diagnostics?.execution, "main-thread-fallback");
-  console.log("PASS timeout → terminate + one fallback", { terminates: totalTerminates() });
+  assert.equal(analyzeJobStats.fallbackAttempts, 0);
+  assert.equal(analyzeJobStats.engineInvocations, 0);
+  console.log("PASS timeout → terminate + no fallback", { terminates: totalTerminates() });
 }
 
 console.log("5) double-click click-lock: second start blocked (constructs===1)");
@@ -776,6 +797,71 @@ console.log("11) GENERAL_LEDGER_CONTROL 1k/10k/100k worker_threads heartbeat");
   console.log("PASS GENERAL_LEDGER_CONTROL scales", { s1k, s10k, s100k });
 }
 
+console.log("11b) real MARE GENERAL_LEDGER_CONTROL worker/main fingerprint parity");
+{
+  const desktop = path.join(process.env.USERPROFILE || "", "Desktop");
+  const fixturePaths = {
+    muavin: process.env.MARE_MUAVIN_SMOKE || path.join(desktop, "muavin_mare.xlsx"),
+    yevmiye:
+      process.env.LUCA_YEVMIYE_SMOKE ||
+      path.join(desktop, "yevmiye_defteri_mare.xlsx"),
+    mizan: process.env.MARE_MIZAN_SMOKE || path.join(desktop, "mizan_mare.xlsx"),
+  };
+  for (const fixturePath of Object.values(fixturePaths)) {
+    assert.equal(fs.existsSync(fixturePath), true, "real MARE fixture must be available");
+  }
+  const readFixture = (fixturePath) => {
+    const bytes = fs.readFileSync(fixturePath);
+    const arrayBuffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength
+    );
+    return {
+      rows: readSheetRowsFromArrayBuffer(arrayBuffer),
+      hashPrefix: createHash("sha256").update(bytes).digest("hex").slice(0, 12),
+    };
+  };
+  const muavin = readFixture(fixturePaths.muavin);
+  const yevmiye = readFixture(fixturePaths.yevmiye);
+  const mizan = readFixture(fixturePaths.mizan);
+  const input = {
+    jobKind: EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL,
+    companyId: "local-real-file-worker-parity",
+    period: "2026/03",
+    muavinSheetRows: muavin.rows,
+    yevmiyeSheetRows: yevmiye.rows,
+    mizanSheetRows: mizan.rows,
+    accountPlanAccounts: [],
+    accountPlanStatus: "missing",
+  };
+  const reference = runGenelMuhasebeKontrol(input);
+  resetAll("success");
+  const workerResult = await runEDefterAnalyzeJob(input, {
+    preferWorker: true,
+    workerUrl: "thread://eDefterAnalyze.worker.js",
+    WorkerImpl: ThreadAnalyzeWorker,
+    generation: bumpAnalyzeGeneration("real-mare-parity"),
+    timeoutMs: 300_000,
+  });
+  assert.equal(workerResult.diagnostics?.execution, "worker");
+  assert.equal(workerResult.diagnostics?.fallback, 0);
+  assert.equal(workerResult.counters?.persistInvocations, 0);
+  assert.ok(resultsAreParityEqual(reference, workerResult));
+  assert.equal(workerResult.summary?.muavinYevmiye?.matchedCount, 545);
+  assert.equal(workerResult.summary?.muavinYevmiye?.denominator, 545);
+  assert.equal(workerResult.summary?.toplamFis, 115);
+  console.log("PASS real MARE worker/main parity", {
+    hashes: {
+      muavin: muavin.hashPrefix,
+      yevmiye: yevmiye.hashPrefix,
+      mizan: mizan.hashPrefix,
+    },
+    matched: "545/545",
+    vouchers: 115,
+    persist: 0,
+  });
+}
+
 console.log("12) classic bundled worker asset — no @/ imports; bridge classicWorker");
 {
   const bridgeSrc = fs.readFileSync(
@@ -880,37 +966,45 @@ console.log("12b) deterministic + fresh bundle matches committed asset");
 {
   const { spawnSync } = await import("node:child_process");
   const { createHash } = await import("node:crypto");
-  const bundlePath = path.resolve("public/workers/eDefterAnalyze.worker.js");
-  const before = fs.readFileSync(bundlePath);
-  const run1 = spawnSync(process.execPath, [path.resolve("scripts/bundle-edefter-analyze-worker.mjs")], {
-    encoding: "utf8",
-  });
-  assert.equal(run1.status, 0, `12b bundle run1 ok: ${run1.stderr || run1.stdout}`);
-  const mid = fs.readFileSync(bundlePath);
-  const run2 = spawnSync(process.execPath, [path.resolve("scripts/bundle-edefter-analyze-worker.mjs")], {
-    encoding: "utf8",
-  });
-  assert.equal(run2.status, 0, `12b bundle run2 ok: ${run2.stderr || run2.stdout}`);
-  const after = fs.readFileSync(bundlePath);
-  assert.equal(
-    createHash("sha256").update(mid).digest("hex"),
-    createHash("sha256").update(after).digest("hex"),
-    "12b second bundle run is byte-identical (deterministic)"
+  const bundlePaths = [
+    path.resolve("public/workers/eDefterAnalyze.worker.js"),
+    path.resolve("public/workers/excelSheet.worker.js"),
+  ];
+  const before = bundlePaths.map((bundlePath) => fs.readFileSync(bundlePath));
+  const hashes = [];
+  for (let runIndex = 0; runIndex < 3; runIndex += 1) {
+    const run = spawnSync(
+      process.execPath,
+      [path.resolve("scripts/bundle-edefter-analyze-worker.mjs")],
+      { encoding: "utf8" }
+    );
+    assert.equal(
+      run.status,
+      0,
+      `12b bundle run${runIndex + 1} ok: ${run.stderr || run.stdout}`
+    );
+    hashes.push(
+      bundlePaths.map((bundlePath) =>
+        createHash("sha256").update(fs.readFileSync(bundlePath)).digest("hex")
+      )
+    );
+  }
+  assert.deepEqual(hashes[0], hashes[1], "12b run1/run2 byte-identical");
+  assert.deepEqual(hashes[1], hashes[2], "12b run2/run3 byte-identical");
+  assert.deepEqual(
+    before.map((bytes) => createHash("sha256").update(bytes).digest("hex")),
+    hashes[2],
+    "12b checked-in/generated assets match fresh rebuild"
   );
-  assert.equal(
-    createHash("sha256").update(before).digest("hex"),
-    createHash("sha256").update(after).digest("hex"),
-    "12b committed bundle matches fresh rebuild (not stale)"
-  );
-  console.log("PASS deterministic + non-stale bundle", {
-    sha256: createHash("sha256").update(after).digest("hex").slice(0, 16),
-    bytes: after.length,
+  console.log("PASS deterministic + non-stale bundles", {
+    eDefterSha256: hashes[2][0].slice(0, 16),
+    excelSha256: hashes[2][1].slice(0, 16),
   });
 }
 
 console.log("13) fallback reason code + yellow warning contract");
 {
-  resetAll("error");
+  resetAll("infrastructure");
   const input = makeInput(20);
   const generation = bumpAnalyzeGeneration("fallback-reason");
   const result = await runEDefterAnalyzeJob(

@@ -93,8 +93,61 @@ function mizanMuavinLabel(summary) {
   return "—";
 }
 
-const LEDGER_FILE_INPUT_CLASS =
-  "block w-full cursor-pointer rounded-lg border-2 border-teal-500 bg-teal-50/50 px-3 py-2 text-sm text-slate-800 shadow-sm transition hover:border-teal-600 hover:bg-teal-50 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500/50 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-teal-700 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-white hover:file:bg-teal-800 focus:file:ring-2 focus:file:ring-teal-600";
+const GENERAL_LEDGER_PARSE_SCOPE = "general-ledger-control";
+
+function LedgerFilePicker({
+  id,
+  label,
+  file,
+  inputRef,
+  onChange,
+  onRemove,
+  removeLabel,
+  className = "",
+}) {
+  const fileName = String(file?.name || "").trim();
+  return (
+    <div className={`min-w-0 text-sm ${className}`}>
+      <span id={`${id}-field-label`} className="mb-1 block text-slate-600">
+        {label}
+      </span>
+      <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg border-2 border-teal-500 bg-teal-50/50 p-2 shadow-sm">
+        <input
+          ref={inputRef}
+          id={id}
+          type="file"
+          accept=".xlsx,.xls"
+          className="peer sr-only"
+          aria-labelledby={`${id}-field-label ${id}-select-label`}
+          onChange={onChange}
+        />
+        <label
+          id={`${id}-select-label`}
+          htmlFor={id}
+          className="cursor-pointer rounded-md bg-teal-700 px-3 py-1.5 font-semibold text-white transition hover:bg-teal-800 peer-focus:ring-2 peer-focus:ring-teal-600"
+        >
+          Dosya Seç
+        </label>
+        <span
+          className="min-w-0 truncate text-slate-700"
+          title={fileName || "Dosya seçilmedi"}
+        >
+          {fileName || "Dosya seçilmedi"}
+        </span>
+        {fileName ? (
+          <button
+            type="button"
+            className="rounded-md border border-slate-300 bg-white px-2 py-1.5 font-medium text-slate-700 hover:border-red-300 hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-red-500"
+            aria-label={removeLabel}
+            onClick={onRemove}
+          >
+            Kaldır
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function safeUserError(err) {
   const code = err?.code || "";
@@ -124,12 +177,12 @@ function safeUserError(err) {
   return "Kontrol çalıştırılamadı. Lütfen tekrar deneyin.";
 }
 
-async function readSheetRows(file) {
-  // Vercel/Turbopack preview: excelSheet.worker is media-copied without bundling
-  // its @/ imports → WORKER_ONERROR. Prefer main-thread XLSX (same as bank Excel).
+async function readSheetRows(file, options = {}) {
   return readExcelSheetRowsFromFile(file, {
-    workerUrl: null,
+    workerUrl: PARSER_WORKER_URLS.excelSheet,
     mode: "rows",
+    includeMetadata: true,
+    ...options,
   });
 }
 
@@ -168,6 +221,10 @@ export default function GenelMuhasebeKontrolPage() {
   const gateRef = useRef(createGenelMuhasebeAnalyzeGate());
   const runTokenRef = useRef(0);
   const abortRef = useRef(null);
+  const mountedRef = useRef(true);
+  const muavinInputRef = useRef(null);
+  const yevmiyeInputRef = useRef(null);
+  const mizanInputRef = useRef(null);
 
   const resetPresentationState = useCallback(() => {
     setFisFilter("");
@@ -181,8 +238,11 @@ export default function GenelMuhasebeKontrolPage() {
     runTokenRef.current += 1;
     setResult(null);
     resetPresentationState();
+    setError("");
     setPerfWarning("");
     setProgressDetail("");
+    setBusy(false);
+    gateRef.current.end();
     bumpAnalyzeGeneration(reason);
     try {
       abortRef.current?.abort();
@@ -256,18 +316,54 @@ export default function GenelMuhasebeKontrolPage() {
   }, [selectedCompanyId]);
 
   useEffect(() => {
+    mountedRef.current = true;
+    const analyzeGate = gateRef.current;
     return () => {
-      invalidateActive("gm-unmount");
+      mountedRef.current = false;
+      runTokenRef.current += 1;
       try {
-        cancelActiveParseJob("gm-unmount");
+        abortRef.current?.abort();
+      } catch {
+        /* ignore */
+      }
+      abortRef.current = null;
+      analyzeGate.end();
+      bumpAnalyzeGeneration("gm-unmount");
+      try {
+        cancelActiveParseJob("gm-unmount", {
+          scopeId: GENERAL_LEDGER_PARSE_SCOPE,
+        });
       } catch {
         /* ignore */
       }
     };
-  }, [invalidateActive]);
+  }, []);
 
   const canStart = Boolean(
-    selectedCompanyId && (muavinFile || yevmiyeFile || mizanFile) && !busy
+    selectedCompanyId && muavinFile && yevmiyeFile && mizanFile && !busy
+  );
+
+  const handleRemoveFile = useCallback(
+    (fileKind) => {
+      if (fileKind === "muavin") {
+        setMuavinFile(null);
+        if (muavinInputRef.current) muavinInputRef.current.value = "";
+      } else if (fileKind === "yevmiye") {
+        setYevmiyeFile(null);
+        if (yevmiyeInputRef.current) yevmiyeInputRef.current.value = "";
+      } else if (fileKind === "mizan") {
+        setMizanFile(null);
+        if (mizanInputRef.current) mizanInputRef.current.value = "";
+      } else {
+        return;
+      }
+      cancelActiveParseJob("stale", {
+        scopeId: GENERAL_LEDGER_PARSE_SCOPE,
+        fileKind,
+      });
+      invalidateActive(`gm-${fileKind}-remove`);
+    },
+    [invalidateActive]
   );
 
   const handleAnalyze = useCallback(async () => {
@@ -287,14 +383,39 @@ export default function GenelMuhasebeKontrolPage() {
     setProgressDetail("Dosyalar okunuyor…");
 
     try {
-      const [muavinSheetRows, yevmiyeSheetRows, mizanSheetRows] = await Promise.all([
-        muavinFile ? readSheetRows(muavinFile) : Promise.resolve(null),
-        yevmiyeFile ? readSheetRows(yevmiyeFile) : Promise.resolve(null),
-        mizanFile ? readSheetRows(mizanFile) : Promise.resolve(null),
+      const parseOne = (file, fileKind, label) =>
+        file
+          ? readSheetRows(file, {
+              generation,
+              fileKind,
+              scopeId: GENERAL_LEDGER_PARSE_SCOPE,
+              signal: controller.signal,
+              onProgress: () => {
+                if (mountedRef.current && token === runTokenRef.current) {
+                  setProgressDetail(`${label} okunuyor`);
+                }
+              },
+            })
+          : Promise.resolve(null);
+      const [muavinRead, yevmiyeRead, mizanRead] = await Promise.all([
+        parseOne(muavinFile, "muavin", "Muavin"),
+        parseOne(yevmiyeFile, "yevmiye", "Yevmiye"),
+        parseOne(mizanFile, "mizan", "Mizan"),
       ]);
       if (token !== runTokenRef.current || controller.signal.aborted) return;
 
-      setProgressDetail("Kontrol ediliyor…");
+      const parseResults = [muavinRead, yevmiyeRead, mizanRead].filter(Boolean);
+      const usedParseFallback = parseResults.some(
+        (item) => item.status === "fallback"
+      );
+      if (usedParseFallback) {
+        setPerfWarning("Worker kullanılamadı, güvenli fallback çalıştı");
+      }
+      const muavinSheetRows = muavinRead?.rows || null;
+      const yevmiyeSheetRows = yevmiyeRead?.rows || null;
+      const mizanSheetRows = mizanRead?.rows || null;
+
+      setProgressDetail("Muhasebe kontrolü çalışıyor");
       const analysis = await runEDefterAnalyzeJob(
         {
           jobKind: EDEFTER_ANALYZE_JOB_KIND.GENERAL_LEDGER_CONTROL,
@@ -314,20 +435,22 @@ export default function GenelMuhasebeKontrolPage() {
           generation,
           timeoutMs: 300_000,
           onProgress: (progress) => {
-            setProgressDetail(
-              progress?.detail || progress?.stage || "Kontrol ediliyor…"
-            );
+            if (mountedRef.current && token === runTokenRef.current) {
+              setProgressDetail(
+                progress?.detail || progress?.stage || "Muhasebe kontrolü çalışıyor"
+              );
+            }
           },
         }
       );
 
-      if (token !== runTokenRef.current) return;
+      if (!mountedRef.current || token !== runTokenRef.current) return;
       if (analysis?.diagnostics?.generation != null && analysis.diagnostics.generation !== generation) {
         return;
       }
 
       setResult(analysis);
-      if (analysis?.diagnostics?.execution === "worker") {
+      if (analysis?.diagnostics?.execution === "worker" && !usedParseFallback) {
         setPerfWarning("");
       } else if (
         analysis?.diagnostics?.fallback === 1 ||
@@ -339,15 +462,26 @@ export default function GenelMuhasebeKontrolPage() {
         );
       }
     } catch (err) {
-      if (token !== runTokenRef.current) return;
-      if (err?.code === "ANALYZE_STALE" || err?.code === "ANALYZE_CANCELLED") return;
+      if (!mountedRef.current || token !== runTokenRef.current) return;
+      if (
+        err?.code === "ANALYZE_STALE" ||
+        err?.code === "ANALYZE_CANCELLED" ||
+        err?.code === "WORKER_STALE" ||
+        err?.code === "WORKER_CANCELLED" ||
+        err?.code === EXCEL_READ_STAGE.CANCELLED ||
+        err?.code === EXCEL_READ_STAGE.STALE
+      ) {
+        setProgressDetail("İptal edildi");
+        return;
+      }
       setError(safeUserError(err));
       setResult(null);
     } finally {
       gateRef.current.end();
       if (abortRef.current === controller) abortRef.current = null;
-      setBusy(false);
-      setProgressDetail("");
+      if (mountedRef.current && token === runTokenRef.current) {
+        setBusy(false);
+      }
     }
   }, [
     busy,
@@ -360,6 +494,23 @@ export default function GenelMuhasebeKontrolPage() {
     planStatus,
     resetPresentationState,
   ]);
+
+  const handleCancel = useCallback(() => {
+    runTokenRef.current += 1;
+    try {
+      abortRef.current?.abort();
+    } catch {
+      /* ignore */
+    }
+    abortRef.current = null;
+    bumpAnalyzeGeneration("gm-user-cancel");
+    cancelActiveParseJob("cancelled", {
+      scopeId: GENERAL_LEDGER_PARSE_SCOPE,
+    });
+    gateRef.current.end();
+    setBusy(false);
+    setProgressDetail("İptal edildi");
+  }, []);
 
   const summary = result?.summary;
   const displayPlanStatus =
@@ -578,42 +729,43 @@ export default function GenelMuhasebeKontrolPage() {
               placeholder="2026/05"
             />
           </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-slate-600">Muavin Excel</span>
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              className={LEDGER_FILE_INPUT_CLASS}
-              onChange={(e) => {
-                setMuavinFile(e.target.files?.[0] || null);
-                invalidateActive("gm-file-change");
-              }}
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-slate-600">Yevmiye Excel</span>
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              className={LEDGER_FILE_INPUT_CLASS}
-              onChange={(e) => {
-                setYevmiyeFile(e.target.files?.[0] || null);
-                invalidateActive("gm-file-change");
-              }}
-            />
-          </label>
-          <label className="block text-sm md:col-span-2">
-            <span className="mb-1 block text-slate-600">Mizan Excel</span>
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              className={LEDGER_FILE_INPUT_CLASS}
-              onChange={(e) => {
-                setMizanFile(e.target.files?.[0] || null);
-                invalidateActive("gm-file-change");
-              }}
-            />
-          </label>
+          <LedgerFilePicker
+            id="genel-muhasebe-muavin-file"
+            label="Muavin Excel"
+            file={muavinFile}
+            inputRef={muavinInputRef}
+            removeLabel="Muavin dosyasını kaldır"
+            onChange={(e) => {
+              setMuavinFile(e.target.files?.[0] || null);
+              invalidateActive("gm-file-change");
+            }}
+            onRemove={() => handleRemoveFile("muavin")}
+          />
+          <LedgerFilePicker
+            id="genel-muhasebe-yevmiye-file"
+            label="Yevmiye Excel"
+            file={yevmiyeFile}
+            inputRef={yevmiyeInputRef}
+            removeLabel="Yevmiye dosyasını kaldır"
+            onChange={(e) => {
+              setYevmiyeFile(e.target.files?.[0] || null);
+              invalidateActive("gm-file-change");
+            }}
+            onRemove={() => handleRemoveFile("yevmiye")}
+          />
+          <LedgerFilePicker
+            id="genel-muhasebe-mizan-file"
+            label="Mizan Excel"
+            file={mizanFile}
+            inputRef={mizanInputRef}
+            removeLabel="Mizan dosyasını kaldır"
+            className="md:col-span-2"
+            onChange={(e) => {
+              setMizanFile(e.target.files?.[0] || null);
+              invalidateActive("gm-file-change");
+            }}
+            onRemove={() => handleRemoveFile("mizan")}
+          />
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -625,10 +777,19 @@ export default function GenelMuhasebeKontrolPage() {
           >
             {busy ? "Kontrol ediliyor…" : "Kontrolü Başlat"}
           </button>
+          {busy ? (
+            <button
+              type="button"
+              onClick={handleCancel}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-slate-400"
+            >
+              İptal
+            </button>
+          ) : null}
           <span className="text-xs text-slate-500">
             Hesap planı: {displayPlanStatus === "loaded" ? "yüklü" : "eksik / inceleme"} · Persist:
             yerel yok
-            {busy && progressDetail ? ` · ${progressDetail}` : ""}
+            {progressDetail ? ` · ${progressDetail}` : ""}
           </span>
         </div>
 
