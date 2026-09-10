@@ -82,10 +82,18 @@ await test("static: vercel cron + reconcile auth + lease in sync motor", () => {
     path.join(root, "app/api/google-drive/reconcile/route.js"),
     "utf8"
   );
-  assert.ok(reconcileSrc.includes("timingSafeEqual"));
-  assert.ok(reconcileSrc.includes("CRON_SECRET"));
-  assert.ok(reconcileSrc.includes("enqueueSyncRetry"));
-  assert.ok(reconcileSrc.includes("sliceReconcileBatch"));
+  const reconcileCore = fs.readFileSync(
+    path.join(root, "src/lib/googleDrive/runSystemReconcile.js"),
+    "utf8"
+  );
+  assert.ok(reconcileSrc.includes("runSystemReconcile"));
+  assert.ok(reconcileCore.includes("authorizeSystemReconcileRequest"));
+  assert.ok(reconcileCore.includes("enqueueSyncRetry"));
+  assert.ok(reconcileCore.includes("sliceReconcileBatch"));
+  assert.ok(
+    reconcileCore.indexOf("authorizeSystemReconcileRequest(") <
+      reconcileCore.indexOf("getApiSupabase(")
+  );
 
   const syncSrc = fs.readFileSync(
     path.join(root, "src/utils/cloudStorage/runCompanyDriveSync.js"),
