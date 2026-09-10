@@ -253,6 +253,10 @@ await test("static: upload uses classifyUploadTarget; reconcile HMAC", () => {
     path.join(root, "app/api/google-drive/reconcile/route.js"),
     "utf8"
   );
+  const reconcileCore = fs.readFileSync(
+    path.join(root, "src/lib/googleDrive/runSystemReconcile.js"),
+    "utf8"
+  );
   const syncSrc = fs.readFileSync(
     path.join(root, "app/api/google-drive/sync/route.js"),
     "utf8"
@@ -283,14 +287,22 @@ await test("static: upload uses classifyUploadTarget; reconcile HMAC", () => {
   assert.doesNotMatch(uploadSrc, /getValidGoogleAccessToken\s*\(\s*session/);
   assert.doesNotMatch(uploadSrc, /SUPABASE_SERVICE_ROLE|client_secret|refresh_token\s*[:=]/);
 
-  assert.ok(reconcileSrc.includes("x-annvero-reconcile-secret"));
-  assert.ok(reconcileSrc.includes("ANNVERO_RECONCILE_SECRET"));
-  assert.ok(reconcileSrc.includes("CRON_SECRET"));
-  assert.ok(reconcileSrc.includes("requiresStrictRuntimeSecrets"));
-  assert.ok(reconcileSrc.includes("runCompanyDriveSync"));
-  assert.ok(reconcileSrc.includes("resolveCompanyDriveConnection"));
-  assert.ok(reconcileSrc.includes("timingSafeEqual"));
-  assert.doesNotMatch(reconcileSrc, /console\.log\([^)]*SECRET/);
+  assert.ok(reconcileSrc.includes("runSystemReconcile"));
+  assert.ok(reconcileCore.includes("authorizeSystemReconcileRequest"));
+  assert.ok(reconcileCore.includes("runCompanyDriveSync"));
+  assert.ok(reconcileCore.includes("resolveCompanyDriveConnection"));
+  assert.doesNotMatch(reconcileSrc, /requireApiSession|requireAuthenticatedApi|assertCompanyAccess/);
+  assert.doesNotMatch(reconcileCore, /requireApiSession|requireAuthenticatedApi|assertCompanyAccess/);
+  assert.doesNotMatch(reconcileCore, /console\.log\([^)]*SECRET/);
+  const authHelper = fs.readFileSync(
+    path.join(root, "src/lib/security/systemReconcileAuth.js"),
+    "utf8"
+  );
+  assert.ok(authHelper.includes("x-annvero-reconcile-secret"));
+  assert.ok(authHelper.includes("ANNVERO_RECONCILE_SECRET"));
+  assert.ok(authHelper.includes("CRON_SECRET"));
+  assert.ok(authHelper.includes("requiresStrictRuntimeSecrets"));
+  assert.ok(authHelper.includes("safeEqualString") || authHelper.includes("timingSafeEqual"));
 
   assert.ok(syncSrc.includes("isManagementUser"));
   assert.ok(syncSrc.includes("force") && syncSrc.includes("full"));
