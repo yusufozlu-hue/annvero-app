@@ -10,7 +10,13 @@ import ParserJobProgress from "@/src/components/ParserJobProgress";
 import { useParserJob } from "@/src/hooks/useParserJob";
 import { logParserJobError } from "@/src/utils/parserJobLogger";
 import { PARSER_WORKER_URLS } from "@/src/utils/parserWorkerUrls";
-import { runFisKontrolWorker } from "@/src/utils/workerParserBridge";
+import {
+  bumpFisKontrolAnalyzeGeneration,
+  FIS_KONTROL_ANALYZE_SCOPE,
+  FIS_KONTROL_FALLBACK_WARNING,
+  FIS_KONTROL_WORKER_THRESHOLD,
+  runFisKontrolAnalyzeJob,
+} from "@/src/utils/fisKontrolAnalyzeBridge";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
 import {
@@ -156,13 +162,14 @@ export default function FisKontrolPage() {
     },
   });
 
-  const FIS_KONTROL_WORKER_THRESHOLD = 300;
+  const [perfWarning, setPerfWarning] = useState("");
 
   const showToast = (message, type) => setToast({ message, type });
 
   useEffect(() => {
     if (!toast) return;
-    const timer = setTimeout(() => setToast(null), 3000);
+    const clearMs = toast.type === "warning" ? 8000 : 3000;
+    const timer = setTimeout(() => setToast(null), clearMs);
     return () => clearTimeout(timer);
   }, [toast]);
 
@@ -384,9 +391,17 @@ export default function FisKontrolPage() {
   useEffect(() => {
     processedKeysRef.current = new Set();
     hydratedRunKeyRef.current = "";
+    try {
+      analysisAbortRef.current?.abort();
+    } catch {
+      /* ignore */
+    }
+    analysisAbortRef.current = null;
+    bumpFisKontrolAnalyzeGeneration("company-change");
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
+      setPerfWarning("");
       setPayload(null);
       setRows([]);
       setAnalysis({ rows: [], issues: [], summary: {} });
@@ -402,10 +417,15 @@ export default function FisKontrolPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+
     queueMicrotask(() => {
-      if (cancelled) return;
+      if (cancelled || controller.signal.aborted) return;
       if (!rows.length) {
         setAnalysis({ rows: [], issues: [], summary: {} });
+        setAnalysisLoading(false);
+        setPerfWarning("");
         return;
       }
 
@@ -415,10 +435,16 @@ export default function FisKontrolPage() {
       };
 
       if (rows.length < FIS_KONTROL_WORKER_THRESHOLD) {
+        bumpFisKontrolAnalyzeGeneration("main-thread-sync");
+        setPerfWarning("");
         setAnalysis(analyzeStandardLucaRows(rows, analyzeOpts));
+        setAnalysisLoading(false);
         return;
       }
 
+      const generation = bumpFisKontrolAnalyzeGeneration("analyze-start");
+      setAnalysis({ rows: [], issues: [], summary: {} });
+      setPerfWarning("");
       setAnalysisLoading(true);
       parserJob.begin({
         stage: "Fiş kontrolü",
@@ -427,41 +453,72 @@ export default function FisKontrolPage() {
 
       (async () => {
         try {
-          let nextAnalysis;
-          try {
-            const workerResult = await runFisKontrolWorker({
+          const result = await runFisKontrolAnalyzeJob(
+            { rows, options: analyzeOpts },
+            {
               workerUrl: PARSER_WORKER_URLS.fisKontrol,
-              payload: { rows, options: analyzeOpts },
               onProgress: parserJob.onProgress,
-            });
-            nextAnalysis = workerResult.analysis;
-          } catch {
-            nextAnalysis = analyzeStandardLucaRows(rows, analyzeOpts);
+              signal: controller.signal,
+              generation,
+            }
+          );
+          if (cancelled || controller.signal.aborted) return;
+          if (
+            result?.diagnostics?.generation != null &&
+            result.diagnostics.generation !== generation
+          ) {
+            return;
           }
-          if (!cancelled) {
-            setAnalysis(nextAnalysis);
-            parserJob.markSuccess("Fiş kontrol analizi tamamlandı");
+          setAnalysis(result.analysis);
+          if (result?.diagnostics?.fallback === 1) {
+            const warning =
+              result.diagnostics.performanceWarning || FIS_KONTROL_FALLBACK_WARNING;
+            setPerfWarning(warning);
+            showToast(warning, "warning");
+          } else {
+            setPerfWarning("");
           }
+          parserJob.markSuccess("Fiş kontrol analizi tamamlandı");
         } catch (error) {
-          if (!cancelled) {
-            logParserJobError(error, {
-              module: "Fiş Kontrol Merkezi",
-              companyId: payload?.companyId || payload?.firmaId || "",
-              companyName: payload?.companyName || "",
-              errorType: SYSTEM_ERROR_TYPES.UNEXPECTED,
-              jobType: "fis-kontrol",
-            });
-            parserJob.markError(error);
-            setAnalysis(analyzeStandardLucaRows(rows, analyzeOpts));
+          if (cancelled || controller.signal.aborted) return;
+          if (
+            error?.code === "FIS_KONTROL_STALE" ||
+            error?.code === "FIS_KONTROL_CANCELLED" ||
+            error?.code === "WORKER_STALE" ||
+            error?.code === "WORKER_CANCELLED"
+          ) {
+            parserJob.reset();
+            return;
           }
+          logParserJobError(error, {
+            module: "Fiş Kontrol Merkezi",
+            companyId: payload?.companyId || payload?.firmaId || "",
+            companyName: payload?.companyName || "",
+            errorType: SYSTEM_ERROR_TYPES.UNEXPECTED,
+            jobType: "fis-kontrol",
+          });
+          parserJob.markError(error);
+          setAnalysis({ rows: [], issues: [], summary: {} });
+          setPerfWarning("");
         } finally {
-          if (!cancelled) setAnalysisLoading(false);
+          if (!cancelled && !controller.signal.aborted) {
+            setAnalysisLoading(false);
+          }
         }
       })();
     });
 
     return () => {
       cancelled = true;
+      try {
+        controller.abort();
+      } catch {
+        /* ignore */
+      }
+      if (analysisAbortRef.current === controller) {
+        analysisAbortRef.current = null;
+      }
+      bumpFisKontrolAnalyzeGeneration("unmount-or-replace");
     };
   }, [rows, selectedCompanyId, payload?.companyId, payload?.companyName, payload?.firmaId]);
   const riskLoggedRef = useRef("");
@@ -761,6 +818,7 @@ export default function FisKontrolPage() {
   };
 
   const exportControlReport = () => {
+    if (analysisLoading || !analysis.rows.length) return;
     if (!analysis.rows.length) {
       showToast("Dışa aktarılacak satır yok", "error");
       return;
@@ -796,6 +854,7 @@ export default function FisKontrolPage() {
   };
 
   const exportPassedOnly = () => {
+    if (analysisLoading) return;
     const result = buildPassedExportPayload(analysis, payload || {});
     if (!result.ok) {
       showToast(result.message || "Geçti durumunda fiş yok", "error");
@@ -824,10 +883,21 @@ export default function FisKontrolPage() {
           className={`fixed top-4 right-4 z-[9999] rounded-lg border px-4 py-3 text-sm font-medium shadow-xl ${
             toast.type === "success"
               ? "border-emerald-700 bg-emerald-950 text-emerald-200"
-              : "border-red-700 bg-red-950 text-red-200"
+              : toast.type === "warning"
+                ? "border-amber-700 bg-amber-950 text-amber-100"
+                : "border-red-700 bg-red-950 text-red-200"
           }`}
         >
           {toast.message}
+        </div>
+      ) : null}
+
+      {perfWarning ? (
+        <div
+          role="status"
+          className="mb-4 rounded-xl border border-amber-700/60 bg-amber-950/40 px-4 py-3 text-sm text-amber-100"
+        >
+          {perfWarning}
         </div>
       ) : null}
 
@@ -850,7 +920,23 @@ export default function FisKontrolPage() {
           timeoutWarning={parserJob.timeoutWarning}
           status={parserJob.status}
           error={parserJob.error}
-          onCancel={analysisLoading ? () => parserJob.cancel("user") : undefined}
+          onCancel={
+            analysisLoading
+              ? () => {
+                  try {
+                    analysisAbortRef.current?.abort();
+                  } catch {
+                    /* ignore */
+                  }
+                  bumpFisKontrolAnalyzeGeneration("user-cancel");
+                  parserJob.cancel("user", {
+                    scopeId: FIS_KONTROL_ANALYZE_SCOPE,
+                  });
+                  setAnalysisLoading(false);
+                  setPerfWarning("");
+                }
+              : undefined
+          }
           className="w-full max-w-md"
         />
 
@@ -865,7 +951,7 @@ export default function FisKontrolPage() {
           <button
             type="button"
             onClick={exportControlReport}
-            disabled={!analysis.rows.length}
+            disabled={!analysis.rows.length || analysisLoading}
             className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Kontrol Raporu Excel
@@ -873,7 +959,9 @@ export default function FisKontrolPage() {
           <button
             type="button"
             onClick={exportPassedOnly}
-            disabled={!filterPassedRowsForExport(analysis).length}
+            disabled={
+              analysisLoading || !filterPassedRowsForExport(analysis).length
+            }
             className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Yalnız Geçenleri Dışa Aktar
