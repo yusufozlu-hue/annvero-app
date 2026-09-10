@@ -1,14 +1,37 @@
 import { analyzeStandardLucaRows } from "@/src/utils/fisKontrolMerkezi";
-import { postProgress, WORKER_PARSE_STAGES, yieldToWorker } from "@/src/workers/workerUtils";
+import {
+  postProgress,
+  setWorkerProgressContext,
+  WORKER_PARSE_STAGES,
+  yieldToWorker,
+} from "@/src/workers/workerUtils";
 
 self.onmessage = async (event) => {
-  const { requestId, rows = [], options = {} } = event.data || {};
+  const data = event.data || {};
+  const {
+    requestId,
+    generation = 0,
+    fileKind = "fis-kontrol",
+    rows = [],
+    options = {},
+  } = data;
+
+  const identity = { requestId, generation, fileKind };
+  setWorkerProgressContext(identity);
 
   try {
-    postProgress(WORKER_PARSE_STAGES.ANALYZING, `${rows.length} satır kontrol ediliyor`, 15);
+    postProgress(
+      WORKER_PARSE_STAGES.ANALYZING,
+      `${rows.length} satır kontrol ediliyor`,
+      15
+    );
     await yieldToWorker();
 
-    postProgress(WORKER_PARSE_STAGES.ANALYZING, "Fiş dengesi ve mükerrer kayıtlar taranıyor", 55);
+    postProgress(
+      WORKER_PARSE_STAGES.ANALYZING,
+      "Fiş dengesi ve mükerrer kayıtlar taranıyor",
+      55
+    );
     const analysis = analyzeStandardLucaRows(rows, options);
 
     const kritikCount = (analysis.issues || []).filter((issue) => issue.seviye === "Hata").length;
@@ -21,7 +44,7 @@ self.onmessage = async (event) => {
 
     self.postMessage({
       type: "success",
-      requestId,
+      ...identity,
       analysis,
       kritikCount,
     });
@@ -31,7 +54,7 @@ self.onmessage = async (event) => {
     }
     self.postMessage({
       type: "error",
-      requestId,
+      ...identity,
       error: error?.message || "Fiş kontrol analizi başarısız.",
       code: error?.name === "AbortError" ? "ABORTED" : "ERROR",
     });

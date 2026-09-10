@@ -97,8 +97,8 @@ export function useParserJob({
   );
 
   const cancel = useCallback(
-    (reason = "user") => {
-      cancelActiveParseJob(reason);
+    (reason = "user", selector = {}) => {
+      cancelActiveParseJob(reason, selector);
       clearWarningTimer();
       if (reason === "user") {
         logParserJobCancelled({ ...logMeta, reason });

@@ -917,13 +917,32 @@ export function runRiskAnalysisWorker({ workerUrl, payload = {}, onProgress, tim
   });
 }
 
-export function runFisKontrolWorker({ workerUrl, payload = {}, onProgress, timeoutMs = 120_000 }) {
+export function runFisKontrolWorker({
+  workerUrl,
+  payload = {},
+  onProgress,
+  timeoutMs = 120_000,
+  WorkerImpl,
+  requestId,
+  generation = 0,
+  scopeId = "fis-kontrol-analyze",
+  signal,
+}) {
   return runParserWorker({
     workerUrl,
     jobType: PARSER_JOB_TYPES.FIS_KONTROL,
     payload,
     onProgress,
     timeoutMs,
+    WorkerImpl,
+    requestId,
+    generation,
+    fileKind: "fis-kontrol",
+    scopeId,
+    signal,
+    // Wrong requestId/generation messages are ignored (not settled as protocol fail).
+    // Matching success still requires requestId (+ generation when present).
+    strictResponseIdentity: false,
   });
 }
 
