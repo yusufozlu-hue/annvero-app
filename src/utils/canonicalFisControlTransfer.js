@@ -80,6 +80,42 @@ export function __resetCanonicalTransferTestState() {
   clearPendingLucaRows();
 }
 
+/**
+ * Logout / company switch — bellek mirror + gate/inflight.
+ * @param {{ all?: boolean, companyId?: string }} scope
+ */
+export function clearCanonicalTransferRuntimeCaches(scope = { all: true }) {
+  const company = textId(scope.companyId);
+  if (scope.all || !company) {
+    memoryByKey.clear();
+    memoryByTransferId.clear();
+    inflightWrites.clear();
+    consumeGates.clear();
+    return;
+  }
+
+  for (const [key, snap] of [...memoryByKey.entries()]) {
+    if (textId(snap?.companyId) === company) {
+      memoryByKey.delete(key);
+    }
+  }
+  for (const [tid, snap] of [...memoryByTransferId.entries()]) {
+    if (textId(snap?.companyId) === company) {
+      memoryByTransferId.delete(tid);
+    }
+  }
+  for (const gateKey of [...consumeGates.keys()]) {
+    // gateKey: `${src}:${company}:${run}`
+    const parts = String(gateKey).split(":");
+    if (parts[1] === company) consumeGates.delete(gateKey);
+  }
+  for (const inflightKey of [...inflightWrites.keys()]) {
+    if (String(inflightKey).startsWith(`${company}:`)) {
+      inflightWrites.delete(inflightKey);
+    }
+  }
+}
+
 export function __listCanonicalTransferMemory() {
   return [...memoryByKey.values()].map((s) => ({ ...s, rows: s.rows?.slice?.() || [] }));
 }

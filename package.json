@@ -32,6 +32,7 @@
     "test:fis-kontrol-worker-lifecycle": "node --import ./scripts/_alias-loader.mjs ./scripts/test-fis-kontrol-worker-lifecycle.mjs",
     "test:bank-fis-kontrol-handoff": "node --import ./scripts/_alias-loader.mjs ./scripts/test-bank-fis-kontrol-handoff.mjs",
     "test:fis-kontrol-handoff-security": "node --import ./scripts/_install-fake-idb.mjs --import ./scripts/_alias-loader.mjs ./scripts/test-fis-kontrol-handoff-security.mjs",
+    "test:transfer-cache-lifecycle": "node --import ./scripts/_install-fake-idb.mjs --import ./scripts/_alias-loader.mjs ./scripts/test-transfer-cache-lifecycle.mjs",
     "test:e-defter-kontrol": "node --import ./scripts/_alias-loader.mjs ./scripts/test-e-defter-kontrol.mjs",
     "test:karsit-hesap": "node --import ./scripts/_alias-loader.mjs ./scripts/test-karsit-hesap-kontrol.mjs",
     "test:genel-muhasebe-kontrol": "node --import ./scripts/_alias-loader.mjs ./scripts/test-genel-muhasebe-kontrol.mjs",

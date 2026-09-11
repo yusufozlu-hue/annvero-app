@@ -20,7 +20,6 @@ import {
 import { useCompanyList } from "../hooks/useCompanyList";
 import { logOperationalEvent, SYSTEM_ERROR_TYPES } from "@/src/utils/systemLogEngine";
 import {
-  clearAllLucaTransferDatasets,
   resolveAuthUserIdForTransfer,
 } from "@/src/utils/companyCenter";
 import {
@@ -297,7 +296,7 @@ export default function FisKontrolPage() {
     applyNormalizedPayload,
   ]);
 
-  // Logout / kullanıcı değişimi: satırları gizle, transfer cache temizle
+  // Logout / kullanıcı değişimi: yalnız UI state — kalıcı transfer cleanup merkezi lifecycle’ta
   useEffect(() => {
     let cancelled = false;
     let subscription = null;
@@ -306,17 +305,16 @@ export default function FisKontrolPage() {
         const { getSupabaseClient } = await import("@/src/lib/supabaseClient");
         const supabase = getSupabaseClient();
         if (!supabase?.auth?.onAuthStateChange) return;
-        const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+        const { data } = supabase.auth.onAuthStateChange((event) => {
           if (cancelled) return;
-          if (event === "SIGNED_OUT" || !session?.user?.id) {
-            applyNormalizedPayload(null);
-            setAnalysis({ rows: [], issues: [], summary: {} });
-            hydratedRunKeyRef.current = "";
-            await clearAllLucaTransferDatasets();
-            setHydrateEmptyMessage(
-              "Oturum kapandı. Fiş aktarımı için yeniden giriş yapın."
-            );
-          }
+          // Bootstrap null / TOKEN_REFRESHED wipe yok — yalnız gerçek SIGNED_OUT UI temizler
+          if (event !== "SIGNED_OUT") return;
+          applyNormalizedPayload(null);
+          setAnalysis({ rows: [], issues: [], summary: {} });
+          hydratedRunKeyRef.current = "";
+          setHydrateEmptyMessage(
+            "Oturum kapandı. Fiş aktarımı için yeniden giriş yapın."
+          );
         });
         subscription = data?.subscription;
       } catch {

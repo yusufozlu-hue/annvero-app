@@ -22,12 +22,35 @@ import {
   syncSelectedCompanyId,
   writeSessionCompanies,
 } from "@/src/utils/companies";
+import {
+  synchronouslyFenceCompanyTransfers,
+  clearCompanyTransferCache,
+  markTransferCleanupRetryPending,
+} from "@/src/utils/transferCacheLifecycle";
 
 const CompanyWorkspaceContext = createContext(null);
 
 function readStoredCompanyId() {
   if (typeof window === "undefined") return "";
   return localStorage.getItem(ANNVERO_SELECTED_COMPANY_KEY) || "";
+}
+
+function textCompanyId(value) {
+  return value == null ? "" : String(value).trim();
+}
+
+/**
+ * Önceki firmaya ait transfer residue — fence senkron, clear async.
+ * null→A / A→A: noop. Event payload’a companyId yazılmaz (yalnız local cleanup).
+ */
+function schedulePreviousCompanyTransferCleanup(previousId, nextId) {
+  const prev = textCompanyId(previousId);
+  const next = textCompanyId(nextId);
+  if (!prev) return;
+  if (prev === next) return;
+  synchronouslyFenceCompanyTransfers(prev);
+  markTransferCleanupRetryPending({ type: "company" });
+  void clearCompanyTransferCache(prev);
 }
 
 export function CompanyWorkspaceProvider({ children }) {
@@ -49,6 +72,9 @@ export function CompanyWorkspaceProvider({ children }) {
   const rawReadyRef = useRef(false);
   /** In-flight publish yarışlarını iptal eder (logout / kullanıcı değişimi). */
   const publishEpochRef = useRef(0);
+  /** Açık previous company — transfer cleanup için. */
+  const previousCompanyIdRef = useRef("");
+  const companyBootstrappedRef = useRef(false);
   const COMPANY_REFRESH_TTL_MS = 60_000;
 
   const roleLoadingRef = useRef(roleLoading);
@@ -73,18 +99,41 @@ export function CompanyWorkspaceProvider({ children }) {
     } else {
       localStorage.removeItem(ANNVERO_SELECTED_COMPANY_KEY);
     }
+    // Payload’sız — diğer sekmeler storage event ile okur
     window.dispatchEvent(
-      new CustomEvent(ANNVERO_COMPANY_CHANGED_EVENT, { detail: { companyId } })
+      new CustomEvent(ANNVERO_COMPANY_CHANGED_EVENT, {
+        detail: { companyId: companyId || "" },
+      })
     );
   }, []);
 
-  const setSelectedCompanyId = useCallback(
-    (nextId) => {
-      if (nextId && !canAccessCompanyRef.current(nextId)) return;
-      setSelectedCompanyIdState(nextId);
-      persistCompanyId(nextId);
+  const applyCompanySelection = useCallback(
+    (nextId, { fromStorageEvent = false } = {}) => {
+      const next = textCompanyId(nextId);
+      if (next && !canAccessCompanyRef.current(next)) return;
+
+      const prev = textCompanyId(previousCompanyIdRef.current);
+
+      if (companyBootstrappedRef.current) {
+        schedulePreviousCompanyTransferCleanup(prev, next);
+      } else if (next) {
+        companyBootstrappedRef.current = true;
+      }
+
+      previousCompanyIdRef.current = next;
+      setSelectedCompanyIdState(next);
+      if (!fromStorageEvent) {
+        persistCompanyId(next);
+      }
     },
     [persistCompanyId]
+  );
+
+  const setSelectedCompanyId = useCallback(
+    (nextId) => {
+      applyCompanySelection(nextId, { fromStorageEvent: false });
+    },
+    [applyCompanySelection]
   );
 
   /**
@@ -113,6 +162,17 @@ export function CompanyWorkspaceProvider({ children }) {
           candidate && access(candidate)
             ? candidate
             : filtered[0]?.id || "";
+        const next = textCompanyId(synced);
+        if (!companyBootstrappedRef.current) {
+          previousCompanyIdRef.current = next;
+          if (next) companyBootstrappedRef.current = true;
+        } else {
+          schedulePreviousCompanyTransferCleanup(
+            previousCompanyIdRef.current,
+            next
+          );
+          previousCompanyIdRef.current = next;
+        }
         if (synced && synced !== storedId) {
           persistCompanyId(synced);
         } else if (!synced && storedId) {
@@ -129,6 +189,11 @@ export function CompanyWorkspaceProvider({ children }) {
     rawCompaniesRef.current = null;
     rawReadyRef.current = false;
     publishEpochRef.current += 1;
+    const prev = textCompanyId(previousCompanyIdRef.current);
+    if (companyBootstrappedRef.current && prev) {
+      schedulePreviousCompanyTransferCleanup(prev, "");
+    }
+    previousCompanyIdRef.current = "";
     setCompanies([]);
     companiesCountRef.current = 0;
     setSelectedCompanyIdState("");
@@ -214,21 +279,27 @@ export function CompanyWorkspaceProvider({ children }) {
     };
     const handleCompanyChanged = (event) => {
       const nextId = event.detail?.companyId ?? "";
-      if (nextId && !canAccessCompanyRef.current(nextId)) return;
-      setSelectedCompanyIdState(nextId);
+      applyCompanySelection(nextId, { fromStorageEvent: true });
+    };
+
+    const handleStorage = (event) => {
+      if (event.key !== ANNVERO_SELECTED_COMPANY_KEY) return;
+      applyCompanySelection(event.newValue || "", { fromStorageEvent: true });
     };
 
     document.addEventListener("visibilitychange", handleVisibility);
     window.addEventListener(ANNVERO_COMPANY_CHANGED_EVENT, handleCompanyChanged);
     window.addEventListener("annvero:refresh-modules", handleRefresh);
+    window.addEventListener("storage", handleStorage);
 
     return () => {
       cancelled = true;
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener(ANNVERO_COMPANY_CHANGED_EVENT, handleCompanyChanged);
       window.removeEventListener("annvero:refresh-modules", handleRefresh);
+      window.removeEventListener("storage", handleStorage);
     };
-  }, [discardHeldRaw, refreshCompanies]);
+  }, [discardHeldRaw, refreshCompanies, applyCompanySelection]);
 
   // Profil/yetki hazır olunca (veya companyIds/role değişince) tutulan ham sonucu
   // filtreleyip yayımlar. Ham dizi yalnız ref'te kalır; UI'ya yazılmaz.

@@ -81,9 +81,11 @@ test("korumalı API'ler sunucu oturum doğrulaması kullanır (örnekler)", () =
 
 test("çıkış ve giriş client session cache temizler", () => {
   const bar = read("src/components/AuthUserBar.jsx");
+  const logout = read("src/lib/auth/performClientLogout.js");
   const login = read("app/login/LoginForm.tsx");
   const clearer = read("src/lib/auth/clearClientSession.js");
-  assert.match(bar, /clearClientSessionCaches/);
+  assert.match(bar, /performClientLogout/);
+  assert.match(logout, /clearClientSessionCaches/);
   assert.match(login, /clearClientSessionCaches/);
   assert.match(clearer, /invalidateAuthMeCache/);
   assert.match(clearer, /resetAuthGateCache/);
@@ -246,6 +248,7 @@ test("open redirect hâlâ kapalı", () => {
 
 test("giris ve cikis yonlendirmeleri uzak cagrilarda asili kalmaz", () => {
   const bar = read("src/components/AuthUserBar.jsx");
+  const logout = read("src/lib/auth/performClientLogout.js");
   const login = read("app/login/LoginForm.tsx");
   const redirect = read("src/utils/authRedirect.js");
   const gate = read("src/components/AuthGate.jsx");
@@ -260,18 +263,24 @@ test("giris ve cikis yonlendirmeleri uzak cagrilarda asili kalmaz", () => {
   assert.doesNotMatch(login, /await existing\.auth\.signOut/);
   assert.match(session, /\/api\/auth\/return-to/);
   assert.match(session, /shouldSkipSessionRefresh/);
-  assert.match(bar, /SIGN_OUT_GLOBAL_TIMEOUT_MS/);
-  assert.match(bar, /SIGN_OUT_TIMEOUT_MS/);
-  assert.match(bar, /signOut\(\{ scope: "global" \}\)/);
-  assert.match(bar, /signOut\(\{ scope: "local" \}\)/);
-  assert.match(bar, /beginLogoutInProgress/);
-  assert.match(bar, /keepalive: true/);
-  assert.match(bar, /window\.location\.replace\("https:\/\/annvero\.com\/"\)/);
+  assert.match(bar, /performClientLogout/);
+  assert.match(logout, /SIGN_OUT_GLOBAL_TIMEOUT_MS/);
+  assert.match(logout, /SIGN_OUT_TIMEOUT_MS/);
+  assert.match(logout, /signOut\(\{ scope: "global" \}\)/);
+  assert.match(logout, /signOut\(\{ scope: "local" \}\)/);
+  assert.match(logout, /beginLogoutInProgress/);
+  assert.match(logout, /synchronouslyFenceAllTransfers/);
+  assert.match(logout, /clearAllTransferCache/);
+  assert.match(logout, /keepalive: true/);
+  assert.match(logout, /redirectUrl.*https:\/\/annvero\.com\//);
+  assert.match(logout, /window\.location\.replace\(redirectUrl\)/);
   assert.match(logoutProg, /logoutInProgress/);
   assert.doesNotMatch(logoutProg, /localStorage\.|sessionStorage\./);
   assert.match(gate, /isLogoutInProgress/);
   assert.match(gate, /Çıkış yapılıyor/);
   assert.match(gate, /logoutActive \|\| isLogoutInProgress\(\)/);
+  assert.match(gate, /handleAuthenticatedUserTransition/);
+  assert.match(gate, /TOKEN_REFRESHED/);
 });
 
 test("return-to login kritik yolunu 1s bloklamaz; open redirect kapali", () => {

@@ -1,5 +1,9 @@
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import { normalizeCompany } from "@/src/utils/companyNormalize";
+import {
+  captureTransferWriteFence,
+  isTransferWriteFenceStale,
+} from "@/src/utils/transferCacheFence";
 
 export const ACCOUNT_PLAN_STORAGE_KEY = "annvero_account_plans_v1";
 export const LEGACY_ACCOUNT_PLAN_STORAGE_KEY = "annvero_hesap_planlari_v1";
@@ -375,6 +379,33 @@ export async function saveLucaTransferDataset(payload = {}) {
   const authUserId =
     textId(payload.authUserId || payload.userId) ||
     (await resolveAuthUserIdForTransfer());
+
+  const fenceToken = captureTransferWriteFence({
+    companyId,
+    authUserId,
+    source,
+    runId,
+  });
+  if (isTransferWriteFenceStale(fenceToken)) {
+    return { ok: false, error: "transfer_fence_stale" };
+  }
+
+  if (typeof globalThis.__ANNVERO_TRANSFER_SAVE_HOOK__ === "function") {
+    try {
+      await globalThis.__ANNVERO_TRANSFER_SAVE_HOOK__({
+        fenceToken,
+        companyId,
+        runId,
+        source,
+      });
+    } catch {
+      /* ignore test hook errors */
+    }
+    if (isTransferWriteFenceStale(fenceToken)) {
+      return { ok: false, error: "transfer_fence_stale" };
+    }
+  }
+
   const contentFingerprint =
     textId(payload.contentFingerprint) ||
     buildLucaTransferContentFingerprint(payload.rows || []);
@@ -435,17 +466,86 @@ export async function saveLucaTransferDataset(payload = {}) {
     consumer,
   };
 
+  let db;
   try {
-    const db = await openLucaTransferDb();
+    if (isTransferWriteFenceStale(fenceToken)) {
+      return { ok: false, error: "transfer_fence_stale" };
+    }
+
+    db = await openLucaTransferDb();
+    if (isTransferWriteFenceStale(fenceToken)) {
+      try {
+        db.close();
+      } catch {
+        /* ignore */
+      }
+      return { ok: false, error: "transfer_fence_stale" };
+    }
+
     const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readwrite");
     const store = tx.objectStore(LUCA_TRANSFER_IDB_STORE);
-    store.put({ key, ...dataset, savedAt: Date.now() });
+    store.put({
+      key,
+      ...dataset,
+      savedAt: Date.now(),
+      writeFence: {
+        authEpoch: Number(fenceToken.authEpoch) || 0,
+        companyEpoch: Number(fenceToken.companyEpoch) || 0,
+      },
+    });
 
     await new Promise((resolve, reject) => {
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error || new Error("indexeddb_put_failed"));
-      tx.onabort = () => reject(tx.error || new Error("indexeddb_put_aborted"));
+      const detach = () => {
+        tx.oncomplete = null;
+        tx.onerror = null;
+        tx.onabort = null;
+      };
+      tx.oncomplete = () => {
+        detach();
+        resolve();
+      };
+      tx.onerror = () => {
+        detach();
+        reject(tx.error || new Error("indexeddb_put_failed"));
+      };
+      tx.onabort = () => {
+        detach();
+        reject(tx.error || new Error("indexeddb_put_aborted"));
+      };
     });
+
+    if (typeof globalThis.__ANNVERO_TRANSFER_AFTER_PUT_HOOK__ === "function") {
+      try {
+        await globalThis.__ANNVERO_TRANSFER_AFTER_PUT_HOOK__({
+          fenceToken,
+          companyId,
+          runId,
+          source,
+          key,
+        });
+      } catch {
+        /* ignore test hook errors */
+      }
+    }
+
+    // Post-commit fence: yalnız aynı writeFence token’ı taşıyan kayıt silinir
+    if (isTransferWriteFenceStale(fenceToken)) {
+      try {
+        await deleteLucaTransferDatasetIfWriteFenceMatches({
+          db,
+          key,
+          fenceToken,
+        });
+      } catch {
+        /* ignore */
+      }
+      try {
+        db.close();
+      } catch {
+        /* ignore */
+      }
+      return { ok: false, error: "transfer_fence_stale" };
+    }
 
     localStorage.setItem(pointerKey, JSON.stringify(pointerMeta));
 
@@ -461,7 +561,26 @@ export async function saveLucaTransferDataset(payload = {}) {
       console.warn(transferLogCode("legacy_ls_cleanup_failed"));
     }
 
-    db.close();
+    try {
+      db.close();
+    } catch {
+      /* ignore */
+    }
+
+    if (isTransferWriteFenceStale(fenceToken)) {
+      try {
+        await deleteLucaTransferDatasetIfWriteFenceMatches({
+          key,
+          source,
+          companyId,
+          runId,
+          fenceToken,
+        });
+      } catch {
+        /* ignore */
+      }
+      return { ok: false, error: "transfer_fence_stale" };
+    }
 
     return {
       ok: true,
@@ -476,6 +595,11 @@ export async function saveLucaTransferDataset(payload = {}) {
       storage: "indexeddb",
     };
   } catch (error) {
+    try {
+      db?.close?.();
+    } catch {
+      /* ignore */
+    }
     console.error(transferLogCode(error?.name || "quota_or_write_error"));
     return {
       ok: false,
@@ -750,23 +874,109 @@ export async function deleteLucaTransferDataset({
   return { ok: true };
 }
 
+/**
+ * Stale late-write cleanup: key eşleşmesi yeterli değil.
+ * Yalnız record.writeFence, silen write’ın fence token’ı ile aynıysa silinir.
+ */
+async function deleteLucaTransferDatasetIfWriteFenceMatches({
+  db: existingDb = null,
+  key = "",
+  source = "",
+  companyId = "",
+  runId = "",
+  fenceToken = null,
+} = {}) {
+  const resolvedKey =
+    textId(key) ||
+    buildLucaTransferStorageKey(
+      normalizeLucaTransferSource(source),
+      textId(companyId),
+      textId(runId)
+    );
+  if (!resolvedKey || !fenceToken) return { ok: false, deleted: false };
+
+  const expectAuth = Number(fenceToken.authEpoch) || 0;
+  const expectCompany = Number(fenceToken.companyEpoch) || 0;
+  let ownsDb = false;
+  let db = existingDb;
+  try {
+    if (!db) {
+      db = await openLucaTransferDb();
+      ownsDb = true;
+    }
+    const record = await new Promise((resolve, reject) => {
+      const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readonly");
+      const req = tx.objectStore(LUCA_TRANSFER_IDB_STORE).get(resolvedKey);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error || new Error("indexeddb_get_failed"));
+    });
+    const wf = record?.writeFence;
+    if (
+      !record ||
+      !wf ||
+      Number(wf.authEpoch) !== expectAuth ||
+      Number(wf.companyEpoch) !== expectCompany
+    ) {
+      return { ok: true, deleted: false };
+    }
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readwrite");
+      tx.objectStore(LUCA_TRANSFER_IDB_STORE).delete(resolvedKey);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("indexeddb_delete_failed"));
+      tx.onabort = () => reject(tx.error || new Error("indexeddb_delete_aborted"));
+    });
+    return { ok: true, deleted: true };
+  } catch {
+    return { ok: false, deleted: false };
+  } finally {
+    if (ownsDb && db) {
+      try {
+        db.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
 /** Logout / kullanıcı değişimi — tüm transfer dataset + pointer temizliği (satır loglanmaz). */
 export async function clearAllLucaTransferDatasets() {
   if (typeof window === "undefined") return { ok: false };
   clearPendingLucaRows();
+  let idbOk = false;
   try {
     const db = await openLucaTransferDb();
     const tx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readwrite");
     const store = tx.objectStore(LUCA_TRANSFER_IDB_STORE);
     store.clear();
     await new Promise((resolve, reject) => {
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error || new Error("indexeddb_clear_failed"));
-      tx.onabort = () => reject(tx.error || new Error("indexeddb_clear_aborted"));
+      const detach = () => {
+        tx.oncomplete = null;
+        tx.onerror = null;
+        tx.onabort = null;
+      };
+      tx.oncomplete = () => {
+        detach();
+        resolve();
+      };
+      tx.onerror = () => {
+        detach();
+        reject(tx.error || new Error("indexeddb_clear_failed"));
+      };
+      tx.onabort = () => {
+        detach();
+        reject(tx.error || new Error("indexeddb_clear_aborted"));
+      };
     });
-    db.close();
+    try {
+      db.close();
+    } catch {
+      /* ignore */
+    }
+    idbOk = true;
   } catch {
-    // ignore
+    idbOk = false;
   }
   try {
     const keys = [];
@@ -778,7 +988,128 @@ export async function clearAllLucaTransferDatasets() {
   } catch {
     // ignore
   }
-  return { ok: true };
+  return { ok: idbOk };
+}
+
+/**
+ * Firma A→B — yalnız companyId eşleşen kayıtlar + pointer’lar.
+ * Key substring tek başına yetki değil; record.companyId doğrulanır.
+ */
+export async function clearCompanyLucaTransferDatasets(companyId = "") {
+  const company = textId(companyId);
+  if (!company || typeof window === "undefined") {
+    return { ok: false };
+  }
+
+  let idbOk = false;
+  try {
+    const db = await openLucaTransferDb();
+    // Phase 1: read (ayrı tx — mid-tx await + delete fake/real IDB güvenli)
+    const readTx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readonly");
+    const all =
+      (await idbRequest(readTx.objectStore(LUCA_TRANSFER_IDB_STORE).getAll())) ||
+      [];
+    await new Promise((resolve) => {
+      readTx.oncomplete = () => resolve();
+      readTx.onerror = () => resolve();
+      readTx.onabort = () => resolve();
+    });
+
+    const keysToDelete = [];
+    for (const entry of all) {
+      const entryCompany = textId(entry?.companyId || entry?.firmaId);
+      if (entryCompany === company && entry?.key) {
+        keysToDelete.push(entry.key);
+      }
+    }
+
+    // Phase 2: delete exact keys
+    const writeTx = db.transaction(LUCA_TRANSFER_IDB_STORE, "readwrite");
+    const store = writeTx.objectStore(LUCA_TRANSFER_IDB_STORE);
+    for (const key of keysToDelete) store.delete(key);
+    await new Promise((resolve, reject) => {
+      const detach = () => {
+        writeTx.oncomplete = null;
+        writeTx.onerror = null;
+        writeTx.onabort = null;
+      };
+      writeTx.oncomplete = () => {
+        detach();
+        resolve();
+      };
+      writeTx.onerror = () => {
+        detach();
+        reject(writeTx.error || new Error("indexeddb_company_clear_failed"));
+      };
+      writeTx.onabort = () => {
+        detach();
+        reject(writeTx.error || new Error("indexeddb_company_clear_aborted"));
+      };
+    });
+    try {
+      db.close();
+    } catch {
+      /* ignore */
+    }
+    idbOk = true;
+  } catch {
+    idbOk = false;
+  }
+
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith("annvero:luca:")) continue;
+      // annvero:luca:{source}:latest:{company}
+      // annvero:luca:{source}:{company}:{run}
+      const parts = k.split(":");
+      if (parts.length < 5) continue;
+      if (parts[0] !== "annvero" || parts[1] !== "luca") continue;
+      const source = parts[2];
+      if (source !== "bank" && source !== "elektraweb") continue;
+      if (parts[3] === "latest") {
+        if (textId(parts.slice(4).join(":")) === company) {
+          keysToRemove.push(k);
+        }
+        continue;
+      }
+      // storage key — company segment before runId
+      const companyFromKey = textId(parts[3]);
+      if (companyFromKey === company) {
+        // Orphan/legacy storage key without IDB — safe for same company segment
+        keysToRemove.push(k);
+      }
+    }
+    for (const k of keysToRemove) {
+      // Pointer: structured match on companyId field when JSON
+      try {
+        const raw = localStorage.getItem(k);
+        if (raw && k.includes(":latest:")) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (
+              parsed &&
+              typeof parsed === "object" &&
+              textId(parsed.companyId) &&
+              textId(parsed.companyId) !== company
+            ) {
+              continue;
+            }
+          } catch {
+            // plain pointer — key already company-scoped
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      localStorage.removeItem(k);
+    }
+  } catch {
+    // ignore
+  }
+
+  return { ok: idbOk };
 }
 
 export async function loadLucaTransferDataset({

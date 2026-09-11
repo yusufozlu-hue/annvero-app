@@ -16,6 +16,10 @@ import {
 import { hasSupabaseAuthCookieHint } from "@/src/lib/supabase/client";
 import { buildLoginUrl } from "@/src/utils/authRedirect";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
+import {
+  handleAuthenticatedUserTransition,
+  retryPendingTransferCleanupIfNeeded,
+} from "@/src/utils/transferCacheLifecycle";
 
 const SESSION_CHECK_TIMEOUT_MS = 2500;
 const REVERIFY_TIMEOUT_MS = 4000;
@@ -58,10 +62,31 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
   useEffect(() => {
     let isMounted = true;
     const supabase = getSupabaseClient();
+    /** @type {string} */
+    let lastKnownUserId = "";
+    let bootstrapped = false;
 
     const applyStatus = (next) => {
       setCachedAuthStatus(next);
       if (isMounted) setStatus(next);
+    };
+
+    /** Retry-pending hydrate’den önce; unmount sonrası setState yok. */
+    const enterAuthenticated = async (uid = "") => {
+      const nextUid = String(uid || "").trim();
+      lastKnownUserId = nextUid;
+      bootstrapped = true;
+      try {
+        await retryPendingTransferCleanupIfNeeded();
+      } catch {
+        // ignore — fail-closed retry bir sonraki boot’ta
+      }
+      if (!isMounted) return;
+      if (isLogoutInProgress()) {
+        setLogoutActive(true);
+        return;
+      }
+      applyStatus("authenticated");
     };
 
     const markUnauthenticated = () => {
@@ -97,7 +122,8 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
         }
         // Bellek/localStorage-only oturum: API cookie yoksa fail-closed.
         if (data.session && hasSupabaseAuthCookieHint()) {
-          applyStatus("authenticated");
+          const uid = String(data.session.user?.id || "").trim();
+          await enterAuthenticated(uid);
           return;
         }
         if (data.session && !hasSupabaseAuthCookieHint()) {
@@ -121,7 +147,7 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
             return;
           }
           if (data.user && hasSupabaseAuthCookieHint()) {
-            applyStatus("authenticated");
+            await enterAuthenticated(String(data.user.id || "").trim());
             return;
           }
         } catch {
@@ -135,13 +161,60 @@ export default function AuthGate({ children, hasAuthCookie = false }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if (isLogoutInProgress()) {
         if (isMounted) setLogoutActive(true);
         return;
       }
-      if (session && hasSupabaseAuthCookieHint()) applyStatus("authenticated");
-      else markUnauthenticated();
+
+      // TOKEN_REFRESHED / INITIAL_SESSION null: wipe yok
+      if (event === "TOKEN_REFRESHED") {
+        if (session && hasSupabaseAuthCookieHint()) {
+          applyStatus("authenticated");
+        }
+        return;
+      }
+
+      const nextUserId = String(session?.user?.id || "").trim();
+
+      if (event === "SIGNED_OUT") {
+        const prev = lastKnownUserId;
+        lastKnownUserId = "";
+        bootstrapped = true;
+        void handleAuthenticatedUserTransition(prev, "");
+        markUnauthenticated();
+        return;
+      }
+
+      if (session && hasSupabaseAuthCookieHint() && nextUserId) {
+        if (bootstrapped && lastKnownUserId && lastKnownUserId !== nextUserId) {
+          const prev = lastKnownUserId;
+          void (async () => {
+            await handleAuthenticatedUserTransition(prev, nextUserId);
+            if (!isMounted) return;
+            await enterAuthenticated(nextUserId);
+          })();
+          return;
+        }
+        void enterAuthenticated(nextUserId);
+        return;
+      }
+
+      // session yok ama SIGNED_OUT değil (bootstrap / loading) — wipe yok
+      if (!session?.user?.id) {
+        if (bootstrapped && lastKnownUserId && event !== "INITIAL_SESSION") {
+          // Belirsiz null: yalnız cookie yoksa unauthenticated; transfer wipe Auth transition ile
+          if (!hasSupabaseAuthCookieHint()) {
+            const prev = lastKnownUserId;
+            lastKnownUserId = "";
+            void handleAuthenticatedUserTransition(prev, "");
+            markUnauthenticated();
+          }
+        }
+        return;
+      }
+
+      markUnauthenticated();
     });
 
     const onAuthInvalid = () => markUnauthenticated();
