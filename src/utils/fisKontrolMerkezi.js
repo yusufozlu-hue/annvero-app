@@ -10,6 +10,12 @@ import { MEMORY_MATCH_LABEL } from "@/src/utils/previewRowEdit";
 import { MEMORY_AUTO_APPLY_MIN_CONFIDENCE } from "@/src/utils/accountMemoryPolicy";
 import { resolveSgkAccountingRole } from "@/src/utils/taxObligation/sgkRules.js";
 import { ACCOUNTING_ROLE } from "@/src/utils/taxObligation/types.js";
+import {
+  canonicalFisNoKey,
+  compareCanonicalFisNoKeys,
+  displayFisNo,
+  fisNosCanonicallyEqual,
+} from "@/src/utils/canonicalFisNo";
 
 export const KONTROL_SEVIYE = {
   HATA: "Hata",
@@ -644,9 +650,7 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
         );
       } else if (duplicateSourceKeys.has(sk)) {
         const prev = sourceRows[duplicateSourceKeys.get(sk)];
-        const sameFis =
-          String(prev?.fisNo ?? "").trim() !== "" &&
-          String(prev?.fisNo ?? "").trim() === String(row.fisNo ?? "").trim();
+        const sameFis = fisNosCanonicallyEqual(prev?.fisNo, row.fisNo);
         const prevRole = String(prev?.lineRole || "").trim();
         const thisRole = String(row.lineRole || "").trim();
         const sameLegRole = Boolean(prevRole && thisRole && prevRole === thisRole);
@@ -669,9 +673,7 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
     const prevFp = duplicateMovementKeys.get(canon.identityKey);
     if (prevFp !== undefined) {
       const prev = sourceRows[prevFp];
-      const sameFis =
-        String(prev?.fisNo ?? "").trim() !== "" &&
-        String(prev?.fisNo ?? "").trim() === String(row.fisNo ?? "").trim();
+      const sameFis = fisNosCanonicallyEqual(prev?.fisNo, row.fisNo);
       if (!sameFis) {
         rowIssues[index].push(
           createIssue(
@@ -696,9 +698,7 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
       const previousRow =
         previousIndex !== undefined ? sourceRows[previousIndex] : null;
       const sameFis =
-        previousRow &&
-        String(previousRow.fisNo ?? "").trim() !== "" &&
-        String(previousRow.fisNo ?? "").trim() === String(row.fisNo ?? "").trim();
+        previousRow && fisNosCanonicallyEqual(previousRow.fisNo, row.fisNo);
       const sameMovement =
         previousRow &&
         String(previousRow.sourceMovementId || previousRow._movementId || "").trim() &&
@@ -722,8 +722,7 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
       const previousIndex = duplicateEvrakNos.get(evrakKey);
       if (previousIndex !== undefined) {
         const previousRow = sourceRows[previousIndex];
-        const sameFis =
-          String(previousRow?.fisNo ?? "").trim() === String(row.fisNo ?? "").trim();
+        const sameFis = fisNosCanonicallyEqual(previousRow?.fisNo, row.fisNo);
         if (!sameFis) {
           rowIssues[index].push(
             createIssue(
@@ -738,10 +737,12 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
       }
     }
 
-    const fisKey = String(row.fisNo ?? "").trim() || `ROW-${index + 1}`;
+    // Canonical key for balance grouping; empty → row-local fail-safe (no fake merge).
+    const displayNo = displayFisNo(row.fisNo);
+    const fisKey = canonicalFisNoKey(row.fisNo) || `ROW-${index + 1}`;
     if (!fisTotals.has(fisKey)) {
       fisTotals.set(fisKey, {
-        fisNo: row.fisNo ?? "—",
+        fisNo: displayNo || "—",
         borc: 0,
         alacak: 0,
         rowIndexes: [],
@@ -766,13 +767,13 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
     }
   });
 
-  // Fiş no sıralı mı + 50'lik grup
+  // Fiş no sıralı mı + 50'lik grup (Number/parseInt yok — uzun numeric anahtarlar güvenli)
   const numericFis = [...fisTotals.keys()]
-    .map((k) => ({ key: k, n: Number(String(k).replace(/\D/g, "")) }))
-    .filter((x) => Number.isFinite(x.n) && x.n > 0)
-    .sort((a, b) => a.n - b.n);
+    .filter((k) => /^\d+$/.test(String(k)) && String(k) !== "0")
+    .map((k) => ({ key: k }))
+    .sort((a, b) => compareCanonicalFisNoKeys(a.key, b.key));
   for (let i = 1; i < numericFis.length; i += 1) {
-    if (numericFis[i].n < numericFis[i - 1].n) {
+    if (compareCanonicalFisNoKeys(numericFis[i].key, numericFis[i - 1].key) < 0) {
       const bad = fisTotals.get(numericFis[i].key);
       bad?.rowIndexes.forEach((rowIndex) => {
         rowIssues[rowIndex].push(
@@ -804,7 +805,7 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
     .map((f) => {
       const idxs = fisTotals.get(f.key)?.rowIndexes || [];
       const row = sourceRows[idxs[0]];
-      return { n: f.n, date: parseDateTR(row?.fisTarihi), idxs };
+      return { key: f.key, date: parseDateTR(row?.fisTarihi), idxs };
     })
     .filter((x) => x.date);
   for (let i = 1; i < orderedByFis.length; i += 1) {
@@ -926,19 +927,15 @@ export function filterPassedRowsForExport(analysis) {
   );
 }
 
-/** 50'lik fiş grupları — deterministik artan fisNo ile */
+/** 50'lik fiş grupları — deterministik artan canonical fisNo ile */
 export function groupLucaFisBatches(rows = [], groupSize = LUCA_FIS_GROUP_SIZE) {
   const byFis = new Map();
   for (const row of rows || []) {
-    const key = String(row.fisNo ?? "").trim() || "_";
+    const key = canonicalFisNoKey(row.fisNo) || "_";
     if (!byFis.has(key)) byFis.set(key, []);
     byFis.get(key).push(row);
   }
-  const fisKeys = [...byFis.keys()].sort((a, b) => {
-    const na = Number(String(a).replace(/\D/g, "")) || 0;
-    const nb = Number(String(b).replace(/\D/g, "")) || 0;
-    return na - nb || String(a).localeCompare(String(b), "tr");
-  });
+  const fisKeys = [...byFis.keys()].sort(compareCanonicalFisNoKeys);
   const batches = [];
   for (let i = 0; i < fisKeys.length; i += groupSize) {
     const slice = fisKeys.slice(i, i + groupSize);

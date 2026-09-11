@@ -17,6 +17,7 @@ import {
   summarizeCorrectionPresentationImpact,
 } from "@/src/utils/correctionRecords/correctionRecordPresentation";
 import { buildMultiCounterpartVoucherDetail } from "@/src/utils/multiCounterpartDetail";
+import { matchesVoucherNumberFilter } from "@/src/utils/canonicalFisNo";
 
 const SEVERITY_PRIORITY = {
   [E_DEFTER_ISSUE_SEVERITY.KRITIK]: 0,
@@ -43,25 +44,6 @@ function compactFis(value = "") {
 
 function severityPriority(severity = "") {
   return SEVERITY_PRIORITY[severity] ?? 9;
-}
-
-/** yerel kopya — genelMuhasebeFindingsView ile döngüsel import yok */
-function normalizeFisNoForFilter(value = "") {
-  const trimmed = String(value ?? "").trim();
-  if (!trimmed) return "";
-  if (/^\d+$/.test(trimmed)) {
-    const stripped = trimmed.replace(/^0+/, "");
-    return stripped === "" ? "0" : stripped;
-  }
-  return trimmed.toLocaleLowerCase("tr-TR");
-}
-
-function matchesVoucherNumberFilter(voucherNo, query = "") {
-  const needle = normalizeFisNoForFilter(query);
-  if (!needle) return true;
-  const haystack = normalizeFisNoForFilter(voucherNo);
-  if (!haystack) return false;
-  return haystack === needle;
 }
 
 function sortFindingsBySeverity(catalog = []) {

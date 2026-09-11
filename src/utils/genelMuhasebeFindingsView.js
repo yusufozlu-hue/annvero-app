@@ -18,6 +18,13 @@ import {
   buildVoucherResultSnapshot,
   VOUCHER_RESULT_VIEW,
 } from "@/src/utils/voucherResultGroups";
+import {
+  canonicalFisNoKey,
+  normalizeFisNoForFilter,
+  matchesVoucherNumberFilter,
+} from "@/src/utils/canonicalFisNo";
+
+export { normalizeFisNoForFilter, matchesVoucherNumberFilter, canonicalFisNoKey };
 
 function isSyntheticSystemFindingRow(row = {}) {
   const id = String(row?.id || "");
@@ -181,35 +188,6 @@ export function sortFindingsBySeverity(catalog = []) {
     if (fisDiff !== 0) return fisDiff;
     return String(left.hesapKodu).localeCompare(String(right.hesapKodu), "tr");
   });
-}
-
-/**
- * Fiş no karşılaştırma anahtarı.
- * Rakam-only: baştaki sıfırları kaldır (49 ≡ 00049). Hepsi sıfır → "0".
- * Alfanümerik: trim + TR locale lower-case. Kısmi arama yok.
- * Görünen fiş no (tabloda 00049) değişmez.
- */
-export function normalizeFisNoForFilter(value = "") {
-  const trimmed = String(value ?? "").trim();
-  if (!trimmed) return "";
-  if (/^\d+$/.test(trimmed)) {
-    const stripped = trimmed.replace(/^0+/, "");
-    return stripped === "" ? "0" : stripped;
-  }
-  return trimmed.toLocaleLowerCase("tr-TR");
-}
-
-/**
- * Tek merkezi fiş no filtre predicate’i.
- * Yalnız voucherNo/fisNo alanını karşılaştırır — hesap/açıklama/mesaj/JSON yok.
- * Query boşsa her satır geçer. Aktif query’de boş fisNo eşleşmez.
- */
-export function matchesVoucherNumberFilter(voucherNo, query = "") {
-  const needle = normalizeFisNoForFilter(query);
-  if (!needle) return true;
-  const haystack = normalizeFisNoForFilter(voucherNo);
-  if (!haystack) return false;
-  return haystack === needle;
 }
 
 /** Presentation satırlarına filtre — gruplu MULTI / single / düzeltilmiş aynı predicate. */
