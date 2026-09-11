@@ -10,12 +10,16 @@
 import {
   LUCA_TRANSFER_SCHEMA_VERSION,
   LUCA_TRANSFER_TTL_MS,
+  LUCA_TRANSFER_BANK_FIS_KONTROL_TTL_MS,
+  resolveLucaTransferTtlMs,
   buildLucaTransferContentFingerprint,
   buildLucaTransferStorageKey,
   buildFisKontrolTransferHref,
   saveLucaTransferDataset,
   loadLucaTransferDataset,
   assertLucaTransferHydrateBinding,
+  atomicallyConsumeLucaTransferDataset,
+  deleteLucaTransferDataset,
   loadPendingLucaRows,
   clearPendingLucaRows,
   resolveAuthUserIdForTransfer,
@@ -65,11 +69,14 @@ const memoryByKey = new Map();
 const memoryByTransferId = new Map();
 /** Inflight write promises — çift tıklama / concurrent dedupe */
 const inflightWrites = new Map();
+/** Aynı run için consume yarışı (aynı JS realm / test) */
+const consumeGates = new Map();
 
 export function __resetCanonicalTransferTestState() {
   memoryByKey.clear();
   memoryByTransferId.clear();
   inflightWrites.clear();
+  consumeGates.clear();
   clearPendingLucaRows();
 }
 
@@ -241,8 +248,9 @@ export function buildCanonicalTransferSnapshot({
   const created = createdAt || nowIso();
   const updated = updatedAt || created;
   const createdMs = Date.parse(created);
+  const ttlMs = resolveLucaTransferTtlMs({ source: src, consumer: cons });
   const expiresAt = new Date(
-    (Number.isNaN(createdMs) ? Date.now() : createdMs) + LUCA_TRANSFER_TTL_MS
+    (Number.isNaN(createdMs) ? Date.now() : createdMs) + ttlMs
   ).toISOString();
   const balanceSummary = computeTransferBalanceSummary(normalizedRows);
   const lucaRowCount = normalizedRows.length;
@@ -323,6 +331,36 @@ function putMemory(snapshot) {
   next.sort((a, b) => a.revision - b.revision);
   memoryByTransferId.set(tid, next);
   return key;
+}
+
+function removeMemoryByStorageKey(key) {
+  const existing = memoryByKey.get(key);
+  if (!existing) return;
+  memoryByKey.delete(key);
+  const tid = existing.transferId;
+  if (!tid) return;
+  const list = memoryByTransferId.get(tid) || [];
+  const next = list.filter(
+    (s) =>
+      buildLucaTransferStorageKey(
+        s.source || s.sourceType,
+        s.companyId,
+        s.runId
+      ) !== key
+  );
+  if (next.length) memoryByTransferId.set(tid, next);
+  else memoryByTransferId.delete(tid);
+}
+
+function cloneSnapshot(snapshot) {
+  if (typeof structuredClone === "function") {
+    try {
+      return structuredClone(snapshot);
+    } catch {
+      /* fall through */
+    }
+  }
+  return JSON.parse(JSON.stringify(snapshot));
 }
 
 function getMemoryLatestForCompany(companyId, source = "bank", runId = "", consumer = "") {
@@ -487,8 +525,13 @@ export async function readCanonicalTransferSnapshot({
 } = {}) {
   const company = textId(companyId);
   const src = textId(source) || "bank";
+  const sessionUser = textId(authUserId);
   if (!company) {
     return { ok: false, code: "NO_COMPANY", snapshot: null };
+  }
+  // Explicit session auth zorunlu — snapshot.authUserId fallback yok
+  if (!sessionUser) {
+    return { ok: false, code: "AUTH_REQUIRED", snapshot: null };
   }
 
   let snapshot = preferMemory
@@ -501,10 +544,10 @@ export async function readCanonicalTransferSnapshot({
         source: src,
         companyId: company,
         runId,
-        authUserId,
+        authUserId: sessionUser,
         urlCompanyId: urlCompanyId || company,
         strictBinding: true,
-        purgeOnReject: false,
+        purgeOnReject: true,
       });
       if (loaded) {
         snapshot = buildCanonicalTransferSnapshot({
@@ -514,6 +557,9 @@ export async function readCanonicalTransferSnapshot({
           transferId: loaded.transferId || loaded.runId,
           producer: loaded.producer || CANONICAL_TRANSFER_PRODUCER.BANK_PARSER,
           status: loaded.status || CANONICAL_TRANSFER_STATUS.READY,
+          consumer: loaded.consumer || CANONICAL_TRANSFER_CONSUMER.FIS_KONTROL,
+          authUserId: loaded.authUserId,
+          createdAt: loaded.createdAt,
         });
         putMemory(snapshot);
       }
@@ -535,10 +581,23 @@ export async function readCanonicalTransferSnapshot({
     activeCompanyId: company,
     urlCompanyId: urlCompanyId || company,
     urlRunId: runId,
-    authUserId: authUserId || snapshot.authUserId,
+    authUserId: sessionUser,
     expectedSource: src,
   });
   if (!binding.ok) {
+    if (binding.cleanup) {
+      const key = memoryKey(snapshot);
+      removeMemoryByStorageKey(key);
+      try {
+        await deleteLucaTransferDataset({
+          source: src,
+          companyId: company,
+          runId: snapshot.runId || snapshot.datasetId || runId,
+        });
+      } catch {
+        /* ignore */
+      }
+    }
     return { ok: false, code: binding.code, snapshot: null, binding };
   }
 
@@ -546,11 +605,137 @@ export async function readCanonicalTransferSnapshot({
 }
 
 /**
- * Tüketim — veriyi silmez; status/audit günceller.
+ * Bank → Fiş Kontrol atomik consume-once.
+ * UI yalnız bu fonksiyon başarı+commit sonrası payload uygulamalı.
+ */
+export async function consumeCanonicalFisKontrolHandoff({
+  companyId = "",
+  source = "bank",
+  runId = "",
+  authUserId = "",
+  urlCompanyId = "",
+  nowMs = Date.now(),
+} = {}) {
+  const company = textId(companyId);
+  const src = textId(source) || "bank";
+  const sessionUser = textId(authUserId);
+  if (!sessionUser) {
+    return { ok: false, code: "AUTH_REQUIRED", snapshot: null };
+  }
+  if (!company) {
+    return { ok: false, code: "NO_COMPANY", snapshot: null };
+  }
+
+  let resolvedRun = textId(runId);
+
+  const gateKey = `${src}:${company}:${resolvedRun || "pointer"}`;
+  const prev = consumeGates.get(gateKey) || Promise.resolve();
+  let release = () => {};
+  const gate = new Promise((r) => {
+    release = r;
+  });
+  consumeGates.set(
+    gateKey,
+    prev.then(() => gate).catch(() => gate)
+  );
+  await prev;
+
+  try {
+    if (typeof indexedDB !== "undefined") {
+      const idbResult = await atomicallyConsumeLucaTransferDataset({
+        source: src,
+        companyId: company,
+        runId: resolvedRun,
+        authUserId: sessionUser,
+        urlCompanyId: urlCompanyId || company,
+        nowMs,
+      });
+      const runForMemory = textId(idbResult.runId || resolvedRun);
+      // Memory yalnız gerçek consume/cleanup sonrası düşür; mismatch/auth hata kayıt bırakır
+      if (
+        runForMemory &&
+        (idbResult.ok || idbResult.cleaned || idbResult.deleted)
+      ) {
+        removeMemoryByStorageKey(
+          buildLucaTransferStorageKey(src, company, runForMemory)
+        );
+      }
+      // IDB kaynak gerçek — NOT_FOUND iken memory ile replay yok
+      if (idbResult.code !== "INDEXEDDB_UNAVAILABLE") {
+        return idbResult;
+      }
+    }
+
+    // Node / IDB yok: memory atomik consume (test + fail-soft)
+    if (!resolvedRun) {
+      const latest = getMemoryLatestForCompany(
+        company,
+        src,
+        "",
+        CANONICAL_TRANSFER_CONSUMER.FIS_KONTROL
+      );
+      resolvedRun = textId(latest?.runId);
+    }
+    if (!resolvedRun) {
+      return { ok: false, code: "NOT_FOUND", snapshot: null };
+    }
+
+    const key = buildLucaTransferStorageKey(src, company, resolvedRun);
+    const snap = memoryByKey.get(key);
+    if (!snap) {
+      return { ok: false, code: "NOT_FOUND", snapshot: null };
+    }
+
+    const binding = assertLucaTransferHydrateBinding({
+      dataset: snap,
+      activeCompanyId: company,
+      urlCompanyId: urlCompanyId || company,
+      urlRunId: resolvedRun,
+      authUserId: sessionUser,
+      expectedSource: src,
+      nowMs,
+      requireConsumableStatus: true,
+    });
+    if (!binding.ok) {
+      if (binding.cleanup) removeMemoryByStorageKey(key);
+      return { ok: false, code: binding.code, snapshot: null, binding };
+    }
+
+    const consumer = textId(snap.consumer).toLowerCase();
+    if (consumer && consumer !== CANONICAL_TRANSFER_CONSUMER.FIS_KONTROL) {
+      return { ok: false, code: "CONSUMER_MISMATCH", snapshot: null };
+    }
+
+    let clone;
+    try {
+      clone = cloneSnapshot(snap);
+    } catch {
+      return { ok: false, code: "MALFORMED", snapshot: null };
+    }
+    removeMemoryByStorageKey(key);
+    return {
+      ok: true,
+      code: "CONSUMED",
+      snapshot: clone,
+      binding,
+      runId: resolvedRun,
+      deleted: true,
+    };
+  } finally {
+    release();
+    if (consumeGates.get(gateKey) === gate) {
+      // no-op; chain continues via linked promises
+    }
+  }
+}
+
+/**
+ * @deprecated Fiş Kontrol hydrate için consumeCanonicalFisKontrolHandoff kullan.
+ * Geriye uyumluluk: consume-once delete yapar (soft CONSUMED yazmaz).
  */
 export async function markCanonicalTransferConsumed(
   snapshotOrId = null,
-  { consumer = "fis_kontrol", companyId = "" } = {}
+  { consumer = "fis_kontrol", companyId = "", authUserId = "" } = {}
 ) {
   let snapshot =
     snapshotOrId && typeof snapshotOrId === "object"
@@ -562,22 +747,31 @@ export async function markCanonicalTransferConsumed(
   if (companyId && textId(snapshot.companyId) !== textId(companyId)) {
     return { ok: false, code: "TENANT_ISOLATION" };
   }
-  const next = {
-    ...snapshot,
-    status: CANONICAL_TRANSFER_STATUS.CONSUMED,
-    consumedAt: nowIso(),
-    consumer: textId(consumer) || "fis_kontrol",
-    updatedAt: nowIso(),
-  };
-  putMemory(next);
-  if (typeof indexedDB !== "undefined") {
-    try {
-      await saveLucaTransferDataset(next);
-    } catch {
-      /* memory remains */
-    }
+  const sessionUser = textId(authUserId);
+  if (!sessionUser) {
+    return { ok: false, code: "AUTH_REQUIRED" };
   }
-  return { ok: true, snapshot: next, deleted: false };
+  if (textId(consumer) === CANONICAL_TRANSFER_CONSUMER.FIS_KONTROL) {
+    return consumeCanonicalFisKontrolHandoff({
+      companyId: textId(companyId || snapshot.companyId),
+      source: snapshot.source || snapshot.sourceType || "bank",
+      runId: snapshot.runId,
+      authUserId: sessionUser,
+      urlCompanyId: textId(companyId || snapshot.companyId),
+    });
+  }
+  const key = memoryKey(snapshot);
+  removeMemoryByStorageKey(key);
+  try {
+    await deleteLucaTransferDataset({
+      source: snapshot.source || snapshot.sourceType,
+      companyId: snapshot.companyId,
+      runId: snapshot.runId,
+    });
+  } catch {
+    /* ignore */
+  }
+  return { ok: true, snapshot: null, deleted: true };
 }
 
 /**
@@ -596,6 +790,10 @@ export async function reviseCanonicalTransferFromEdit({
   if (textId(baseSnapshot.companyId) !== company) {
     return { ok: false, code: "TENANT_ISOLATION" };
   }
+  const sessionUser = textId(authUserId);
+  if (!sessionUser) {
+    return { ok: false, code: "AUTH_REQUIRED" };
+  }
 
   const nextRev = Number(baseSnapshot.revision || 1) + 1;
   return writeCanonicalTransferSnapshot(
@@ -605,7 +803,7 @@ export async function reviseCanonicalTransferFromEdit({
       source: baseSnapshot.source || baseSnapshot.sourceType,
       sourceId: baseSnapshot.sourceId,
       archiveId: baseSnapshot.archiveId,
-      authUserId: authUserId || baseSnapshot.authUserId,
+      authUserId: sessionUser,
       rows: nextRows,
       movementCount: baseSnapshot.movementCount,
       bankId: baseSnapshot.bankId,
@@ -634,8 +832,12 @@ export async function migrateLegacyPendingOnce({
   authUserId = "",
 } = {}) {
   const company = textId(companyId);
+  const sessionUser = textId(authUserId);
   if (!company) {
     return { ok: false, code: "NO_COMPANY", migrated: false };
+  }
+  if (!sessionUser) {
+    return { ok: false, code: "AUTH_REQUIRED", migrated: false };
   }
 
   const pending = loadPendingLucaRows();
@@ -665,7 +867,7 @@ export async function migrateLegacyPendingOnce({
       companyName: pending.companyName || "",
       source: pending.source || "bank",
       sourceId: pending.sourceId || "",
-      authUserId: authUserId || pending.authUserId || "",
+      authUserId: sessionUser,
       rows: pending.rows,
       movementCount: pending.movementCount || 0,
       bankId: pending.bankId || "",
@@ -786,6 +988,9 @@ export async function publishLucaProducerTransfer({
   producer = CANONICAL_TRANSFER_PRODUCER.BANK_PARSER,
 } = {}) {
   const userId = textId(authUserId) || (await resolveAuthUserIdForTransfer());
+  if (!userId) {
+    return { ok: false, code: "AUTH_REQUIRED" };
+  }
   const src =
     textId(source).toLowerCase() === "elektraweb" ? "elektraweb" : "bank";
   const consumer =
@@ -805,7 +1010,7 @@ export async function publishLucaProducerTransfer({
       companyName,
       source: src,
       sourceId,
-      authUserId: userId || "anonymous-transfer",
+      authUserId: userId,
       rows,
       movementCount,
       bankId: bankName,
@@ -871,12 +1076,16 @@ export async function persistAiKontrolRows({
       authUserId,
     });
   }
+  const userId = textId(authUserId) || (await resolveAuthUserIdForTransfer());
+  if (!userId) {
+    return { ok: false, code: "AUTH_REQUIRED" };
+  }
   return writeCanonicalTransferSnapshot(
     {
       companyId,
       companyName,
       source: "bank",
-      authUserId: authUserId || "anonymous-transfer",
+      authUserId: userId,
       rows: nextRows,
       kaynakTipi,
       kaynakAdi,
@@ -1007,4 +1216,7 @@ export {
   buildStandardLucaTransferPayload,
   buildFisKontrolTransferHref,
   buildLucaTransferContentFingerprint,
+  LUCA_TRANSFER_TTL_MS,
+  LUCA_TRANSFER_BANK_FIS_KONTROL_TTL_MS,
+  resolveLucaTransferTtlMs,
 };

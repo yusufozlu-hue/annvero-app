@@ -18,6 +18,7 @@ import {
   normalizeAccountPlanForMatching,
   normalizeCompanyRecord,
   resolve102BankAccount,
+  resolveAuthUserIdForTransfer,
 } from "@/src/utils/companyCenter";
 import {
   readCanonicalTransferSnapshot,
@@ -211,10 +212,25 @@ export default function LucaDonusturucuPage() {
     }
 
     (async () => {
+      const authUserId = await resolveAuthUserIdForTransfer();
+      if (!authUserId) {
+        if (cancelled) return;
+        setHasTransferredRows(false);
+        setStandardLucaRows([]);
+        setFisler([]);
+        setExportValidation(null);
+        setPreviewError(
+          "Oturum bulunamadı. Yeniden giriş yapıp kaynağı yeniden gönderin."
+        );
+        return;
+      }
+
       const loaded = await readCanonicalTransferSnapshot({
         source: urlSource === SOURCE_TYPES.BANKA ? "bank" : "elektraweb",
         companyId,
         runId: urlRunId,
+        authUserId,
+        urlCompanyId: companyId,
       });
 
       if (cancelled) return;

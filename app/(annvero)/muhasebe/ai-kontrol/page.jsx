@@ -11,6 +11,7 @@ import {
   persistAiKontrolRows,
   getCanonicalSnapshotForCompanySync,
 } from "@/src/utils/canonicalFisControlTransfer";
+import { resolveAuthUserIdForTransfer } from "@/src/utils/companyCenter";
 import {
   AI_RISK,
   analyzeAiKontrolRows,
@@ -101,7 +102,11 @@ export default function AiKontrolPage() {
   const loadData = useCallback(async () => {
     const history = loadAccountHistoryFromStorage();
     const companyHint = selectedCompanyId || "";
-    const loaded = await loadRowsForAiKontrol({ companyId: companyHint });
+    const authUserId = await resolveAuthUserIdForTransfer();
+    const loaded = await loadRowsForAiKontrol({
+      companyId: companyHint,
+      authUserId,
+    });
 
     if (!loaded.ok || !loaded.snapshot?.rows?.length) {
       // Canonical yoksa güvenli boş — pending’e düşme

@@ -193,10 +193,10 @@ await test("wiring: Fiş Kontrol page canonical hydrate + tenant clear", () => {
     path.join(root, "app/(annvero)/muhasebe/fis-kontrol/page.jsx"),
     "utf8"
   );
-  assert.match(page, /readCanonicalTransferSnapshot/);
-  assert.match(page, /assertLucaTransferHydrateBinding/);
+  assert.match(page, /consumeCanonicalFisKontrolHandoff/);
   assert.match(page, /migrateLegacyPendingOnce/);
   assert.match(page, /clearAllLucaTransferDatasets/);
+  assert.doesNotMatch(page, /authUserId \|\| snapshot/);
   assert.match(page, /useSearchParams/);
   assert.match(page, /hydrateEmptyMessage/);
   assert.match(page, /SIGNED_OUT/);

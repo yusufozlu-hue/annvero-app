@@ -3193,6 +3193,7 @@ export default function BankParserWorkbench() {
       movementCount: movementsRef.current.length,
       sourceId: String(canonicalSourceIdRef.current || "").trim(),
       source: "bank",
+      authUserId: await resolveAuthUserIdForTransfer(),
     });
     if (!saved.ok) {
       alert(
