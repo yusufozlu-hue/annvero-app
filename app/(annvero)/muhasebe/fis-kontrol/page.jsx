@@ -42,6 +42,7 @@ import {
   KONTROL_SEVIYE,
   DUPLICATE_VOUCHER_UI_MESSAGE,
 } from "@/src/utils/fisKontrolMerkezi";
+import { matchesVoucherNumberFilter } from "@/src/utils/canonicalFisNo";
 import {
   applyStandardLucaRowEditDraft,
   buildStandardLucaRowEditDraft,
@@ -547,12 +548,13 @@ export default function FisKontrolPage() {
   const filteredRows = useMemo(() => {
     const baseRows = filterKontrolRows(analysis.rows, filter);
 
-    const query = search.trim().toLocaleLowerCase("tr");
+    const query = search.trim();
     if (!query) return baseRows;
 
+    const queryLower = query.toLocaleLowerCase("tr");
     return baseRows.filter((row) => {
+      if (matchesVoucherNumberFilter(row.fisNo, query)) return true;
       const haystack = [
-        row.fisNo,
         row.fisTarihi,
         row.fisAciklama,
         row.detayAciklama,
@@ -567,7 +569,7 @@ export default function FisKontrolPage() {
         .join(" ")
         .toLocaleLowerCase("tr");
 
-      return haystack.includes(query);
+      return haystack.includes(queryLower);
     });
   }, [analysis.rows, filter, search]);
 
