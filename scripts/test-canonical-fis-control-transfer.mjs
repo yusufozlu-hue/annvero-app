@@ -413,7 +413,7 @@ describe("Faz6 canonical fis-control transfer", () => {
     assert.equal(second.requiresReview, true);
   });
 
-  it("17) tüketim veriyi silmez, status günceller", async () => {
+  it("17) tüketim atomik consume-once — payload bir kez, sonra silinir", async () => {
     const rows = bankMovementsToStandardLucaRows([dualMovement(6)], {
       firmaId: COMPANY_A,
     });
@@ -426,12 +426,18 @@ describe("Faz6 canonical fis-control transfer", () => {
     const consumed = await markCanonicalTransferConsumed(saved.snapshot, {
       consumer: "fis_kontrol",
       companyId: COMPANY_A,
+      authUserId: "user-a",
     });
     assert.equal(consumed.ok, true);
-    assert.equal(consumed.deleted, false);
-    assert.equal(consumed.snapshot.status, CANONICAL_TRANSFER_STATUS.CONSUMED);
-    assert.ok(consumed.snapshot.consumedAt);
-    assert.equal(consumed.snapshot.rows.length, 2);
+    assert.equal(consumed.deleted, true);
+    assert.ok(consumed.snapshot?.rows?.length === 2);
+    const again = await markCanonicalTransferConsumed(saved.snapshot, {
+      consumer: "fis_kontrol",
+      companyId: COMPANY_A,
+      authUserId: "user-a",
+    });
+    assert.equal(again.ok, false);
+    assert.equal(again.code, "NOT_FOUND");
   });
 
   it("18) idempotency — tekrar publish aynı checksum", async () => {
@@ -467,14 +473,15 @@ describe("Faz6 canonical fis-control transfer", () => {
     assert.doesNotMatch(wb, /savePendingLucaRows\(/);
   });
 
-  it("wiring: fis-kontrol reviseCanonical + migrateLegacy", () => {
+  it("wiring: fis-kontrol consumeCanonical + migrateLegacy", () => {
     const page = fs.readFileSync(
       path.join(root, "app/(annvero)/muhasebe/fis-kontrol/page.jsx"),
       "utf8"
     );
     assert.match(page, /reviseCanonicalTransferFromEdit/);
     assert.match(page, /migrateLegacyPendingOnce/);
-    assert.match(page, /readCanonicalTransferSnapshot/);
+    assert.match(page, /consumeCanonicalFisKontrolHandoff/);
+    assert.doesNotMatch(page, /authUserId \|\| snapshot\.authUserId/);
     assert.doesNotMatch(page, /savePendingLucaRows\(/);
     assert.doesNotMatch(page, /loadLucaTransferDataset\(/);
   });
