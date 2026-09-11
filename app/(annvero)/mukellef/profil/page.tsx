@@ -5,45 +5,7 @@ import { useCompanyList } from "@/app/(annvero)/muhasebe/hooks/useCompanyList";
 import { useUserRole } from "@/src/hooks/useUserRole";
 import { ANNVERO_ROLE_LABELS } from "@/src/config/annveroRoles";
 import { getCompanyDisplayName } from "@/src/utils/companies";
-import { getSupabaseClient } from "@/src/lib/supabaseClient";
-import { clearClientAuthStorage } from "@/src/lib/supabase/client";
-import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
-import {
-  beginLogoutInProgress,
-  endLogoutInProgress,
-} from "@/src/lib/auth/logoutInProgress";
-
-const SIGN_OUT_GLOBAL_TIMEOUT_MS = 4000;
-const SIGN_OUT_TIMEOUT_MS = 750;
-
-async function signOutSafely(supabase: ReturnType<typeof getSupabaseClient>) {
-  if (!supabase) return;
-
-  let globalDone = false;
-  try {
-    const result = await Promise.race([
-      supabase.auth
-        .signOut({ scope: "global" })
-        .then(() => "ok")
-        .catch(() => "fail"),
-      new Promise<"timeout">((resolve) => {
-        window.setTimeout(() => resolve("timeout"), SIGN_OUT_GLOBAL_TIMEOUT_MS);
-      }),
-    ]);
-    globalDone = result === "ok";
-  } catch {
-    globalDone = false;
-  }
-
-  if (!globalDone) {
-    await Promise.race([
-      supabase.auth.signOut({ scope: "local" }).catch(() => undefined),
-      new Promise((resolve) => {
-        window.setTimeout(resolve, SIGN_OUT_TIMEOUT_MS);
-      }),
-    ]);
-  }
-}
+import { performClientLogout } from "@/src/lib/auth/performClientLogout";
 
 export default function MukellefProfilPage() {
   const { email, role } = useUserRole();
@@ -64,23 +26,10 @@ export default function MukellefProfilPage() {
 
   const handleSignOut = async () => {
     if (isSigningOut) return;
-    beginLogoutInProgress();
     setIsSigningOut(true);
     setSignOutError("");
-
-    const supabase = getSupabaseClient();
-    try {
-      await signOutSafely(supabase);
-      clearClientAuthStorage();
-      clearClientSessionCaches();
-      void fetch("/api/auth/return-to", {
-        method: "DELETE",
-        credentials: "include",
-        keepalive: true,
-      }).catch(() => undefined);
-      window.location.replace("https://annvero.com/");
-    } catch {
-      endLogoutInProgress();
+    const result = await performClientLogout();
+    if (!result.ok) {
       setIsSigningOut(false);
       setSignOutError("Çıkış tamamlanamadı. Lütfen tekrar deneyin.");
     }

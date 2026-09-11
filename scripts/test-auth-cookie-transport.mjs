@@ -84,10 +84,12 @@ test("login cookie hint fail-closed; logout storage clear", () => {
   assert.doesNotMatch(login, /document\.cookie\s*=\s*`[^`]*access_token/);
 
   const bar = read("src/components/AuthUserBar.jsx");
-  assert.match(bar, /clearClientAuthStorage/);
-  assert.match(bar, /signOut/);
-  assert.match(bar, /beginLogoutInProgress/);
-  assert.match(bar, /signOut\(\{ scope: "global" \}\)/);
+  const logout = read("src/lib/auth/performClientLogout.js");
+  assert.match(bar, /performClientLogout/);
+  assert.match(logout, /clearClientAuthStorage/);
+  assert.match(logout, /signOut/);
+  assert.match(logout, /beginLogoutInProgress/);
+  assert.match(logout, /signOut\(\{ scope: "global" \}\)/);
 });
 
 test("AuthGate logout sirasinda /login yonlendirmez", () => {

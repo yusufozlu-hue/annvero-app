@@ -3,55 +3,15 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabaseClient } from "@/src/lib/supabaseClient";
-import { clearClientAuthStorage } from "@/src/lib/supabase/client";
 import { useAdminAccess } from "@/src/hooks/useAdminAccess";
 import { useUserRole } from "@/src/hooks/useUserRole";
-import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
-import {
-  beginLogoutInProgress,
-  endLogoutInProgress,
-} from "@/src/lib/auth/logoutInProgress";
+import { performClientLogout } from "@/src/lib/auth/performClientLogout";
 
 const actionButtonClass =
   "rounded-lg border border-gray-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60";
 
-/** Global iptal için üst süre; aşılırsa yerel oturum kapatılır, sonra yönlendirilir. */
-const SIGN_OUT_GLOBAL_TIMEOUT_MS = 4000;
-/** Yerel signOut'un yönlendirmeyi asılı bırakmasını engeller (519be27 temeli). */
-const SIGN_OUT_TIMEOUT_MS = 750;
-
 const adminLinkClass =
   "rounded-lg border border-amber-700/60 bg-amber-950/40 px-3 py-1.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-900/50";
-
-async function signOutSafely(supabase) {
-  if (!supabase) return;
-
-  let globalDone = false;
-  try {
-    const result = await Promise.race([
-      supabase.auth
-        .signOut({ scope: "global" })
-        .then(() => "ok")
-        .catch(() => "fail"),
-      new Promise((resolve) => {
-        window.setTimeout(() => resolve("timeout"), SIGN_OUT_GLOBAL_TIMEOUT_MS);
-      }),
-    ]);
-    globalDone = result === "ok";
-  } catch {
-    globalDone = false;
-  }
-
-  // Bu tarayıcıdaki oturum/cookie her durumda kapanmalı; yerel yol da zaman aşımına bağlı.
-  if (!globalDone) {
-    await Promise.race([
-      supabase.auth.signOut({ scope: "local" }).catch(() => undefined),
-      new Promise((resolve) => {
-        window.setTimeout(resolve, SIGN_OUT_TIMEOUT_MS);
-      }),
-    ]);
-  }
-}
 
 export default function AuthUserBar({
   variant = "standalone",
@@ -79,28 +39,11 @@ export default function AuthUserBar({
 
   const handleSignOut = async () => {
     if (isSigningOut) return;
-
-    // AuthGate /login yarışını engellemek için signOut'tan önce.
-    beginLogoutInProgress();
     setIsSigningOut(true);
     setSignOutError("");
 
-    const supabase = getSupabaseClient();
-
-    try {
-      await signOutSafely(supabase);
-
-      clearClientAuthStorage();
-      clearClientSessionCaches();
-      void fetch("/api/auth/return-to", {
-        method: "DELETE",
-        credentials: "include",
-        keepalive: true,
-      }).catch(() => undefined);
-
-      window.location.replace("https://annvero.com/");
-    } catch {
-      endLogoutInProgress();
+    const result = await performClientLogout();
+    if (!result.ok) {
       setIsSigningOut(false);
       setSignOutError("Çıkış tamamlanamadı. Lütfen tekrar deneyin.");
     }

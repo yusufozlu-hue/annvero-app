@@ -24,6 +24,7 @@ import {
   writeRememberedEmail,
 } from "@/src/utils/authRedirect";
 import { clearClientSessionCaches } from "@/src/lib/auth/clearClientSession";
+import { clearExistingSessionTransfersBeforeLogin } from "@/src/lib/auth/performClientLogout";
 
 const CONFIG_MISSING_MESSAGE = "Supabase bağlantı bilgileri eksik";
 const CONFIG_MISSING_PRODUCTION_MESSAGE =
@@ -282,6 +283,7 @@ export default function LoginForm() {
       // Önce mevcut client ile resmi signOut (cookie storage temizliği);
       // elle session JSON → document.cookie kopyası yok.
       clearClientAuthStorage();
+      await clearExistingSessionTransfersBeforeLogin();
 
       const supabase = getSupabaseBrowserClient({ rememberMe });
       if (!supabase) {

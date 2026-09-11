@@ -195,11 +195,12 @@ await test("wiring: Fiş Kontrol page canonical hydrate + tenant clear", () => {
   );
   assert.match(page, /consumeCanonicalFisKontrolHandoff/);
   assert.match(page, /migrateLegacyPendingOnce/);
-  assert.match(page, /clearAllLucaTransferDatasets/);
+  assert.doesNotMatch(page, /clearAllLucaTransferDatasets/);
   assert.doesNotMatch(page, /authUserId \|\| snapshot/);
   assert.match(page, /useSearchParams/);
   assert.match(page, /hydrateEmptyMessage/);
   assert.match(page, /SIGNED_OUT/);
+  assert.match(page, /event !== "SIGNED_OUT"/);
   assert.doesNotMatch(page, /loadLucaTransferDataset\(/);
   assert.doesNotMatch(page, /savePendingLucaRows\(/);
   assert.doesNotMatch(page, /console\.(log|debug|info)\([^)]*rows/);
