@@ -1,0 +1,35 @@
+---
+description: Zorunlu canlı staging E2E kapanış — otomatik test/Ready tek başına PASS değildir
+alwaysApply: true
+---
+
+# ANNVERO zorunlu E2E kapanış standardı
+
+“Sayfa açıldı”, “buton göründü”, “API 200”, “test geçti” veya “deployment Ready” tek başına PASS değildir.
+
+Bu kural `deployment.mdc` ile birlikte okunur: chat **deploy onayla** + hook akışı geçerlidir; ancak feature merge / “tamamlandı” iddiası için önce bu E2E zinciri PASS olmalıdır.
+
+## PASS için zorunlu zincir (gerçek oturumlu staging)
+
+1. **Gerçek veri ekranda:** beklenen kayıt/satır sayısı tek tek doğrulanır; sayaç = görünür liste; boş/yanlış filtre veri gizlemez.
+2. **Temel kullanıcı işlemi yapılır:** butona bakılmaz, tıklanır; seçim + Uygula/Kaydet; progress ve buton kilitleri doğrulanır.
+3. **Sonuç oluşur:** yeni state/revision/çıktı ekranda; önceki/yeni sayısal karşılaştırma; hatalar yutulmaz.
+4. **Kalıcılık:** yenileme; firma değiştirip geri dönme; revision/seçim/öğrenme/audit korunur; cross-tenant sızıntı yok.
+5. **Sonraki adım:** reanalyze; kritik kalkınca Fiş Kontrol; geçince Luca/Elektra çıktısı + indirme satır sayısı; kapılar doğru açılır/kapanır.
+6. **Yan etkisizlik:** ikinci Drive dosyası yok; mükerrer yükleme ikinci source/job/fiş/export üretmez; reanalysis yalnız yeni revision; geçici fixture/inject/base64/müşteri içeriği commit edilmez.
+7. **PDF–Excel ortaklığı:** yalnız parser girişi farklı; canonical sonrası aynı çözüm merkezi/hafıza/Fiş Kontrol/export; eşdeğer sonuç kanıtlanır; ayrı ekran/hafıza/kopya iş mantığı yok.
+8. **PASS raporunda kanıt zorunlu:** beklenen/görünen satır; tıklanan işlem+sonuç; önceki/yeni revision; audit/persistence; yenileme; firma izolasyonu; Drive/source/job sayısı; Fiş Kontrol+export.
+
+## Güvenlik / rapor
+
+- Rapor ve commit’e parola, token, cookie, IBAN, VKN, ham ekstre veya müşteri PDF/Excel içeriği yazma.
+- Kanıtta yalnız sayılar, SHA, revision no, kapı kodları ve redakte özet kullan.
+- Staging oturumu kullanıcı tarafından açılır; agent şifre/oturum istemez ve göstermez.
+
+## Yasaklar
+
+- Çalıştırılmayan maddeyi PASS sayma.
+- “Göründü / hazır / uygun görünüyor” veya yalnız otomatik test ile PASS deme.
+- Staging zinciri tamamen geçmeden feature merge etme.
+- Production Ready + canlı SHA eşleşmeden “tamamlandı” deme.
+- Çalıştırılamayan maddeyi PASS sayma; tek gerçek engel olarak raporla.
