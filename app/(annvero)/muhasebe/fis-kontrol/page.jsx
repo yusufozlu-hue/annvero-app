@@ -34,9 +34,7 @@ import {
   buildPassedExportPayload,
   filterKontrolRows,
   filterPassedRowsForExport,
-  KONTROL_DURUM,
   KONTROL_SEVIYE,
-  DUPLICATE_VOUCHER_UI_MESSAGE,
 } from "@/src/utils/fisKontrolMerkezi";
 import { matchesVoucherNumberFilter } from "@/src/utils/canonicalFisNo";
 import {
@@ -46,7 +44,6 @@ import {
   resolveStandardLucaEditRowId,
 } from "@/src/utils/previewRowEdit";
 import {
-  buildStandardLucaTransferPayload,
   ensureStandardLucaRowIds,
   finalizeStandardLucaRow,
   isStandardLucaPayload,
@@ -128,7 +125,7 @@ function normalizeIncomingPayload(pending) {
 }
 
 export default function FisKontrolPage() {
-  const { getCompanyDisplayName, selectedCompanyId, selectedCompany } =
+  const { selectedCompanyId, selectedCompany } =
     useCompanyList();
   const searchParams = useSearchParams();
   const urlCompanyId = String(searchParams.get("companyId") || "").trim();
@@ -153,8 +150,6 @@ export default function FisKontrolPage() {
   const parserJob = useParserJob({
     logMeta: {
       module: "Fiş Kontrol Merkezi",
-      companyId: payload?.companyId || payload?.firmaId || "",
-      companyName: payload?.companyName || "",
       jobType: "fis-kontrol",
     },
   });
@@ -450,8 +445,6 @@ export default function FisKontrolPage() {
           }
           logParserJobError(error, {
             module: "Fiş Kontrol Merkezi",
-            companyId: payload?.companyId || payload?.firmaId || "",
-            companyName: payload?.companyName || "",
             errorType: SYSTEM_ERROR_TYPES.UNEXPECTED,
             jobType: "fis-kontrol",
           });
@@ -494,10 +487,22 @@ export default function FisKontrolPage() {
       module: "Fiş Kontrol Merkezi",
       message: `${highRisk.length} kritik kontrol uyarısı`,
       level: "warning",
-      companyId: payload?.companyId || payload?.firmaId || "",
-      companyName: payload?.companyName || "",
+      companyId: "",
+      companyName: "",
       errorType: SYSTEM_ERROR_TYPES.RISK_FLAG,
-      technicalDetail: highRisk.slice(0, 5).map((issue) => issue.message),
+      technicalDetail: {
+        code: "FIS_KONTROL_RISK_SUMMARY",
+        stage: "ANALYZING",
+        hataCount: highRisk.length,
+        issueTypes: [
+          ...new Set(
+            highRisk
+              .slice(0, 8)
+              .map((issue) => String(issue?.type || "").trim())
+              .filter((type) => /^[A-Z][A-Z0-9_]{1,48}$/.test(type))
+          ),
+        ],
+      },
       suggestion: "Hatalı satırları düzenleyin veya fişi yeniden üretin.",
     });
   }, [analysis.issues, payload]);

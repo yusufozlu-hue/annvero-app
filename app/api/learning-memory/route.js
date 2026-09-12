@@ -18,8 +18,22 @@ import {
   isLearningMemorySchemaError,
   LEARNING_MEMORY_SCHEMA_MESSAGE,
 } from "@/src/utils/learningMemorySafePayload";
+import { safeConsoleError, safeErrorMessage } from "@/src/lib/security/redact";
 
 const TABLE = "learning_memory";
+
+function learningMemoryClientError(error) {
+  if (isLearningMemorySchemaError(error)) {
+    return {
+      error: LEARNING_MEMORY_SCHEMA_MESSAGE,
+      code: "LEARNING_MEMORY_SCHEMA",
+    };
+  }
+  return {
+    error: safeErrorMessage(error, "İşlem başarısız."),
+    code: "SAFE_ERROR",
+  };
+}
 
 const ALLOWED_DOCUMENT_TYPES = new Set([
   "DK",
@@ -113,10 +127,6 @@ function sanitizeClientLearningRecord(record = {}, companyId = "", { forCreate =
   return safe;
 }
 
-function buildRecordPayload(record = {}) {
-  return buildSafeLearningMemoryPayload(record);
-}
-
 export async function GET(request) {
   const companyId = resolveCompanyId({
     companyId: request.nextUrl.searchParams.get("companyId"),
@@ -155,7 +165,10 @@ export async function GET(request) {
   }
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    safeConsoleError("learning_memory list failed", error, {
+      code: "LEARNING_MEMORY_FETCH_FAILED",
+    });
+    return NextResponse.json(learningMemoryClientError(error), { status: 500 });
   }
 
   const rows = includeInactive
@@ -232,15 +245,10 @@ export async function POST(request) {
     .maybeSingle();
 
   if (error) {
-    console.error(error);
-    return NextResponse.json(
-      {
-        error: isLearningMemorySchemaError(error)
-          ? LEARNING_MEMORY_SCHEMA_MESSAGE
-          : error.message,
-      },
-      { status: 500 }
-    );
+    safeConsoleError("learning_memory create failed", error, {
+      code: "LEARNING_MEMORY_CREATE_FAILED",
+    });
+    return NextResponse.json(learningMemoryClientError(error), { status: 500 });
   }
 
   void writeAuditEvent({
@@ -309,15 +317,10 @@ export async function PATCH(request) {
       .maybeSingle();
 
     if (error) {
-      console.error(error);
-      return NextResponse.json(
-        {
-          error: isLearningMemorySchemaError(error)
-            ? LEARNING_MEMORY_SCHEMA_MESSAGE
-            : error.message,
-        },
-        { status: 500 }
-      );
+      safeConsoleError("learning_memory update failed", error, {
+        code: "LEARNING_MEMORY_UPDATE_FAILED",
+      });
+      return NextResponse.json(learningMemoryClientError(error), { status: 500 });
     }
 
     void writeAuditEvent({
@@ -362,7 +365,9 @@ export async function PATCH(request) {
         results.push({ id, increment, skipped: true });
         continue;
       }
-      console.error(readError);
+      safeConsoleError("learning_memory usage read failed", readError, {
+        code: "LEARNING_MEMORY_USAGE_FAILED",
+      });
       continue;
     }
 
@@ -379,7 +384,9 @@ export async function PATCH(request) {
         results.push({ id, increment, skipped: true });
         continue;
       }
-      console.error(updateError);
+      safeConsoleError("learning_memory usage update failed", updateError, {
+        code: "LEARNING_MEMORY_USAGE_FAILED",
+      });
       continue;
     }
 

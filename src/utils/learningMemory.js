@@ -1,3 +1,8 @@
+import {
+  safeConsoleError,
+  safeErrorMessage,
+} from "@/src/lib/security/redact";
+
 export async function fetchLearningMemoryForCompany(companyId, options = {}) {
   const result = await fetchLearningMemoryForCompanyDetailed(companyId, options);
   return result.data || [];
@@ -24,17 +29,21 @@ export async function fetchLearningMemoryForCompanyDetailed(companyId, options =
 
     if (!response.ok) {
       const error = await readLearningMemoryError(response);
-      console.error("learning_memory fetch failed", error);
+      safeConsoleError("learning_memory fetch failed", null, {
+        code: "LEARNING_MEMORY_FETCH_FAILED",
+      });
       return { data: [], error };
     }
 
     const payload = await response.json();
     return { data: normalizeLearningMemoryList(payload), error: null };
   } catch (error) {
-    console.error("learning_memory fetch failed", error);
+    safeConsoleError("learning_memory fetch failed", error, {
+      code: "LEARNING_MEMORY_FETCH_FAILED",
+    });
     return {
       data: [],
-      error: error?.message || "Kayıtlar yüklenemedi.",
+      error: safeErrorMessage(error, "Kayıtlar yüklenemedi."),
     };
   }
 }
@@ -49,10 +58,15 @@ function normalizeLearningMemoryList(payload) {
 async function readLearningMemoryError(response) {
   try {
     const payload = await response.json();
-    return payload?.error || response.statusText || "Kayıtlar yüklenemedi.";
+    if (payload?.code === "LEARNING_MEMORY_SCHEMA") {
+      return payload?.error || "Öğrenen hafıza şeması güncel değil.";
+    }
+    return safeErrorMessage(
+      { message: payload?.error || response.statusText },
+      "Kayıtlar yüklenemedi."
+    );
   } catch {
-    const text = await response.text().catch(() => "");
-    return text || response.statusText || "Kayıtlar yüklenemedi.";
+    return "Kayıtlar yüklenemedi.";
   }
 }
 
@@ -71,17 +85,21 @@ export async function fetchAllLearningMemory(options = {}) {
 
     if (!response.ok) {
       const error = await readLearningMemoryError(response);
-      console.error("learning_memory fetch failed", error);
+      safeConsoleError("learning_memory fetch failed", null, {
+        code: "LEARNING_MEMORY_FETCH_FAILED",
+      });
       return { data: [], error };
     }
 
     const payload = await response.json();
     return { data: normalizeLearningMemoryList(payload), error: null };
   } catch (error) {
-    console.error("learning_memory fetch failed", error);
+    safeConsoleError("learning_memory fetch failed", error, {
+      code: "LEARNING_MEMORY_FETCH_FAILED",
+    });
     return {
       data: [],
-      error: error?.message || "Kayıtlar yüklenemedi.",
+      error: safeErrorMessage(error, "Kayıtlar yüklenemedi."),
     };
   }
 }
@@ -102,17 +120,21 @@ export async function createLearningMemoryRecordDetailed(record) {
 
     if (!response.ok) {
       const error = await readLearningMemoryError(response);
-      console.error("learning_memory create failed", error);
+      safeConsoleError("learning_memory create failed", null, {
+        code: "LEARNING_MEMORY_CREATE_FAILED",
+      });
       return { data: null, error };
     }
 
     const payload = await response.json();
     return { data: payload.data || null, error: null };
   } catch (error) {
-    console.error("learning_memory create failed", error);
+    safeConsoleError("learning_memory create failed", error, {
+      code: "LEARNING_MEMORY_CREATE_FAILED",
+    });
     return {
       data: null,
-      error: error?.message || "Kayıt oluşturulamadı.",
+      error: safeErrorMessage(error, "Kayıt oluşturulamadı."),
     };
   }
 }
@@ -135,17 +157,21 @@ export async function updateLearningMemoryRecordDetailed(id, fields) {
 
     if (!response.ok) {
       const error = await readLearningMemoryError(response);
-      console.error("learning_memory record update failed", error);
+      safeConsoleError("learning_memory record update failed", null, {
+        code: "LEARNING_MEMORY_UPDATE_FAILED",
+      });
       return { ok: false, error };
     }
 
     const payload = await response.json().catch(() => ({}));
     return { ok: true, data: payload?.data || null, error: null };
   } catch (error) {
-    console.error("learning_memory record update failed", error);
+    safeConsoleError("learning_memory record update failed", error, {
+      code: "LEARNING_MEMORY_UPDATE_FAILED",
+    });
     return {
       ok: false,
-      error: error?.message || "Kayıt güncellenemedi.",
+      error: safeErrorMessage(error, "Kayıt güncellenemedi."),
     };
   }
 }
@@ -160,13 +186,17 @@ export async function deleteLearningMemoryRecord(id) {
     );
 
     if (!response.ok) {
-      console.error("learning_memory delete failed", await response.text());
+      safeConsoleError("learning_memory delete failed", null, {
+        code: "LEARNING_MEMORY_DELETE_FAILED",
+      });
       return false;
     }
 
     return true;
   } catch (error) {
-    console.error("learning_memory delete failed", error);
+    safeConsoleError("learning_memory delete failed", error, {
+      code: "LEARNING_MEMORY_DELETE_FAILED",
+    });
     return false;
   }
 }
@@ -194,9 +224,13 @@ export async function recordLearningMemoryUsage(rows = []) {
     });
 
     if (!response.ok) {
-      console.error("learning_memory usage update failed", await response.text());
+      safeConsoleError("learning_memory usage update failed", null, {
+        code: "LEARNING_MEMORY_USAGE_FAILED",
+      });
     }
   } catch (error) {
-    console.error("learning_memory usage update failed", error);
+    safeConsoleError("learning_memory usage update failed", error, {
+      code: "LEARNING_MEMORY_USAGE_FAILED",
+    });
   }
 }

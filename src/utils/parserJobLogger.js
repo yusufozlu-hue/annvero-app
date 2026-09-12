@@ -6,29 +6,52 @@ import {
   SYSTEM_ERROR_TYPES,
 } from "@/src/utils/systemLogEngine";
 import { subscribeParserEvents } from "@/src/utils/workerParserBridge";
+import {
+  resolveSafeErrorCode,
+  safeUiMessageForCode,
+} from "@/src/lib/security/redact";
+
+function safeParserMeta(meta = {}) {
+  return {
+    jobType: meta.jobType || "",
+    module: meta.module || "",
+    errorType: meta.errorType || "",
+    source: meta.source || "",
+    reason: meta.reason || "",
+  };
+}
 
 export function logParserJobCancelled(meta = {}) {
   return logOperationalEvent({
     module: meta.module || "Parser Worker",
-    message: meta.message || "Parser işlemi kullanıcı tarafından iptal edildi.",
+    message: safeUiMessageForCode("PARSER_CANCELLED", "İşlem iptal edildi."),
     level: "info",
-    companyId: meta.companyId || "",
-    companyName: meta.companyName || "",
-    fileName: meta.fileName || "",
+    companyId: "",
+    companyName: "",
+    fileName: "",
     errorType: SYSTEM_ERROR_TYPES.UNEXPECTED,
-    technicalDetail: { reason: meta.reason || "user", jobType: meta.jobType || "" },
+    technicalDetail: {
+      code: "PARSER_CANCELLED",
+      reason: meta.reason || "user",
+      jobType: meta.jobType || "",
+      stage: "PARSER",
+    },
     suggestion: "Gerekirse işlemi yeniden başlatın.",
   });
 }
 
 export function logParserJobTimeout(meta = {}) {
   return logParserError(
-    meta.message || "Parser işlemi zaman aşımına uğradı.",
-    { jobType: meta.jobType || "", fileName: meta.fileName || "" },
-    meta.companyId || "",
+    safeUiMessageForCode("PARSER_TIMEOUT", "İşlem zaman aşımına uğradı."),
     {
-      companyName: meta.companyName || "",
-      fileName: meta.fileName || "",
+      code: "PARSER_TIMEOUT",
+      jobType: meta.jobType || "",
+      stage: "PARSER",
+    },
+    "",
+    {
+      companyName: "",
+      fileName: "",
       errorType: SYSTEM_ERROR_TYPES.TIMEOUT,
       module: meta.module || "Parser Worker",
       suggestion: "Dosyayı küçültün veya daha sonra tekrar deneyin.",
@@ -37,30 +60,37 @@ export function logParserJobTimeout(meta = {}) {
 }
 
 export function logParserJobError(error, meta = {}) {
-  const message = error?.message || String(error || "Parser hatası");
+  const code = resolveSafeErrorCode(error, "PARSER_FAILED");
+  const message = safeUiMessageForCode(code, "İşlem tamamlanamadı.");
   const source = meta.source || "parser";
+  const detail = {
+    code,
+    jobType: meta.jobType || "",
+    stage: "PARSER",
+    ...safeParserMeta(meta),
+  };
 
   if (source === "xml") {
-    return logXmlError(message, { stack: error?.stack, jobType: meta.jobType }, meta.companyId, {
-      fileName: meta.fileName || "",
-      companyName: meta.companyName || "",
+    return logXmlError(message, detail, "", {
+      fileName: "",
+      companyName: "",
       errorType: meta.errorType || SYSTEM_ERROR_TYPES.CORRUPT_XML,
       module: meta.module || "XML / e-Defter",
     });
   }
 
   if (source === "excel") {
-    return logExcelError(message, { stack: error?.stack, jobType: meta.jobType }, meta.companyId, {
-      fileName: meta.fileName || "",
-      companyName: meta.companyName || "",
+    return logExcelError(message, detail, "", {
+      fileName: "",
+      companyName: "",
       errorType: meta.errorType || SYSTEM_ERROR_TYPES.CORRUPT_EXCEL,
       module: meta.module || "Excel İşleme",
     });
   }
 
-  return logParserError(message, { stack: error?.stack, jobType: meta.jobType }, meta.companyId, {
-    fileName: meta.fileName || "",
-    companyName: meta.companyName || "",
+  return logParserError(message, detail, "", {
+    fileName: "",
+    companyName: "",
     errorType: meta.errorType || SYSTEM_ERROR_TYPES.UNEXPECTED,
     module: meta.module || "Parser Worker",
   });

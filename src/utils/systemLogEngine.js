@@ -3,6 +3,7 @@ import {
   N8N_AUTOMATION_LOGS_STORAGE_KEY,
 } from "@/src/config/n8nOtomasyonDefaults";
 import { AI_OFIS_HISTORY_STORAGE_KEY } from "@/src/config/aiOfisAsistaniDefaults";
+import { toSafeOperationalDetail } from "@/src/lib/security/redact";
 
 export const SYSTEM_LOG_STORAGE_KEY = "annvero_system_logs_v1";
 export const SYSTEM_LOG_DEDUPE_STORAGE_KEY = "annvero_system_log_dedupe_v1";
@@ -21,14 +22,22 @@ function safeParseJson(value, fallback) {
   }
 }
 
+/** Fail-closed: allowlist dışı / stringify hatasında ham payload yazılmaz. */
 function normalizeDetail(detail) {
-  if (detail == null) return "";
-  if (typeof detail === "string") return detail;
+  if (detail == null || detail === "") return "";
   try {
-    return JSON.stringify(detail);
+    const safe = toSafeOperationalDetail(detail);
+    if (safe == null || safe === "") return "";
+    if (typeof safe === "string") return safe;
+    return JSON.stringify(safe);
   } catch {
-    return String(detail);
+    return JSON.stringify({ code: "UNEXPECTED_ERROR" });
   }
+}
+
+/** Test-only — production callers use normalizeDetail via append path. */
+export function normalizeDetailForTests(detail) {
+  return normalizeDetail(detail);
 }
 
 function buildLogRecord(entry = {}) {
@@ -425,7 +434,7 @@ export function logOperationalEvent({
   companyName = "",
   fileName = "",
   userId = "",
-  operationType = "",
+  operationType: _operationType = "",
   detail = "",
   technicalDetail = "",
   suggestion = "",
@@ -433,6 +442,7 @@ export function logOperationalEvent({
   errorType = "",
   retryable = false,
 } = {}) {
+  void _operationType;
   return logSystemError({
     module,
     message,
