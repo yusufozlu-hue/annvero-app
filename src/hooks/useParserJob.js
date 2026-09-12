@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cancelActiveParseJob } from "@/src/utils/workerParserBridge";
 import { logParserJobCancelled } from "@/src/utils/parserJobLogger";
+import {
+  resolveSafeErrorCode,
+  safeUiMessageForCode,
+} from "@/src/lib/security/redact";
 
 const IDLE_STATE = {
   status: "idle",
@@ -84,13 +88,14 @@ export function useParserJob({
   const markError = useCallback(
     (error) => {
       clearWarningTimer();
+      const code = resolveSafeErrorCode(error, "UNEXPECTED_ERROR");
       setState({
         status: "error",
         percent: 0,
         stage: "Hata",
         detail: "",
         timeoutWarning: false,
-        error: error?.message || String(error || "İşlem başarısız."),
+        error: safeUiMessageForCode(code, "İşlem başarısız."),
       });
     },
     [clearWarningTimer]

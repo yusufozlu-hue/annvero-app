@@ -2,6 +2,12 @@
  * Worker-ready parser bridge with progress events, cancel, timeout and logging hooks.
  */
 
+import {
+  resolveWorkerProtocolCode,
+  safeConsoleError,
+  safeUiMessageForCode,
+} from "@/src/lib/security/redact";
+
 const parseQueue = [];
 let processing = false;
 let activeJob = null;
@@ -163,7 +169,7 @@ function emit(event = {}) {
     try {
       listener(event);
     } catch (error) {
-      console.error("[parser-bridge] listener error", error);
+      safeConsoleError("[parser-bridge] listener error", error);
     }
   });
 }
@@ -418,20 +424,11 @@ export function serializeWorkerErrorEvent(errorEvent) {
   };
 }
 
-function formatWorkerLoadFailureMessage(detail) {
-  const parts = [
-    detail.message,
-    detail.errorMessage && detail.errorMessage !== detail.message
-      ? detail.errorMessage
-      : null,
-    detail.errorName ? `name=${detail.errorName}` : null,
-    detail.filename ? `file=${detail.filename}` : null,
-    Number.isFinite(detail.lineno) ? `line=${detail.lineno}` : null,
-    Number.isFinite(detail.colno) ? `col=${detail.colno}` : null,
-  ].filter(Boolean);
-
-  if (parts.length > 0) return parts.join(" | ");
-  return "Worker modülü yüklenemedi (URL/bundle çözümleme hatası). Ana thread fallback kullanılacak.";
+function formatWorkerLoadFailureMessage() {
+  return safeUiMessageForCode(
+    "WORKER_ONERROR",
+    "Worker modülü yüklenemedi. Ana thread fallback kullanılacak."
+  );
 }
 
 function makeWorkerRequestId() {
@@ -723,12 +720,15 @@ export function runParserWorker({
             );
             return;
           }
-          const errorText =
-            message.errorMessage || message.error || "Parser başarısız.";
-          const err = new Error(errorText);
-          err.code =
-            message.errorCode || message.code || "WORKER_PARSE_FAILED";
-          err.phase = message.phase || message.stage || null;
+          const code = resolveWorkerProtocolCode(
+            message.errorCode || message.code,
+            "WORKER_PARSE_FAILED"
+          );
+          const err = new Error(
+            safeUiMessageForCode(code, "Analiz tamamlanamadı. Lütfen tekrar deneyin.")
+          );
+          err.code = code;
+          err.phase = null;
           job.finish("reject", err);
         };
 
@@ -739,7 +739,7 @@ export function runParserWorker({
             type: detail.type,
             errorName: detail.errorName,
           });
-          const err = new Error(formatWorkerLoadFailureMessage(detail));
+          const err = new Error(formatWorkerLoadFailureMessage());
           err.code = "WORKER_ONERROR";
           job.finish("reject", err);
         };

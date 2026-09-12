@@ -1789,12 +1789,11 @@ export function buildParserOnlyMovements(parsedRows = [], context = {}) {
 export function mapSingleParsedRowToMovement(row, context, index = 0) {
   try {
     return mapParsedRowToStandardMovement(row, context);
-  } catch (error) {
+  } catch {
     const description = String(row?.aciklama || row?.description || "").trim();
     console.error("[bankMovementMapper] row failed", {
+      code: "BANK_ROW_MAP_FAILED",
       index: index + 1,
-      description,
-      error: error?.message || String(error),
     });
     return {
       id: `fallback-${index + 1}-${Date.now()}`,
@@ -1809,7 +1808,7 @@ export function mapSingleParsedRowToMovement(row, context, index = 0) {
       counterAccountCode: "",
       documentType: "DK",
       lucaDescription: description,
-      warning: `Satır ${index + 1}: Hesap eşleşmesi bulunamadı (${error?.message || "mapping hatası"})`,
+      warning: `Satır ${index + 1}: Hesap eşleşmesi bulunamadı`,
       matchedMemoryId: null,
       accountSuggestions: [],
       accountPlanMissing: null,

@@ -52,11 +52,17 @@ self.onmessage = async (event) => {
     if (error?.name !== "AbortError") {
       // İçerik loglanmaz
     }
+    const aborted = error?.name === "AbortError";
+    const code = aborted
+      ? "FIS_KONTROL_CANCELLED"
+      : "FIS_KONTROL_ANALYZE_FAILED";
     self.postMessage({
       type: "error",
       ...identity,
-      error: error?.message || "Fiş kontrol analizi başarısız.",
-      code: error?.name === "AbortError" ? "ABORTED" : "ERROR",
+      error: aborted
+        ? "Fiş kontrolü iptal edildi."
+        : "Fiş kontrolü tamamlanamadı.",
+      code,
     });
   }
 };
