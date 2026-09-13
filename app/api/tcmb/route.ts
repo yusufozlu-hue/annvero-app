@@ -3,6 +3,7 @@ import { requireApiSession } from "@/src/lib/auth/apiGuard";
 import { enforceDurableRateLimit } from "@/src/lib/security/rateLimitDurable";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/src/lib/security/requestId";
 import { applyCorsHeaders } from "@/src/lib/security/cors";
+import { getServerSupabaseAdmin } from "@/src/lib/supabase/serverAdmin";
 
 const ALLOWED_DOVIZ = new Set(["USD", "EUR", "GBP", "CHF", "JPY", "SAR", "AUD", "CAD", "SEK", "NOK", "DKK"]);
 
@@ -48,11 +49,13 @@ export async function GET(req: Request) {
     return session.error;
   }
 
+  const supabase = getServerSupabaseAdmin({ requireServiceRole: true });
   const rateLimited = await enforceDurableRateLimit(
     req,
     session,
     "tcmb:kur",
-    { limit: 60, windowMs: 300_000 }
+    { limit: 60, windowMs: 300_000 },
+    { supabase }
   );
   if (rateLimited) {
     rateLimited.headers.set(REQUEST_ID_HEADER, requestId);
