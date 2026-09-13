@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import CompanySelectOptions from "../components/CompanySelectOptions";
@@ -409,6 +409,8 @@ export default function FisDonusturmePage() {
 
   const [standardLucaRows, setStandardLucaRows] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const exportBusyRef = useRef(false);
   const [pipelineError, setPipelineError] = useState("");
 
   const [previewSearch, setPreviewSearch] = useState("");
@@ -849,91 +851,112 @@ export default function FisDonusturmePage() {
     }
   };
 
+  const withExportGuard = (action) => {
+    if (exportBusyRef.current) return;
+    exportBusyRef.current = true;
+    setIsExporting(true);
+    try {
+      action();
+    } finally {
+      // Sync writeFile biter bitmez kilidi açma: çift tıklama ikinci export başlatmasın.
+      window.setTimeout(() => {
+        exportBusyRef.current = false;
+        setIsExporting(false);
+      }, 400);
+    }
+  };
+
   const exportLucaExcel = () => {
-    if (!standardLucaRows.length) {
-      showToast("Önce dönüştürme yapın.", "error");
-      return;
-    }
+    withExportGuard(() => {
+      if (!standardLucaRows.length) {
+        showToast("Önce dönüştürme yapın.", "error");
+        return;
+      }
 
-    const prefix = (sourceMeta.label || "fis")
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, "");
+      const prefix = (sourceMeta.label || "fis")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
 
-    const prepared = prepareFisDonusturmeLucaExcelFiles({
-      rows: standardLucaRows,
-      sourceType,
-      filePrefix: prefix,
-      chunkSize: 50,
-    });
-
-    if (!prepared.ok) {
-      showToast(prepared.message || "Luca Excel oluşturulamadı.", "error");
-      return;
-    }
-
-    for (const file of prepared.files) {
-      const worksheet = XLSX.utils.json_to_sheet(file.excelRows, {
-        header: file.headers,
+      const prepared = prepareFisDonusturmeLucaExcelFiles({
+        rows: standardLucaRows,
+        sourceType,
+        filePrefix: prefix,
+        chunkSize: 50,
       });
-      enforceLucaExportDateStrings(worksheet, ["Fiş Tarihi", "Evrak Tarihi"]);
 
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Luca Fişleri");
-      XLSX.writeFile(workbook, file.fileName);
-    }
+      if (!prepared.ok) {
+        showToast(prepared.message || "Luca Excel oluşturulamadı.", "error");
+        return;
+      }
 
-    if (prepared.files.length > 1) {
-      showToast(
-        `${prepared.files.length} adet Luca Excel dosyası oluşturuldu.`,
-        "success"
-      );
-    }
+      for (const file of prepared.files) {
+        const worksheet = XLSX.utils.json_to_sheet(file.excelRows, {
+          header: file.headers,
+        });
+        enforceLucaExportDateStrings(worksheet, ["Fiş Tarihi", "Evrak Tarihi"]);
+
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "Luca Fişleri");
+        XLSX.writeFile(workbook, file.fileName);
+      }
+
+      if (prepared.files.length > 1) {
+        showToast(
+          `${prepared.files.length} adet Luca Excel dosyası oluşturuldu.`,
+          "success"
+        );
+      }
+    });
   };
 
   const exportControlReport = () => {
-    if (!standardLucaRows.length) {
-      showToast("Önce dönüştürme yapın.", "error");
-      return;
-    }
+    withExportGuard(() => {
+      if (!standardLucaRows.length) {
+        showToast("Önce dönüştürme yapın.", "error");
+        return;
+      }
 
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(
-      workbook,
-      XLSX.utils.json_to_sheet(buildFisKontrolExcelRows(analysis)),
-      "Kontrol"
-    );
-    XLSX.utils.book_append_sheet(
-      workbook,
-      XLSX.utils.json_to_sheet(buildFisKontrolIssueExcelRows(analysis)),
-      "Bulgular"
-    );
-    XLSX.writeFile(workbook, "kontrol_raporu.xlsx");
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.json_to_sheet(buildFisKontrolExcelRows(analysis)),
+        "Kontrol"
+      );
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.json_to_sheet(buildFisKontrolIssueExcelRows(analysis)),
+        "Bulgular"
+      );
+      XLSX.writeFile(workbook, "kontrol_raporu.xlsx");
+    });
   };
 
   const exportErrorReport = () => {
-    if (!standardLucaRows.length) {
-      showToast("Önce dönüştürme yapın.", "error");
-      return;
-    }
+    withExportGuard(() => {
+      if (!standardLucaRows.length) {
+        showToast("Önce dönüştürme yapın.", "error");
+        return;
+      }
 
-    const errorAnalysis = {
-      issues: analysis.issues.filter(
-        (issue) => issue.seviye === KONTROL_SEVIYE.HATA
-      ),
-    };
+      const errorAnalysis = {
+        issues: analysis.issues.filter(
+          (issue) => issue.seviye === KONTROL_SEVIYE.HATA
+        ),
+      };
 
-    if (!errorAnalysis.issues.length) {
-      showToast("Hata seviyesinde kayıt bulunamadı.", "success");
-      return;
-    }
+      if (!errorAnalysis.issues.length) {
+        showToast("Hata seviyesinde kayıt bulunamadı.", "success");
+        return;
+      }
 
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(
-      workbook,
-      XLSX.utils.json_to_sheet(buildFisKontrolIssueExcelRows(errorAnalysis)),
-      "Hatalar"
-    );
-    XLSX.writeFile(workbook, "hata_raporu.xlsx");
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.json_to_sheet(buildFisKontrolIssueExcelRows(errorAnalysis)),
+        "Hatalar"
+      );
+      XLSX.writeFile(workbook, "hata_raporu.xlsx");
+    });
   };
 
   const handleTransferToLuca = async () => {
@@ -992,8 +1015,11 @@ export default function FisDonusturmePage() {
           maximumFractionDigits: 2,
         });
 
+  const canExport = standardLucaRows.length > 0;
+  const exportActionsDisabled = !canExport || isExporting;
+
   return (
-    <main className="relative min-h-screen bg-gray-950 p-6 text-white sm:p-8">
+    <main className="relative min-h-screen overflow-x-hidden bg-gray-950 p-6 text-white sm:p-8">
       {toast && (
         <div
           role="status"
@@ -1013,7 +1039,7 @@ export default function FisDonusturmePage() {
         </div>
       )}
 
-      <div className="mx-auto max-w-[1800px]">
+      <div className="mx-auto w-full max-w-[1800px] min-w-0">
         <header className="mb-6">
           <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
             Fiş Dönüştürme Merkezi
@@ -1037,9 +1063,9 @@ export default function FisDonusturmePage() {
           ))}
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-[1fr_320px]">
+        <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
           {/* SOL: konfigürasyon + önizleme */}
-          <div className="space-y-6">
+          <div className="min-w-0 space-y-6">
             <section className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
               <h2 className="mb-4 text-xl font-semibold">1. Firma & Kaynak</h2>
 
@@ -1150,16 +1176,33 @@ export default function FisDonusturmePage() {
               )}
             </section>
 
-            <section className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-xl font-semibold">Ön İzleme</h2>
-                <button
-                  type="button"
-                  onClick={addNewRow}
-                  className="rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-950/70"
+            <section className="min-w-0 rounded-2xl border border-gray-800 bg-gray-900 p-4 sm:p-6">
+              <div className="mb-4 flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h2 className="text-xl font-semibold">Ön İzleme</h2>
+                  <button
+                    type="button"
+                    onClick={addNewRow}
+                    className="rounded-lg border border-emerald-700/60 bg-emerald-950/40 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-950/70"
+                  >
+                    + Yeni Satır Ekle
+                  </button>
+                </div>
+                <div
+                  data-testid="fis-donusturme-export-actions-primary"
+                  className="rounded-xl border border-gray-800 bg-gray-950/50 p-3"
                 >
-                  + Yeni Satır Ekle
-                </button>
+                  <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                    Dışa aktar
+                  </p>
+                  <ExportActionsBar
+                    disabled={exportActionsDisabled}
+                    loading={isExporting}
+                    onLucaExcel={exportLucaExcel}
+                    onControlReport={exportControlReport}
+                    onErrorReport={exportErrorReport}
+                  />
+                </div>
               </div>
 
               {standardLucaRows.length === 0 ? (
@@ -1180,7 +1223,7 @@ export default function FisDonusturmePage() {
                     totalCount={standardLucaRows.length}
                   />
 
-                  <div className="mt-4 overflow-auto">
+                  <div className="mt-4 max-w-full overflow-x-auto overscroll-x-contain">
                     <table className="w-full min-w-[1500px] text-sm">
                       <thead className="bg-gray-800">
                         <tr>
@@ -1315,8 +1358,8 @@ export default function FisDonusturmePage() {
             </section>
           </div>
 
-          {/* SAĞ: kontrol özeti + export */}
-          <aside className="space-y-6">
+          {/* SAĞ: kontrol özeti + (yalnız geniş ekranda) export kartı */}
+          <aside className="min-w-0 space-y-6">
             <section className="rounded-2xl border border-gray-800 bg-gray-900 p-5">
               <h2 className="mb-4 text-lg font-semibold">Kontrol Özeti</h2>
 
@@ -1367,36 +1410,70 @@ export default function FisDonusturmePage() {
               </div>
             </section>
 
-            <section className="rounded-2xl border border-gray-800 bg-gray-900 p-5">
+            <section
+              data-testid="fis-donusturme-export-actions-sidebar"
+              className="hidden rounded-2xl border border-gray-800 bg-gray-900 p-5 2xl:block"
+            >
               <h2 className="mb-4 text-lg font-semibold">Dışa Aktar</h2>
-              <div className="flex flex-col gap-3">
-                <button
-                  type="button"
-                  onClick={exportLucaExcel}
-                  className="rounded-xl bg-green-600 px-4 py-2.5 text-sm font-semibold hover:bg-green-700"
-                >
-                  Luca Excel
-                </button>
-                <button
-                  type="button"
-                  onClick={exportControlReport}
-                  className="rounded-xl border border-gray-700 bg-gray-950 px-4 py-2.5 text-sm font-semibold text-gray-200 hover:bg-gray-800"
-                >
-                  Kontrol Raporu
-                </button>
-                <button
-                  type="button"
-                  onClick={exportErrorReport}
-                  className="rounded-xl border border-red-700/60 bg-red-950/30 px-4 py-2.5 text-sm font-semibold text-red-200 hover:bg-red-950/60"
-                >
-                  Hata Raporu
-                </button>
-              </div>
+              <ExportActionsBar
+                layout="stack"
+                disabled={exportActionsDisabled}
+                loading={isExporting}
+                onLucaExcel={exportLucaExcel}
+                onControlReport={exportControlReport}
+                onErrorReport={exportErrorReport}
+              />
             </section>
           </aside>
         </div>
       </div>
     </main>
+  );
+}
+
+function ExportActionsBar({
+  disabled = false,
+  loading = false,
+  onLucaExcel,
+  onControlReport,
+  onErrorReport,
+  layout = "responsive",
+}) {
+  const stackClass =
+    layout === "stack"
+      ? "flex flex-col gap-3"
+      : "flex flex-col gap-2 sm:flex-row sm:flex-wrap";
+
+  return (
+    <div className={stackClass}>
+      <button
+        type="button"
+        onClick={onLucaExcel}
+        disabled={disabled}
+        aria-busy={loading || undefined}
+        className="rounded-xl bg-green-600 px-4 py-2.5 text-sm font-semibold hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {loading ? "Oluşturuluyor..." : "Luca Excel"}
+      </button>
+      <button
+        type="button"
+        onClick={onControlReport}
+        disabled={disabled}
+        aria-busy={loading || undefined}
+        className="rounded-xl border border-gray-700 bg-gray-950 px-4 py-2.5 text-sm font-semibold text-gray-200 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {loading ? "Oluşturuluyor..." : "Kontrol Raporu"}
+      </button>
+      <button
+        type="button"
+        onClick={onErrorReport}
+        disabled={disabled}
+        aria-busy={loading || undefined}
+        className="rounded-xl border border-red-700/60 bg-red-950/30 px-4 py-2.5 text-sm font-semibold text-red-200 hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {loading ? "Oluşturuluyor..." : "Hata Raporu"}
+      </button>
+    </div>
   );
 }
 
