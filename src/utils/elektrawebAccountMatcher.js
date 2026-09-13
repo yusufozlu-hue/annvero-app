@@ -392,65 +392,32 @@ function getDefaultAccountByBelgeTuru(belgeTuru, accountingRules = {}) {
   return "";
 }
 
-export function matchAccountCode(
+function mergeKontrolNotu(...parts) {
+  const seen = new Set();
+  const out = [];
+  for (const part of parts) {
+    for (const piece of String(part || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)) {
+      if (seen.has(piece)) continue;
+      seen.add(piece);
+      out.push(piece);
+    }
+  }
+  return out.join(", ");
+}
+
+function findAutoMatchCandidate(
   row,
-  selectedCompanyAccountPlan = [],
-  learningMemory = [],
-  companyMappings = {}
+  accountPlan,
+  learningMemory,
+  companyMappings,
+  debug
 ) {
-  const accountPlan = normalizeAccountPlanForMatching(selectedCompanyAccountPlan);
-  const debug = buildRowDebug(row, accountPlan);
   const combinedText = buildElektrawebCombinedSearchText(row);
   const searchCandidates = collectElektrawebSearchCandidates(row);
   const employees = companyMappings.employees || [];
-
-  if (!accountPlan.length) {
-    return buildMatchFailure(debug, "hesap_plani_yuklu_degil");
-  }
-
-  if (row.manuallyEdited && String(row.hesapKodu || "").trim()) {
-    return buildMatchSuccess({
-      hesapKodu: String(row.hesapKodu).trim(),
-      eslesmeYontemi: row.eslesmeYontemi || ESLESME_YONTEMI.MANUEL,
-      hafizaEslesme: Boolean(row.hafizaEslesme),
-      kontrolNotu: String(row.kontrolNotu || "").trim(),
-      debug,
-    });
-  }
-
-  // Faz 4: doğrulanmış accountingDecision → yeniden keyword/kural/cari çözümü yok
-  if (
-    shouldSkipOutputResolveTrusted(row, {
-      companyId: companyMappings.companyId || row.firmaId || "",
-      firmaId: companyMappings.companyId || row.firmaId || "",
-    })
-  ) {
-    const frozenCode = String(
-      row.hesapKodu || row.accountingDecision?.accountCode || ""
-    ).trim();
-    if (frozenCode) {
-      return buildMatchSuccess({
-        hesapKodu: frozenCode,
-        eslesmeYontemi: row.eslesmeYontemi || "accounting_decision",
-        hafizaEslesme: Boolean(row.hafizaEslesme),
-        kontrolNotu: String(row.kontrolNotu || "").trim(),
-        debug,
-      });
-    }
-    if (row.accountingDecision?.requiresReview) {
-      return buildMatchFailure(debug, "accounting_decision_requires_review");
-    }
-  }
-
-  const existingCode = String(row.hesapKodu || "").trim();
-  if (existingCode && accountExistsInPlan(accountPlan, existingCode)) {
-    return buildMatchSuccess({
-      hesapKodu: existingCode,
-      eslesmeYontemi: "Excel",
-      kontrolNotu: String(row.kontrolNotu || "").trim(),
-      debug,
-    });
-  }
 
   const memoryMatch = findLearningMemoryAccount(
     learningMemory,
@@ -561,11 +528,7 @@ export function matchAccountCode(
     );
   }
 
-  const smmMatch = findSmmPersonMatch(
-    accountPlan,
-    combinedText,
-    employees
-  );
+  const smmMatch = findSmmPersonMatch(accountPlan, combinedText, employees);
   if (smmMatch?.found && smmMatch.code) {
     return applyRuleOverlayToMatch(
       buildMatchSuccess({
@@ -591,10 +554,7 @@ export function matchAccountCode(
     );
   }
 
-  const containsCode = findPlanContainsMatch(
-    accountPlan,
-    searchCandidates
-  );
+  const containsCode = findPlanContainsMatch(accountPlan, searchCandidates);
   if (containsCode) {
     return applyRuleOverlayToMatch(
       buildMatchSuccess({
@@ -624,28 +584,189 @@ export function matchAccountCode(
   }
 
   if (noterMatch && noterMatch.found === false) {
-    return applyRuleOverlayToMatch(buildMatchFailure(debug, "noter_hesabi_bulunamadi"), ruleOverlay);
+    return applyRuleOverlayToMatch(
+      buildMatchFailure(debug, "noter_hesabi_bulunamadi"),
+      ruleOverlay
+    );
   }
 
   if (smmMatch && smmMatch.found === false) {
-    return applyRuleOverlayToMatch(buildMatchFailure(debug, "smm_hesabi_bulunamadi"), ruleOverlay);
+    return applyRuleOverlayToMatch(
+      buildMatchFailure(debug, "smm_hesabi_bulunamadi"),
+      ruleOverlay
+    );
   }
 
-  return applyRuleOverlayToMatch(buildMatchFailure(debug, "eslesme_bulunamadi"), ruleOverlay);
+  return applyRuleOverlayToMatch(
+    buildMatchFailure(debug, "eslesme_bulunamadi"),
+    ruleOverlay
+  );
+}
+
+function buildProtectedSourceMatch({
+  kaynakCode,
+  inPlan,
+  suggestion,
+  existingKontrolNotu,
+  debug,
+}) {
+  const suggestionCode = String(suggestion?.hesapKodu || "").trim();
+  const suggestionMethod = String(suggestion?.eslesmeYontemi || "").trim();
+  const hasSuggestion =
+    Boolean(suggestionCode) &&
+    compactAccount(suggestionCode) !== compactAccount(kaynakCode);
+
+  const kontrolNotu = inPlan
+    ? String(existingKontrolNotu || "").trim()
+    : mergeKontrolNotu(existingKontrolNotu, "Hesap planında yok");
+
+  return {
+    hesapKodu: kaynakCode,
+    eslesmeYontemi: "Excel",
+    kontrolNotu,
+    riskDurumu: inPlan ? "" : "HESAP_EKSIK",
+    hafizaEslesme: false,
+    hesapEslesmeNotlari: [],
+    onerilenHesapKodu: hasSuggestion ? suggestionCode : "",
+    onerilenEslesmeYontemi: hasSuggestion ? suggestionMethod : "",
+    accountSuggestions: hasSuggestion
+      ? [
+          {
+            code: suggestionCode,
+            method: suggestionMethod,
+            note: String(suggestion?.kontrolNotu || "").trim(),
+          },
+        ]
+      : [],
+    debug: {
+      ...debug,
+      bulunanHesapKodu: kaynakCode,
+      eslesmeYontemi: "Excel",
+      nedenBos: inPlan ? "" : "kaynak_hesap_planda_yok",
+      onerilenHesapKodu: hasSuggestion ? suggestionCode : "",
+    },
+  };
+}
+
+export function matchAccountCode(
+  row,
+  selectedCompanyAccountPlan = [],
+  learningMemory = [],
+  companyMappings = {}
+) {
+  const accountPlan = normalizeAccountPlanForMatching(selectedCompanyAccountPlan);
+  const debug = buildRowDebug(row, accountPlan);
+
+  if (!accountPlan.length) {
+    return buildMatchFailure(debug, "hesap_plani_yuklu_degil");
+  }
+
+  if (row.manuallyEdited && String(row.hesapKodu || "").trim()) {
+    return buildMatchSuccess({
+      hesapKodu: String(row.hesapKodu).trim(),
+      eslesmeYontemi: row.eslesmeYontemi || ESLESME_YONTEMI.MANUEL,
+      hafizaEslesme: Boolean(row.hafizaEslesme),
+      kontrolNotu: String(row.kontrolNotu || "").trim(),
+      debug,
+    });
+  }
+
+  // Faz 4: doğrulanmış accountingDecision → yeniden keyword/kural/cari çözümü yok
+  if (
+    shouldSkipOutputResolveTrusted(row, {
+      companyId: companyMappings.companyId || row.firmaId || "",
+      firmaId: companyMappings.companyId || row.firmaId || "",
+    })
+  ) {
+    const frozenCode = String(
+      row.hesapKodu || row.accountingDecision?.accountCode || ""
+    ).trim();
+    if (frozenCode) {
+      return buildMatchSuccess({
+        hesapKodu: frozenCode,
+        eslesmeYontemi: row.eslesmeYontemi || "accounting_decision",
+        hafizaEslesme: Boolean(row.hafizaEslesme),
+        kontrolNotu: String(row.kontrolNotu || "").trim(),
+        debug,
+      });
+    }
+    if (row.accountingDecision?.requiresReview) {
+      return buildMatchFailure(debug, "accounting_decision_requires_review");
+    }
+  }
+
+  const kaynakCode = String(row.kaynakHesapKodu || "").trim();
+
+  // Dolu Excel kaynağı: asla sessiz remap; plan dışıysa kod görünür + HESAP_EKSIK
+  if (kaynakCode) {
+    const inPlan = accountExistsInPlan(accountPlan, kaynakCode);
+    const suggestion = inPlan
+      ? null
+      : findAutoMatchCandidate(
+          row,
+          accountPlan,
+          learningMemory,
+          companyMappings,
+          debug
+        );
+    const suggestionOk =
+      suggestion &&
+      String(suggestion.hesapKodu || "").trim() &&
+      !suggestion.riskDurumu;
+
+    return buildProtectedSourceMatch({
+      kaynakCode,
+      inPlan,
+      suggestion: suggestionOk ? suggestion : null,
+      existingKontrolNotu: row.kontrolNotu,
+      debug,
+    });
+  }
+
+  return findAutoMatchCandidate(
+    row,
+    accountPlan,
+    learningMemory,
+    companyMappings,
+    debug
+  );
 }
 
 export function applyMatchResultToRow(row, match) {
+  const kaynakHesapKodu = String(
+    row.kaynakHesapKodu || match.kaynakHesapKodu || ""
+  ).trim();
+  const matchedCode = String(match.hesapKodu || "").trim();
+  const protectedCode =
+    kaynakHesapKodu && !row.manuallyEdited
+      ? kaynakHesapKodu
+      : matchedCode;
+
   return {
     ...row,
-    hesapKodu: match.hesapKodu,
-    kontrolNotu: match.kontrolNotu,
-    riskDurumu: match.riskDurumu || (match.hesapKodu ? "" : "HESAP_EKSIK"),
+    ...(kaynakHesapKodu ? { kaynakHesapKodu } : {}),
+    hesapKodu: protectedCode || matchedCode,
+    kontrolNotu: mergeKontrolNotu(row.kontrolNotu, match.kontrolNotu),
+    riskDurumu:
+      match.riskDurumu ||
+      (protectedCode || matchedCode ? "" : "HESAP_EKSIK"),
     hafizaEslesme: Boolean(match.hafizaEslesme),
     eslesmeYontemi: match.eslesmeYontemi || "",
     hesapEslesmeNotlari: match.hesapEslesmeNotlari || [],
-    ...(match.belgeTuru ? { belgeTuru: match.belgeTuru } : {}),
-    ...(match.fisAciklama ? { fisAciklama: match.fisAciklama } : {}),
-    ...(match.detayAciklama ? { detayAciklama: match.detayAciklama } : {}),
+    onerilenHesapKodu: String(match.onerilenHesapKodu || "").trim(),
+    onerilenEslesmeYontemi: String(match.onerilenEslesmeYontemi || "").trim(),
+    accountSuggestions: Array.isArray(match.accountSuggestions)
+      ? match.accountSuggestions
+      : [],
+    ...(match.belgeTuru && !kaynakHesapKodu
+      ? { belgeTuru: match.belgeTuru }
+      : {}),
+    ...(match.fisAciklama && !kaynakHesapKodu
+      ? { fisAciklama: match.fisAciklama }
+      : {}),
+    ...(match.detayAciklama && !kaynakHesapKodu
+      ? { detayAciklama: match.detayAciklama }
+      : {}),
   };
 }
 

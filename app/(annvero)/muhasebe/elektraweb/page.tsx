@@ -29,6 +29,7 @@ import { loadAccountingRulesFromStorage } from "@/src/utils/accountingRuleEngine
 import {
   buildElektrawebPreviewRows,
   getStandardLucaMissingBadges,
+  assertElektrawebNoHesapEksikForExport,
   logElektrawebPreviewDiagnostics,
   logStandardLucaReport,
   standardLucaRowsToExcelRows,
@@ -66,6 +67,7 @@ export default function ElektrawebPage() {
   const [dengesizFis, setDengesizFis] = useState(0);
   const [aciklamaEksikSatir, setAciklamaEksikSatir] = useState(0);
   const [belgeTuruEksikSatir, setBelgeTuruEksikSatir] = useState(0);
+  const [mukerrerBelgeSayisi, setMukerrerBelgeSayisi] = useState(0);
   const [standardLucaRows, setStandardLucaRows] = useState<any[]>([]);
   const [accountPlans, setAccountPlans] = useState<Record<string, unknown>>({});
   const [learningMemory, setLearningMemory] = useState<any[]>([]);
@@ -277,12 +279,12 @@ export default function ElektrawebPage() {
       logElektrawebPreviewDiagnostics(previewRows, { afterMatching: true });
 
       const unmatchedWithPlan = previewRows.some(
-        (row: any) => !String(row.hesapKodu || "").trim()
+        (row: any) => String(row.riskDurumu || "").trim() === "HESAP_EKSIK"
       );
 
       if (unmatchedWithPlan) {
         showToast(
-          "Bazı satırlarda hesap planında bu açıklamaya uygun hesap bulunamadı",
+          "Bazı satırlarda kaynak hesap Luca planında yok (HESAP_EKSIK)",
           "error"
         );
       }
@@ -295,6 +297,7 @@ export default function ElektrawebPage() {
       setDengesizFis(data.dengesizFis ?? 0);
       setAciklamaEksikSatir(data.aciklamaEksikSatir ?? 0);
       setBelgeTuruEksikSatir(data.belgeTuruEksikSatir ?? 0);
+      setMukerrerBelgeSayisi(data.mukerrerBelgeSayisi ?? 0);
       setStandardLucaRows(previewRows);
       setFiltre("tumu");
     } finally {
@@ -310,6 +313,12 @@ export default function ElektrawebPage() {
 
     if (!selectedCompanyId) {
       alert("Luca aktarımı için önce firma seçmelisin.");
+      return;
+    }
+
+    const hesapGate = assertElektrawebNoHesapEksikForExport(standardLucaRows);
+    if (!hesapGate.ok) {
+      alert(hesapGate.message);
       return;
     }
 
@@ -361,7 +370,7 @@ export default function ElektrawebPage() {
         return false;
       if (filtre === "aciklama" && !f.riskler?.includes("Açıklama boş"))
         return false;
-      if (filtre === "belgeTuru" && !f.riskler?.includes("Belge türü boş"))
+      if (filtre === "belgeTuru" && String(f.belgeTuru || "").trim())
         return false;
 
       if (aramaText) {
@@ -384,6 +393,13 @@ export default function ElektrawebPage() {
   const exportToExcel = (rows: any[]) => {
     if (rows.length === 0) {
       alert("Dışa aktarılacak satır yok.");
+      return;
+    }
+
+    const hesapGate = assertElektrawebNoHesapEksikForExport(rows);
+    if (!hesapGate.ok) {
+      alert(hesapGate.message);
+      setExportAcik(false);
       return;
     }
 
@@ -438,6 +454,14 @@ export default function ElektrawebPage() {
       glow: "from-amber-500/20",
       icon: <TagIcon />,
       iconColor: "text-amber-300",
+    },
+    {
+      label: "Mükerrer Belge",
+      value: mukerrerBelgeSayisi,
+      sub: "benzersiz belge no",
+      glow: "from-orange-500/20",
+      icon: <AlertIcon />,
+      iconColor: "text-orange-300",
     },
     {
       label: "Yüksek Riskli",
@@ -741,12 +765,61 @@ export default function ElektrawebPage() {
                         </td>
                         <td
                           className={`px-2 py-2 font-mono text-[11px] ${
-                            fis.hesapKodu
-                              ? "text-slate-200"
-                              : "font-semibold text-red-400"
+                            fis.riskDurumu === "HESAP_EKSIK"
+                              ? "font-semibold text-amber-300"
+                              : fis.hesapKodu
+                                ? "text-slate-200"
+                                : "font-semibold text-red-400"
                           }`}
                         >
-                          {fis.hesapKodu || "—"}
+                          {(() => {
+                            const kaynak = String(
+                              fis.kaynakHesapKodu || fis.hesapKodu || ""
+                            ).trim();
+                            const hedef = String(fis.hesapKodu || "").trim();
+                            const oneri = String(fis.onerilenHesapKodu || "").trim();
+                            const hasHedef =
+                              Boolean(fis.manuallyEdited) &&
+                              Boolean(hedef) &&
+                              hedef !== kaynak;
+                            const showOneri =
+                              Boolean(oneri) &&
+                              !hasHedef &&
+                              oneri !== kaynak &&
+                              oneri !== hedef;
+
+                            return (
+                              <div className="space-y-0.5 leading-tight">
+                                <div>
+                                  <span className="font-sans text-[9px] font-medium text-slate-500">
+                                    Kaynak{" "}
+                                  </span>
+                                  <span>{kaynak || "—"}</span>
+                                </div>
+                                {hasHedef ? (
+                                  <div>
+                                    <span className="font-sans text-[9px] font-medium text-emerald-400/90">
+                                      Hedef{" "}
+                                    </span>
+                                    <span className="text-emerald-300">{hedef}</span>
+                                  </div>
+                                ) : null}
+                                {showOneri ? (
+                                  <div>
+                                    <span className="font-sans text-[9px] font-medium text-amber-400/90">
+                                      Öneri{" "}
+                                    </span>
+                                    <span className="text-amber-200">
+                                      {oneri}
+                                      {fis.onerilenEslesmeYontemi
+                                        ? ` (${fis.onerilenEslesmeYontemi})`
+                                        : ""}
+                                    </span>
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-2 py-2">
                           <span className="inline-block rounded-md border border-slate-700 bg-slate-800/60 px-1.5 py-0.5 text-[10px] font-medium text-slate-200">

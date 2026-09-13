@@ -75,6 +75,98 @@ function parseWorkbookRows(workbook) {
   });
 }
 
+function normalizeBelgeKey(row) {
+  const belgeNo = String(row.belgeNo || row.evrakNo || "").trim();
+  if (!belgeNo || belgeNo.length <= 5) return "";
+  return belgeNo;
+}
+
+/**
+ * Mükerrer belge: aynı belge no en az iki farklı fişteyse.
+ * Aynı fiş içindeki tekrarlar mükerrer sayılmaz.
+ */
+export function computeMukerrerBelgeAcrossFis(rows = []) {
+  const belgeToFis = new Map();
+
+  for (const row of rows) {
+    const belgeKey = normalizeBelgeKey(row);
+    if (!belgeKey) continue;
+    const fisNo = String(row.fisNo || "");
+    if (!belgeToFis.has(belgeKey)) belgeToFis.set(belgeKey, new Set());
+    belgeToFis.get(belgeKey).add(fisNo);
+  }
+
+  const mukerrerBelgeKeys = new Set();
+  const mukerrerFis = new Set();
+
+  for (const [belgeKey, fisSet] of belgeToFis.entries()) {
+    if (fisSet.size < 2) continue;
+    mukerrerBelgeKeys.add(belgeKey);
+    for (const fisNo of fisSet) mukerrerFis.add(fisNo);
+  }
+
+  return {
+    mukerrerBelgeKeys,
+    mukerrerBelgeSayisi: mukerrerBelgeKeys.size,
+    mukerrerFisSayisi: mukerrerFis.size,
+  };
+}
+
+function attachMukerrerBelgeRisk(rows = []) {
+  const { mukerrerBelgeKeys, mukerrerBelgeSayisi, mukerrerFisSayisi } =
+    computeMukerrerBelgeAcrossFis(rows);
+
+  let mukerrerSatirSayisi = 0;
+
+  const nextRows = rows.map((row) => {
+    const belgeKey = normalizeBelgeKey(row);
+    if (!belgeKey || !mukerrerBelgeKeys.has(belgeKey)) {
+      return row;
+    }
+
+    mukerrerSatirSayisi += 1;
+    const riskler = [...(row.riskler || [])];
+    if (!riskler.includes("Mükerrer belge no")) {
+      riskler.push("Mükerrer belge no");
+    }
+
+    return {
+      ...row,
+      riskler,
+      riskPuani: Number(row.riskPuani || 0) + 45,
+      kontrolNotu: [row.kontrolNotu, "Mükerrer belge no"]
+        .filter(Boolean)
+        .join(", ")
+        .replace(/(Mükerrer belge no,\s*)+Mükerrer belge no/g, "Mükerrer belge no"),
+    };
+  });
+
+  // Deduplicate kontrolNotu "Mükerrer belge no" if already present from join
+  const cleaned = nextRows.map((row) => {
+    if (!String(row.kontrolNotu || "").includes("Mükerrer belge no")) return row;
+    const parts = String(row.kontrolNotu)
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const seen = new Set();
+    const unique = [];
+    for (const part of parts) {
+      if (seen.has(part)) continue;
+      seen.add(part);
+      unique.push(part);
+    }
+    return { ...row, kontrolNotu: unique.join(", ") };
+  });
+
+  return {
+    rows: cleaned,
+    mukerrerBelgeSayisi,
+    mukerrerSatirSayisi,
+    mukerrerFisSayisi,
+    mukerrerBelgeListesi: [...mukerrerBelgeKeys].sort(),
+  };
+}
+
 function attachFisBalanceRisk(satirlar) {
   const fisGruplari = {};
 
@@ -123,18 +215,23 @@ function attachFisBalanceRisk(satirlar) {
   };
 }
 
-function buildResponseStats(standardLucaRows, fisGruplari, balanceStats) {
+function buildResponseStats(
+  standardLucaRows,
+  fisGruplari,
+  balanceStats,
+  mukerrerStats = {}
+) {
   const toplamFis = Object.keys(fisGruplari).length;
   const toplamSatir = standardLucaRows.length;
   const riskliFisSayisi = standardLucaRows.filter((f) => f.durum === "Riskli").length;
   const yuksekRisk = standardLucaRows.filter((f) => f.riskSeviyesi === "Yüksek").length;
   const ortaRisk = standardLucaRows.filter((f) => f.riskSeviyesi === "Orta").length;
   const dusukRisk = standardLucaRows.filter((f) => f.riskSeviyesi === "Düşük").length;
-  const aciklamaEksikSatir = standardLucaRows.filter((f) =>
-    f.riskler?.includes("Açıklama boş")
+  const aciklamaEksikSatir = standardLucaRows.filter(
+    (f) => !String(f.detayAciklama || f.fisAciklama || f.aciklama || "").trim()
   ).length;
-  const belgeTuruEksikSatir = standardLucaRows.filter((f) =>
-    f.riskler?.includes("Belge türü boş")
+  const belgeTuruEksikSatir = standardLucaRows.filter(
+    (f) => !String(f.belgeTuru || "").trim()
   ).length;
 
   return {
@@ -153,12 +250,15 @@ function buildResponseStats(standardLucaRows, fisGruplari, balanceStats) {
     belgesizFatura: standardLucaRows.filter((f) =>
       f.riskler?.includes("Fatura belge no boş")
     ).length,
+    // mukerrerBelgeSayisi = benzersiz belge no (tercih edilen KPI)
+    mukerrerBelgeSayisi: Number(mukerrerStats.mukerrerBelgeSayisi || 0),
+    mukerrerSatirSayisi: Number(mukerrerStats.mukerrerSatirSayisi || 0),
+    mukerrerFisSayisi: Number(mukerrerStats.mukerrerFisSayisi || 0),
+    mukerrerBelgeListesi: mukerrerStats.mukerrerBelgeListesi || [],
   };
 }
 
 export function processElektrawebWorkbook(workbook, matchingContext = {}) {
-  const belgeler = {};
-
   const rows = parseWorkbookRows(workbook);
 
   console.log("[elektraweb-parser] raw row sample:", rows.slice(0, 2));
@@ -195,37 +295,24 @@ export function processElektrawebWorkbook(workbook, matchingContext = {}) {
     })
   );
 
-  const parsedRows = sortStandardLucaRows(
-    normalizedRows.map((row) => {
-      const risk = satirRiskAnaliz(row);
-      const riskler = [...risk.riskler];
-      let riskPuani = risk.riskPuani;
+  const withBaseRisk = normalizedRows.map((row) => {
+    const risk = satirRiskAnaliz(row);
+    const finalized = finalizeStandardLucaRow({
+      ...row,
+      riskDurumu: risk.riskDurumu,
+      kontrolNotu:
+        row.kontrolNotu || (risk.riskler.length ? risk.riskler.join(", ") : ""),
+    });
 
-      const belgeNo = row.belgeNo || row.evrakNo || "";
-      if (
-        belgeNo &&
-        String(belgeNo).trim() !== "" &&
-        String(belgeNo).length > 5
-      ) {
-        const belgeKey = String(belgeNo);
-        if (belgeler[belgeKey]) {
-          riskler.push("Mükerrer belge no");
-          riskPuani += 45;
-        } else {
-          belgeler[belgeKey] = true;
-        }
-      }
+    return {
+      ...finalized,
+      riskler: risk.riskler,
+      riskPuani: risk.riskPuani,
+    };
+  });
 
-      return finalizeStandardLucaRow({
-        ...row,
-        riskDurumu: risk.riskDurumu,
-        kontrolNotu: row.kontrolNotu || (riskler.length ? riskler.join(", ") : ""),
-        riskler,
-        riskPuani,
-      });
-    })
-  );
-
+  const mukerrer = attachMukerrerBelgeRisk(withBaseRisk);
+  const parsedRows = sortStandardLucaRows(mukerrer.rows);
   const balanceStats = attachFisBalanceRisk(parsedRows);
 
   const standardLucaRows = buildElektrawebPreviewRows(parsedRows, {
@@ -253,7 +340,7 @@ export function processElektrawebWorkbook(workbook, matchingContext = {}) {
       ...row,
       risk: row.risk || riskMetni,
       riskSeviyesi: riskSeviyesiHesapla(Number(row.riskPuani || 0)),
-      durum: riskMetni === "Sorun yok" ? "Temiz" : "Riskli",
+      durum: riskMetni === "Sorun yok" || riskMetni === "" ? "Temiz" : "Riskli",
     };
   });
 
@@ -263,7 +350,12 @@ export function processElektrawebWorkbook(workbook, matchingContext = {}) {
   return {
     standardLucaRows,
     fisler: standardLucaRows,
-    ...buildResponseStats(standardLucaRows, balanceStats.fisGruplari, balanceStats),
+    ...buildResponseStats(
+      standardLucaRows,
+      balanceStats.fisGruplari,
+      balanceStats,
+      mukerrer
+    ),
   };
 }
 

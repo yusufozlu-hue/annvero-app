@@ -14,6 +14,7 @@ import {
   shouldSkipOutputResolve,
 } from "@/src/utils/outputAccountingDecisionFacade";
 import {
+  assertElektrawebNoHesapEksikForExport,
   standardLucaRowsToExcelRows,
   stripStandardLucaRow,
 } from "@/src/utils/standardLucaRow";
@@ -31,15 +32,24 @@ export function prepareElektrawebExportRows(rows = [], context = {}) {
     companyId,
     firmaId: companyId,
   });
-  const gate = evaluateOutputExportDecisionGate(prepared);
+  const decisionGate = evaluateOutputExportDecisionGate(prepared);
+  const hesapGate = assertElektrawebNoHesapEksikForExport(prepared);
+  const allowed = decisionGate.allowed && hesapGate.ok;
+
   return {
-    ok: gate.allowed,
+    ok: allowed,
     format: ELEKTRAWEB_OUTPUT_FORMAT,
     rows: prepared,
     excelRows: standardLucaRowsToExcelRows(
       prepared.map((r) => stripStandardLucaRow(r))
     ),
-    gate,
+    gate: {
+      ...decisionGate,
+      allowed,
+      code: !hesapGate.ok ? "HESAP_EKSIK" : decisionGate.code,
+      message: !hesapGate.ok ? hesapGate.message : decisionGate.message,
+      missingKaynakHesapKodlari: hesapGate.missingKaynakHesapKodlari,
+    },
     skippedResolveCount: prepared.filter((r) =>
       shouldSkipOutputResolve(r, { companyId, firmaId: companyId })
     ).length,

@@ -262,6 +262,11 @@ export function finalizeStandardLucaRow(row) {
   }
 
   const hesapKodu = String(row.hesapKodu || "").trim();
+  const kaynakHesapKodu = String(
+    row.kaynakHesapKodu != null && String(row.kaynakHesapKodu).trim() !== ""
+      ? row.kaynakHesapKodu
+      : ""
+  ).trim();
   const hesapAdi = String(row.hesapAdi || "").trim();
   const karsiHesapKodu = String(row.karsiHesapKodu || row.karsiHesap || "").trim();
   let riskDurumu = String(row.riskDurumu || "").trim();
@@ -280,6 +285,13 @@ export function finalizeStandardLucaRow(row) {
     belgeTuru,
     belgeNo: String(row.belgeNo || "").trim(),
     hesapKodu,
+    ...(kaynakHesapKodu ? { kaynakHesapKodu } : {}),
+    ...(row.onerilenHesapKodu
+      ? { onerilenHesapKodu: String(row.onerilenHesapKodu).trim() }
+      : {}),
+    ...(row.onerilenEslesmeYontemi
+      ? { onerilenEslesmeYontemi: String(row.onerilenEslesmeYontemi).trim() }
+      : {}),
     hesapAdi,
     karsiHesapKodu,
     evrakNo: String(row.evrakNo || "").trim(),
@@ -401,11 +413,22 @@ export function normalizeElektrawebRawToStandardLucaRow(rawRow, context = {}) {
   ).trim();
   const evrakTarihi = getRowValue(rawRow, "Evrak Tarihi", "EvrakTarihi");
   const belgeNo = String(getRowValue(rawRow, "Belge No", "BelgeNo") || "").trim();
+  const explicitBelgeTuru = String(
+    getRowValue(
+      rawRow,
+      "Dok Tipi",
+      "DokTipi",
+      "Belge Tipi",
+      "Belge Türü",
+      "BelgeTuru",
+      "Belge Turu"
+    ) || ""
+  ).trim();
   const belgeTuru = resolveElektrawebBelgeTuru({
     detayAciklama,
     evrakNo,
     belgeNo,
-    explicit: getRowValue(rawRow, "Belge Tipi", "Belge Türü", "BelgeTuru", "Belge Turu"),
+    explicit: explicitBelgeTuru,
     documentSeriesRules,
   });
   const borc = parseAmount(
@@ -426,6 +449,7 @@ export function normalizeElektrawebRawToStandardLucaRow(rawRow, context = {}) {
     belgeTuru,
     belgeNo,
     hesapKodu,
+    kaynakHesapKodu: hesapKodu,
     evrakNo,
     evrakTarihi,
     detayAciklama,
@@ -520,14 +544,20 @@ export function enrichElektrawebStandardLucaRow(row, context = {}) {
   }
 
   const matched = applyMatchResultToRow(baseRow, match);
-  matched.hesapKodu = match.hesapKodu;
 
-  const finalized = finalizeStandardLucaRow(matched);
+  const finalized = finalizeStandardLucaRow({
+    ...matched,
+    kaynakHesapKodu:
+      matched.kaynakHesapKodu || baseRow.kaynakHesapKodu || "",
+  });
 
   return {
     ...finalized,
     eslesmeYontemi: matched.eslesmeYontemi || "",
     hesapEslesmeNotlari: matched.hesapEslesmeNotlari || [],
+    onerilenHesapKodu: matched.onerilenHesapKodu || "",
+    onerilenEslesmeYontemi: matched.onerilenEslesmeYontemi || "",
+    accountSuggestions: matched.accountSuggestions || [],
     riskPuani: row.riskPuani ?? finalized.riskPuani,
     riskler: row.riskler || finalized.riskler || [],
     risk: row.risk || finalized.risk,
@@ -989,9 +1019,13 @@ export function stripStandardLucaRow(row) {
 
 export function getStandardLucaMissingBadges(row) {
   const badges = [];
+  const riskDurumu = String(row?.riskDurumu || "").trim();
+  const hasHesap = Boolean(String(row?.hesapKodu || "").trim());
 
-  if (!String(row?.hesapKodu || "").trim()) {
-    badges.push(row.riskDurumu === "HESAP_EKSIK" ? "HESAP_EKSIK" : "Hesap eksik");
+  if (riskDurumu === "HESAP_EKSIK") {
+    badges.push("HESAP_EKSIK");
+  } else if (!hasHesap) {
+    badges.push("Hesap eksik");
   }
 
   if (!String(row?.detayAciklama || row?.fisAciklama || "").trim()) {
@@ -1003,6 +1037,42 @@ export function getStandardLucaMissingBadges(row) {
   }
 
   return badges;
+}
+
+/**
+ * HESAP_EKSIK satırlarındaki benzersiz kaynak hesap kodları.
+ * Export/aktarım engeli için kullanılır; satır sessizce düşürülmez.
+ */
+export function collectElektrawebHesapEksikKaynakKodlari(rows = []) {
+  const codes = new Set();
+
+  for (const row of rows) {
+    if (String(row?.riskDurumu || "").trim() !== "HESAP_EKSIK") continue;
+    const kod = String(row?.kaynakHesapKodu || row?.hesapKodu || "").trim();
+    if (kod) codes.add(kod);
+  }
+
+  return [...codes].sort((left, right) =>
+    left.localeCompare(right, "tr", { numeric: true })
+  );
+}
+
+export function assertElektrawebNoHesapEksikForExport(rows = []) {
+  const missingKaynakHesapKodlari = collectElektrawebHesapEksikKaynakKodlari(rows);
+
+  if (!missingKaynakHesapKodlari.length) {
+    return {
+      ok: true,
+      missingKaynakHesapKodlari: [],
+      message: "",
+    };
+  }
+
+  return {
+    ok: false,
+    missingKaynakHesapKodlari,
+    message: `Luca export/aktarım engellendi. Çözülmesi gereken kaynak hesaplar: ${missingKaynakHesapKodlari.join(", ")}`,
+  };
 }
 
 export function computeStandardLucaReport(rows = []) {
