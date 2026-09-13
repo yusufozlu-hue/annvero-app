@@ -9,6 +9,7 @@ import {
 } from "@/src/lib/security/uploadGuard";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/src/lib/security/requestId";
 import { safeErrorMessage } from "@/src/lib/security/redact";
+import { getServerSupabaseAdmin } from "@/src/lib/supabase/serverAdmin";
 
 export async function POST(req: NextRequest) {
   const requestId = getOrCreateRequestId(req);
@@ -25,11 +26,13 @@ export async function POST(req: NextRequest) {
     return csrfError;
   }
 
+  const supabase = getServerSupabaseAdmin({ requireServiceRole: true });
   const rateLimited = await enforceDurableRateLimit(
     req,
     session,
     "elektraweb:upload",
-    { limit: 20, windowMs: 300_000 }
+    { limit: 20, windowMs: 300_000 },
+    { supabase }
   );
   if (rateLimited) {
     rateLimited.headers.set(REQUEST_ID_HEADER, requestId);
