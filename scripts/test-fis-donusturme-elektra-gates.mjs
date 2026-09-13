@@ -24,6 +24,7 @@ import {
 } from "../src/utils/standardLucaRow.js";
 import { applyElektrawebEditDraft } from "../src/utils/previewRowEdit.js";
 import { safeRead } from "../src/utils/safeXlsx.js";
+import { formatDateTR } from "../src/utils/formatDateTR.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
@@ -393,6 +394,148 @@ if (fs.existsSync(nisanPath)) {
     }
 
     assert.equal(isFisDonusturmeElektrawebSource("ELEKTRAWEB"), true);
+  });
+
+  await test("Nisan 2026 resolved disposable: 50+50+50+24 and 558-row integrity", () => {
+    const workbook = safeRead(fs.readFileSync(nisanPath));
+    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+    const raw = XLSX.utils.sheet_to_json(firstSheet, { defval: "", raw: false });
+    const codes = [
+      ...new Set(
+        raw
+          .map((r) => String(r["Hesap Kodu"] || r.HesapKodu || "").trim())
+          .filter(Boolean)
+      ),
+    ];
+    // Disposable: tüm kaynak hesaplar planda → HESAP_EKSIK kapısı açık (gerçek dosya kopyası)
+    const plan = codes.map((hesapKodu) => ({ hesapKodu, hesapAdi: hesapKodu }));
+
+    const result = processElektrawebWorkbook(workbook, {
+      firmaId: "x",
+      accountPlan: plan,
+      learningMemory: [],
+      companyMappings: { companyId: "x", kuralMotoruRules: [] },
+    });
+
+    assert.equal(result.toplamSatir, 558, "kaynak satır");
+    assert.equal(result.toplamFis, 174, "benzersiz fiş");
+    assert.equal(result.standardLucaRows.length, 558);
+
+    const unresolved = result.standardLucaRows.filter(
+      (r) => String(r.riskDurumu || "").trim() === "HESAP_EKSIK"
+    );
+    assert.equal(unresolved.length, 0, "disposable fixture HESAP_EKSIK=0");
+
+    const gate = assertElektrawebNoHesapEksikForExport(result.standardLucaRows);
+    assert.equal(gate.ok, true);
+
+    const prepared = prepareFisDonusturmeLucaExcelFiles({
+      sourceType: "ELEKTRAWEB",
+      rows: result.standardLucaRows,
+      chunkSize: 50,
+      filePrefix: "elektraweb",
+    });
+    assert.equal(prepared.ok, true);
+    assert.equal(prepared.files.length, 4);
+    assert.deepEqual(
+      prepared.files.map((f) => f.fisCount),
+      [50, 50, 50, 24]
+    );
+
+    const totalExportRows = prepared.files.reduce((sum, f) => sum + f.rowCount, 0);
+    assert.equal(totalExportRows, 558, "export satır toplamı");
+
+    const flatExcel = prepared.files.flatMap((f) => f.excelRows);
+    assert.equal(flatExcel.length, 558);
+
+    const normalizeMoney = (value) => {
+      if (value === "" || value === null || value === undefined) return "";
+      const num = Number(value);
+      if (!Number.isFinite(num) || num === 0) return "";
+      return String(num);
+    };
+
+    const sourceFingerprints = result.standardLucaRows.map((row) =>
+      [
+        String(row.fisNo ?? ""),
+        formatDateTR(row.fisTarihi),
+        String(row.hesapKodu || "").trim(),
+        String(row.belgeTuru || "").trim(),
+        normalizeMoney(row.borc),
+        normalizeMoney(row.alacak),
+        String(row.detayAciklama || row.fisAciklama || "").trim(),
+      ].join("|")
+    );
+    const excelFingerprints = flatExcel.map((row) =>
+      [
+        String(row["Fiş No"] ?? ""),
+        String(row["Fiş Tarihi"] ?? ""),
+        String(row["Hesap Kodu"] || "").trim(),
+        String(row["Belge Türü"] || "").trim(),
+        normalizeMoney(row["Borç"]),
+        normalizeMoney(row["Alacak"]),
+        String(row["Detay Açıklama"] || row["Fiş Açıklama"] || "").trim(),
+      ].join("|")
+    );
+
+    const sortCopy = (list) => [...list].sort((a, b) => a.localeCompare(b, "tr"));
+    assert.deepEqual(
+      sortCopy(excelFingerprints),
+      sortCopy(sourceFingerprints),
+      "kayıp/mükerrer/drift fingerprint"
+    );
+
+    // Her fiş tam bir grupta; fiş bölünmesi yok
+    const fisOwner = new Map();
+    for (let fileIndex = 0; fileIndex < prepared.files.length; fileIndex += 1) {
+      const fisInFile = new Set(
+        prepared.files[fileIndex].excelRows.map((r) => String(r["Fiş No"] ?? ""))
+      );
+      assert.equal(fisInFile.size, prepared.files[fileIndex].fisCount);
+      for (const fisNo of fisInFile) {
+        assert.equal(
+          fisOwner.has(fisNo),
+          false,
+          `fiş bölünmesi: ${fisNo} birden fazla grupta`
+        );
+        fisOwner.set(fisNo, fileIndex);
+      }
+    }
+    assert.equal(fisOwner.size, 174);
+
+    const groupReport = prepared.files.map((file, index) => {
+      let borc = 0;
+      let alacak = 0;
+      for (const row of file.excelRows) {
+        borc += Number(row["Borç"] || 0) || 0;
+        alacak += Number(row["Alacak"] || 0) || 0;
+      }
+      borc = Math.round(borc * 100) / 100;
+      alacak = Math.round(alacak * 100) / 100;
+      assert.equal(
+        borc,
+        alacak,
+        `grup ${index + 1} borç/alacak dengesi ${borc}≠${alacak}`
+      );
+      return {
+        grup: index + 1,
+        fis: file.fisCount,
+        satir: file.rowCount,
+        borc,
+        alacak,
+      };
+    });
+
+    console.log("  Nisan resolved chunk table:");
+    for (const row of groupReport) {
+      console.log(
+        `    G${row.grup}: fiş=${row.fis} satır=${row.satir} borç=${row.borc} alacak=${row.alacak}`
+      );
+    }
+    assert.equal(
+      groupReport.reduce((s, r) => s + r.satir, 0),
+      558
+    );
   });
 } else {
   console.log("skip - Nisan 2026 Excel not on Desktop");
