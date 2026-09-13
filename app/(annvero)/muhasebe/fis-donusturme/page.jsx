@@ -25,22 +25,26 @@ import {
   buildLucaProducerHref,
 } from "@/src/utils/canonicalFisControlTransfer";
 import {
+  assertFisDonusturmeLucaProducerTransferAllowed,
+  isFisDonusturmeElektrawebSource,
+  prepareFisDonusturmeLucaExcelFiles,
+  resolveFisDonusturmeDisplayRiskSeviyesi,
+  shouldShowFisDonusturmeRiskPill,
+} from "@/src/utils/fisDonusturmeElektraGates";
+import {
   formatAccountingRuleTemplate,
   loadAccountingRulesFromStorage,
   matchAccountingRule,
 } from "@/src/utils/accountingRuleEngine";
 import {
   bankMovementsToStandardLucaRows,
-  buildStandardLucaTransferPayload,
   ensureStandardLucaRowIds,
   filterStandardLucaRows,
   finalizeStandardLucaRow,
   getRowValue,
   getStandardLucaMissingBadges,
   KAYNAK_TIPI,
-  LUCA_EXPORT_HEADERS,
   sortStandardLucaRows,
-  standardLucaRowsToExcelRows,
 } from "@/src/utils/standardLucaRow";
 import {
   mapParsedRowsToStandardMovements,
@@ -851,35 +855,38 @@ export default function FisDonusturmePage() {
       return;
     }
 
-    const rows = sortStandardLucaRows(standardLucaRows);
-    const uniqueFisNo = [...new Set(rows.map((row) => row.fisNo))];
-    const chunkSize = 50;
-    const totalFiles = Math.ceil(uniqueFisNo.length / chunkSize);
     const prefix = (sourceMeta.label || "fis")
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "");
 
-    for (let fileIndex = 0; fileIndex < totalFiles; fileIndex += 1) {
-      const chunkFisNos = new Set(
-        uniqueFisNo.slice(fileIndex * chunkSize, fileIndex * chunkSize + chunkSize)
-      );
-      const chunkRows = rows.filter((row) => chunkFisNos.has(row.fisNo));
-      const excelRows = standardLucaRowsToExcelRows(chunkRows);
+    const prepared = prepareFisDonusturmeLucaExcelFiles({
+      rows: standardLucaRows,
+      sourceType,
+      filePrefix: prefix,
+      chunkSize: 50,
+    });
 
-      const worksheet = XLSX.utils.json_to_sheet(excelRows, {
-        header: LUCA_EXPORT_HEADERS,
+    if (!prepared.ok) {
+      showToast(prepared.message || "Luca Excel oluşturulamadı.", "error");
+      return;
+    }
+
+    for (const file of prepared.files) {
+      const worksheet = XLSX.utils.json_to_sheet(file.excelRows, {
+        header: file.headers,
       });
       enforceLucaExportDateStrings(worksheet, ["Fiş Tarihi", "Evrak Tarihi"]);
 
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, "Luca Fişleri");
-
-      const suffix = totalFiles === 1 ? "luca" : `luca_${fileIndex + 1}`;
-      XLSX.writeFile(workbook, `${prefix}_${suffix}.xlsx`);
+      XLSX.writeFile(workbook, file.fileName);
     }
 
-    if (totalFiles > 1) {
-      showToast(`${totalFiles} adet Luca Excel dosyası oluşturuldu.`, "success");
+    if (prepared.files.length > 1) {
+      showToast(
+        `${prepared.files.length} adet Luca Excel dosyası oluşturuldu.`,
+        "success"
+      );
     }
   };
 
@@ -930,6 +937,16 @@ export default function FisDonusturmePage() {
   };
 
   const handleTransferToLuca = async () => {
+    const transferGate = assertFisDonusturmeLucaProducerTransferAllowed({
+      sourceType,
+      source: "bank",
+      rows: standardLucaRows,
+    });
+    if (!transferGate.ok) {
+      showToast(transferGate.message, "error");
+      return;
+    }
+
     if (!standardLucaRows.length) {
       showToast("Önce dönüştürme yapın.", "error");
       return;
@@ -939,6 +956,7 @@ export default function FisDonusturmePage() {
       return;
     }
 
+    // Elektra için source:"bank" yolu kullanılmaz (fail-closed yukarıda).
     const saved = await publishFisDonusturmeTransfer({
       companyId: selectedCompanyId,
       companyName: getCompanyDisplayName(selectedCompany),
@@ -947,7 +965,13 @@ export default function FisDonusturmePage() {
       source: "bank",
     });
     if (!saved.ok) {
-      showToast("Luca aktarımı kaydedilemedi.", "error");
+      showToast(
+        saved.message ||
+          (saved.code === "ELEKTRAWEB_LUCA_TRANSFER_DISABLED"
+            ? transferGate.message
+            : "Luca aktarımı kaydedilemedi."),
+        "error"
+      );
       return;
     }
 
@@ -1108,13 +1132,15 @@ export default function FisDonusturmePage() {
                 >
                   {isProcessing ? "İşleniyor..." : "Dönüştür (Pipeline Çalıştır)"}
                 </button>
-                <button
-                  type="button"
-                  onClick={handleTransferToLuca}
-                  className="rounded-xl border border-gray-700 px-6 py-3 font-semibold text-gray-200 hover:bg-gray-800"
-                >
-                  Luca Fiş Üretici'ye Aktar →
-                </button>
+                {!isFisDonusturmeElektrawebSource(sourceType) ? (
+                  <button
+                    type="button"
+                    onClick={handleTransferToLuca}
+                    className="rounded-xl border border-gray-700 px-6 py-3 font-semibold text-gray-200 hover:bg-gray-800"
+                  >
+                    Luca Fiş Üretici'ye Aktar →
+                  </button>
+                ) : null}
               </div>
 
               {pipelineError && (
@@ -1198,9 +1224,12 @@ export default function FisDonusturmePage() {
                                 <td className="p-3">
                                   <div className="flex flex-col gap-1">
                                     <div className="flex flex-wrap gap-1">
-                                      {row._kontrol?.seviye &&
-                                      row._kontrol.seviye !== "Temiz" ? (
-                                        <RiskPill seviye={row._kontrol.riskSeviyesi} />
+                                      {shouldShowFisDonusturmeRiskPill(row) ? (
+                                        <RiskPill
+                                          seviye={resolveFisDonusturmeDisplayRiskSeviyesi(
+                                            row
+                                          )}
+                                        />
                                       ) : null}
                                       {row.hafizaEslesme ? (
                                         <span className="rounded-full border border-emerald-700/60 bg-emerald-950/50 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">

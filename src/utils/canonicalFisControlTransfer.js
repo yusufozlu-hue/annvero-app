@@ -30,6 +30,7 @@ import {
   stripStandardLucaRow,
   sortStandardLucaRows,
 } from "@/src/utils/standardLucaRow";
+import { assertFisDonusturmeLucaProducerTransferAllowed } from "@/src/utils/fisDonusturmeElektraGates";
 import { shouldSkipOutputResolveTrusted } from "@/src/utils/accountingDecisionTrust";
 import {
   getAccountingResolveCallCount,
@@ -1070,11 +1071,24 @@ export async function publishElektrawebLucaTransfer(opts = {}) {
   });
 }
 
-/** Fiş dönüştürme → Luca üretici (canonical; pending yok). */
+/** Fiş dönüştürme → Luca üretici (canonical; pending yok). Elektra fail-closed. */
 export async function publishFisDonusturmeTransfer(opts = {}) {
+  const gate = assertFisDonusturmeLucaProducerTransferAllowed({
+    sourceType: opts.sourceType || opts.kaynakTipi || "",
+    source: opts.source || "bank",
+    rows: opts.rows || [],
+  });
+  if (!gate.ok) {
+    return {
+      ok: false,
+      code: gate.code,
+      message: gate.message,
+    };
+  }
+
   return publishLucaProducerTransfer({
     ...opts,
-    source: opts.source || "bank",
+    source: "bank",
     producer: CANONICAL_TRANSFER_PRODUCER.FIS_DONUSTURME,
   });
 }
