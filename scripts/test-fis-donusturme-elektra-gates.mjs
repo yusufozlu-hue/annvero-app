@@ -68,6 +68,36 @@ await test("UI: Elektra seçiliyken aktarım CTA’sı koşullu gizlenir", () =>
   assert.match(src, /prepareFisDonusturmeLucaExcelFiles/);
 });
 
+await test("UI: export işlem çubuğu Ön İzleme’de; sidebar yalnız 2xl+", () => {
+  const src = fs.readFileSync(pagePath, "utf8");
+  assert.match(src, /data-testid="fis-donusturme-export-actions-primary"/);
+  assert.match(src, /data-testid="fis-donusturme-export-actions-sidebar"/);
+  assert.match(src, /hidden[\s\S]*?2xl:block/);
+  assert.match(src, /minmax\(0,1fr\)/);
+  assert.match(src, /overflow-x-auto/);
+  assert.match(src, /overflow-x-hidden/);
+  assert.match(src, /exportActionsDisabled/);
+  assert.match(src, /disabled=\{exportActionsDisabled\}/);
+  assert.match(src, /loading=\{isExporting\}/);
+  assert.match(src, /withExportGuard/);
+  assert.match(src, /exportBusyRef/);
+  assert.match(src, /function ExportActionsBar/);
+  // Primary + sidebar aynı handler / disabled / loading
+  const lucaBindings = src.match(/onLucaExcel=\{exportLucaExcel\}/g) || [];
+  assert.equal(lucaBindings.length, 2);
+  const controlBindings = src.match(/onControlReport=\{exportControlReport\}/g) || [];
+  assert.equal(controlBindings.length, 2);
+  const errorBindings = src.match(/onErrorReport=\{exportErrorReport\}/g) || [];
+  assert.equal(errorBindings.length, 2);
+  const disabledBindings = src.match(/disabled=\{exportActionsDisabled\}/g) || [];
+  assert.equal(disabledBindings.length, 2);
+  const loadingBindings = src.match(/loading=\{isExporting\}/g) || [];
+  assert.equal(loadingBindings.length, 2);
+  // HESAP_EKSIK gate her iki görünümde aynı prepare yolundan
+  assert.match(src, /prepareFisDonusturmeLucaExcelFiles/);
+  assert.equal((src.match(/prepareFisDonusturmeLucaExcelFiles\(/g) || []).length, 1);
+});
+
 await test("Handler: Elektra sourceType doğrudan reddedilir", () => {
   const gate = assertFisDonusturmeLucaProducerTransferAllowed({
     sourceType: "ELEKTRAWEB",
