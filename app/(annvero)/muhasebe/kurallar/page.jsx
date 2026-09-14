@@ -15,6 +15,7 @@ import {
   loadRuleEngineFromStorage,
   saveRuleEngineToStorage,
 } from "@/src/utils/companyCenter";
+import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/lucaDocumentTypes";
 
 const editableTabs = {
   banka: {    label: "Banka Kuralları",
@@ -568,7 +569,7 @@ export default function KurallarPage() {
                   }
                   className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white outline-none focus:border-indigo-500"
                 >
-                  {["EA", "EF", "DK", "KR", "NM", "SMM", "FT"].map((option) => (
+                  {DOCUMENT_TYPE_OPTIONS.map((option) => (
                     <option key={option} value={option}>
                       {option}
                     </option>

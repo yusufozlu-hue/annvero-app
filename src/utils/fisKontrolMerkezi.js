@@ -16,6 +16,7 @@ import {
   displayFisNo,
   fisNosCanonicallyEqual,
 } from "@/src/utils/canonicalFisNo";
+import { isValidLucaDocumentType } from "@/src/utils/lucaDocumentTypes";
 
 export const KONTROL_SEVIYE = {
   HATA: "Hata",
@@ -75,20 +76,6 @@ export const KONTROL_TIP = {
   OGRENEN_HAFIZA: "Öğrenen hafıza",
   TENANT: "Firma kapsamı",
 };
-
-const VALID_BELGE_TURLERI = new Set([
-  "EA",
-  "EF",
-  "NM",
-  "DK",
-  "SM",
-  "SMM",
-  "MS",
-  "DF",
-  "HS",
-  "DM",
-  "KD",
-]);
 
 function compactText(value) {
   return String(value || "")
@@ -362,7 +349,7 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
       );
     } else if (
       options.strictDocumentTypes !== false &&
-      !VALID_BELGE_TURLERI.has(belgeTuru)
+      !isValidLucaDocumentType(belgeTuru)
     ) {
       rowIssues[index].push(
         createIssue(

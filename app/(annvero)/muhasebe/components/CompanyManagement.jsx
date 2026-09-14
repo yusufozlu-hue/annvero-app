@@ -18,6 +18,7 @@ import {
   loadAccountPlansFromStorage,
 } from "@/src/utils/companyCenter";
 import { useOptionalCompanyWorkspace } from "@/src/contexts/CompanyWorkspaceContext";
+import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/lucaDocumentTypes";
 
 const GibCredentialsSection = dynamic(
   () =>
@@ -870,7 +871,7 @@ export default function CompanyManagement() {
   // BELGE SERİLERİ
   // =========================
 
-  const documentTypeOptions = ["EA", "EF", "DK", "KR", "NM", "SMM", "FT"];
+  const documentTypeOptions = DOCUMENT_TYPE_OPTIONS;
 
   const createEmptyDocumentSeries = () => ({
     id: crypto.randomUUID(),

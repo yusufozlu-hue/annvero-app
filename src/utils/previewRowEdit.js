@@ -2,15 +2,7 @@ import { buildElektrawebCombinedSearchText } from "@/src/utils/elektrawebAccount
 import { normalizeParserText } from "@/src/utils/textNormalize";
 import { stampManualAccountingDecision } from "@/src/utils/outputAccountingDecisionFacade";
 
-export const DOCUMENT_TYPE_OPTIONS = [
-  "EA",
-  "EF",
-  "DK",
-  "KR",
-  "NM",
-  "SMM",
-  "FT",
-];
+export { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/lucaDocumentTypes";
 
 export const MEMORY_MATCH_LABEL = "Hafızadan eşleşti";
 
