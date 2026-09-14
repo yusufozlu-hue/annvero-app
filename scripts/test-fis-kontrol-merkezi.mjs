@@ -231,6 +231,16 @@ function row(partial) {
     bad.issues.some((i) => /Geçersiz belge/i.test(i.message)),
     "geçersiz belge türü"
   );
+
+  const krMf = analyzeStandardLucaRows([
+    row({ borc: 10, belgeTuru: "KR", hesapKodu: "102.01" }),
+    row({ alacak: 10, belgeTuru: "MF", hesapKodu: "320.01" }),
+  ]);
+  assert(
+    !krMf.issues.some((i) => /Geçersiz belge/i.test(i.message)),
+    "KR ve MF geçerli belge türü"
+  );
+  assert(krMf.summary.gectiRowCount === 2, "KR/MF satırları Geçti");
 }
 
 // 9) Kapanmış dönem

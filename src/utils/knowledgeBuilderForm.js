@@ -2,6 +2,7 @@ import {
   KNOWLEDGE_ENTITY_FAMILIES,
   KNOWLEDGE_SOURCE_TYPES,
 } from "@/src/lib/knowledge-engine/constants";
+import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/lucaDocumentTypes";
 
 export const KNOWLEDGE_BUILDER_ENTITY_FAMILIES = Object.values(KNOWLEDGE_ENTITY_FAMILIES);
 export const KNOWLEDGE_BUILDER_SOURCE_TYPES = [
@@ -9,7 +10,9 @@ export const KNOWLEDGE_BUILDER_SOURCE_TYPES = [
   KNOWLEDGE_SOURCE_TYPES.CREDIT_CARD,
   KNOWLEDGE_SOURCE_TYPES.POS,
 ];
-export const KNOWLEDGE_BUILDER_DOCUMENT_TYPES = ["EA", "EF", "DK", "KR", "NM", "SMM", "FT"];
+export const KNOWLEDGE_BUILDER_DOCUMENT_TYPES = [
+  ...DOCUMENT_TYPE_OPTIONS,
+];
 export const KNOWLEDGE_BUILDER_RISK_LEVELS = ["low", "medium", "high"];
 
 export function buildTeachFormFromMovement(movement = {}, context = {}) {

@@ -20,11 +20,22 @@ import { processElektrawebWorkbook } from "../src/utils/elektrawebProcessor.js";
 import {
   assertElektrawebNoHesapEksikForExport,
   buildElektrawebPreviewRows,
+  getRowValue,
   LUCA_EXPORT_HEADERS,
+  normalizeElektrawebRawToStandardLucaRow,
 } from "../src/utils/standardLucaRow.js";
 import { applyElektrawebEditDraft } from "../src/utils/previewRowEdit.js";
 import { safeRead } from "../src/utils/safeXlsx.js";
 import { formatDateTR } from "../src/utils/formatDateTR.js";
+import {
+  analyzeStandardLucaRows,
+  KONTROL_SEVIYE,
+  KONTROL_TIP,
+} from "../src/utils/fisKontrolMerkezi.js";
+import {
+  DOCUMENT_TYPE_OPTIONS,
+  isValidLucaDocumentType,
+} from "../src/utils/lucaDocumentTypes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
@@ -565,6 +576,96 @@ if (fs.existsSync(nisanPath)) {
     assert.equal(
       groupReport.reduce((s, r) => s + r.satir, 0),
       558
+    );
+  });
+
+  await test("Nisan 2026: KR/MF allowlist — 0 geçersiz belge, Hata=10, export KR7/MF6", () => {
+    assert.equal(isValidLucaDocumentType("KR"), true);
+    assert.equal(isValidLucaDocumentType("MF"), true);
+    assert.ok(DOCUMENT_TYPE_OPTIONS.includes("MF"));
+    assert.ok(DOCUMENT_TYPE_OPTIONS.includes("KR"));
+
+    const workbook = safeRead(fs.readFileSync(nisanPath));
+    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+    const raw = XLSX.utils.sheet_to_json(firstSheet, { defval: "", raw: false });
+    const codes = [
+      ...new Set(
+        raw
+          .map((r) => String(r["Hesap Kodu"] || r.HesapKodu || "").trim())
+          .filter(Boolean)
+      ),
+    ];
+    const plan = codes.map((hesapKodu) => ({ hesapKodu, hesapAdi: hesapKodu }));
+
+    const result = processElektrawebWorkbook(workbook, {
+      firmaId: "x",
+      accountPlan: plan,
+      learningMemory: [],
+      companyMappings: { companyId: "x", kuralMotoruRules: [] },
+    });
+
+    assert.equal(result.standardLucaRows.length, 558);
+    assert.equal(result.toplamFis, 174);
+
+    const filtered = raw.filter((r) => r["Fiş Numarası"] || r["Fiş No"]);
+    const dokById = new Map(
+      filtered.map((src, index) => {
+        const n = normalizeElektrawebRawToStandardLucaRow(src, { index });
+        return [n.id, String(getRowValue(src, "Dok Tipi") || "").trim()];
+      })
+    );
+    let drift = 0;
+    for (const row of result.standardLucaRows) {
+      const srcDok = dokById.get(row.id) || "";
+      if (srcDok.toUpperCase() !== String(row.belgeTuru || "").trim().toUpperCase()) {
+        drift += 1;
+      }
+    }
+    assert.equal(drift, 0, "Dok Tipi → belgeTuru drift");
+
+    const analysis = analyzeStandardLucaRows(result.standardLucaRows, {
+      firmaId: "x",
+      accountPlan: plan,
+    });
+    const hata = analysis.issues.filter((i) => i.seviye === KONTROL_SEVIYE.HATA);
+    assert.equal(hata.length, 10, "Hata sayısı 10 (8 mükerrer + 2 eksik açıklama)");
+    assert.equal(
+      hata.filter((i) => i.message === "Geçersiz belge türü: KR").length,
+      0
+    );
+    assert.equal(
+      hata.filter((i) => i.message === "Geçersiz belge türü: MF").length,
+      0
+    );
+    assert.equal(
+      hata.filter((i) => i.type === KONTROL_TIP.GECERSIZ_BELGE_TURU).length,
+      0
+    );
+    assert.equal(
+      hata.filter((i) => i.type === KONTROL_TIP.MUKERRER_HAREKET).length,
+      8
+    );
+    assert.equal(
+      hata.filter((i) => i.type === KONTROL_TIP.EKSIK_ACIKLAMA).length,
+      2
+    );
+
+    const prepared = prepareFisDonusturmeLucaExcelFiles({
+      sourceType: "ELEKTRAWEB",
+      rows: result.standardLucaRows,
+      chunkSize: 50,
+      filePrefix: "elektraweb",
+    });
+    assert.equal(prepared.ok, true);
+    const excelRows = prepared.files.flatMap((f) => f.excelRows);
+    assert.equal(excelRows.length, 558);
+    assert.equal(
+      excelRows.filter((r) => String(r["Belge Türü"] || "").trim() === "KR").length,
+      7
+    );
+    assert.equal(
+      excelRows.filter((r) => String(r["Belge Türü"] || "").trim() === "MF").length,
+      6
     );
   });
 } else {

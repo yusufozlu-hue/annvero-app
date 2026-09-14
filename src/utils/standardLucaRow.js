@@ -51,6 +51,14 @@ export const LUCA_EXPORT_HEADERS = [
   "Döviz Tutar",
 ];
 
+export {
+  DOCUMENT_TYPE_OPTIONS,
+  isValidLucaDocumentType,
+  LUCA_DOCUMENT_TYPE_CODES,
+  normalizeLucaDocumentType,
+  VALID_LUCA_DOCUMENT_TYPES,
+} from "@/src/utils/lucaDocumentTypes";
+
 function compactKey(value) {
   return String(value || "")
     .toUpperCase()
