@@ -43,6 +43,11 @@ import {
   MUKERRER_EXPORT_EXCLUDED_LABEL,
 } from "@/src/utils/fisDonusturmeMukerrerDecisions";
 import {
+  applyBulkHesapKoduByKaynak,
+  collectHesapEksikKaynakGroups,
+  hasUnresolvedHesapEksik,
+} from "@/src/utils/fisDonusturmeBulkHesapMatch";
+import {
   formatAccountingRuleTemplate,
   loadAccountingRulesFromStorage,
   matchAccountingRule,
@@ -423,6 +428,7 @@ export default function FisDonusturmePage() {
   const [standardLucaRows, setStandardLucaRows] = useState([]);
   const [mukerrerDecisions, setMukerrerDecisions] = useState({});
   const [fisAciklamaDrafts, setFisAciklamaDrafts] = useState({});
+  const [bulkHesapDrafts, setBulkHesapDrafts] = useState({});
   const [isProcessing, setIsProcessing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const exportBusyRef = useRef(false);
@@ -537,6 +543,11 @@ export default function FisDonusturmePage() {
 
   const missingAciklamaFisler = useMemo(
     () => collectFisNosMissingAciklama(standardLucaRows),
+    [standardLucaRows]
+  );
+
+  const hesapEksikGroups = useMemo(
+    () => collectHesapEksikKaynakGroups(standardLucaRows),
     [standardLucaRows]
   );
 
@@ -1048,6 +1059,27 @@ export default function FisDonusturmePage() {
     );
   };
 
+  const handleApplyBulkHesapMatch = (kaynakHesapKodu) => {
+    const target = String(bulkHesapDrafts[kaynakHesapKodu] || "").trim();
+    const result = applyBulkHesapKoduByKaynak(
+      standardLucaRows,
+      kaynakHesapKodu,
+      target
+    );
+    if (!result.ok) {
+      showToast(result.message || "Toplu eşleme uygulanamadı.", "error");
+      return;
+    }
+    // Mükerrer kararları bilinçli olarak dokunulmaz.
+    setStandardLucaRows(result.rows);
+    setBulkHesapDrafts((prev) => {
+      const next = { ...prev };
+      delete next[kaynakHesapKodu];
+      return next;
+    });
+    showToast(result.message, result.appliedCount > 0 ? "success" : "error");
+  };
+
   const exportControlReport = () => {
     withExportGuard(() => {
       if (!standardLucaRows.length) {
@@ -1154,7 +1186,8 @@ export default function FisDonusturmePage() {
           maximumFractionDigits: 2,
         });
 
-  const canExport = standardLucaRows.length > 0;
+  const canExport =
+    standardLucaRows.length > 0 && !hasUnresolvedHesapEksik(standardLucaRows);
   const exportActionsDisabled = !canExport || isExporting;
 
   return (
@@ -1407,6 +1440,73 @@ export default function FisDonusturmePage() {
                     </section>
                   ) : null}
 
+                  {hesapEksikGroups.length > 0 ? (
+                    <section
+                      data-testid="fis-donusturme-bulk-hesap-match"
+                      className="mb-6 rounded-2xl border border-amber-800/40 bg-gray-950/60 p-4"
+                    >
+                      <h3 className="mb-1 text-sm font-semibold text-amber-100">
+                        Toplu hesap eşleştirme
+                      </h3>
+                      <p className="mb-3 text-xs text-gray-400">
+                        Aynı kaynak hesap koduna sahip tüm HESAP_EKSIK satırlarına
+                        tek seferde hedef hesap uygula. Kaynak kod değişmez;
+                        mükerrer kararlar korunur.
+                      </p>
+                      <div className="space-y-3">
+                        {hesapEksikGroups.map((group) => (
+                          <div
+                            key={group.kaynakHesapKodu}
+                            className="flex flex-col gap-2 rounded-xl border border-gray-800 bg-gray-900/80 p-3 lg:flex-row lg:items-center"
+                          >
+                            <div className="min-w-[12rem] text-sm text-gray-300">
+                              <span className="font-mono text-xs">
+                                {group.kaynakHesapKodu}
+                              </span>
+                              <span className="ml-2 text-xs text-gray-500">
+                                {group.rowCount} satır
+                              </span>
+                            </div>
+                            <input
+                              type="text"
+                              list="fis-donusturme-account-plan-codes"
+                              value={bulkHesapDrafts[group.kaynakHesapKodu] || ""}
+                              onChange={(e) =>
+                                setBulkHesapDrafts((prev) => ({
+                                  ...prev,
+                                  [group.kaynakHesapKodu]: e.target.value,
+                                }))
+                              }
+                              placeholder="Hedef hesap kodu…"
+                              className="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-sm text-white"
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleApplyBulkHesapMatch(group.kaynakHesapKodu)
+                              }
+                              className="shrink-0 whitespace-nowrap rounded-lg border border-amber-700/60 bg-amber-950/40 px-3 py-2 text-xs font-semibold text-amber-100 hover:bg-amber-950/70"
+                            >
+                              Tüm satırlara uygula
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      {normalizedAccountPlan.length > 0 ? (
+                        <datalist id="fis-donusturme-account-plan-codes">
+                          {normalizedAccountPlan.map((account) => (
+                            <option
+                              key={account.accountCode}
+                              value={account.accountCode}
+                            >
+                              {account.accountName || account.accountCode}
+                            </option>
+                          ))}
+                        </datalist>
+                      ) : null}
+                    </section>
+                  ) : null}
+
                   <RowSearchToolbar
                     search={previewSearch}
                     onSearchChange={setPreviewSearch}
@@ -1418,8 +1518,11 @@ export default function FisDonusturmePage() {
                     totalCount={standardLucaRows.length}
                   />
 
-                  <div className="mt-4 max-w-full overflow-x-auto overscroll-x-contain">
-                    <table className="w-full min-w-[1500px] text-sm">
+                  <div
+                    data-testid="fis-donusturme-preview-scroll"
+                    className="mt-4 max-w-full min-w-0 overflow-x-auto overscroll-x-contain"
+                  >
+                    <table className="w-full min-w-[1500px] border-collapse text-sm">
                       <thead className="bg-gray-800">
                         <tr>
                           <th className="p-3 text-left">Fiş No</th>
@@ -1431,7 +1534,9 @@ export default function FisDonusturmePage() {
                           <th className="p-3 text-right">Borç</th>
                           <th className="p-3 text-right">Alacak</th>
                           <th className="p-3 text-left">Risk / Kontrol</th>
-                          <th className="p-3 text-center">İşlem</th>
+                          <th className="sticky right-0 z-20 min-w-[148px] whitespace-nowrap border-l border-gray-700 bg-gray-800 p-3 text-center shadow-[-8px_0_16px_-8px_rgba(0,0,0,0.45)]">
+                            İşlem
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1500,12 +1605,13 @@ export default function FisDonusturmePage() {
                                     ) : null}
                                   </div>
                                 </td>
-                                <td className="p-3">
+                                <td className="sticky right-0 z-10 min-w-[148px] whitespace-nowrap border-l border-gray-800 bg-gray-900 p-3 shadow-[-6px_0_14px_-8px_rgba(0,0,0,0.4)]">
                                   <div className="flex items-center justify-center gap-2">
                                     <button
                                       type="button"
                                       onClick={() => toggleRowEdit(row)}
-                                      className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                                      title="Düzenle"
+                                      className={`inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
                                         editingRowId === row.id
                                           ? "border-indigo-500 bg-indigo-950/60 text-indigo-200"
                                           : "border-gray-700 bg-gray-950 text-gray-300 hover:border-indigo-500 hover:text-white"
@@ -1516,7 +1622,8 @@ export default function FisDonusturmePage() {
                                     <button
                                       type="button"
                                       onClick={() => deleteRow(row)}
-                                      className="rounded-lg border border-red-700/60 bg-red-950/30 px-3 py-1.5 text-xs font-semibold text-red-300 transition hover:bg-red-950/60"
+                                      title="Sil"
+                                      className="inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-lg border border-red-700/60 bg-red-950/30 px-3 py-1.5 text-xs font-semibold text-red-300 transition hover:bg-red-950/60"
                                     >
                                       Sil
                                     </button>
