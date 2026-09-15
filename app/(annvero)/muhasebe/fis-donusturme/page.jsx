@@ -6,6 +6,7 @@ import * as XLSX from "xlsx";
 import CompanySelectOptions from "../components/CompanySelectOptions";
 import RowSearchToolbar from "../components/RowSearchToolbar";
 import PreviewVoucherDetailPanel from "../components/PreviewVoucherDetailPanel";
+import MukerrerFisDecisionPanel from "../components/MukerrerFisDecisionPanel";
 import { useCompanyList } from "../hooks/useCompanyList";
 import { getCompanyDisplayName } from "@/src/utils/companies";
 import {
@@ -31,6 +32,15 @@ import {
   resolveFisDonusturmeDisplayRiskSeviyesi,
   shouldShowFisDonusturmeRiskPill,
 } from "@/src/utils/fisDonusturmeElektraGates";
+import {
+  annotateRowsWithMukerrerExportExclusion,
+  applyFisAciklamaToEmptyRows,
+  buildMukerrerFisGroups,
+  collectFisNosMissingAciklama,
+  isMukerrerDecisionResolved,
+  listUnresolvedMukerrerGroups,
+  MUKERRER_EXPORT_EXCLUDED_LABEL,
+} from "@/src/utils/fisDonusturmeMukerrerDecisions";
 import {
   formatAccountingRuleTemplate,
   loadAccountingRulesFromStorage,
@@ -70,10 +80,12 @@ import {
   buildFisKontrolExcelRows,
   buildFisKontrolIssueExcelRows,
   KONTROL_SEVIYE,
+  KONTROL_TIP,
 } from "@/src/utils/fisKontrolMerkezi";
 import { parseGarantiEkstre } from "@/parsers/garantiParser";
 import { parseVakifbankEkstre } from "@/parsers/vakifbankParser";
 import { bankaKurallari } from "@/parsers/bankaKurallari";
+import { fisNosCanonicallyEqual } from "@/src/utils/canonicalFisNo";
 
 const SOURCE_TYPES = {
   BANKA: "BANKA",
@@ -408,6 +420,8 @@ export default function FisDonusturmePage() {
   const [genericRawRows, setGenericRawRows] = useState([]);
 
   const [standardLucaRows, setStandardLucaRows] = useState([]);
+  const [mukerrerDecisions, setMukerrerDecisions] = useState({});
+  const [fisAciklamaDrafts, setFisAciklamaDrafts] = useState({});
   const [isProcessing, setIsProcessing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const exportBusyRef = useRef(false);
@@ -469,11 +483,40 @@ export default function FisDonusturmePage() {
   );
 
   const analysis = useMemo(
-    () => analyzeStandardLucaRows(standardLucaRows),
+    () =>
+      analyzeStandardLucaRows(standardLucaRows, {
+        firmaId: selectedCompanyId || "",
+      }),
+    [standardLucaRows, selectedCompanyId]
+  );
+
+  const mukerrerGroups = useMemo(
+    () =>
+      buildMukerrerFisGroups(standardLucaRows, {
+        firmaId: selectedCompanyId || "",
+      }),
+    [standardLucaRows, selectedCompanyId]
+  );
+
+  const unresolvedMukerrerGroups = useMemo(
+    () => listUnresolvedMukerrerGroups(mukerrerGroups, mukerrerDecisions),
+    [mukerrerGroups, mukerrerDecisions]
+  );
+
+  const missingAciklamaFisler = useMemo(
+    () => collectFisNosMissingAciklama(standardLucaRows),
     [standardLucaRows]
   );
 
-  const analyzedRows = analysis.rows;
+  const analyzedRows = useMemo(
+    () =>
+      annotateRowsWithMukerrerExportExclusion(
+        analysis.rows,
+        mukerrerGroups,
+        mukerrerDecisions
+      ),
+    [analysis.rows, mukerrerGroups, mukerrerDecisions]
+  );
 
   const controlSummary = useMemo(() => {
     const eksikHesap = standardLucaRows.filter(
@@ -482,14 +525,45 @@ export default function FisDonusturmePage() {
     const hafiza = standardLucaRows.filter((row) => row.hafizaEslesme).length;
     const kural = standardLucaRows.filter(rowMatchedByRuleEngine).length;
 
+    const resolvedGroupIds = new Set(
+      mukerrerGroups
+        .filter((group) => isMukerrerDecisionResolved(mukerrerDecisions[group.id]))
+        .map((group) => group.id)
+    );
+    const resolvedFisNos = new Set(
+      mukerrerGroups
+        .filter((group) => resolvedGroupIds.has(group.id))
+        .flatMap((group) => group.fisNos)
+    );
+
+    const openHata = analysis.issues.filter((issue) => {
+      if (issue.seviye !== KONTROL_SEVIYE.HATA) return false;
+      const isMukerrer =
+        issue.type === KONTROL_TIP.MUKERRER_HAREKET ||
+        issue.type === KONTROL_TIP.MUKERRER_KAYNAK;
+      if (!isMukerrer) return true;
+      const row = standardLucaRows[issue.rowIndex];
+      if (!row) return true;
+      return ![...resolvedFisNos].some((fis) =>
+        fisNosCanonicallyEqual(fis, row.fisNo)
+      );
+    }).length;
+
     return {
       eksikHesap,
       dengesizFis: analysis.summary.unbalancedFisCount,
-      riskliKayit: analysis.summary.hataRowCount,
+      riskliKayit: openHata,
+      mukerrerGrup: unresolvedMukerrerGroups.length,
       hafizaEslesme: hafiza,
       kuralEslesme: kural,
     };
-  }, [standardLucaRows, analysis]);
+  }, [
+    standardLucaRows,
+    analysis,
+    mukerrerGroups,
+    mukerrerDecisions,
+    unresolvedMukerrerGroups,
+  ]);
 
   const filteredRows = useMemo(
     () => filterStandardLucaRows(analyzedRows, previewSearch, previewQuickFilter),
@@ -500,6 +574,8 @@ export default function FisDonusturmePage() {
 
   const resetPipelineOutput = () => {
     setStandardLucaRows([]);
+    setMukerrerDecisions({});
+    setFisAciklamaDrafts({});
     setEditingRowId(null);
     setDraftRow(null);
     setPipelineError("");
@@ -882,6 +958,9 @@ export default function FisDonusturmePage() {
         sourceType,
         filePrefix: prefix,
         chunkSize: 50,
+        mukerrerGroups,
+        mukerrerDecisions,
+        firmaId: selectedCompanyId || "",
       });
 
       if (!prepared.ok) {
@@ -907,6 +986,34 @@ export default function FisDonusturmePage() {
         );
       }
     });
+  };
+
+  const handleMukerrerDecisionChange = (groupId, decision) => {
+    setMukerrerDecisions((prev) => {
+      const next = { ...prev };
+      if (!decision) delete next[groupId];
+      else next[groupId] = decision;
+      return next;
+    });
+  };
+
+  const handleApplyFisAciklama = (fisNo) => {
+    const text = String(fisAciklamaDrafts[fisNo] || "").trim();
+    if (!text) {
+      showToast("Açıklama boş olamaz.", "error");
+      return;
+    }
+    const applied = applyFisAciklamaToEmptyRows(standardLucaRows, fisNo, text);
+    setStandardLucaRows(applied.rows);
+    setFisAciklamaDrafts((prev) => {
+      const next = { ...prev };
+      delete next[fisNo];
+      return next;
+    });
+    showToast(
+      `${fisNo}: ${applied.updatedCount} boş satıra açıklama yazıldı.`,
+      "success"
+    );
   };
 
   const exportControlReport = () => {
@@ -1212,6 +1319,62 @@ export default function FisDonusturmePage() {
                 </p>
               ) : (
                 <>
+                  {mukerrerGroups.length > 0 ? (
+                    <div className="mb-6">
+                      <MukerrerFisDecisionPanel
+                        groups={mukerrerGroups}
+                        decisions={mukerrerDecisions}
+                        onDecisionChange={handleMukerrerDecisionChange}
+                      />
+                    </div>
+                  ) : null}
+
+                  {missingAciklamaFisler.length > 0 ? (
+                    <section className="mb-6 rounded-2xl border border-sky-800/40 bg-gray-950/60 p-4">
+                      <h3 className="mb-1 text-sm font-semibold text-sky-100">
+                        Eksik açıklama (uyarı)
+                      </h3>
+                      <p className="mb-3 text-xs text-gray-400">
+                        Tek başına Luca Excel’i engellemez. Açıklama yalnız boş
+                        satırlara yazılır.
+                      </p>
+                      <div className="space-y-3">
+                        {missingAciklamaFisler.map((item) => (
+                          <div
+                            key={item.fisNo}
+                            className="flex flex-col gap-2 rounded-xl border border-gray-800 bg-gray-900/80 p-3 sm:flex-row sm:items-center"
+                          >
+                            <div className="min-w-[120px] text-sm text-gray-300">
+                              Fiş {item.fisNo}
+                              <span className="ml-2 text-xs text-gray-500">
+                                {item.count} boş satır
+                              </span>
+                            </div>
+                            <input
+                              type="text"
+                              value={fisAciklamaDrafts[item.fisNo] || ""}
+                              onChange={(e) =>
+                                setFisAciklamaDrafts((prev) => ({
+                                  ...prev,
+                                  [item.fisNo]: e.target.value,
+                                }))
+                              }
+                              placeholder="Açıklama ekle…"
+                              className="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleApplyFisAciklama(item.fisNo)}
+                              className="rounded-lg border border-sky-700/60 bg-sky-950/40 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-950/70"
+                            >
+                              Açıklama ekle
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+
                   <RowSearchToolbar
                     search={previewSearch}
                     onSearchChange={setPreviewSearch}
@@ -1292,6 +1455,11 @@ export default function FisDonusturmePage() {
                                           {badge}
                                         </span>
                                       ))}
+                                      {row.mukerrerExportExcluded ? (
+                                        <span className="rounded-full border border-amber-700/60 bg-amber-950/50 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                                          {MUKERRER_EXPORT_EXCLUDED_LABEL}
+                                        </span>
+                                      ) : null}
                                     </div>
                                     {row._kontrol?.kontrolNotu ? (
                                       <span className="text-[11px] text-gray-400">
@@ -1378,6 +1546,11 @@ export default function FisDonusturmePage() {
                   label="Riskli kayıt"
                   value={controlSummary.riskliKayit}
                   tone={controlSummary.riskliKayit > 0 ? "warning" : "ok"}
+                />
+                <SummaryRow
+                  label="Mükerrer grup (açık)"
+                  value={controlSummary.mukerrerGrup}
+                  tone={controlSummary.mukerrerGrup > 0 ? "danger" : "ok"}
                 />
                 <SummaryRow
                   label="Öğrenen hafıza eşleşmesi"

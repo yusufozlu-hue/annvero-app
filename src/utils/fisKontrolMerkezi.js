@@ -333,7 +333,7 @@ export function analyzeStandardLucaRows(rows = [], options = {}) {
       rowIssues[index].push(
         createIssue(
           KONTROL_TIP.EKSIK_ACIKLAMA,
-          KONTROL_SEVIYE.HATA,
+          KONTROL_SEVIYE.UYARI,
           "Detay açıklama ve fiş açıklama alanları boş."
         )
       );
