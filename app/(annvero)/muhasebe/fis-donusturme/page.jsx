@@ -21,6 +21,7 @@ import {
   normalizeAccountPlanForMatching,
   normalizeCompanyRecord,
 } from "@/src/utils/companyCenter";
+import { hydrateCompanyAccountPlanFromApi } from "@/src/utils/accountPlanHydrate";
 import {
   publishFisDonusturmeTransfer,
   buildLucaProducerHref,
@@ -454,8 +455,39 @@ export default function FisDonusturmePage() {
 
     refresh();
     window.addEventListener("focus", refresh);
-    return () => window.removeEventListener("focus", refresh);
-  }, [refreshCompanies]);
+    const onPlanUpdated = (event) => {
+      const companyId = event?.detail?.companyId;
+      if (!companyId || companyId === selectedCompanyId) {
+        setAccountPlans(loadAccountPlansFromStorage());
+      }
+    };
+    window.addEventListener("annvero:account-plan-updated", onPlanUpdated);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("annvero:account-plan-updated", onPlanUpdated);
+    };
+  }, [refreshCompanies, selectedCompanyId]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return undefined;
+    let cancelled = false;
+    const controller = new AbortController();
+
+    void (async () => {
+      const result = await hydrateCompanyAccountPlanFromApi({
+        companyId: selectedCompanyId,
+        signal: controller.signal,
+        isCancelled: () => cancelled,
+      });
+      if (cancelled || !result.ok || !result.accountPlans) return;
+      setAccountPlans(result.accountPlans);
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [selectedCompanyId]);
 
   useEffect(() => {
     if (!selectedCompanyId) {
