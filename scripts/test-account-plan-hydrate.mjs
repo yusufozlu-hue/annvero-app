@@ -224,6 +224,17 @@ test("UI: elektraweb aynı hydrate desenini kullanır", () => {
   assert.match(src, /AbortController/);
 });
 
+test("accountPlanHydrate JSDoc accountPlans Record<string, unknown>", () => {
+  const src = fs.readFileSync(
+    path.join(root, "src/utils/accountPlanHydrate.js"),
+    "utf8"
+  );
+  assert.match(src, /@typedef \{Record<string, unknown>\} AccountPlansByCompany/);
+  assert.match(src, /accountPlans:\s*AccountPlansByCompany\s*\|\s*null/);
+  assert.doesNotMatch(src, /accountPlans:\s*object\s*\|\s*null/);
+  assert.doesNotMatch(src, /\bas any\b|@ts-ignore|@ts-expect-error/);
+});
+
 test("accountPlanApi signal + fetchFull options passthrough", () => {
   const src = fs.readFileSync(
     path.join(root, "src/utils/accountPlanApi.js"),

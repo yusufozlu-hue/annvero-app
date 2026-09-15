@@ -14,21 +14,37 @@ import {
 } from "@/src/utils/companyCenter";
 
 /**
+ * companyCenter storage sözleşmesi: `{ [companyId]: { uploadedAt?, accounts } }`.
+ *
+ * @typedef {Record<string, unknown>} AccountPlansByCompany
+ * @typedef {{
+ *   accountCode?: string,
+ *   accountName?: string,
+ *   [key: string]: unknown,
+ * }} AccountPlanRow
+ *
  * @param {{
  *   companyId: string,
  *   signal?: AbortSignal,
  *   isCancelled?: () => boolean,
- *   fetchPlan?: (companyId: string, options?: object) => Promise<object>,
- *   loadStorage?: () => object,
- *   setPlan?: (plans: object, companyId: string, accounts: array) => object,
- *   saveStorage?: (plans: object) => void,
- * }} options
+ *   fetchPlan?: (
+ *     companyId: string,
+ *     options?: Record<string, unknown>
+ *   ) => Promise<{ source?: string, accounts?: AccountPlanRow[] }>,
+ *   loadStorage?: () => AccountPlansByCompany,
+ *   setPlan?: (
+ *     plans: AccountPlansByCompany,
+ *     companyId: string,
+ *     accounts: AccountPlanRow[]
+ *   ) => AccountPlansByCompany,
+ *   saveStorage?: (plans: AccountPlansByCompany) => void,
+ * }} [options]
  * @returns {Promise<{
  *   ok: boolean,
  *   reason: string,
  *   companyId: string,
- *   accounts: array,
- *   accountPlans: object | null,
+ *   accounts: AccountPlanRow[],
+ *   accountPlans: AccountPlansByCompany | null,
  * }>}
  */
 export async function hydrateCompanyAccountPlanFromApi({
@@ -75,6 +91,7 @@ export async function hydrateCompanyAccountPlanFromApi({
       return { ...empty, reason: "cancelled" };
     }
 
+    /** @type {AccountPlansByCompany} */
     const accountPlans = setPlan(loadStorage(), companyId, accounts);
     saveStorage(accountPlans);
 
