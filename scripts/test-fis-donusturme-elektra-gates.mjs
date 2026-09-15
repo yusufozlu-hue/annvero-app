@@ -36,6 +36,41 @@ import {
   DOCUMENT_TYPE_OPTIONS,
   isValidLucaDocumentType,
 } from "../src/utils/lucaDocumentTypes.js";
+import {
+  applyFisAciklamaToEmptyRows,
+  buildMukerrerFisGroups,
+  createMukerrerDecision,
+  getExcludedFisNosFromMukerrerDecisions,
+  MUKERRER_DECISION_KEEP_ALL,
+  MUKERRER_DECISION_KEEP_FIRST,
+} from "../src/utils/fisDonusturmeMukerrerDecisions.js";
+import { parseMoneyTR } from "../src/utils/parseMoneyTR.js";
+
+function keepAllMukerrerDecisions(rows, firmaId = "x") {
+  const groups = buildMukerrerFisGroups(rows, { firmaId });
+  const decisions = {};
+  for (const group of groups) {
+    decisions[group.id] = createMukerrerDecision(
+      MUKERRER_DECISION_KEEP_ALL,
+      [],
+      group
+    );
+  }
+  return { groups, decisions };
+}
+
+function keepFirstMukerrerDecisions(rows, firmaId = "x") {
+  const groups = buildMukerrerFisGroups(rows, { firmaId });
+  const decisions = {};
+  for (const group of groups) {
+    decisions[group.id] = createMukerrerDecision(
+      MUKERRER_DECISION_KEEP_FIRST,
+      [],
+      group
+    );
+  }
+  return { groups, decisions };
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
@@ -77,6 +112,31 @@ await test("UI: Elektra seçiliyken aktarım CTA’sı koşullu gizlenir", () =>
   );
   assert.match(src, /assertFisDonusturmeLucaProducerTransferAllowed/);
   assert.match(src, /prepareFisDonusturmeLucaExcelFiles/);
+  assert.match(src, /MukerrerFisDecisionPanel/);
+  assert.match(src, /mukerrerDecisions/);
+  assert.match(src, /applyFisAciklamaToEmptyRows/);
+  assert.match(
+    src,
+    /setMukerrerDecisions\(\{\}\)[\s\S]*?setFisAciklamaDrafts\(\{\}\)/
+  );
+  assert.match(src, /const resetPipelineOutput = \(\) => \{[\s\S]*?setMukerrerDecisions\(\{\}\)/);
+  assert.match(src, /changeSourceType[\s\S]*?resetPipelineOutput\(\)/);
+  assert.match(src, /handleFile[\s\S]*?resetPipelineOutput\(\)/);
+  assert.match(src, /setSelectedCompanyId[\s\S]*?resetPipelineOutput\(\)/);
+});
+
+await test("UI: mükerrer panel mobil + masaüstü viewport sınıfları", () => {
+  const panelPath = path.join(
+    root,
+    "app/(annvero)/muhasebe/components/MukerrerFisDecisionPanel.jsx"
+  );
+  const src = fs.readFileSync(panelPath, "utf8");
+  assert.match(src, /overflow-x-auto/);
+  assert.match(src, /min-w-\[640px\]/);
+  assert.match(src, /flex-col gap-2 sm:flex-row/);
+  assert.match(src, /max-w-full/);
+  const pageSrc = fs.readFileSync(pagePath, "utf8");
+  assert.match(pageSrc, /from "\.\.\/components\/MukerrerFisDecisionPanel"/);
 });
 
 await test("UI: export işlem çubuğu Ön İzleme’de; sidebar yalnız 2xl+", () => {
@@ -387,6 +447,201 @@ await test("Aynı fiş içi belge tekrarları mükerrer değil; çapraz-fiş kor
   assert.equal(result.mukerrerBelgeSayisi, 1);
 });
 
+await test("Mükerrer grup kimliği satır sırasından bağımsız ve deterministik", () => {
+  const base = [
+    {
+      fisNo: "A2",
+      fisTarihi: "01.04.2026",
+      hesapKodu: "102.01",
+      belgeTuru: "DK",
+      detayAciklama: "aynı hareket",
+      borc: 100,
+      alacak: "",
+      firmaId: "x",
+    },
+    {
+      fisNo: "A2",
+      fisTarihi: "01.04.2026",
+      hesapKodu: "320.01",
+      belgeTuru: "DK",
+      detayAciklama: "aynı hareket",
+      borc: "",
+      alacak: 100,
+      firmaId: "x",
+    },
+    {
+      fisNo: "A1",
+      fisTarihi: "01.04.2026",
+      hesapKodu: "102.01",
+      belgeTuru: "DK",
+      detayAciklama: "aynı hareket",
+      borc: 100,
+      alacak: "",
+      firmaId: "x",
+    },
+    {
+      fisNo: "A1",
+      fisTarihi: "01.04.2026",
+      hesapKodu: "320.01",
+      belgeTuru: "DK",
+      detayAciklama: "aynı hareket",
+      borc: "",
+      alacak: 100,
+      firmaId: "x",
+    },
+  ];
+  const forward = buildMukerrerFisGroups(base, { firmaId: "x" });
+  const reverse = buildMukerrerFisGroups([...base].reverse(), { firmaId: "x" });
+  assert.equal(forward.length, 1);
+  assert.equal(reverse.length, 1);
+  assert.equal(forward[0].id, reverse[0].id);
+  assert.deepEqual(forward[0].fisNos, ["A1", "A2"]);
+  assert.deepEqual(reverse[0].fisNos, ["A1", "A2"]);
+  assert.equal(forward[0].id, "A1|A2");
+});
+
+await test("Mükerrer export fiş bütünlüğü + formül sanitize + boş/uzun açıklama", () => {
+  const rows = [
+    {
+      fisNo: "1",
+      fisTarihi: "01.04.2026",
+      hesapKodu: "102.01",
+      belgeTuru: "DK",
+      detayAciklama: "=CMD()",
+      fisAciklama: "=CMD()",
+      borc: 10,
+      alacak: "",
+      firmaId: "x",
+      kaynakTipi: "ELEKTRAWEB",
+    },
+    {
+      fisNo: "1",
+      fisTarihi: "01.04.2026",
+      hesapKodu: "320.01",
+      belgeTuru: "DK",
+      detayAciklama: "+hijack",
+      fisAciklama: "+hijack",
+      borc: "",
+      alacak: 10,
+      firmaId: "x",
+      kaynakTipi: "ELEKTRAWEB",
+    },
+    {
+      fisNo: "2",
+      fisTarihi: "01.04.2026",
+      hesapKodu: "102.01",
+      belgeTuru: "DK",
+      detayAciklama: "=CMD()",
+      fisAciklama: "=CMD()",
+      borc: 10,
+      alacak: "",
+      firmaId: "x",
+      kaynakTipi: "ELEKTRAWEB",
+    },
+    {
+      fisNo: "2",
+      fisTarihi: "01.04.2026",
+      hesapKodu: "320.01",
+      belgeTuru: "DK",
+      detayAciklama: "@sum",
+      fisAciklama: "@sum",
+      borc: "",
+      alacak: 10,
+      firmaId: "x",
+      kaynakTipi: "ELEKTRAWEB",
+    },
+    {
+      fisNo: "3",
+      fisTarihi: "01.04.2026",
+      hesapKodu: "102.01",
+      belgeTuru: "DK",
+      detayAciklama: "",
+      fisAciklama: "",
+      borc: 5,
+      alacak: "",
+      firmaId: "x",
+      kaynakTipi: "ELEKTRAWEB",
+    },
+    {
+      fisNo: "3",
+      fisTarihi: "01.04.2026",
+      hesapKodu: "320.01",
+      belgeTuru: "DK",
+      detayAciklama: "x".repeat(4000),
+      fisAciklama: "x".repeat(4000),
+      borc: "",
+      alacak: 5,
+      firmaId: "x",
+      kaynakTipi: "ELEKTRAWEB",
+    },
+  ];
+
+  const groups = buildMukerrerFisGroups(rows, { firmaId: "x" });
+  assert.ok(groups.length >= 1);
+  const unresolved = prepareFisDonusturmeLucaExcelFiles({
+    sourceType: "ELEKTRAWEB",
+    rows,
+    mukerrerGroups: groups,
+    mukerrerDecisions: {},
+  });
+  assert.equal(unresolved.ok, false);
+  assert.equal(unresolved.code, "MUKERRER_UNRESOLVED");
+
+  const keepFirst = keepFirstMukerrerDecisions(rows);
+  // Fiş 1+2 mükerrer; keep first → A1 style first sorted = "1"
+  const prepared = prepareFisDonusturmeLucaExcelFiles({
+    sourceType: "ELEKTRAWEB",
+    rows,
+    mukerrerGroups: keepFirst.groups,
+    mukerrerDecisions: keepFirst.decisions,
+  });
+  assert.equal(prepared.ok, true);
+  const excel = prepared.files.flatMap((f) => f.excelRows);
+  const byFis = new Map();
+  for (const row of excel) {
+    const fis = String(row["Fiş No"] ?? "");
+    byFis.set(fis, (byFis.get(fis) || 0) + 1);
+  }
+  // Excluded mükerrer twin must drop ALL legs (0), kept fiş keeps both legs (2)
+  for (const group of keepFirst.groups) {
+    const keep = group.firstFisNo;
+    for (const fis of group.fisNos) {
+      if (fis === keep) {
+        assert.equal(byFis.get(fis), 2, `korunan fiş ${fis} iki bacak`);
+      } else {
+        assert.equal(byFis.get(fis) || 0, 0, `çıkarılan fiş ${fis} bütünüyle dışarı`);
+      }
+    }
+  }
+  assert.equal(byFis.get("3"), 2, "mükerrer dışı fiş bütünü korunur");
+
+  const formulas = excel.map((r) => String(r["Detay Açıklama"] || ""));
+  assert.ok(formulas.some((t) => t.startsWith("'=")));
+  assert.ok(formulas.some((t) => t.startsWith("'+")));
+  assert.equal(
+    formulas.some(
+      (t) =>
+        (t.startsWith("=") || t.startsWith("+") || t.startsWith("-") || t.startsWith("@")) &&
+        !t.startsWith("'")
+    ),
+    false
+  );
+  assert.ok(formulas.some((t) => t.length >= 4000));
+  assert.ok(formulas.some((t) => t === ""));
+
+  const filled = applyFisAciklamaToEmptyRows(rows, "3", "yeni açıklama");
+  assert.equal(filled.updatedCount, 1);
+  const row3 = filled.rows.filter((r) => String(r.fisNo) === "3");
+  assert.equal(
+    row3.filter((r) => String(r.detayAciklama || "").trim() === "yeni açıklama").length,
+    1
+  );
+  assert.equal(
+    row3.filter((r) => String(r.detayAciklama || "").trim() === "x".repeat(4000)).length,
+    1
+  );
+});
+
 const nisanPath = path.join(
   process.env.USERPROFILE || "",
   "Desktop",
@@ -420,11 +675,19 @@ if (fs.existsSync(nisanPath)) {
     assert.equal(result.toplamSatir, 558);
     assert.equal(result.toplamFis, 174);
 
+    const { groups, decisions } = keepAllMukerrerDecisions(
+      result.standardLucaRows
+    );
+    assert.equal(groups.length, 2);
+
     const blocked = prepareFisDonusturmeLucaExcelFiles({
       sourceType: "ELEKTRAWEB",
       rows: result.standardLucaRows,
+      mukerrerGroups: groups,
+      mukerrerDecisions: decisions,
     });
     assert.equal(blocked.ok, false);
+    assert.equal(blocked.code, "HESAP_EKSIK");
     assert.equal(blocked.files.length, 0);
     assert.ok(blocked.missingKaynakHesapKodlari.length > 0);
 
@@ -470,11 +733,28 @@ if (fs.existsSync(nisanPath)) {
     const gate = assertElektrawebNoHesapEksikForExport(result.standardLucaRows);
     assert.equal(gate.ok, true);
 
+    const unresolvedBlocked = prepareFisDonusturmeLucaExcelFiles({
+      sourceType: "ELEKTRAWEB",
+      rows: result.standardLucaRows,
+      chunkSize: 50,
+      filePrefix: "elektraweb",
+    });
+    assert.equal(unresolvedBlocked.ok, false);
+    assert.equal(unresolvedBlocked.code, "MUKERRER_UNRESOLVED");
+    assert.equal(result.standardLucaRows.length, 558, "kararsızken satır sessiz düşmez");
+
+    const { groups, decisions } = keepAllMukerrerDecisions(
+      result.standardLucaRows
+    );
+    assert.equal(groups.length, 2);
+
     const prepared = prepareFisDonusturmeLucaExcelFiles({
       sourceType: "ELEKTRAWEB",
       rows: result.standardLucaRows,
       chunkSize: 50,
       filePrefix: "elektraweb",
+      mukerrerGroups: groups,
+      mukerrerDecisions: decisions,
     });
     assert.equal(prepared.ok, true);
     assert.equal(prepared.files.length, 4);
@@ -579,7 +859,7 @@ if (fs.existsSync(nisanPath)) {
     );
   });
 
-  await test("Nisan 2026: KR/MF allowlist — 0 geçersiz belge, Hata=10, export KR7/MF6", () => {
+  await test("Nisan 2026: KR/MF allowlist — 0 geçersiz belge, Hata=8 mükerrer, açıklama uyarı", () => {
     assert.equal(isValidLucaDocumentType("KR"), true);
     assert.equal(isValidLucaDocumentType("MF"), true);
     assert.ok(DOCUMENT_TYPE_OPTIONS.includes("MF"));
@@ -628,7 +908,8 @@ if (fs.existsSync(nisanPath)) {
       accountPlan: plan,
     });
     const hata = analysis.issues.filter((i) => i.seviye === KONTROL_SEVIYE.HATA);
-    assert.equal(hata.length, 10, "Hata sayısı 10 (8 mükerrer + 2 eksik açıklama)");
+    const uyari = analysis.issues.filter((i) => i.seviye === KONTROL_SEVIYE.UYARI);
+    assert.equal(hata.length, 8, "Hata=8 mükerrer (açıklama artık uyarı)");
     assert.equal(
       hata.filter((i) => i.message === "Geçersiz belge türü: KR").length,
       0
@@ -647,14 +928,23 @@ if (fs.existsSync(nisanPath)) {
     );
     assert.equal(
       hata.filter((i) => i.type === KONTROL_TIP.EKSIK_ACIKLAMA).length,
+      0
+    );
+    assert.equal(
+      uyari.filter((i) => i.type === KONTROL_TIP.EKSIK_ACIKLAMA).length,
       2
     );
 
+    const { groups, decisions } = keepAllMukerrerDecisions(
+      result.standardLucaRows
+    );
     const prepared = prepareFisDonusturmeLucaExcelFiles({
       sourceType: "ELEKTRAWEB",
       rows: result.standardLucaRows,
       chunkSize: 50,
       filePrefix: "elektraweb",
+      mukerrerGroups: groups,
+      mukerrerDecisions: decisions,
     });
     assert.equal(prepared.ok, true);
     const excelRows = prepared.files.flatMap((f) => f.excelRows);
@@ -666,6 +956,173 @@ if (fs.existsSync(nisanPath)) {
     assert.equal(
       excelRows.filter((r) => String(r["Belge Türü"] || "").trim() === "MF").length,
       6
+    );
+  });
+
+  await test("Nisan 2026: mükerrer fiş kararları + açıklama uyarı/akış", () => {
+    const workbook = safeRead(fs.readFileSync(nisanPath));
+    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+    const raw = XLSX.utils.sheet_to_json(firstSheet, { defval: "", raw: false });
+    const codes = [
+      ...new Set(
+        raw
+          .map((r) => String(r["Hesap Kodu"] || r.HesapKodu || "").trim())
+          .filter(Boolean)
+      ),
+    ];
+    const plan = codes.map((hesapKodu) => ({ hesapKodu, hesapAdi: hesapKodu }));
+    const result = processElektrawebWorkbook(workbook, {
+      firmaId: "x",
+      accountPlan: plan,
+      learningMemory: [],
+      companyMappings: { companyId: "x", kuralMotoruRules: [] },
+    });
+
+    assert.equal(result.standardLucaRows.length, 558);
+    assert.equal(result.toplamFis, 174);
+
+    const analysis = analyzeStandardLucaRows(result.standardLucaRows, {
+      firmaId: "x",
+      accountPlan: plan,
+    });
+    const hata = analysis.issues.filter((i) => i.seviye === KONTROL_SEVIYE.HATA);
+    const uyari = analysis.issues.filter((i) => i.seviye === KONTROL_SEVIYE.UYARI);
+    assert.equal(hata.filter((i) => i.type === KONTROL_TIP.MUKERRER_HAREKET).length, 8);
+    assert.equal(uyari.filter((i) => i.type === KONTROL_TIP.EKSIK_ACIKLAMA).length, 2);
+    assert.equal(hata.filter((i) => i.type === KONTROL_TIP.GECERSIZ_BELGE_TURU).length, 0);
+
+    const groups = buildMukerrerFisGroups(result.standardLucaRows, { firmaId: "x" });
+    assert.equal(groups.length, 2);
+    assert.deepEqual(groups[0].fisNos, ["04010006", "04010011", "04010014"]);
+    assert.deepEqual(groups[1].fisNos, ["04010010", "04010013", "04010017"]);
+
+    const blocked = prepareFisDonusturmeLucaExcelFiles({
+      sourceType: "ELEKTRAWEB",
+      rows: result.standardLucaRows,
+      mukerrerGroups: groups,
+      mukerrerDecisions: {},
+    });
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.code, "MUKERRER_UNRESOLVED");
+    assert.match(blocked.message, /04010006/);
+    assert.equal(result.standardLucaRows.length, 558);
+
+    const keepFirst = keepFirstMukerrerDecisions(result.standardLucaRows);
+    const excluded = getExcludedFisNosFromMukerrerDecisions(
+      keepFirst.groups,
+      keepFirst.decisions
+    );
+    assert.deepEqual(excluded, [
+      "04010011",
+      "04010013",
+      "04010014",
+      "04010017",
+    ]);
+    assert.equal(keepFirst.groups[0].firstFisNo, "04010006");
+    assert.equal(keepFirst.groups[1].firstFisNo, "04010010");
+
+    const preparedFirst = prepareFisDonusturmeLucaExcelFiles({
+      sourceType: "ELEKTRAWEB",
+      rows: result.standardLucaRows,
+      chunkSize: 50,
+      filePrefix: "elektraweb",
+      mukerrerGroups: keepFirst.groups,
+      mukerrerDecisions: keepFirst.decisions,
+    });
+    assert.equal(preparedFirst.ok, true);
+    const exportRowsFirst = preparedFirst.files.flatMap((f) => f.excelRows);
+    const exportFisFirst = [
+      ...new Set(exportRowsFirst.map((r) => String(r["Fiş No"] ?? ""))),
+    ];
+    assert.equal(exportFisFirst.length, 170);
+    assert.equal(exportRowsFirst.length, 550);
+    assert.equal(
+      exportFisFirst.includes("04010011") ||
+        exportFisFirst.includes("04010014") ||
+        exportFisFirst.includes("04010013") ||
+        exportFisFirst.includes("04010017"),
+      false
+    );
+    assert.equal(exportFisFirst.includes("04010006"), true);
+    assert.equal(exportFisFirst.includes("04010010"), true);
+
+    // Bütün fişler dengeli
+    const byFis = new Map();
+    for (const row of exportRowsFirst) {
+      const fis = String(row["Fiş No"] ?? "");
+      if (!byFis.has(fis)) byFis.set(fis, { borc: 0, alacak: 0 });
+      const bucket = byFis.get(fis);
+      bucket.borc += parseMoneyTR(row["Borç"]) || 0;
+      bucket.alacak += parseMoneyTR(row["Alacak"]) || 0;
+    }
+    for (const [fis, totals] of byFis) {
+      assert.ok(
+        Math.abs(totals.borc - totals.alacak) < 0.005,
+        `dengesiz export fiş ${fis}`
+      );
+    }
+
+    // Karar geri alınca yeniden blok
+    const revoked = prepareFisDonusturmeLucaExcelFiles({
+      sourceType: "ELEKTRAWEB",
+      rows: result.standardLucaRows,
+      mukerrerGroups: groups,
+      mukerrerDecisions: {},
+    });
+    assert.equal(revoked.ok, false);
+
+    const keepAll = keepAllMukerrerDecisions(result.standardLucaRows);
+    const preparedAll = prepareFisDonusturmeLucaExcelFiles({
+      sourceType: "ELEKTRAWEB",
+      rows: result.standardLucaRows,
+      chunkSize: 50,
+      filePrefix: "elektraweb",
+      mukerrerGroups: keepAll.groups,
+      mukerrerDecisions: keepAll.decisions,
+    });
+    assert.equal(preparedAll.ok, true);
+    const exportAll = preparedAll.files.flatMap((f) => f.excelRows);
+    assert.equal(exportAll.length, 558);
+    assert.equal(
+      new Set(exportAll.map((r) => String(r["Fiş No"] ?? ""))).size,
+      174
+    );
+
+    // 04010093 açıklama — yalnız 2 boş satır
+    const before = result.standardLucaRows.filter(
+      (r) => String(r.fisNo) === "04010093"
+    );
+    assert.equal(before.length >= 2, true);
+    const filledBefore = before.filter(
+      (r) =>
+        String(r.detayAciklama || "").trim() ||
+        String(r.fisAciklama || "").trim()
+    ).length;
+    const applied = applyFisAciklamaToEmptyRows(
+      result.standardLucaRows,
+      "04010093",
+      "Nisan test açıklaması"
+    );
+    assert.equal(applied.updatedCount, 2);
+    const after = applied.rows.filter((r) => String(r.fisNo) === "04010093");
+    const emptyAfter = after.filter(
+      (r) =>
+        !String(r.detayAciklama || "").trim() &&
+        !String(r.fisAciklama || "").trim()
+    );
+    assert.equal(emptyAfter.length, 0);
+    const stillOriginal = after.filter(
+      (r) => String(r.detayAciklama || "").trim() === "Nisan test açıklaması"
+    );
+    assert.equal(stillOriginal.length, 2);
+    // Dolu satırlar değişmedi
+    assert.equal(
+      after.filter(
+        (r) =>
+          String(r.detayAciklama || "").trim() &&
+          String(r.detayAciklama || "").trim() !== "Nisan test açıklaması"
+      ).length,
+      filledBefore
     );
   });
 } else {

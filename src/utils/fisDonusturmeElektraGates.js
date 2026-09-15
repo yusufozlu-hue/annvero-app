@@ -9,6 +9,15 @@ import {
   sortStandardLucaRows,
   standardLucaRowsToExcelRows,
 } from "@/src/utils/standardLucaRow";
+import { sanitizeExportJsonRows } from "@/src/utils/safeXlsx";
+import {
+  assertMukerrerDecisionsForExport,
+  buildMukerrerFisGroups,
+  filterRowsForMukerrerExport,
+  FIS_DONUSTURME_MUKERRER_UNRESOLVED_CODE,
+} from "@/src/utils/fisDonusturmeMukerrerDecisions";
+
+export { FIS_DONUSTURME_MUKERRER_UNRESOLVED_CODE };
 
 export const FIS_DONUSTURME_ELEKTRA_TRANSFER_DISABLED_CODE =
   "ELEKTRAWEB_LUCA_TRANSFER_DISABLED";
@@ -83,20 +92,54 @@ export function assertFisDonusturmeLucaProducerTransferAllowed({
 /**
  * Elektra doğrudan Luca Excel: HESAP_EKSIK varken tamamen engelle.
  * Satır kısmen/sessiz düşürülmez.
+ * Mükerrer gruplar: çözülmemiş karar varsa engelle (tüm kaynaklar).
  */
 export function assertFisDonusturmeLucaExcelExportAllowed({
   sourceType = "",
   rows = [],
+  mukerrerGroups = null,
+  mukerrerDecisions = {},
+  firmaId = "",
 } = {}) {
+  const groups =
+    mukerrerGroups ||
+    buildMukerrerFisGroups(rows, { firmaId });
+  const mukerrerGate = assertMukerrerDecisionsForExport(
+    groups,
+    mukerrerDecisions || {}
+  );
+  if (!mukerrerGate.ok) {
+    return {
+      ok: false,
+      code: mukerrerGate.code,
+      message: mukerrerGate.message,
+      missingKaynakHesapKodlari: [],
+      unresolvedMukerrerGroups: mukerrerGate.unresolvedGroups,
+    };
+  }
+
+  const exportRows = filterRowsForMukerrerExport(
+    rows,
+    groups,
+    mukerrerDecisions || {}
+  );
+
   if (!isFisDonusturmeElektrawebSource(sourceType)) {
     return {
       ok: true,
       missingKaynakHesapKodlari: [],
       message: "",
+      exportRows,
+      mukerrerGroups: groups,
     };
   }
 
-  return assertElektrawebNoHesapEksikForExport(rows);
+  const hesapGate = assertElektrawebNoHesapEksikForExport(exportRows);
+  return {
+    ...hesapGate,
+    exportRows,
+    mukerrerGroups: groups,
+  };
 }
 
 /**
@@ -130,19 +173,30 @@ export function prepareFisDonusturmeLucaExcelFiles({
   sourceType = "",
   filePrefix = "fis",
   chunkSize = 50,
+  mukerrerGroups = null,
+  mukerrerDecisions = {},
+  firmaId = "",
 } = {}) {
-  const gate = assertFisDonusturmeLucaExcelExportAllowed({ sourceType, rows });
+  const gate = assertFisDonusturmeLucaExcelExportAllowed({
+    sourceType,
+    rows,
+    mukerrerGroups,
+    mukerrerDecisions,
+    firmaId,
+  });
   if (!gate.ok) {
     return {
       ok: false,
-      code: "HESAP_EKSIK",
+      code: gate.code || "HESAP_EKSIK",
       message: gate.message,
       missingKaynakHesapKodlari: gate.missingKaynakHesapKodlari || [],
+      unresolvedMukerrerGroups: gate.unresolvedMukerrerGroups || [],
       files: [],
     };
   }
 
-  const sorted = sortStandardLucaRows(rows);
+  const exportRows = gate.exportRows || rows;
+  const sorted = sortStandardLucaRows(exportRows);
   if (!sorted.length) {
     return {
       ok: false,
@@ -166,7 +220,9 @@ export function prepareFisDonusturmeLucaExcelFiles({
       uniqueFisNo.slice(fileIndex * size, fileIndex * size + size)
     );
     const chunkRows = sorted.filter((row) => chunkFisNos.has(row.fisNo));
-    const excelRows = standardLucaRowsToExcelRows(chunkRows);
+    const excelRows = sanitizeExportJsonRows(
+      standardLucaRowsToExcelRows(chunkRows)
+    );
 
     for (const excelRow of excelRows) {
       for (const header of LUCA_EXPORT_HEADERS) {
