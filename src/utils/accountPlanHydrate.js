@@ -4,6 +4,7 @@
  *
  * Başarısızlık veya unavailable: mevcut localStorage planına dokunmaz.
  * İptal (cancelled / AbortSignal): yazmaz.
+ * Aktif upload metadata'sı dönüşte korunur (localStorage'a API tarihi yazılmaz).
  */
 
 import { fetchFullActiveAccountPlan } from "@/src/utils/accountPlanApi";
@@ -12,6 +13,7 @@ import {
   saveAccountPlansToStorage,
   setCompanyAccountPlan,
 } from "@/src/utils/companyCenter";
+import { countActiveAccountPlanRows } from "@/src/utils/accountPlanFreshness";
 
 /**
  * companyCenter storage sözleşmesi: `{ [companyId]: { uploadedAt?, accounts } }`.
@@ -20,8 +22,18 @@ import {
  * @typedef {{
  *   accountCode?: string,
  *   accountName?: string,
+ *   isActive?: boolean,
  *   [key: string]: unknown,
  * }} AccountPlanRow
+ * @typedef {{
+ *   id?: string,
+ *   fileName?: string,
+ *   originalFileName?: string,
+ *   uploadedBy?: string,
+ *   uploadedAt?: string | number | null,
+ *   activatedAt?: string | number | null,
+ *   [key: string]: unknown,
+ * }} AccountPlanUploadMeta
  *
  * @param {{
  *   companyId: string,
@@ -30,7 +42,12 @@ import {
  *   fetchPlan?: (
  *     companyId: string,
  *     options?: Record<string, unknown>
- *   ) => Promise<{ source?: string, accounts?: AccountPlanRow[] }>,
+ *   ) => Promise<{
+ *     source?: string,
+ *     accounts?: AccountPlanRow[],
+ *     upload?: AccountPlanUploadMeta | null,
+ *     pagination?: Record<string, unknown> | null,
+ *   }>,
  *   loadStorage?: () => AccountPlansByCompany,
  *   setPlan?: (
  *     plans: AccountPlansByCompany,
@@ -45,6 +62,9 @@ import {
  *   companyId: string,
  *   accounts: AccountPlanRow[],
  *   accountPlans: AccountPlansByCompany | null,
+ *   upload: AccountPlanUploadMeta | null,
+ *   source: string,
+ *   accountCount: number,
  * }>}
  */
 export async function hydrateCompanyAccountPlanFromApi({
@@ -62,6 +82,9 @@ export async function hydrateCompanyAccountPlanFromApi({
     companyId: companyId || "",
     accounts: [],
     accountPlans: null,
+    upload: null,
+    source: "none",
+    accountCount: 0,
   };
 
   if (!companyId) return empty;
@@ -81,10 +104,21 @@ export async function hydrateCompanyAccountPlanFromApi({
     }
 
     if (!plan || plan.source === "unavailable") {
-      return { ...empty, reason: "unavailable" };
+      return {
+        ...empty,
+        reason: "unavailable",
+        source: "unavailable",
+        upload: null,
+      };
     }
 
     const accounts = Array.isArray(plan.accounts) ? plan.accounts : [];
+    const upload =
+      plan.upload && typeof plan.upload === "object" ? plan.upload : null;
+    const source = String(plan.source || "api");
+    const accountCount =
+      Number(plan.pagination?.planActiveCount ?? plan.pagination?.activeCount) ||
+      countActiveAccountPlanRows(accounts);
 
     // Yazmadan önce tekrar kontrol — A→B yarışında iptal edilen istek storage'a yazmasın.
     if (cancelled()) {
@@ -101,11 +135,14 @@ export async function hydrateCompanyAccountPlanFromApi({
       companyId,
       accounts,
       accountPlans,
+      upload,
+      source,
+      accountCount,
     };
   } catch (error) {
     if (cancelled() || error?.name === "AbortError") {
       return { ...empty, reason: "cancelled" };
     }
-    return { ...empty, reason: "error" };
+    return { ...empty, reason: "error", source: "error" };
   }
 }
