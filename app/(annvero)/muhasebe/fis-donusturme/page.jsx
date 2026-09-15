@@ -13,6 +13,12 @@ import {
   BANK_PARSER_OPTIONS,
   getDefaultBankParserId,
 } from "@/src/config/bankParserOptions";
+import { hydrateCompanyAccountPlanFromApi } from "@/src/utils/accountPlanHydrate";
+import {
+  buildAccountPlanFreshnessSummary,
+  isAccountPlanFreshnessStaleForCompany,
+} from "@/src/utils/accountPlanFreshness";
+import AccountPlanFreshnessCard from "../components/AccountPlanFreshnessCard";
 import {
   getAccountPlanForCompany,
   getCompanyRules,
@@ -21,7 +27,6 @@ import {
   normalizeAccountPlanForMatching,
   normalizeCompanyRecord,
 } from "@/src/utils/companyCenter";
-import { hydrateCompanyAccountPlanFromApi } from "@/src/utils/accountPlanHydrate";
 import {
   publishFisDonusturmeTransfer,
   buildLucaProducerHref,
@@ -429,6 +434,7 @@ export default function FisDonusturmePage() {
   const [mukerrerDecisions, setMukerrerDecisions] = useState({});
   const [fisAciklamaDrafts, setFisAciklamaDrafts] = useState({});
   const [bulkHesapDrafts, setBulkHesapDrafts] = useState({});
+  const [accountPlanFreshness, setAccountPlanFreshness] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const exportBusyRef = useRef(false);
@@ -475,9 +481,26 @@ export default function FisDonusturmePage() {
   }, [refreshCompanies, selectedCompanyId]);
 
   useEffect(() => {
-    if (!selectedCompanyId) return undefined;
+    if (!selectedCompanyId) {
+      setAccountPlanFreshness(
+        buildAccountPlanFreshnessSummary({
+          companyId: "",
+          status: "none",
+          source: "none",
+          accounts: [],
+        })
+      );
+      return undefined;
+    }
     let cancelled = false;
     const controller = new AbortController();
+    setAccountPlanFreshness(
+      buildAccountPlanFreshnessSummary({
+        companyId: selectedCompanyId,
+        status: "loading",
+        source: "api",
+      })
+    );
 
     void (async () => {
       const result = await hydrateCompanyAccountPlanFromApi({
@@ -485,8 +508,40 @@ export default function FisDonusturmePage() {
         signal: controller.signal,
         isCancelled: () => cancelled,
       });
-      if (cancelled || !result.ok || !result.accountPlans) return;
-      setAccountPlans(result.accountPlans);
+      if (cancelled) return;
+
+      if (result.ok && result.accountPlans) {
+        setAccountPlans(result.accountPlans);
+        setAccountPlanFreshness(
+          buildAccountPlanFreshnessSummary({
+            companyId: selectedCompanyId,
+            status: "ready",
+            source: result.source || "api",
+            upload: result.upload,
+            accounts: result.accounts,
+            accountCount: result.accountCount,
+          })
+        );
+        return;
+      }
+
+      const local = loadAccountPlansFromStorage();
+      const localAccounts = getAccountPlanForCompany(local, selectedCompanyId);
+      if (localAccounts.length > 0) {
+        setAccountPlans(local);
+      }
+      setAccountPlanFreshness(
+        buildAccountPlanFreshnessSummary({
+          companyId: selectedCompanyId,
+          status: localAccounts.length > 0 ? "ready" : "missing",
+          source:
+            result.reason === "unavailable" || result.reason === "error"
+              ? "localStorage"
+              : "localStorage",
+          upload: null,
+          accounts: localAccounts,
+        })
+      );
     })();
 
     return () => {
@@ -550,6 +605,31 @@ export default function FisDonusturmePage() {
     () => collectHesapEksikKaynakGroups(standardLucaRows),
     [standardLucaRows]
   );
+
+  const displayedAccountPlanFreshness = useMemo(() => {
+    if (!selectedCompanyId) {
+      return buildAccountPlanFreshnessSummary({
+        companyId: "",
+        status: "none",
+        source: "none",
+        accounts: [],
+      });
+    }
+    if (
+      !accountPlanFreshness ||
+      isAccountPlanFreshnessStaleForCompany(
+        accountPlanFreshness,
+        selectedCompanyId
+      )
+    ) {
+      return buildAccountPlanFreshnessSummary({
+        companyId: selectedCompanyId,
+        status: "loading",
+        source: "api",
+      });
+    }
+    return accountPlanFreshness;
+  }, [accountPlanFreshness, selectedCompanyId]);
 
   const analyzedRows = useMemo(
     () =>
@@ -1248,10 +1328,22 @@ export default function FisDonusturmePage() {
                   setSelectedCompanyId(e.target.value);
                   resetPipelineOutput();
                 }}
-                className="mb-6 w-full max-w-md rounded-xl border border-gray-700 bg-gray-950 p-3 text-white"
+                className="mb-4 w-full max-w-md rounded-xl border border-gray-700 bg-gray-950 p-3 text-white"
               >
                 <CompanySelectOptions companies={companies} />
               </select>
+
+              {selectedCompanyId ? (
+                <div className="mb-6 max-w-md">
+                  <AccountPlanFreshnessCard
+                    variant="compact"
+                    summary={displayedAccountPlanFreshness}
+                    loading={
+                      displayedAccountPlanFreshness?.readiness === "loading"
+                    }
+                  />
+                </div>
+              ) : null}
 
               <label className="mb-2 block text-sm text-gray-400">Kaynak Tipi</label>
               <div className="mb-6 flex flex-wrap gap-2" role="radiogroup">

@@ -27,6 +27,10 @@ import {
   formatAccountPlanUploadStatus,
   parseAccountPlanSheetRows,
 } from "@/src/utils/accountPlanUpload";
+import {
+  buildAccountPlanFreshnessSummary,
+} from "@/src/utils/accountPlanFreshness";
+import AccountPlanFreshnessCard from "../components/AccountPlanFreshnessCard";
 
 const ROW_HEIGHT = 52;
 const PAGE_SIZE = 50;
@@ -491,10 +495,45 @@ export default function HesapPlaniPage() {
             {activeUpload
               ? `Aktif sürüm · ${activeUpload.fileName || "—"}`
               : source === "localStorage"
-                ? "Yerel kaynak"
+                ? "Yerel önbellek"
                 : "—"}
           </span>
         </div>
+
+        {selectedCompanyId ? (
+          <div className="border-b border-gray-800 px-4 py-3">
+            <AccountPlanFreshnessCard
+              variant="detailed"
+              loading={loading || source === "loading"}
+              summary={
+                loading || source === "loading"
+                  ? buildAccountPlanFreshnessSummary({
+                      companyId: selectedCompanyId,
+                      status: "loading",
+                      source: "api",
+                    })
+                  : buildAccountPlanFreshnessSummary({
+                      companyId: selectedCompanyId,
+                      status:
+                        planCounts.activeCount > 0 || planCounts.total > 0
+                          ? "ready"
+                          : "missing",
+                      source:
+                        source === "localStorage"
+                          ? "localStorage"
+                          : source === "api"
+                            ? "api"
+                            : source === "unavailable"
+                              ? "localStorage"
+                              : "none",
+                      upload: source === "api" ? activeUpload : null,
+                      accountCount:
+                        planCounts.activeCount || planCounts.total || 0,
+                    })
+              }
+            />
+          </div>
+        ) : null}
 
         {!selectedCompanyId ? (
           <div className="p-8 text-center text-sm text-gray-400">
