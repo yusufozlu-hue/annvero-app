@@ -20,6 +20,7 @@ export async function fetchActiveAccountPlan(companyId, options = {}) {
   const response = await fetch(`/api/account-plans?${params}`, {
     cache: "no-store",
     credentials: "include",
+    signal: options.signal,
   });
   if (response.status === 404 || response.status === 503) {
     return {
@@ -46,8 +47,8 @@ export async function fetchActiveAccountPlan(companyId, options = {}) {
  * Bank Parser / Eksik Hesap — tam aktif plan (1000+ satır dahil).
  * İstemci tarafında ek sayfalama gerekmez; sunucu range döngüsü yapar.
  */
-export async function fetchFullActiveAccountPlan(companyId) {
-  return fetchActiveAccountPlan(companyId, { all: true });
+export async function fetchFullActiveAccountPlan(companyId, options = {}) {
+  return fetchActiveAccountPlan(companyId, { ...options, all: true });
 }
 
 export async function fetchAccountPlanUploads(companyId) {

@@ -16,6 +16,7 @@ import {
   logElektrawebAccountPlanDiagnostics,
   normalizeAccountPlanForMatching,
 } from "@/src/utils/companyCenter";
+import { hydrateCompanyAccountPlanFromApi } from "@/src/utils/accountPlanHydrate";
 import {
   publishElektrawebLucaTransfer,
   buildLucaProducerHref,
@@ -121,8 +122,39 @@ export default function ElektrawebPage() {
     };
     refreshPlans();
     window.addEventListener("focus", refreshPlans);
-    return () => window.removeEventListener("focus", refreshPlans);
-  }, []);
+    const onPlanUpdated = (event: Event) => {
+      const companyId = (event as CustomEvent)?.detail?.companyId;
+      if (!companyId || companyId === selectedCompanyId) {
+        setAccountPlans(loadAccountPlansFromStorage());
+      }
+    };
+    window.addEventListener("annvero:account-plan-updated", onPlanUpdated);
+    return () => {
+      window.removeEventListener("focus", refreshPlans);
+      window.removeEventListener("annvero:account-plan-updated", onPlanUpdated);
+    };
+  }, [selectedCompanyId]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return undefined;
+    let cancelled = false;
+    const controller = new AbortController();
+
+    void (async () => {
+      const result = await hydrateCompanyAccountPlanFromApi({
+        companyId: selectedCompanyId,
+        signal: controller.signal,
+        isCancelled: () => cancelled,
+      });
+      if (cancelled || !result.ok || !result.accountPlans) return;
+      setAccountPlans(result.accountPlans);
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [selectedCompanyId]);
 
   useEffect(() => {
     if (!selectedCompanyId) {
