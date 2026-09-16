@@ -695,6 +695,14 @@ export default function FisDonusturmePage() {
 
   const displayedRows = filteredRows.slice(0, 150);
 
+  const hatalarFilterMeta = useMemo(() => {
+    if (previewQuickFilter !== "errors") return null;
+    const issueCount = Number(analysis.summary?.hataIssueCount || 0);
+    const rowCount = filteredRows.length;
+    if (issueCount === rowCount) return null;
+    return { issueCount, rowCount };
+  }, [previewQuickFilter, analysis.summary, filteredRows.length]);
+
   const resetPipelineOutput = () => {
     setStandardLucaRows([]);
     setMukerrerDecisions({});
@@ -1610,23 +1618,56 @@ export default function FisDonusturmePage() {
                     totalCount={standardLucaRows.length}
                   />
 
+                  {hatalarFilterMeta ? (
+                    <p
+                      data-testid="fis-donusturme-hatalar-filter-meta"
+                      className="mt-2 text-xs text-amber-200/90"
+                    >
+                      Özet: {hatalarFilterMeta.issueCount} hata kaydı · Filtre:{" "}
+                      {hatalarFilterMeta.rowCount} etkilenen satır (risk veya
+                      kontrol notu olanlar; uyarı notları da dahil).
+                    </p>
+                  ) : null}
+
                   <div
                     data-testid="fis-donusturme-preview-scroll"
-                    className="mt-4 max-w-full min-w-0 overflow-x-auto overscroll-x-contain"
+                    className={`mt-4 max-w-full min-w-0 overscroll-x-contain ${
+                      displayedRows.length === 0
+                        ? "overflow-x-hidden"
+                        : "max-h-[min(70vh,720px)] overflow-x-auto overflow-y-auto lg:max-h-none lg:overflow-x-visible lg:overflow-y-visible"
+                    }`}
                   >
-                    <table className="w-full min-w-[1500px] border-collapse text-sm">
-                      <thead className="bg-gray-800">
+                    <table
+                      className={`w-full border-collapse text-sm ${
+                        displayedRows.length === 0
+                          ? "min-w-0"
+                          : "table-fixed min-w-0 max-lg:min-w-[860px] lg:min-w-0"
+                      }`}
+                    >
+                      <colgroup>
+                        <col className="w-[4.5rem]" />
+                        <col className="w-[5.5rem]" />
+                        <col className="w-[5rem]" />
+                        <col className="w-[6.5rem]" />
+                        <col className="w-[4.25rem]" />
+                        <col />
+                        <col className="w-[5.5rem]" />
+                        <col className="w-[5.5rem]" />
+                        <col className="w-[7.5rem]" />
+                        <col className="w-[8.75rem]" />
+                      </colgroup>
+                      <thead className="sticky top-0 z-[5] bg-gray-800">
                         <tr>
-                          <th className="p-3 text-left">Fiş No</th>
-                          <th className="p-3 text-left">Tarih</th>
-                          <th className="p-3 text-left">Kaynak</th>
-                          <th className="p-3 text-left">Hesap Kodu</th>
-                          <th className="p-3 text-left">Belge Türü</th>
-                          <th className="p-3 text-left">Açıklama</th>
-                          <th className="p-3 text-right">Borç</th>
-                          <th className="p-3 text-right">Alacak</th>
-                          <th className="p-3 text-left">Risk / Kontrol</th>
-                          <th className="sticky right-0 z-20 min-w-[148px] whitespace-nowrap border-l border-gray-700 bg-gray-800 p-3 text-center shadow-[-8px_0_16px_-8px_rgba(0,0,0,0.45)]">
+                          <th className="p-2 text-left text-xs font-semibold">Fiş No</th>
+                          <th className="p-2 text-left text-xs font-semibold">Tarih</th>
+                          <th className="p-2 text-left text-xs font-semibold">Kaynak</th>
+                          <th className="p-2 text-left text-xs font-semibold">Hesap Kodu</th>
+                          <th className="p-2 text-left text-xs font-semibold">Belge Türü</th>
+                          <th className="p-2 text-left text-xs font-semibold">Açıklama</th>
+                          <th className="p-2 text-right text-xs font-semibold">Borç</th>
+                          <th className="p-2 text-right text-xs font-semibold">Alacak</th>
+                          <th className="p-2 text-left text-xs font-semibold">Risk / Kontrol</th>
+                          <th className="bg-gray-800 p-2 text-center text-xs font-semibold max-lg:sticky max-lg:right-0 max-lg:z-20 max-lg:min-w-[140px] max-lg:whitespace-nowrap max-lg:border-l max-lg:border-gray-700 max-lg:shadow-[-8px_0_16px_-8px_rgba(0,0,0,0.45)]">
                             İşlem
                           </th>
                         </tr>
@@ -1642,21 +1683,31 @@ export default function FisDonusturmePage() {
                           displayedRows.map((row) => (
                             <Fragment key={row.id}>
                               <tr className="border-t border-gray-800">
-                                <td className="p-3">{row.fisNo}</td>
-                                <td className="p-3">{formatDateTR(row.fisTarihi)}</td>
-                                <td className="p-3 text-xs text-gray-400">
+                                <td className="truncate p-2 text-xs">{row.fisNo}</td>
+                                <td className="whitespace-nowrap p-2 text-xs">
+                                  {formatDateTR(row.fisTarihi)}
+                                </td>
+                                <td className="truncate p-2 text-[11px] text-gray-400">
                                   {row.kaynakAdi || row.kaynakTipi}
                                 </td>
-                                <td className="p-3 font-mono text-xs">
+                                <td className="truncate p-2 font-mono text-[11px]">
                                   {row.hesapKodu || "—"}
                                 </td>
-                                <td className="p-3">{row.belgeTuru || "—"}</td>
-                                <td className="p-3">
-                                  {row.detayAciklama || row.fisAciklama || "—"}
+                                <td className="truncate p-2 text-xs">
+                                  {row.belgeTuru || "—"}
                                 </td>
-                                <td className="p-3 text-right">{formatAmount(row.borc)}</td>
-                                <td className="p-3 text-right">{formatAmount(row.alacak)}</td>
-                                <td className="p-3">
+                                <td className="p-2 text-xs">
+                                  <span className="line-clamp-2 break-words">
+                                    {row.detayAciklama || row.fisAciklama || "—"}
+                                  </span>
+                                </td>
+                                <td className="whitespace-nowrap p-2 text-right text-xs tabular-nums">
+                                  {formatAmount(row.borc)}
+                                </td>
+                                <td className="whitespace-nowrap p-2 text-right text-xs tabular-nums">
+                                  {formatAmount(row.alacak)}
+                                </td>
+                                <td className="p-2">
                                   <div className="flex flex-col gap-1">
                                     <div className="flex flex-wrap gap-1">
                                       {shouldShowFisDonusturmeRiskPill(row) ? (
@@ -1691,13 +1742,13 @@ export default function FisDonusturmePage() {
                                       ) : null}
                                     </div>
                                     {row._kontrol?.kontrolNotu ? (
-                                      <span className="text-[11px] text-gray-400">
+                                      <span className="line-clamp-2 text-[11px] text-gray-400">
                                         {row._kontrol.kontrolNotu}
                                       </span>
                                     ) : null}
                                   </div>
                                 </td>
-                                <td className="sticky right-0 z-10 min-w-[148px] whitespace-nowrap border-l border-gray-800 bg-gray-900 p-3 shadow-[-6px_0_14px_-8px_rgba(0,0,0,0.4)]">
+                                <td className="bg-gray-900 p-2 max-lg:sticky max-lg:right-0 max-lg:z-10 max-lg:min-w-[140px] max-lg:whitespace-nowrap max-lg:border-l max-lg:border-gray-800 max-lg:shadow-[-6px_0_14px_-8px_rgba(0,0,0,0.4)]">
                                   <div className="flex items-center justify-center gap-2">
                                     <button
                                       type="button"
