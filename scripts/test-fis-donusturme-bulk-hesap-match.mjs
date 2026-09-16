@@ -180,25 +180,28 @@ test("Tüm 11 kod çözülünce export açılır; kısmi çözümde engel", () =
 
 test("UI: sticky İşlem + whitespace-nowrap Düzenle (viewport güvenliği)", () => {
   const src = fs.readFileSync(pagePath, "utf8");
-  assert.match(src, /sticky right-0 z-20[\s\S]*?İşlem/);
-  assert.match(src, /sticky right-0 z-10[\s\S]*?Düzenle/);
+  // Desktop: sticky yok (overlay yok); dar ekranda max-lg:sticky
+  assert.match(src, /max-lg:sticky max-lg:right-0[\s\S]*?İşlem/);
+  assert.match(src, /max-lg:sticky max-lg:right-0[\s\S]*?Düzenle/);
   assert.match(src, /whitespace-nowrap[\s\S]*?Düzenle|Düzenle[\s\S]*?whitespace-nowrap/);
-  assert.match(src, /min-w-\[148px\]/);
-  assert.match(src, /overflow-x-auto/);
-  assert.match(src, /overflow-x-hidden/);
+  assert.match(src, /table-fixed/);
+  assert.doesNotMatch(src, /min-w-\[1500px\]/);
+  assert.match(src, /lg:overflow-x-visible/);
   assert.match(src, /fis-donusturme-preview-scroll/);
-  // Truncation to single letter "D" yok
-  assert.doesNotMatch(
-    src,
-    />\s*D\s*<\/button>/
-  );
-  // 390 / 1280 / 1366 / 1440: sticky + nowrap + table scroll sözleşmesi
+  assert.doesNotMatch(src, />\s*D\s*<\/button>/);
   for (const width of [390, 1280, 1366, 1440]) {
     assert.ok(
-      src.includes("sticky right-0") && src.includes("whitespace-nowrap"),
-      `viewport ${width}: sticky/nowrap contract`
+      src.includes("whitespace-nowrap") && src.includes("table-fixed"),
+      `viewport ${width}: compact table contract`
     );
   }
+});
+
+test("UI: Hatalılar filtresi issue vs satır ayrımını gösterir", () => {
+  const src = fs.readFileSync(pagePath, "utf8");
+  assert.match(src, /fis-donusturme-hatalar-filter-meta/);
+  assert.match(src, /hataIssueCount/);
+  assert.match(src, /etkilenen satır/);
 });
 
 test("UI: toplu panel + export HESAP_EKSIK ile kapalı", () => {
