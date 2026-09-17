@@ -206,8 +206,9 @@ console.log("3) audit afterState parity vs origin/main redactDeep");
     path.join(root, "app/api/learning-memory/route.js"),
     "utf8"
   );
-  pass(/afterState:\s*data/.test(route), "writeAuditEvent afterState: data unchanged");
+  pass(/afterState:\s*buildLearningMemoryAuditState\(/.test(route), "writeAuditEvent afterState uses LM audit builder");
   pass(!/toSafeOperationalDetail\(data\)/.test(route), "afterState not run through ops allowlist");
+  pass(!/afterState:\s*data\b/.test(route), "afterState is not full business row");
 }
 
 console.log("4) systemLogEngine normalizeDetail fail-closed");
