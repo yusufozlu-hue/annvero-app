@@ -13,6 +13,7 @@ import {
   AUDIT_ACTIONS,
   AUDIT_ENTITY_TYPES,
 } from "@/src/lib/audit/auditEvents";
+import { buildLearningMemoryAuditState } from "@/src/lib/audit/learningMemoryAuditState";
 import {
   buildSafeLearningMemoryPayload,
   isLearningMemorySchemaError,
@@ -257,7 +258,10 @@ export async function POST(request) {
     entityType: AUDIT_ENTITY_TYPES.LEARNING_MEMORY,
     entityId: data?.id || "",
     action: AUDIT_ACTIONS.CREATE,
-    afterState: data,
+    afterState: buildLearningMemoryAuditState(data, {
+      companyId,
+      entityId: data?.id || "",
+    }),
   });
 
   return NextResponse.json({ data: withLearningMemoryAliases(data) });
@@ -329,7 +333,11 @@ export async function PATCH(request) {
       entityType: AUDIT_ENTITY_TYPES.LEARNING_MEMORY,
       entityId: record.id,
       action: AUDIT_ACTIONS.UPDATE,
-      afterState: data,
+      afterState: buildLearningMemoryAuditState(data, {
+        companyId: accessCheck.companyId,
+        entityId: record.id,
+        changedFields: Object.keys(payload),
+      }),
     });
 
     return NextResponse.json({ data: withLearningMemoryAliases(data) });
