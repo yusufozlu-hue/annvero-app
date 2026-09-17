@@ -34015,6 +34015,124 @@
     "cookie",
     "set-cookie"
   ]);
+  var SAFE_OPERATIONAL_CODES = Object.freeze(
+    /* @__PURE__ */ new Set([
+      "SAFE_ERROR",
+      "UNEXPECTED_ERROR",
+      "ABORTED",
+      "WORKER_ONERROR",
+      "WORKER_CONSTRUCT_FAILED",
+      "WORKER_UNAVAILABLE",
+      "WORKER_MESSAGE_ERROR",
+      "WORKER_POSTMESSAGE_FAILED",
+      "WORKER_SCRIPT_HTML",
+      "WORKER_SCRIPT_INVALID",
+      "WORKER_SCRIPT_FETCH_FAILED",
+      "WORKER_CLONE_FAILED",
+      "WORKER_DUPLICATE_REQUEST",
+      "WORKER_CANCELLED",
+      "WORKER_STALE",
+      "WORKER_TIMEOUT",
+      "WORKER_PARSE_FAILED",
+      "WORKER_PROTOCOL_ERROR",
+      "WORKER_FAILED",
+      "FIS_KONTROL_CANCELLED",
+      "FIS_KONTROL_STALE",
+      "FIS_KONTROL_TIMEOUT",
+      "FIS_KONTROL_ANALYZE_FAILED",
+      "FIS_KONTROL_WORKER_EMPTY",
+      "FIS_KONTROL_WORKER_SCHEMA",
+      "FIS_KONTROL_IN_FLIGHT",
+      "FIS_KONTROL_REQUEST_ID_MISMATCH",
+      "FIS_KONTROL_RISK_SUMMARY",
+      "LEARNING_MEMORY_FETCH_FAILED",
+      "LEARNING_MEMORY_CREATE_FAILED",
+      "LEARNING_MEMORY_UPDATE_FAILED",
+      "LEARNING_MEMORY_DELETE_FAILED",
+      "LEARNING_MEMORY_USAGE_FAILED",
+      "LEARNING_MEMORY_SCHEMA",
+      "BANK_ROW_MAP_FAILED",
+      "PARSER_CANCELLED",
+      "PARSER_TIMEOUT",
+      "PARSER_FAILED",
+      "CORRUPT_XML",
+      "CORRUPT_EXCEL",
+      "ERROR",
+      // e-Defter / Genel Muhasebe analyze bridge routing codes
+      "ANALYZE_WORKER_EMPTY",
+      "ANALYZE_WORKER_SCHEMA",
+      "ANALYZE_WORKER_FAILED",
+      "ANALYZE_REQUEST_ID_MISMATCH",
+      "ANALYZE_REQUEST_ID_MISSING",
+      "ANALYZE_PROTOCOL_MISMATCH",
+      "ANALYZE_PAYLOAD_MISSING",
+      "ANALYZE_TIMEOUT",
+      "ANALYZE_IN_FLIGHT",
+      "ANALYZE_STALE",
+      "ANALYZE_CANCELLED"
+    ])
+  );
+  var SAFE_DETAIL_KEYS = Object.freeze(
+    /* @__PURE__ */ new Set([
+      "code",
+      "stage",
+      "module",
+      "errorType",
+      "jobType",
+      "reason",
+      "source",
+      "hataCount",
+      "issueCount",
+      "rowCount",
+      "uyariCount",
+      "count",
+      "grouped",
+      "workerFallback",
+      "fallbackReasonCode",
+      "durationMs",
+      "durationBucket",
+      "generation",
+      "requestId",
+      "issueType",
+      "issueTypes"
+    ])
+  );
+  var SAFE_STAGES = Object.freeze(
+    /* @__PURE__ */ new Set([
+      "ANALYZING",
+      "HYDRATE",
+      "EXPORT",
+      "LEARN",
+      "TRANSFER",
+      "PARSER",
+      "WORKER",
+      "FALLBACK",
+      "IDLE"
+    ])
+  );
+  var SAFE_UI_MESSAGES = Object.freeze({
+    WORKER_ONERROR: "Arka plan i\u015F\xE7isi y\xFCklenemedi. Ana i\u015Flem yolu denenecek.",
+    WORKER_UNAVAILABLE: "Arka plan i\u015F\xE7isi kullan\u0131lam\u0131yor. Ana i\u015Flem yolu denenecek.",
+    WORKER_TIMEOUT: "\u0130\u015Flem zaman a\u015F\u0131m\u0131na u\u011Frad\u0131. L\xFCtfen tekrar deneyin.",
+    WORKER_CANCELLED: "\u0130\u015Flem iptal edildi.",
+    WORKER_STALE: "\u0130\u015Flem g\xFCncellendi; \xF6nceki sonu\xE7 yok say\u0131ld\u0131.",
+    WORKER_PARSE_FAILED: "Analiz tamamlanamad\u0131. L\xFCtfen tekrar deneyin.",
+    WORKER_PROTOCOL_ERROR: "Analiz tamamlanamad\u0131. L\xFCtfen tekrar deneyin.",
+    WORKER_FAILED: "Analiz tamamlanamad\u0131. L\xFCtfen tekrar deneyin.",
+    FIS_KONTROL_CANCELLED: "Fi\u015F kontrol\xFC iptal edildi.",
+    FIS_KONTROL_STALE: "Fi\u015F kontrol\xFC g\xFCncellendi; \xF6nceki sonu\xE7 yok say\u0131ld\u0131.",
+    FIS_KONTROL_TIMEOUT: "Fi\u015F kontrol\xFC zaman a\u015F\u0131m\u0131na u\u011Frad\u0131. L\xFCtfen tekrar deneyin.",
+    FIS_KONTROL_ANALYZE_FAILED: "Fi\u015F kontrol\xFC tamamlanamad\u0131. L\xFCtfen tekrar deneyin.",
+    PARSER_TIMEOUT: "\u0130\u015Flem zaman a\u015F\u0131m\u0131na u\u011Frad\u0131. L\xFCtfen tekrar deneyin.",
+    PARSER_CANCELLED: "\u0130\u015Flem iptal edildi.",
+    PARSER_FAILED: "\u0130\u015Flem tamamlanamad\u0131. L\xFCtfen tekrar deneyin.",
+    CORRUPT_XML: "Dosya okunamad\u0131. Ge\xE7erli bir XML/ZIP y\xFCkleyin.",
+    CORRUPT_EXCEL: "Dosya okunamad\u0131. Ge\xE7erli bir Excel y\xFCkleyin.",
+    LEARNING_MEMORY_SCHEMA: "\xD6\u011Frenen haf\u0131za \u015Femas\u0131 g\xFCncel de\u011Fil.",
+    UNEXPECTED_ERROR: "\u0130\u015Flem ba\u015Far\u0131s\u0131z.",
+    SAFE_ERROR: "\u0130\u015Flem ba\u015Far\u0131s\u0131z.",
+    BANK_ROW_MAP_FAILED: "Baz\u0131 sat\u0131rlar e\u015Fle\u015Ftirilemedi."
+  });
 
   // src/utils/safeXlsx.js
   var SAFE_XLSX_READ_DEFAULTS = Object.freeze({
