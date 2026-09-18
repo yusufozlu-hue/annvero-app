@@ -12,12 +12,12 @@ import {
 import { enforceRateLimit } from "@/src/lib/security/rateLimit";
 import {
   parseBankStatementPdf,
-  PDF_MAX_BYTES,
+  PDF_UPLOAD_MAX_BYTES,
 } from "@/src/utils/bankStatementPdf.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 30;
+export const maxDuration = 90;
 
 function publicParseResult(result) {
   if (!result || typeof result !== "object") {
@@ -110,12 +110,12 @@ export async function POST(request) {
   }
 
   const size = Number(file.size) || 0;
-  if (size <= 0 || size > PDF_MAX_BYTES) {
+  if (size <= 0 || size > PDF_UPLOAD_MAX_BYTES) {
     return NextResponse.json(
       {
         ok: false,
         code: "PDF_TOO_LARGE",
-        message: `PDF çok büyük. En fazla ${(PDF_MAX_BYTES / (1024 * 1024)).toFixed(0)} MB.`,
+        message: `PDF çok büyük. En fazla ${(PDF_UPLOAD_MAX_BYTES / (1024 * 1024)).toFixed(0)} MB.`,
         transactions: [],
       },
       { status: 400 }

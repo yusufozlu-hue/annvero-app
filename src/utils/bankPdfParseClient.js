@@ -4,7 +4,7 @@
  * Ham PDF / IBAN / VKN / metin istemci loguna yazılmaz.
  */
 
-import { PDF_MAX_BYTES } from "@/src/utils/bankStatementPdf";
+import { PDF_UPLOAD_MAX_BYTES } from "@/src/utils/bankStatementPdf";
 
 function asArrayBuffer(bytes) {
   if (!bytes) return new ArrayBuffer(0);
@@ -28,7 +28,7 @@ export async function runBankPdfParseViaServer({
   parseUrl = "/api/bank-pdf/parse",
 } = {}) {
   const ab = asArrayBuffer(bytes);
-  if (!ab.byteLength || ab.byteLength > PDF_MAX_BYTES) {
+  if (!ab.byteLength || ab.byteLength > PDF_UPLOAD_MAX_BYTES) {
     return null;
   }
 

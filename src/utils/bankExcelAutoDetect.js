@@ -8,7 +8,7 @@ import {
   toParserBankId,
 } from "@/src/utils/bankIdentity";
 
-export const BANK_EXCEL_DETECTOR_VERSION = "excel-auto-detect/1.0.3";
+export const BANK_EXCEL_DETECTOR_VERSION = "excel-auto-detect/1.0.4";
 
 /** formatGuard ile aynı — döngüsel import yok; İ→i̇ birleşik işaretini temizler */
 function normalizeStatementHeaderText(value) {
@@ -160,6 +160,59 @@ function scoreVakifbank(corpus) {
   };
 }
 
+/**
+ * TEB 14-kolon hesap hareketleri ihracatı (yapısal fingerprint).
+ * Dosya adı / firma / hesap no kullanılmaz — yalnız başlık seti.
+ * Belirsiz Tutar+Dekont (Garanti-benzeri) bu sözleşmeyi karşılamaz.
+ */
+export function looksLikeTebFourteenColumnExport(corpusOrText = "") {
+  const t =
+    typeof corpusOrText === "string"
+      ? corpusOrText
+      : String(
+          corpusOrText?.identityText || corpusOrText?.fullText || ""
+        );
+  if (!t) return false;
+  const hasTarih = t.includes("tarih");
+  const hasValor = t.includes("valor");
+  const hasSaat = t.includes("saat");
+  const hasIslemiGiren =
+    t.includes("islemi giren") || t.includes("islem giren kullanici");
+  const hasAciklama = t.includes("aciklama");
+  const hasBankaCol = /\bbanka\b/.test(t);
+  const hasUnvan = t.includes("unvan");
+  const hasAliciHesap =
+    t.includes("alici hesap") ||
+    (t.includes("iban") && t.includes("kart")) ||
+    t.includes("alici hesap / iban");
+  const hasOzelIslem = t.includes("ozel islem");
+  const hasEftSorgu = t.includes("eft sorgu");
+  const hasTutar = t.includes("tutar");
+  const hasBakiye = t.includes("bakiye");
+  const hasDekont = t.includes("dekont");
+  const hasMusteriRef =
+    t.includes("musteri referans") || t.includes("musteri referansi");
+  const hasBorcAlacakPair = t.includes("borc") && t.includes("alacak");
+  // 14-kolon TEB: Valör+Saat+EFT+Müşteri Ref zorunlu ayırt edici set
+  const strong =
+    hasTarih &&
+    hasValor &&
+    hasSaat &&
+    hasIslemiGiren &&
+    hasAciklama &&
+    hasBankaCol &&
+    hasUnvan &&
+    hasAliciHesap &&
+    hasOzelIslem &&
+    hasEftSorgu &&
+    hasTutar &&
+    hasBakiye &&
+    hasDekont &&
+    hasMusteriRef &&
+    !hasBorcAlacakPair;
+  return strong;
+}
+
 function scoreGaranti(corpus) {
   const signals = [];
   const t = corpus.fullText;
@@ -189,16 +242,19 @@ function scoreGaranti(corpus) {
   // Vakıf native ile karışmasın; borc+alacak+dekont Ziraat/TEB’e daha yakın
   const looksVakif =
     t.includes("b/a") || (t.includes("hesap no") && t.includes("fis no"));
+  // TEB 14-kolon: yalnız Tutar+Dekont Garanti sinyalini ezmesin
+  const looksTebFourteen = looksLikeTebFourteenColumnExport(corpus);
 
   if (
     hasTarih &&
     hasAciklama &&
     hasAmount &&
     !looksVakif &&
+    !looksTebFourteen &&
     (hasEtiket || (hasDekont && !hasBorcAlacakPair))
   ) {
     pushSignal(signals, "header_garanti_export", WEIGHTS.formatFingerprint + 6);
-  } else if (hasEtiket && hasTarih && hasAciklama) {
+  } else if (hasEtiket && hasTarih && hasAciklama && !looksTebFourteen) {
     pushSignal(signals, "header_garanti_partial", WEIGHTS.distinctiveHeader);
   }
 
@@ -231,7 +287,14 @@ function scoreTeb(corpus) {
   const hasIslemNo = t.includes("islem no") || t.includes("islem numarasi");
   const hasBakiye = t.includes("bakiye");
 
-  if (hasTarih && hasAciklama && hasBorcAlacak && hasIslemNo) {
+  if (looksLikeTebFourteenColumnExport(corpus)) {
+    // Yapısal 14-kolon fingerprint — SELECT_MIN (45) üstü, reason'da müşteri verisi yok
+    pushSignal(
+      signals,
+      "header_teb_fourteen_column",
+      WEIGHTS.formatFingerprint + WEIGHTS.distinctiveHeader + 8
+    );
+  } else if (hasTarih && hasAciklama && hasBorcAlacak && hasIslemNo) {
     pushSignal(signals, "header_teb_islem_no", WEIGHTS.distinctiveHeader + 4);
   } else if (hasTarih && hasAciklama && hasBorcAlacak && hasBakiye) {
     // Generic — düşük; yalnız brand/iban ile birleşince yeter

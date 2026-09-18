@@ -34,6 +34,11 @@ import {
   classifyVakifPdfDocument,
   parseVakifPdfLayout,
 } from "@/src/utils/bankPdf/vakifPdfLayout.js";
+import {
+  looksLikeTebPdfLayout,
+  parseTebPdfLayout,
+  TEB_PDF_LAYOUT_UNSUPPORTED,
+} from "@/src/utils/bankPdf/tebPdfLayout.js";
 
 export { reconcileStatementBalances } from "@/src/utils/bankBalanceReconcile.js";
 export {
@@ -44,22 +49,41 @@ export {
   classifyZiraatPdfDocument,
   BANK_PDF_DOCUMENT_TYPE,
 } from "@/src/utils/bankPdf/ziraatPdfLayout.js";
+export {
+  looksLikeTebBankBrand,
+  looksLikeTebPdfLayout,
+  parseTebPdfLayout,
+  TEB_PDF_LAYOUT_UNSUPPORTED,
+} from "@/src/utils/bankPdf/tebPdfLayout.js";
 
 export const PDF_MAX_BYTES = 8 * 1024 * 1024;
 export const PDF_MAX_PAGES = 80;
+/** Doğrulanmış text-native TEB layout için kontrollü üst sınır */
+export const PDF_MAX_BYTES_TEB_TEXT_NATIVE = 16 * 1024 * 1024;
+export const PDF_MAX_PAGES_TEB_TEXT_NATIVE = 150;
+export const PDF_MAX_CHARS_TEB = 600_000;
+export const PDF_MAX_TEXT_ITEMS_TEB = 250_000;
+/** Multipart upload tavanı (server iki aşamalı doğrular) */
+export const PDF_UPLOAD_MAX_BYTES = PDF_MAX_BYTES_TEB_TEXT_NATIVE;
 export const PDF_PARSE_TIMEOUT_MS = 25_000;
+/** TEB büyük ekstre — kontrollü timeout */
+export const PDF_PARSE_TIMEOUT_MS_TEB = 90_000;
 
 const SAFE = Object.freeze({
   EMPTY: "PDF dosyası boş veya okunamadı.",
   TOO_LARGE: `PDF çok büyük. En fazla ${(PDF_MAX_BYTES / (1024 * 1024)).toFixed(0)} MB yükleyebilirsiniz.`,
+  TOO_LARGE_TEB: `PDF çok büyük. TEB text-native ekstre için en fazla ${(PDF_MAX_BYTES_TEB_TEXT_NATIVE / (1024 * 1024)).toFixed(0)} MB.`,
   NOT_PDF: "Dosya geçerli bir PDF değil.",
   ENCRYPTED: "Şifreli PDF desteklenmiyor. Şifreyi kaldırıp tekrar yükleyin.",
   TOO_MANY_PAGES: `PDF sayfa sayısı çok yüksek. En fazla ${PDF_MAX_PAGES} sayfa desteklenir.`,
+  TOO_MANY_PAGES_TEB: `PDF sayfa sayısı çok yüksek. TEB text-native ekstre için en fazla ${PDF_MAX_PAGES_TEB_TEXT_NATIVE} sayfa.`,
   TIMEOUT: "PDF ayrıştırma zaman aşımına uğradı. Dosyayı bölüp tekrar deneyin.",
   CORRUPT: "PDF bozuk veya desteklenmeyen biçimde.",
   OCR_REQUIRED:
     "Bu PDF taranmış görünüyor; metin katmanı yok. OCR tamamlanana kadar inceleme kuyruğuna alındı.",
   UNSUPPORTED: "Bu PDF banka ekstresi olarak tanınamadı.",
+  TEB_LAYOUT_UNSUPPORTED:
+    "TEB PDF düzeni doğrulanamadı. Desteklenen text-native hesap hareketleri PDF'i yükleyin.",
   CANCELLED: "PDF ayrıştırma iptal edildi.",
   INCOMPLETE: "PDF sayfaları eksik veya tamamlanmamış görünüyor.",
 });
@@ -996,12 +1020,12 @@ export async function parseBankStatementPdf(bytes, options = {}) {
       sourceFileHash,
     };
   }
-  if (buf.byteLength > PDF_MAX_BYTES) {
+  if (buf.byteLength > PDF_UPLOAD_MAX_BYTES) {
     return {
       ok: false,
       status: BANK_PARSE_STATUS.ERROR,
       code: "PDF_TOO_LARGE",
-      message: SAFE.TOO_LARGE,
+      message: SAFE.TOO_LARGE_TEB,
       transactions: [],
       sourceFileHash,
     };
@@ -1028,17 +1052,66 @@ export async function parseBankStatementPdf(bytes, options = {}) {
   }
 
   const pages = estimatePdfPageCount(buf);
-  if (pages > PDF_MAX_PAGES) {
+  if (pages > PDF_MAX_PAGES_TEB_TEXT_NATIVE) {
     return {
       ok: false,
       status: BANK_PARSE_STATUS.ERROR,
       code: "PDF_TOO_MANY_PAGES",
-      message: SAFE.TOO_MANY_PAGES,
+      message: SAFE.TOO_MANY_PAGES_TEB,
       transactions: [],
       sourceFileHash,
       pageCount: pages,
     };
   }
+
+  const overGeneralBytes = buf.byteLength > PDF_MAX_BYTES;
+  const overGeneralPages = pages > PDF_MAX_PAGES;
+  let tebElevatedLimits = false;
+
+  if (overGeneralBytes || overGeneralPages) {
+    // İki aşama: sınırlı text probe → yalnız doğrulanmış text-native TEB layout yükseltilir
+    let probeText = "";
+    try {
+      const probe = await extractPdfTextLayerPdfJs(buf, {
+        signal,
+        maxPages: Math.min(3, Math.max(1, pages || 1)),
+        maxChars: 40_000,
+        withItems: false,
+      });
+      probeText = typeof probe === "string" ? probe : probe?.text || "";
+      if (!probeText) {
+        probeText = extractPdfTextLayer(buf, { signal, maxChars: 40_000 }) || "";
+      }
+    } catch {
+      probeText = "";
+    }
+    const tebOk = looksLikeTebPdfLayout(probeText);
+    // Limit yükseltme: yalnız layout kolon sözleşmesi — selectedBank / dosya adı / müşteri metnindeki "TEB" yetmez.
+    if (!tebOk) {
+      if (overGeneralBytes) {
+        return {
+          ok: false,
+          status: BANK_PARSE_STATUS.ERROR,
+          code: "PDF_TOO_LARGE",
+          message: SAFE.TOO_LARGE,
+          transactions: [],
+          sourceFileHash,
+          pageCount: pages,
+        };
+      }
+      return {
+        ok: false,
+        status: BANK_PARSE_STATUS.ERROR,
+        code: "PDF_TOO_MANY_PAGES",
+        message: SAFE.TOO_MANY_PAGES,
+        transactions: [],
+        sourceFileHash,
+        pageCount: pages,
+      };
+    }
+    tebElevatedLimits = true;
+  }
+
   if (looksIncompletePdf(buf)) {
     return {
       ok: false,
@@ -1051,7 +1124,13 @@ export async function parseBankStatementPdf(bytes, options = {}) {
     };
   }
 
-  const timeoutMs = Number(options.timeoutMs) || PDF_PARSE_TIMEOUT_MS;
+  const effectiveMaxPages = tebElevatedLimits
+    ? PDF_MAX_PAGES_TEB_TEXT_NATIVE
+    : PDF_MAX_PAGES;
+  const effectiveMaxChars = tebElevatedLimits ? PDF_MAX_CHARS_TEB : 500_000;
+  const timeoutMs =
+    Number(options.timeoutMs) ||
+    (tebElevatedLimits ? PDF_PARSE_TIMEOUT_MS_TEB : PDF_PARSE_TIMEOUT_MS);
   let text = "";
   let extractDiag = buildExtractDiagnostics();
   let extractPagesItems = null;
@@ -1066,11 +1145,24 @@ export async function parseBankStatementPdf(bytes, options = {}) {
         try {
           const pdfjsResult = await extractPdfTextLayerPdfJs(buf, {
             signal,
-            maxPages: PDF_MAX_PAGES,
+            maxPages: effectiveMaxPages,
+            maxChars: effectiveMaxChars,
             withItems: true,
           });
           pdfjsText = pdfjsResult?.text || "";
           pdfjsPagesItems = pdfjsResult?.pagesItems || null;
+          // text-item bound for TEB elevated path
+          if (tebElevatedLimits && Array.isArray(pdfjsPagesItems)) {
+            let itemCount = 0;
+            for (const p of pdfjsPagesItems) {
+              itemCount += (p?.items || []).length;
+              if (itemCount > PDF_MAX_TEXT_ITEMS_TEB) {
+                const err = new Error("PDF_TEXT_ITEMS_LIMIT");
+                err.code = "PDF_TEXT_ITEMS_LIMIT";
+                throw err;
+              }
+            }
+          }
           pdfjsOk = Boolean(pdfjsText && pdfjsText.length > 0);
           if (!pdfjsOk) pdfjsErrorCode = "PDFJS_EMPTY";
         } catch (e) {
@@ -1078,6 +1170,7 @@ export async function parseBankStatementPdf(bytes, options = {}) {
           pdfjsOk = false;
           pdfjsPagesItems = null;
           pdfjsErrorCode = String(e?.code || e?.name || "PDFJS_THROW").slice(0, 64);
+          if (e?.code === "PDF_TEXT_ITEMS_LIMIT") throw e;
         }
         const latinText = extractPdfTextLayer(buf, { signal });
         const candidates = [];
@@ -1257,6 +1350,36 @@ export async function parseBankStatementPdf(bytes, options = {}) {
   let parsed;
   if (extractZiraatParsed && (extractZiraatParsed.transactions || []).length) {
     parsed = extractZiraatParsed;
+  } else if (
+    looksLikeTebPdfLayout(workingText) &&
+    bankHint !== "ZIRAAT" &&
+    bankHint !== "VAKIFBANK" &&
+    !looksLikeVakifBankBrand(workingText)
+  ) {
+    // TEB 14-kolon layout doğrulandı → coord parser; başarısızsa generic'e sessiz düşme
+    const teb = parseTebPdfLayout({
+      text: workingText,
+      pagesItems: extractPagesItems,
+      context: {
+        ...options,
+        sourceFileHash,
+        selectedBank: "TEB",
+      },
+    });
+    if (teb.code === TEB_PDF_LAYOUT_UNSUPPORTED || !(teb.transactions || []).length) {
+      return {
+        ok: false,
+        status: BANK_PARSE_STATUS.ERROR,
+        code: TEB_PDF_LAYOUT_UNSUPPORTED,
+        message: SAFE.TEB_LAYOUT_UNSUPPORTED,
+        transactions: [],
+        sourceFileHash,
+        pageCount: pages,
+        detectedBank: "TEB",
+        warnings: teb.warnings || [],
+      };
+    }
+    parsed = teb;
   } else if (
     (bankHint === "VAKIFBANK" || looksLikeVakifBankBrand(workingText)) &&
     bankHint !== "ZIRAAT"

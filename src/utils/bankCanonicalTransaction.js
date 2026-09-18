@@ -158,6 +158,9 @@ export function createCanonicalBankTransaction(partial = {}) {
     accountIdentity,
     transactionDate,
     valueDate: empty(partial.valueDate || partial.value_date) || transactionDate,
+    transactionTime: empty(
+      partial.transactionTime || partial.saat || partial.transaction_time
+    ),
     description,
     // UNKNOWN: unsigned absolute — direction not invented from sign
     amount: direction === "CIKIS" ? -amountAbs : amountAbs,
@@ -169,6 +172,31 @@ export function createCanonicalBankTransaction(partial = {}) {
           : toNumber(partial.bakiye)
         : toNumber(partial.balance),
     currency: empty(partial.currency || "TRY").toUpperCase() || "TRY",
+    counterpartyBank: empty(
+      partial.counterpartyBank || partial.karsiBanka || partial.counter_bank
+    ),
+    counterpartyName: empty(
+      partial.counterpartyName || partial.unvan || partial.counterparty_name
+    ),
+    counterAccount: empty(
+      partial.counterAccount ||
+        partial.karsiHesap ||
+        partial.counter_account ||
+        (partial.iban && !accountIdentity ? partial.iban : "") ||
+        (partial.hesapNo && partial.hesapNo !== accountIdentity ? partial.hesapNo : "") ||
+        ""
+    ),
+    specialDescription: empty(
+      partial.specialDescription || partial.ozelAciklama || partial.special_description
+    ),
+    eftQueryNo: empty(
+      partial.eftQueryNo || partial.eftSorguNo || partial.eft_query_no
+    ),
+    customerReference: empty(
+      partial.customerReference ||
+        partial.musteriReferansi ||
+        partial.customer_reference
+    ),
     sourceRow: Number(partial.sourceRow || partial.excelRowNumber || partial.source_row) || 0,
     sourceSheet: empty(partial.sourceSheet || partial.sheetName || partial.source_sheet),
     sourcePage: Number(partial.sourcePage || partial.page || 0) || 0,
@@ -204,6 +232,7 @@ export function legacyBankRowToCanonical(row = {}, context = {}) {
     accountIdentity: row.hesapNo || row.iban || context.accountNo,
     transactionDate: row.tarih,
     valueDate: row.valor || row.valueDate || row.tarih,
+    transactionTime: row.saat || row.transactionTime,
     description: row.aciklama,
     amount: tutar || (debit ? debit : credit ? -credit : 0),
     direction: row.yon,
@@ -211,6 +240,12 @@ export function legacyBankRowToCanonical(row = {}, context = {}) {
     credit_amount: credit,
     balance: row.bakiye,
     currency: context.currency || "TRY",
+    counterpartyBank: row.karsiBanka || row.counterpartyBank,
+    counterpartyName: row.unvan,
+    counterAccount: row.iban || row.hesapNo,
+    specialDescription: row.ozelAciklama || row.specialDescription,
+    eftQueryNo: row.eftSorguNo || row.eftQueryNo,
+    customerReference: row.musteriReferansi || row.customerReference,
     sourceRow: row.excelRowNumber,
     sourceSheet: row.sheetName,
     sourcePage: row.sourcePage || row.page,
@@ -255,15 +290,22 @@ export function canonicalToLegacyBankRow(tx = {}) {
   return {
     banka: tx.bank,
     tarih: tx.transactionDate,
+    valor: tx.valueDate,
+    saat: tx.transactionTime,
     aciklama: tx.description,
     dekontNo: tx.documentNo,
+    unvan: tx.counterpartyName,
+    karsiBanka: tx.counterpartyBank,
+    ozelAciklama: tx.specialDescription,
+    eftSorguNo: tx.eftQueryNo,
+    musteriReferansi: tx.customerReference,
     borc: isIn ? amount : 0,
     alacak: isIn ? 0 : amount,
     bakiye: tx.balance,
     tutar: isIn ? amount : -amount,
     yon: tx.direction,
-    hesapNo: tx.accountIdentity,
-    iban: tx.accountIdentity,
+    hesapNo: tx.accountIdentity || tx.counterAccount,
+    iban: tx.counterAccount || tx.accountIdentity,
     excelRowNumber: tx.sourceRow,
     sheetName: tx.sourceSheet,
     sourcePage: tx.sourcePage,

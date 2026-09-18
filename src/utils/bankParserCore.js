@@ -11,7 +11,7 @@ import {
   normalizeParserText,
   buildLearningMemoryIndex,
 } from "@/src/utils/bankMovementMapper";
-import { enrichTebParsedRows, groupTebHavaleMovements, logTebHavaleGroupingReport } from "@/src/utils/tebHavaleGrouping";
+import { groupTebHavaleMovements, logTebHavaleGroupingReport } from "@/src/utils/tebHavaleGrouping";
 import {
   bankMovementToStandardLucaRows,
   bankMovementsToStandardLucaRows,
@@ -50,6 +50,7 @@ import {
   normalizeBankParsedRow,
   parseGenericBankEkstre,
   parseMoney,
+  enrichTebParsedRowsLite,
   parseRowsForBank as parseRowsForBankWorkerSafe,
 } from "@/src/utils/bankParserWorkerCore";
 import { assertSelectedBankMatchesSheet } from "@/src/utils/bankStatementFormatGuard";
@@ -255,14 +256,14 @@ export {
   parseMoney,
 };
 
-/** Ana thread: TEB için tam enrich; worker kendi lite sürümünü kullanır */
+/** Ana thread: TEB enrich worker Lite ile parity */
 export function parseRowsForBank(sheetRows, selectedBank) {
   const bank = toParserBankId(selectedBank) || String(selectedBank || "").trim().toUpperCase();
   assertSelectedBankMatchesSheet(sheetRows, bank);
   if (bank === "GARANTI") return parseGarantiEkstre(sheetRows);
   if (bank === "VAKIFBANK") return parseVakifbankEkstre(sheetRows);
   if (bank === "TEB") {
-    return enrichTebParsedRows(parseGenericBankEkstre(sheetRows, "TEB"));
+    return enrichTebParsedRowsLite(parseGenericBankEkstre(sheetRows, "TEB"));
   }
   if (bank === "KUVEYT") return parseGenericBankEkstre(sheetRows, "KUVEYT");
   if (bank === "ZIRAAT") return parseGenericBankEkstre(sheetRows, "ZIRAAT");
