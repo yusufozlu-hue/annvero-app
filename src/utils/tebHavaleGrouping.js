@@ -246,12 +246,18 @@ function isTebMasrafParsedRow(row) {
   });
 }
 
+/** @deprecated Prefer enrichTebParsedRowsLite from bankParserWorkerCore (worker/main parity). */
 export function enrichTebParsedRows(parsedRows = []) {
+  // Re-implement with same keyword rules as worker Lite — avoid formatParserDate drift
   let lastDekont = "";
   let lastDate = "";
 
   return parsedRows.map((row) => {
-    const date = formatParserDate(row?.tarih || row?.date || "");
+    const rawDate = row?.tarih || row?.date || "";
+    const date =
+      typeof rawDate === "string" && /^\d{1,2}\.\d{1,2}\.\d{2,4}$/.test(rawDate.trim())
+        ? rawDate.trim()
+        : formatParserDate(rawDate);
     let dekontNo = resolveDekontForMatching(row);
 
     if (date !== lastDate) {
@@ -268,6 +274,7 @@ export function enrichTebParsedRows(parsedRows = []) {
 
     return {
       ...row,
+      tarih: date || row?.tarih || "",
       dekontNo,
       unvan: String(row?.unvan || row?.Unvan || "").trim(),
     };

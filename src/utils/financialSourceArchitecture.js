@@ -26,7 +26,7 @@ export const FILE_TYPE_CAPABILITY = {
 export const BANK_PARSER_NAMES = {
   GARANTI: "garantiParser",
   VAKIFBANK: "vakifbankParser",
-  TEB: "genericBankEkstre+tebHavale",
+  TEB: "genericBankEkstre+tebFourteen+tebHavale+tebPdfLayout",
   KUVEYT: "genericBankEkstre",
   ZIRAAT: "genericBankEkstre",
   CREDIT_CARD_STUB: "creditCardParserStub",

@@ -7,6 +7,7 @@
  *
  * DUPLICATE (kaynaklar silinmedi / değiştirilmedi — senkron tut):
  * - src/utils/bankStatementFormatGuard.js (format guard helpers)
+ * - src/utils/bankExcelAutoDetect.js (TEB 14-col fingerprint / Garanti exclusion)
  * - parsers/garantiParser.js
  * - parsers/vakifbankParser.js
  * - src/utils/bankParserWorkerCore.js (generic TEB/KUVEYT/ZIRAAT + normalize)
@@ -147,10 +148,60 @@ const WORKER_W = Object.freeze({
   brand: 42,
   iban: 36,
   bic: 30,
+  distinctiveHeader: 26,
   formatFingerprint: 22,
   sheetName: 14,
   filename: 8,
 });
+
+/**
+ * TEB 14-kolon hesap hareketleri ihracatı (yapısal fingerprint).
+ * bankExcelAutoDetect.looksLikeTebFourteenColumnExport ile parity.
+ */
+function looksLikeTebFourteenColumnExport(corpusOrText) {
+  const t =
+    typeof corpusOrText === "string"
+      ? corpusOrText
+      : String(corpusOrText || "");
+  if (!t) return false;
+  const hasTarih = t.includes("tarih");
+  const hasValor = t.includes("valor");
+  const hasSaat = t.includes("saat");
+  const hasIslemiGiren =
+    t.includes("islemi giren") || t.includes("islem giren kullanici");
+  const hasAciklama = t.includes("aciklama");
+  const hasBankaCol = /\bbanka\b/.test(t);
+  const hasUnvan = t.includes("unvan");
+  const hasAliciHesap =
+    t.includes("alici hesap") ||
+    (t.includes("iban") && t.includes("kart")) ||
+    t.includes("alici hesap / iban");
+  const hasOzelIslem = t.includes("ozel islem");
+  const hasEftSorgu = t.includes("eft sorgu");
+  const hasTutar = t.includes("tutar");
+  const hasBakiye = t.includes("bakiye");
+  const hasDekont = t.includes("dekont");
+  const hasMusteriRef =
+    t.includes("musteri referans") || t.includes("musteri referansi");
+  const hasBorcAlacakPair = t.includes("borc") && t.includes("alacak");
+  return (
+    hasTarih &&
+    hasValor &&
+    hasSaat &&
+    hasIslemiGiren &&
+    hasAciklama &&
+    hasBankaCol &&
+    hasUnvan &&
+    hasAliciHesap &&
+    hasOzelIslem &&
+    hasEftSorgu &&
+    hasTutar &&
+    hasBakiye &&
+    hasDekont &&
+    hasMusteriRef &&
+    !hasBorcAlacakPair
+  );
+}
 
 function pushW(bag, code, weight) {
   bag.push({ code, weight });
@@ -191,6 +242,8 @@ function scoreWorkerCandidates(sheetRows, options) {
     if (/tr\d{2}00062/.test(idCompact)) pushW(signals, "iban_00062", WORKER_W.iban);
     if (/tgbatris|tgba\s*tr/.test(id)) pushW(signals, "bic_tgba", WORKER_W.bic);
     const looksVakif = t.includes("b/a") || (t.includes("hesap no") && t.includes("fis no"));
+    // TEB 14-kolon: yalnız Tutar+Dekont Garanti sinyalini ezmesin
+    const looksTebFourteen = looksLikeTebFourteenColumnExport(id || t);
     const hasTarih = t.includes("tarih");
     const hasAciklama = t.includes("aciklama") || t.includes("islem aciklamasi");
     const hasAmount =
@@ -203,9 +256,12 @@ function scoreWorkerCandidates(sheetRows, options) {
       hasAciklama &&
       hasAmount &&
       !looksVakif &&
+      !looksTebFourteen &&
       (hasEtiket || (hasDekont && !hasBorcAlacakPair))
     ) {
       pushW(signals, "header_garanti_export", WORKER_W.formatFingerprint + 6);
+    } else if (hasEtiket && hasTarih && hasAciklama && !looksTebFourteen) {
+      pushW(signals, "header_garanti_partial", WORKER_W.distinctiveHeader);
     }
     if (/garanti/.test(sheet)) pushW(signals, "sheet_name", WORKER_W.sheetName);
     if (/garanti|bbva/.test(file)) pushW(signals, "filename_hint", WORKER_W.filename);
@@ -224,8 +280,14 @@ function scoreWorkerCandidates(sheetRows, options) {
     const hasBorcAlacak = t.includes("borc") && t.includes("alacak");
     const hasIslemNo = t.includes("islem no") || t.includes("islem numarasi");
     const hasBakiye = t.includes("bakiye");
-    if (hasTarih && hasAciklama && hasBorcAlacak && hasIslemNo) {
-      pushW(signals, "header_teb_islem_no", 30);
+    if (looksLikeTebFourteenColumnExport(id || t)) {
+      pushW(
+        signals,
+        "header_teb_fourteen_column",
+        WORKER_W.formatFingerprint + WORKER_W.distinctiveHeader + 8
+      );
+    } else if (hasTarih && hasAciklama && hasBorcAlacak && hasIslemNo) {
+      pushW(signals, "header_teb_islem_no", WORKER_W.distinctiveHeader + 4);
     } else if (hasTarih && hasAciklama && hasBorcAlacak && hasBakiye) {
       pushW(signals, "header_teb_borc_alacak", 10);
     }
@@ -698,15 +760,98 @@ function detectVakifbankIslemTipi(aciklama) {
 }
 
 // ——— DUPLICATE: bankParserWorkerCore (generic + normalize + TEB enrich) ———
+/** TEB masraf anahtarları — tebHavaleGrouping / worker core ile parity */
+const TEB_MASRAF_KEYWORDS = [
+  "HAVALE / EFT MASRAFI",
+  "HAVALE/EFT MASRAFI",
+  "HAVALE MASRAF",
+  "EFT MASRAF",
+  "EFT MASRAFI",
+  "BSMV",
+  "KOMISYON",
+  "KOMİSYON",
+  "HAVALE UCRET",
+  "HAVALE ÜCRET",
+  "HAVALE UCRETI",
+  "HAVALE ÜCRETİ",
+  "EFT UCRET",
+  "EFT ÜCRET",
+  "EFT UCRETI",
+  "EFT ÜCRETİ",
+  "FAST UCRET",
+  "FAST ÜCRET",
+  "BKM UCR",
+  "BKM UCRET",
+  "KESINTI",
+  "KESİNTİ",
+];
+
+/**
+ * Para parse — numeric / TR 1.234,56 / US 1234.56 / negatif.
+ * Noktalı ondalık (1234.56) binlik sanılmaz.
+ */
 function parseMoney(value) {
-  if (typeof value === "number") return value;
-  const text = String(value || "")
-    .replaceAll("TL", "")
-    .replace(/\./g, "")
-    .replace(",", ".")
-    .replace(/[^\d.-]/g, "");
+  if (value == null || value === "") return 0;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return 0;
+    const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
+    return Object.is(rounded, -0) ? 0 : rounded;
+  }
+
+  let text = String(value)
+    .trim()
+    .replace(/\u00a0/g, "")
+    .replace(/\s+/g, "")
+    .replace(/TL/gi, "")
+    .replace(/₺/g, "");
+
+  if (!text || text === "-" || text === "—" || text === "–") return 0;
+
+  let negative = false;
+  if (/^\(.*\)$/.test(text)) {
+    negative = true;
+    text = text.slice(1, -1);
+  }
+  if (text.startsWith("-") || text.startsWith("−")) {
+    negative = true;
+    text = text.slice(1);
+  }
+  if (!text) return 0;
+
+  const lastComma = text.lastIndexOf(",");
+  const lastDot = text.lastIndexOf(".");
+
+  if (lastComma !== -1 && lastDot !== -1) {
+    if (lastComma > lastDot) {
+      text = text.replace(/\./g, "").replace(",", ".");
+    } else {
+      text = text.replace(/,/g, "");
+    }
+  } else if (lastComma !== -1) {
+    const parts = text.split(",");
+    if (parts.length === 2 && parts[1].length <= 2) {
+      text = `${parts[0]}.${parts[1]}`;
+    } else {
+      text = text.replace(/,/g, "");
+    }
+  } else if (lastDot !== -1) {
+    const dotCount = (text.match(/\./g) || []).length;
+    if (dotCount > 1) {
+      text = text.replace(/\./g, "");
+    } else {
+      const [, fraction = ""] = text.split(".");
+      if (fraction.length === 3 && /^\d+$/.test(fraction)) {
+        text = text.replace(".", "");
+      }
+    }
+  }
+
+  text = text.replace(/[^\d.]/g, "");
   const number = Number(text);
-  return Number.isNaN(number) ? 0 : number;
+  if (!Number.isFinite(number) || Number.isNaN(number)) return 0;
+  const signed = negative ? -Math.abs(number) : number;
+  const rounded = Math.round((signed + Number.EPSILON) * 100) / 100;
+  return Object.is(rounded, -0) ? 0 : rounded;
 }
 
 function findGenericHeaderRowIndex(rows) {
@@ -716,32 +861,99 @@ function findGenericHeaderRowIndex(rows) {
   });
 }
 
+function headerNormKey(header) {
+  return normalizeParserText(header).replace(/\s+/g, "");
+}
+
+/** Exact match preferred; includes as fallback (longer wanted first). */
 function getGenericCell(row, headers, names) {
   const list = Array.isArray(names) ? names : [names];
+  const normHeaders = headers.map((h) => headerNormKey(h));
+
   for (const name of list) {
-    const wanted = normalizeParserText(name).replace(/\s+/g, "");
-    const index = headers.findIndex((header) =>
-      normalizeParserText(header).replace(/\s+/g, "").includes(wanted)
-    );
+    const wanted = headerNormKey(name);
+    if (!wanted) continue;
+    const exact = normHeaders.findIndex((h) => h === wanted);
+    if (exact >= 0) return row[exact];
+  }
+
+  const sorted = [...list].sort(
+    (a, b) => headerNormKey(b).length - headerNormKey(a).length
+  );
+  for (const name of sorted) {
+    const wanted = headerNormKey(name);
+    if (!wanted) continue;
+    const index = normHeaders.findIndex((h) => h.includes(wanted));
     if (index >= 0) return row[index];
   }
+
   return "";
 }
 
+function isTebFourteenColumnHeaders(headers) {
+  const u = (headers || []).map((h) => headerNormKey(h)).join(" ");
+  return (
+    u.includes("TARIH") &&
+    u.includes("VALOR") &&
+    u.includes("SAAT") &&
+    (u.includes("ISLEMIGIRENKULLANICI") || u.includes("ISLEMIGIREN")) &&
+    u.includes("ACIKLAMA") &&
+    u.includes("BANKA") &&
+    u.includes("UNVAN") &&
+    (u.includes("ALICHESAP") || (u.includes("IBAN") && u.includes("KART"))) &&
+    u.includes("OZELISLEM") &&
+    u.includes("EFTSORGU") &&
+    u.includes("TUTAR") &&
+    u.includes("BAKIYE") &&
+    u.includes("DEKONT") &&
+    u.includes("MUSTERIREFERANS")
+  );
+}
+
+function isDevirBalanceRow(row) {
+  const blob = normalizeParserText(
+    (row || []).map((c) => String(c ?? "")).join(" ")
+  );
+  return (
+    blob.includes("DEVIR BAKIYE") ||
+    blob.includes("DEVIRBAKIYE") ||
+    blob.includes("DEVREDEN BAKIYE") ||
+    blob.includes("ONCEKI BAKIYE")
+  );
+}
+
 function formatParserDateLite(dateText) {
-  if (!dateText) return "";
+  if (!dateText && dateText !== 0) return "";
+
   if (dateText instanceof Date) {
     const day = String(dateText.getDate()).padStart(2, "0");
     const month = String(dateText.getMonth() + 1).padStart(2, "0");
     const year = dateText.getFullYear();
     return `${day}.${month}.${year}`;
   }
-  const text = String(dateText);
-  if (text.includes("-")) {
-    const [year, month, day] = text.split("-");
+
+  const text = String(dateText).trim();
+  if (!text) return "";
+
+  if (text.includes("-") && /^\d{4}-\d{2}-\d{2}/.test(text)) {
+    const [year, month, day] = text.split(/[T\s]/)[0].split("-");
     return `${day}.${month}.${year}`;
   }
+
   return text.split(" ")[0];
+}
+
+function formatParserTimeLite(value) {
+  if (value == null || value === "") return "";
+  if (value instanceof Date) {
+    const hh = String(value.getHours()).padStart(2, "0");
+    const mm = String(value.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+  const text = String(value).trim();
+  const m = text.match(/^(\d{1,2}):(\d{2})(?::\d{2})?/);
+  if (m) return `${m[1].padStart(2, "0")}:${m[2]}`;
+  return text;
 }
 
 function normalizeDekont(value) {
@@ -775,6 +987,15 @@ function isTebMasrafParsedRow(row) {
   const text = normalizeParserText(row?.aciklama || row?.description || "");
   const amount = Math.abs(Number(row?.tutar ?? row?.amount ?? 0));
   if (!amount) return false;
+
+  if (
+    TEB_MASRAF_KEYWORDS.some((keyword) =>
+      text.includes(normalizeParserText(keyword))
+    )
+  ) {
+    return true;
+  }
+
   if (
     text.includes("MASRAF") ||
     text.includes("UCRET") ||
@@ -801,10 +1022,157 @@ function enrichTebParsedRowsLite(parsedRows) {
     lastDate = date;
     return {
       ...row,
+      tarih: date || row?.tarih || "",
       dekontNo,
       unvan: String(row?.unvan || row?.Unvan || "").trim(),
     };
   });
+}
+
+function buildLegacyAmountFields(tutar) {
+  const yon = tutar > 0 ? "GIRIS" : "CIKIS";
+  return {
+    borc: yon === "GIRIS" ? Math.abs(tutar) : 0,
+    alacak: yon === "CIKIS" ? Math.abs(tutar) : 0,
+    yon,
+  };
+}
+
+/**
+ * TEB 14-kolon Excel ihracatı — bankParserWorkerCore.parseTebFourteenColumnEkstre parity.
+ */
+function parseTebFourteenColumnEkstre(sheetRows, bankaAdi) {
+  const bank = bankaAdi || "TEB";
+  if (!sheetRows || sheetRows.length === 0) {
+    return { rows: [], openingBalanceHint: null, headerIndex: -1 };
+  }
+
+  const headerIndex = findGenericHeaderRowIndex(sheetRows);
+  if (headerIndex < 0) {
+    return { rows: [], openingBalanceHint: null, headerIndex: -1 };
+  }
+  const headers = sheetRows[headerIndex];
+  if (!isTebFourteenColumnHeaders(headers)) {
+    return { rows: [], openingBalanceHint: null, headerIndex };
+  }
+
+  const dataRows = sheetRows.slice(headerIndex + 1);
+  let openingBalanceHint = null;
+  const rows = [];
+  let movementIndex = 0;
+
+  for (let i = 0; i < dataRows.length; i += 1) {
+    const row = dataRows[i];
+    if (!row || !row.some((cell) => String(cell ?? "").trim())) continue;
+
+    if (isDevirBalanceRow(row)) {
+      const bal = parseMoney(
+        getGenericCell(row, headers, ["BAKİYE", "BAKIYE"]) || row[row.length - 1]
+      );
+      const anyBal = parseMoney(
+        getGenericCell(row, headers, ["BAKİYE", "BAKIYE"]) ||
+          row.find((c, idx) => idx > 0 && parseMoney(c) !== 0) ||
+          ""
+      );
+      openingBalanceHint = bal || anyBal || openingBalanceHint;
+      if (!openingBalanceHint) {
+        for (const cell of row) {
+          const n = parseMoney(cell);
+          if (n) {
+            openingBalanceHint = n;
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    const tarihRaw = getGenericCell(row, headers, [
+      "TARİH",
+      "TARIH",
+      "İŞLEM TARİHİ",
+      "ISLEM TARIHI",
+    ]);
+    const tarih = formatParserDateLite(tarihRaw);
+    if (!tarih || !/^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/.test(tarih)) continue;
+
+    const valor = formatParserDateLite(
+      getGenericCell(row, headers, ["VALÖR", "VALOR", "VALÖRDEN", "VALORDEN"])
+    );
+    const saat = formatParserTimeLite(
+      getGenericCell(row, headers, ["SAAT", "İŞLEM SAATİ", "ISLEM SAATI"])
+    );
+    const aciklama = String(
+      getGenericCell(row, headers, ["AÇIKLAMA", "ACIKLAMA"]) || ""
+    ).trim();
+    const ozelAciklama = String(
+      getGenericCell(row, headers, [
+        "ÖZEL İŞLEM AÇIKLAMASI",
+        "OZEL ISLEM ACIKLAMASI",
+        "ÖZEL İŞLEM",
+        "OZEL ISLEM",
+      ]) || ""
+    ).trim();
+    const karsiBanka = String(getGenericCell(row, headers, ["BANKA"]) || "").trim();
+    const unvan = String(getGenericCell(row, headers, ["ÜNVAN", "UNVAN"]) || "").trim();
+    const karsiHesap = String(
+      getGenericCell(row, headers, [
+        "ALICI HESAP / IBAN / KART NO",
+        "ALICI HESAP/IBAN/KART NO",
+        "ALICI HESAP",
+        "IBAN",
+        "KART NO",
+      ]) || ""
+    ).trim();
+    const eftSorguNo = String(
+      getGenericCell(row, headers, ["EFT SORGU NO", "EFT SORGU", "SORGU NO"]) || ""
+    ).trim();
+    const musteriReferansi = String(
+      getGenericCell(row, headers, [
+        "MÜŞTERİ REFERANSI",
+        "MUSTERI REFERANSI",
+        "MÜŞTERİ REFERANS",
+        "MUSTERI REFERANS",
+      ]) || ""
+    ).trim();
+    const dekontNo = String(
+      getGenericCell(row, headers, ["DEKONT", "DEKONT NO"]) || ""
+    ).trim();
+    const tutar = parseMoney(
+      getGenericCell(row, headers, ["TUTAR", "İŞLEM TUTARI", "ISLEM TUTARI"])
+    );
+    const bakiye = parseMoney(getGenericCell(row, headers, ["BAKİYE", "BAKIYE"]));
+
+    if (!aciklama || !tutar) continue;
+
+    const amounts = buildLegacyAmountFields(tutar);
+    movementIndex += 1;
+    rows.push({
+      banka: bank,
+      tarih,
+      valor: valor || tarih,
+      saat,
+      dekontNo: dekontNo || `${bank}-${movementIndex}`,
+      aciklama,
+      unvan,
+      karsiBanka,
+      iban: karsiHesap,
+      hesapNo: karsiHesap,
+      ozelAciklama,
+      eftSorguNo,
+      musteriReferansi,
+      borc: amounts.borc,
+      alacak: amounts.alacak,
+      bakiye,
+      tutar,
+      yon: amounts.yon,
+      islemTipi: "DIGER",
+      excelRowNumber: headerIndex + 2 + i,
+      openingBalanceHint: null,
+    });
+  }
+
+  return { rows, openingBalanceHint, headerIndex };
 }
 
 function parseGenericBankEkstre(sheetRows, bankaAdi) {
@@ -813,9 +1181,26 @@ function parseGenericBankEkstre(sheetRows, bankaAdi) {
   const headers = headerIndex >= 0 ? sheetRows[headerIndex] : sheetRows[0];
   const dataRows = sheetRows.slice((headerIndex >= 0 ? headerIndex : 0) + 1);
 
+  // TEB 14-kolon yolu
+  if (
+    String(bankaAdi || "").toUpperCase() === "TEB" &&
+    isTebFourteenColumnHeaders(headers)
+  ) {
+    const parsed = parseTebFourteenColumnEkstre(sheetRows, "TEB");
+    if (parsed.openingBalanceHint != null && parsed.rows[0]) {
+      parsed.rows[0] = {
+        ...parsed.rows[0],
+        openingBalanceHint: parsed.openingBalanceHint,
+      };
+    }
+    return parsed.rows;
+  }
+
   return dataRows
     .filter((row) => row && row.some((cell) => String(cell || "").trim()))
     .map((row, index) => {
+      if (isDevirBalanceRow(row)) return null;
+
       const tarih =
         getGenericCell(row, headers, ["TARİH", "TARIH", "İŞLEM TARİHİ", "ISLEM TARIHI"]) ||
         row[0] ||
@@ -828,7 +1213,6 @@ function parseGenericBankEkstre(sheetRows, bankaAdi) {
         getGenericCell(row, headers, [
           "ÜNVAN",
           "UNVAN",
-          "ALICI",
           "ALICI ÜNVAN",
           "ALICI UNVAN",
           "KARSI HESAP",
@@ -888,9 +1272,15 @@ function normalizeBankParsedRow(row, selectedBank) {
   return {
     banka: row.banka || row.Banka || selectedBank,
     tarih: row.tarih || row.Tarih || "",
+    valor: row.valor || row.valueDate || row.tarih || row.Tarih || "",
+    saat: row.saat || row.transactionTime || "",
     dekontNo: row.dekontNo || row.FisNo || row.Dekont || "",
     aciklama: row.aciklama || row.Aciklama || row.HamAciklama || "",
     unvan: row.unvan || row.Unvan || "",
+    karsiBanka: row.karsiBanka || row.counterpartyBank || "",
+    ozelAciklama: row.ozelAciklama || row.specialDescription || "",
+    eftSorguNo: row.eftSorguNo || row.eftQueryNo || "",
+    musteriReferansi: row.musteriReferansi || row.customerReference || "",
     borc: borc || (yon === "GIRIS" ? Math.abs(tutar) : 0),
     alacak: alacak || (yon === "CIKIS" ? Math.abs(tutar) : 0),
     bakiye: row.bakiye || row.Bakiye || "",
@@ -899,6 +1289,8 @@ function normalizeBankParsedRow(row, selectedBank) {
     islemTipi: row.islemTipi || row.IslemTipi || "DIGER",
     iban: row.iban || "",
     hesapNo: row.hesapNo || "",
+    openingBalanceHint:
+      row.openingBalanceHint == null ? null : Number(row.openingBalanceHint),
   };
 }
 

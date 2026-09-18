@@ -50,6 +50,7 @@ import {
   FIXTURE_F_TEB_NAMED_WEAK_GARANTI,
   FIXTURE_ZIRAAT_REAL_EXPORT_ANON,
   FIXTURE_TEB_NAMED_GARANTI_COLUMNS,
+  FIXTURE_TEB_FOURTEEN_COLUMN_ANON,
 } from "./fixtures/bank-excel/sheetRows.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -563,6 +564,29 @@ section("17) Gerçek Ziraat export + TEB-adlı Garanti kolonları");
       tebNamed.diagnostics.topScore === 36
   );
   console.log("OK — Ziraat real export + TEB-named ≠ TEB", decisionSummary(tebNamed));
+
+  const teb14 = detectExcelBank(FIXTURE_TEB_FOURTEEN_COLUMN_ANON.rows, {
+    sheetName: FIXTURE_TEB_FOURTEEN_COLUMN_ANON.sheetName,
+    fileName: FIXTURE_TEB_FOURTEEN_COLUMN_ANON.fileName,
+  });
+  assert.equal(teb14.status, "detected");
+  assert.equal(teb14.bankId, "TEB");
+  assert.ok(teb14.diagnostics.matchedSignals.includes("header_teb_fourteen_column"));
+  assert.ok(teb14.diagnostics.topScore >= 45);
+  assert.notEqual(teb14.diagnostics.topCandidate, "GARANTI");
+
+  const teb14Rows = parseRowsForBank(FIXTURE_TEB_FOURTEEN_COLUMN_ANON.rows, "TEB");
+  assert.equal(teb14Rows.length, 4);
+  assert.equal(teb14Rows[0].valor, "10.01.2026");
+  assert.equal(teb14Rows[0].saat, "09:15");
+  assert.equal(teb14Rows[0].karsiBanka, "TEB");
+  assert.equal(Number(teb14Rows[0].openingBalanceHint), 1000);
+  // aynı saat/dekont → 3 ayrı hareket (havale+ücret+BSMV)
+  assert.equal(
+    teb14Rows.filter((r) => String(r.dekontNo) === "D10").length,
+    3
+  );
+  console.log("OK — TEB 14-column detect+parse", decisionSummary(teb14));
 }
 
 console.log("\nALL PASS — bank excel auto-detect TEB/Ziraat/KuveytTürk");

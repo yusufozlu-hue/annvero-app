@@ -63,3 +63,6 @@ annvero-companies-export-*.json
 .tmp-staging-storage-backup/
 .tmp-production-storage-backup/
 backup-artifacts/
+
+# Local TEB/bank fixtures (never commit)
+.local-fixtures/
