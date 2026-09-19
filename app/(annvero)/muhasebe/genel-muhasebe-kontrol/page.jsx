@@ -43,11 +43,30 @@ import {
   resolveCorrectionRecordForFinding,
 } from "@/src/utils/correctionRecords";
 
-function Stat({ label, value }) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+function Stat({ label, value, onClick = null, testId = "" }) {
+  const className =
+    "rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm text-left w-full";
+  const body = (
+    <>
       <div className="text-xs text-slate-500">{label}</div>
       <div className="text-sm font-semibold text-slate-900">{value}</div>
+    </>
+  );
+  if (typeof onClick === "function") {
+    return (
+      <button
+        type="button"
+        className={`${className} hover:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-300`}
+        onClick={onClick}
+        data-testid={testId || undefined}
+      >
+        {body}
+      </button>
+    );
+  }
+  return (
+    <div className={className} data-testid={testId || undefined}>
+      {body}
     </div>
   );
 }
@@ -154,6 +173,12 @@ function safeUserError(err) {
   if (code === "ANALYZE_IN_FLIGHT") return "Kontrol zaten çalışıyor.";
   if (code === "ANALYZE_CANCELLED" || code === "ANALYZE_STALE") {
     return "Kontrol iptal edildi veya geçersiz kılındı.";
+  }
+  if (code === "SHEET_ROW_LIMIT_EXCEEDED") {
+    return (
+      err?.message ||
+      "Excel satır sayısı güvenli üst sınırı aşıyor. Analiz durduruldu; dosyayı bölerek yeniden deneyin."
+    );
   }
   if (typeof console !== "undefined" && code) {
     console.debug("[genel-muhasebe-kontrol]", code, err?.message || "");
@@ -563,6 +588,16 @@ export default function GenelMuhasebeKontrolPage() {
   const activeFilterVoucher = trimmedFisFilter
     ? visibleRows[0]?.fisNo || trimmedFisFilter
     : "";
+  const overallSonucValue =
+    findingsWithCorrections?.overallSonucDisplay ||
+    findingsWithCorrections?.overallSonuc ||
+    summary?.overallSonuc ||
+    "";
+  const scrollToSystemWarnings = useCallback(() => {
+    if (typeof document === "undefined") return;
+    const el = document.getElementById("genel-muhasebe-system-warnings");
+    el?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  }, []);
   const findingsTableBodyKey = `findings-body|${voucherView}|${trimmedFisFilter}|${showDuzeltildiOnly ? "1" : "0"}|${visibleRowsCount}`;
 
   const openVoucherDetail = useCallback((group, event) => {
@@ -810,11 +845,17 @@ export default function GenelMuhasebeKontrolPage() {
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <Stat
                 label="Sonuç"
-                value={findingsWithCorrections?.overallSonuc ?? summary.overallSonuc}
+                value={overallSonucValue}
+                testId="genel-muhasebe-overall-sonuc"
+                onClick={
+                  findingsWithCorrections?.overallElevatedBySystemWarnings
+                    ? scrollToSystemWarnings
+                    : null
+                }
               />
               <Stat label="Toplam fiş" value={summary.toplamFis} />
-              <Stat label="Bulgulu fiş" value={voucherCounts.findings} />
-              <Stat label="Uygun fiş" value={voucherCounts.appropriate} />
+              <Stat label="Bulgulu Fişler" value={voucherCounts.findings} />
+              <Stat label="Uygun Fişler" value={voucherCounts.appropriate} />
               <Stat
                 label="Hareket"
                 value={summary.hareketSatir ?? summary.toplamSatir}
@@ -937,6 +978,7 @@ export default function GenelMuhasebeKontrolPage() {
 
             {systemWarnings.length ? (
               <section
+                id="genel-muhasebe-system-warnings"
                 className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3"
                 data-testid="genel-muhasebe-system-warnings"
                 aria-labelledby="genel-muhasebe-system-warnings-title"
@@ -947,6 +989,9 @@ export default function GenelMuhasebeKontrolPage() {
                 >
                   Sistem Uyarıları
                 </h2>
+                <p className="mt-1 text-xs text-amber-900">
+                  Fiş satırına bağlı olmayan uyarılar genel sonucu yükseltebilir.
+                </p>
                 <div className="mt-2 space-y-2">
                   {systemWarnings.map((warning, index) => (
                     <div
@@ -983,8 +1028,14 @@ export default function GenelMuhasebeKontrolPage() {
                   <span className="font-medium text-slate-900">Sonuç tablosu</span>
                   <span className="ml-2 text-slate-500">
                     {summary.toplamFis} fiş işlendi · {findingsCatalogSize} ham bulgu ·{" "}
+                    görünüm:{" "}
+                    {voucherView === VOUCHER_RESULT_VIEW.FINDINGS
+                      ? `Bulgulu Fişler (${voucherCounts.findings})`
+                      : `Tüm Fişler (${voucherCounts.total})`}
+                    {" · "}
                     {visibleRowsCount} fiş sonucu
-                    {trimmedFisFilter ? " gösteriliyor" : ""} · {compositeVoucherCount} bileşik fiş
+                    {trimmedFisFilter ? " gösteriliyor" : ""} · {compositeVoucherCount}{" "}
+                    bileşik fiş
                   </span>
                 </div>
                   <div className="flex flex-wrap items-end gap-2">
@@ -1006,7 +1057,7 @@ export default function GenelMuhasebeKontrolPage() {
                           setVoucherDetailGroup(null);
                         }}
                       >
-                        Bulgular ({voucherCounts.findings})
+                        Bulgulu Fişler ({voucherCounts.findings})
                       </button>
                       <button
                         type="button"
@@ -1022,7 +1073,7 @@ export default function GenelMuhasebeKontrolPage() {
                           setVoucherDetailGroup(null);
                         }}
                       >
-                        Tüm fişler ({voucherCounts.total})
+                        Tüm Fişler ({voucherCounts.total})
                       </button>
                     </div>
                     <label className="block text-sm">
@@ -1043,15 +1094,18 @@ export default function GenelMuhasebeKontrolPage() {
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-600">
                   <span data-testid="genel-muhasebe-voucher-counts">
-                    Bulgulu fiş: {voucherCounts.findings} · Uygun fiş:{" "}
-                    {voucherCounts.appropriate} · Toplam fiş: {voucherCounts.total}
+                    Bulgulu Fişler ({voucherCounts.findings}) · Uygun Fişler (
+                    {voucherCounts.appropriate}) · Tüm Fişler ({voucherCounts.total})
                   </span>
                   {trimmedFisFilter ? (
                     <span
                       className="inline-flex items-center gap-2 rounded-full bg-amber-100 px-2.5 py-1 text-amber-900"
                       data-testid="genel-muhasebe-active-filter"
                     >
-                      Aktif filtre: Fiş {activeFilterVoucher}
+                      Aktif filtre: «{trimmedFisFilter}»
+                      {activeFilterVoucher
+                        ? ` → yalnız Fiş ${activeFilterVoucher}`
+                        : " → eşleşen fiş yok"}
                       <button
                         type="button"
                         className="font-semibold underline"

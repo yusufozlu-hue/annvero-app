@@ -73,10 +73,40 @@ function sanitizeCell(cell) {
   return String(cell).slice(0, 500);
 }
 
-/** Clone-safe Excel sheet matrix (preserves 0 / empty string). */
-export function sanitizeSheetRows(rows) {
+/** Excel sheet satır tavanı — aşım sessiz kırpma değil, fail-closed. */
+export const SHEET_ROW_SANITIZE_LIMIT = 200_000;
+
+/**
+ * @returns {null | { originalCount: number, truncated: boolean, limit: number, label?: string }}
+ */
+export function inspectSheetRowSanitize(rows, label = "sheet") {
   if (!Array.isArray(rows)) return null;
-  return rows.slice(0, 200_000).map((row) => {
+  const originalCount = rows.length;
+  return {
+    label: String(label || "sheet"),
+    originalCount,
+    truncated: originalCount > SHEET_ROW_SANITIZE_LIMIT,
+    limit: SHEET_ROW_SANITIZE_LIMIT,
+    keptCount: Math.min(originalCount, SHEET_ROW_SANITIZE_LIMIT),
+  };
+}
+
+function assertSheetRowsWithinSanitizeLimit(rows, label) {
+  const info = inspectSheetRowSanitize(rows, label);
+  if (!info?.truncated) return info;
+  throw Object.assign(
+    new Error(
+      `${info.label} satır sayısı (${info.originalCount.toLocaleString("tr-TR")}) güvenli üst sınırı (${info.limit.toLocaleString("tr-TR")}) aşıyor. Analiz durduruldu; dosyayı bölerek yeniden deneyin.`
+    ),
+    { code: "SHEET_ROW_LIMIT_EXCEEDED", sheetLimit: info }
+  );
+}
+
+/** Clone-safe Excel sheet matrix (preserves 0 / empty string). Over-limit → throw. */
+export function sanitizeSheetRows(rows, { label = "sheet" } = {}) {
+  if (!Array.isArray(rows)) return null;
+  assertSheetRowsWithinSanitizeLimit(rows, label);
+  return rows.slice(0, SHEET_ROW_SANITIZE_LIMIT).map((row) => {
     if (!Array.isArray(row)) return [];
     return row.slice(0, 64).map(sanitizeCell);
   });
@@ -192,9 +222,11 @@ export function buildCloneSafeAnalyzePayload(input = {}) {
       jobKind,
       companyId: String(input.companyId || "").slice(0, 80),
       period: String(input.period || "").slice(0, 16),
-      muavinSheetRows: sanitizeSheetRows(input.muavinSheetRows),
-      yevmiyeSheetRows: sanitizeSheetRows(input.yevmiyeSheetRows),
-      mizanSheetRows: sanitizeSheetRows(input.mizanSheetRows),
+      muavinSheetRows: sanitizeSheetRows(input.muavinSheetRows, { label: "Muavin" }),
+      yevmiyeSheetRows: sanitizeSheetRows(input.yevmiyeSheetRows, {
+        label: "Yevmiye",
+      }),
+      mizanSheetRows: sanitizeSheetRows(input.mizanSheetRows, { label: "Mizan" }),
       accountPlanAccounts: sanitizeAccountPlanAccounts(input.accountPlanAccounts),
       accountPlanStatus: String(input.accountPlanStatus || "unknown").slice(0, 32),
     };
