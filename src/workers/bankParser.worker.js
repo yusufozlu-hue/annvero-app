@@ -203,6 +203,43 @@ function looksLikeTebFourteenColumnExport(corpusOrText) {
   );
 }
 
+/**
+ * TEB 7-kolon fingerprint — bankExcelAutoDetect.looksLikeTebSevenColumnExport parity.
+ */
+function looksLikeTebSevenColumnExport(corpusOrText) {
+  const t =
+    typeof corpusOrText === "string"
+      ? corpusOrText
+      : String(corpusOrText || "");
+  if (!t) return false;
+  if (looksLikeTebFourteenColumnExport(t)) return false;
+  const hasTarih = t.includes("tarih");
+  const hasAciklama = t.includes("aciklama");
+  const hasUnvan = t.includes("unvan");
+  const hasOzelIslem = t.includes("ozel islem");
+  const hasTutar = t.includes("tutar");
+  const hasBakiye = t.includes("bakiye");
+  const hasDekont = t.includes("dekont");
+  const hasEtiket = t.includes("etiket");
+  const hasBorcAlacakPair = t.includes("borc") && t.includes("alacak");
+  const hasFourteenExtras =
+    t.includes("valor") ||
+    t.includes("eft sorgu") ||
+    t.includes("musteri referans");
+  return (
+    hasTarih &&
+    hasAciklama &&
+    hasUnvan &&
+    hasOzelIslem &&
+    hasTutar &&
+    hasBakiye &&
+    hasDekont &&
+    !hasEtiket &&
+    !hasBorcAlacakPair &&
+    !hasFourteenExtras
+  );
+}
+
 function pushW(bag, code, weight) {
   bag.push({ code, weight });
 }
@@ -242,8 +279,11 @@ function scoreWorkerCandidates(sheetRows, options) {
     if (/tr\d{2}00062/.test(idCompact)) pushW(signals, "iban_00062", WORKER_W.iban);
     if (/tgbatris|tgba\s*tr/.test(id)) pushW(signals, "bic_tgba", WORKER_W.bic);
     const looksVakif = t.includes("b/a") || (t.includes("hesap no") && t.includes("fis no"));
-    // TEB 14-kolon: yalnız Tutar+Dekont Garanti sinyalini ezmesin
-    const looksTebFourteen = looksLikeTebFourteenColumnExport(id || t);
+    // TEB 14/7-kolon: yalnız Tutar+Dekont Garanti sinyalini ezmesin
+    const tebCorpus = id || t;
+    const looksTebExclusive =
+      looksLikeTebFourteenColumnExport(tebCorpus) ||
+      looksLikeTebSevenColumnExport(tebCorpus);
     const hasTarih = t.includes("tarih");
     const hasAciklama = t.includes("aciklama") || t.includes("islem aciklamasi");
     const hasAmount =
@@ -256,11 +296,11 @@ function scoreWorkerCandidates(sheetRows, options) {
       hasAciklama &&
       hasAmount &&
       !looksVakif &&
-      !looksTebFourteen &&
+      !looksTebExclusive &&
       (hasEtiket || (hasDekont && !hasBorcAlacakPair))
     ) {
       pushW(signals, "header_garanti_export", WORKER_W.formatFingerprint + 6);
-    } else if (hasEtiket && hasTarih && hasAciklama && !looksTebFourteen) {
+    } else if (hasEtiket && hasTarih && hasAciklama && !looksTebExclusive) {
       pushW(signals, "header_garanti_partial", WORKER_W.distinctiveHeader);
     }
     if (/garanti/.test(sheet)) pushW(signals, "sheet_name", WORKER_W.sheetName);
@@ -284,6 +324,12 @@ function scoreWorkerCandidates(sheetRows, options) {
       pushW(
         signals,
         "header_teb_fourteen_column",
+        WORKER_W.formatFingerprint + WORKER_W.distinctiveHeader + 8
+      );
+    } else if (looksLikeTebSevenColumnExport(id || t)) {
+      pushW(
+        signals,
+        "header_teb_seven_column",
         WORKER_W.formatFingerprint + WORKER_W.distinctiveHeader + 8
       );
     } else if (hasTarih && hasAciklama && hasBorcAlacak && hasIslemNo) {

@@ -8,7 +8,7 @@ import {
   toParserBankId,
 } from "@/src/utils/bankIdentity";
 
-export const BANK_EXCEL_DETECTOR_VERSION = "excel-auto-detect/1.0.4";
+export const BANK_EXCEL_DETECTOR_VERSION = "excel-auto-detect/1.0.5";
 
 /** formatGuard ile aynı — döngüsel import yok; İ→i̇ birleşik işaretini temizler */
 function normalizeStatementHeaderText(value) {
@@ -165,13 +165,15 @@ function scoreVakifbank(corpus) {
  * Dosya adı / firma / hesap no kullanılmaz — yalnız başlık seti.
  * Belirsiz Tutar+Dekont (Garanti-benzeri) bu sözleşmeyi karşılamaz.
  */
+function corpusTextFrom(corpusOrText = "") {
+  if (typeof corpusOrText === "string") return corpusOrText;
+  return String(
+    corpusOrText?.identityText || corpusOrText?.fullText || ""
+  );
+}
+
 export function looksLikeTebFourteenColumnExport(corpusOrText = "") {
-  const t =
-    typeof corpusOrText === "string"
-      ? corpusOrText
-      : String(
-          corpusOrText?.identityText || corpusOrText?.fullText || ""
-        );
+  const t = corpusTextFrom(corpusOrText);
   if (!t) return false;
   const hasTarih = t.includes("tarih");
   const hasValor = t.includes("valor");
@@ -213,6 +215,44 @@ export function looksLikeTebFourteenColumnExport(corpusOrText = "") {
   return strong;
 }
 
+/**
+ * TEB 7-kolon hesap hareketleri ihracatı (yapısal fingerprint).
+ * Tarih | Açıklama | Unvan | Özel İşlem Açıklaması | Tutar | Bakiye | Dekont
+ * Dekont+Tutar tek başına yetmez; Unvan+Özel İşlem ayırt edicidir.
+ * Dosya adı kullanılmaz. 14-kolon sözleşmesi ayrıdır.
+ */
+export function looksLikeTebSevenColumnExport(corpusOrText = "") {
+  const t = corpusTextFrom(corpusOrText);
+  if (!t) return false;
+  if (looksLikeTebFourteenColumnExport(t)) return false;
+  const hasTarih = t.includes("tarih");
+  const hasAciklama = t.includes("aciklama");
+  const hasUnvan = t.includes("unvan");
+  const hasOzelIslem = t.includes("ozel islem");
+  const hasTutar = t.includes("tutar");
+  const hasBakiye = t.includes("bakiye");
+  const hasDekont = t.includes("dekont");
+  const hasEtiket = t.includes("etiket");
+  const hasBorcAlacakPair = t.includes("borc") && t.includes("alacak");
+  // 14-kolon ayırt edicileri bu sade export’ta yok
+  const hasFourteenExtras =
+    t.includes("valor") ||
+    t.includes("eft sorgu") ||
+    t.includes("musteri referans");
+  return (
+    hasTarih &&
+    hasAciklama &&
+    hasUnvan &&
+    hasOzelIslem &&
+    hasTutar &&
+    hasBakiye &&
+    hasDekont &&
+    !hasEtiket &&
+    !hasBorcAlacakPair &&
+    !hasFourteenExtras
+  );
+}
+
 function scoreGaranti(corpus) {
   const signals = [];
   const t = corpus.fullText;
@@ -242,19 +282,21 @@ function scoreGaranti(corpus) {
   // Vakıf native ile karışmasın; borc+alacak+dekont Ziraat/TEB’e daha yakın
   const looksVakif =
     t.includes("b/a") || (t.includes("hesap no") && t.includes("fis no"));
-  // TEB 14-kolon: yalnız Tutar+Dekont Garanti sinyalini ezmesin
-  const looksTebFourteen = looksLikeTebFourteenColumnExport(corpus);
+  // TEB 14/7-kolon: yalnız Tutar+Dekont Garanti sinyalini ezmesin
+  const looksTebExclusive =
+    looksLikeTebFourteenColumnExport(corpus) ||
+    looksLikeTebSevenColumnExport(corpus);
 
   if (
     hasTarih &&
     hasAciklama &&
     hasAmount &&
     !looksVakif &&
-    !looksTebFourteen &&
+    !looksTebExclusive &&
     (hasEtiket || (hasDekont && !hasBorcAlacakPair))
   ) {
     pushSignal(signals, "header_garanti_export", WEIGHTS.formatFingerprint + 6);
-  } else if (hasEtiket && hasTarih && hasAciklama && !looksTebFourteen) {
+  } else if (hasEtiket && hasTarih && hasAciklama && !looksTebExclusive) {
     pushSignal(signals, "header_garanti_partial", WEIGHTS.distinctiveHeader);
   }
 
@@ -292,6 +334,13 @@ function scoreTeb(corpus) {
     pushSignal(
       signals,
       "header_teb_fourteen_column",
+      WEIGHTS.formatFingerprint + WEIGHTS.distinctiveHeader + 8
+    );
+  } else if (looksLikeTebSevenColumnExport(corpus)) {
+    // Yapısal 7-kolon fingerprint — Unvan+Özel İşlem ayırt edici; dekont+tutar yetmez
+    pushSignal(
+      signals,
+      "header_teb_seven_column",
       WEIGHTS.formatFingerprint + WEIGHTS.distinctiveHeader + 8
     );
   } else if (hasTarih && hasAciklama && hasBorcAlacak && hasIslemNo) {

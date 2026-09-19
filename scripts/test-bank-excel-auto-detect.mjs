@@ -49,7 +49,8 @@ import {
   FIXTURE_E_TEB_NAMED_STRONG_GARANTI,
   FIXTURE_F_TEB_NAMED_WEAK_GARANTI,
   FIXTURE_ZIRAAT_REAL_EXPORT_ANON,
-  FIXTURE_TEB_NAMED_GARANTI_COLUMNS,
+  FIXTURE_TEB_SEVEN_COLUMN_ANON,
+  FIXTURE_TEB_FILENAME_WEAK_DEKONT,
   FIXTURE_TEB_FOURTEEN_COLUMN_ANON,
 } from "./fixtures/bank-excel/sheetRows.mjs";
 
@@ -476,6 +477,9 @@ section("16) UI ↔ worker detector parity (aynı matris)");
     FIXTURE_D_FILENAME_ONLY_KUVEYT,
     FIXTURE_E_TEB_NAMED_STRONG_GARANTI,
     FIXTURE_F_TEB_NAMED_WEAK_GARANTI,
+    FIXTURE_TEB_SEVEN_COLUMN_ANON,
+    FIXTURE_TEB_FOURTEEN_COLUMN_ANON,
+    FIXTURE_TEB_FILENAME_WEAK_DEKONT,
     { rows: FIXTURE_AMBIGUOUS_TEB_ZIRAAT, sheetName: "", fileName: "" },
     FIXTURE_KUVEYT_REAL_EXPORT_ANON,
     { rows: FIXTURE_VAKIF_ROWS, sheetName: "", fileName: "" },
@@ -548,22 +552,32 @@ section("17) Gerçek Ziraat export + TEB-adlı Garanti kolonları");
   assert.equal(zNativeOnly.bankId, "ZIRAAT");
   assert.ok(zNativeOnly.diagnostics.matchedSignals.includes("header_ziraat_export"));
 
-  const tebNamed = detectExcelBank(FIXTURE_TEB_NAMED_GARANTI_COLUMNS.rows, {
-    sheetName: FIXTURE_TEB_NAMED_GARANTI_COLUMNS.sheetName,
-    fileName: FIXTURE_TEB_NAMED_GARANTI_COLUMNS.fileName,
+  const teb7 = detectExcelBank(FIXTURE_TEB_SEVEN_COLUMN_ANON.rows, {
+    sheetName: FIXTURE_TEB_SEVEN_COLUMN_ANON.sheetName,
+    fileName: FIXTURE_TEB_SEVEN_COLUMN_ANON.fileName,
   });
-  assert.equal(tebNamed.status, "unknown");
-  assert.equal(tebNamed.bankId, null);
-  assert.notEqual(tebNamed.diagnostics.topCandidate, "TEB");
-  assert.equal(tebNamed.diagnostics.topCandidate, "GARANTI");
-  assert.ok(tebNamed.diagnostics.topScore < 45);
-  // dosya adı TEB seçtirmesin
+  assert.equal(teb7.status, "detected");
+  assert.equal(teb7.bankId, "TEB");
+  assert.ok(teb7.diagnostics.matchedSignals.includes("header_teb_seven_column"));
+  assert.ok(teb7.diagnostics.topScore >= 45);
+  assert.notEqual(teb7.diagnostics.topCandidate, "GARANTI");
   assert.ok(
-    (tebNamed.diagnostics.matchedSignals || []).includes("header_garanti_export") ||
-      tebNamed.diagnostics.topScore === 28 ||
-      tebNamed.diagnostics.topScore === 36
+    !(teb7.diagnostics.matchedSignals || []).includes("header_garanti_export")
   );
-  console.log("OK — Ziraat real export + TEB-named ≠ TEB", decisionSummary(tebNamed));
+  console.log("OK — Ziraat real export + TEB 7-column", decisionSummary(teb7));
+
+  const tebFilenameOnly = detectExcelBank(FIXTURE_TEB_FILENAME_WEAK_DEKONT.rows, {
+    sheetName: FIXTURE_TEB_FILENAME_WEAK_DEKONT.sheetName,
+    fileName: FIXTURE_TEB_FILENAME_WEAK_DEKONT.fileName,
+  });
+  assert.notEqual(tebFilenameOnly.bankId, "TEB");
+  assert.ok(
+    tebFilenameOnly.status === "unknown" || tebFilenameOnly.status === "ambiguous"
+  );
+  console.log(
+    "OK — filename TEB + weak dekont ≠ TEB",
+    decisionSummary(tebFilenameOnly)
+  );
 
   const teb14 = detectExcelBank(FIXTURE_TEB_FOURTEEN_COLUMN_ANON.rows, {
     sheetName: FIXTURE_TEB_FOURTEEN_COLUMN_ANON.sheetName,

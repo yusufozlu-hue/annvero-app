@@ -42,6 +42,8 @@ const STRONG_SIGNAL_PREFIXES = ["brand_", "iban_", "bic_"];
 const EXCLUSIVE_FORMAT_CODES = new Set([
   "header_vakif_native",
   "header_ziraat_export",
+  "header_teb_fourteen_column",
+  "header_teb_seven_column",
 ]);
 
 function compactIban(value = "") {

@@ -32,7 +32,9 @@ import {
 import { buildBankStatementSchemaFingerprint } from "../src/utils/bankStatementSchemaFingerprint.js";
 import { canStartFullPipeline } from "../src/utils/bankOneClickPipeline.js";
 import {
-  FIXTURE_TEB_NAMED_GARANTI_COLUMNS,
+  FIXTURE_TEB_SEVEN_COLUMN_ANON,
+  FIXTURE_TEB_FOURTEEN_COLUMN_ANON,
+  FIXTURE_TEB_FILENAME_WEAK_DEKONT,
   FIXTURE_TEB_XLSX_ROWS,
   FIXTURE_ZIRAAT_REAL_EXPORT_ANON,
   FIXTURE_GARANTI_ROWS,
@@ -42,9 +44,11 @@ import {
 
 const require = createRequire(import.meta.url);
 
-const TEB_GARANTI_LIKE = FIXTURE_TEB_NAMED_GARANTI_COLUMNS.rows;
-const TEB_FILE = FIXTURE_TEB_NAMED_GARANTI_COLUMNS.fileName;
-const TEB_SHEET = FIXTURE_TEB_NAMED_GARANTI_COLUMNS.sheetName;
+/** Schema-memory / persist akışları için TEB 7-kolon (eski “garanti-like” ad) */
+const TEB_SEVEN = FIXTURE_TEB_SEVEN_COLUMN_ANON.rows;
+const TEB_FILE = FIXTURE_TEB_SEVEN_COLUMN_ANON.fileName;
+const TEB_SHEET = FIXTURE_TEB_SEVEN_COLUMN_ANON.sheetName;
+const TEB_GARANTI_LIKE = TEB_SEVEN;
 
 async function withMemoryStore(fn) {
   __setStatementFormatMemoryStoreForTests({});
@@ -121,9 +125,13 @@ await withMemoryStore(async () => {
   });
   assert.equal(detectedViaAccount.status, "detected");
   assert.equal(detectedViaAccount.bankId, "TEB");
-  assert.equal(
-    detectedViaAccount.resolutionSource,
-    BANK_RESOLUTION_SOURCE.COMPANY_ACCOUNT_MATCH
+  assert.ok(
+    [
+      BANK_RESOLUTION_SOURCE.COMPANY_ACCOUNT_MATCH,
+      BANK_RESOLUTION_SOURCE.STRONG_STATEMENT_IDENTITY,
+      BANK_RESOLUTION_SOURCE.UNIQUE_FORMAT_FINGERPRINT,
+    ].includes(detectedViaAccount.resolutionSource),
+    `unexpected source ${detectedViaAccount.resolutionSource}`
   );
   console.log("OK — company account match → TEB");
 
@@ -236,7 +244,7 @@ await withMemoryStore(async () => {
   );
   console.log("OK — C server fail warning + pipeline continues");
 
-  // D) Başka companyId — server memory uygulanmaz
+  // D) Başka companyId — server memory uygulanmaz; exclusive TEB7 yine içerikten TEB
   const otherCo = resolveExcelBankWithCompanyContext(TEB_GARANTI_LIKE, {
     companyId: "co-other",
     bankAccounts: [{ bankName: "TEB", isActive: true }],
@@ -247,8 +255,12 @@ await withMemoryStore(async () => {
       "co-other"
     ),
   });
-  assert.equal(otherCo.status, "requires_confirmation");
-  assert.equal(otherCo.bankId, null);
+  assert.equal(otherCo.status, "detected");
+  assert.equal(otherCo.bankId, "TEB");
+  assert.equal(
+    otherCo.resolutionSource,
+    BANK_RESOLUTION_SOURCE.UNIQUE_FORMAT_FINGERPRINT
+  );
   const leakExtract = extractStatementFormatMemoryFromLearning(
     serverA.rows,
     "co-stranger"
@@ -262,34 +274,42 @@ await withMemoryStore(async () => {
     records: serverHydrated,
   });
   assert.equal(leakFind, null);
-  console.log("OK — D tenant isolation / other company");
+  console.log("OK — D tenant isolation / exclusive TEB7 without leaked memory");
 
-  // Filename alone ≠ TEB
-  const fileOnly = detectExcelBank(TEB_GARANTI_LIKE, {
-    fileName: TEB_FILE,
-    sheetName: TEB_SHEET,
+  // Filename alone ≠ TEB (zayıf dekont kolonları)
+  const fileOnly = detectExcelBank(FIXTURE_TEB_FILENAME_WEAK_DEKONT.rows, {
+    fileName: FIXTURE_TEB_FILENAME_WEAK_DEKONT.fileName,
+    sheetName: FIXTURE_TEB_FILENAME_WEAK_DEKONT.sheetName,
   });
+  assert.notEqual(fileOnly.bankId, "TEB");
   assert.equal(fileOnly.status, "unknown");
-  const fileOnlyCtx = resolveExcelBankWithCompanyContext(TEB_GARANTI_LIKE, {
-    companyId: "co-fn",
-    fileName: TEB_FILE,
-    sheetName: TEB_SHEET,
-  });
+  const fileOnlyCtx = resolveExcelBankWithCompanyContext(
+    FIXTURE_TEB_FILENAME_WEAK_DEKONT.rows,
+    {
+      companyId: "co-fn",
+      fileName: FIXTURE_TEB_FILENAME_WEAK_DEKONT.fileName,
+      sheetName: FIXTURE_TEB_FILENAME_WEAK_DEKONT.sheetName,
+    }
+  );
   assert.equal(fileOnlyCtx.status, "requires_confirmation");
+  assert.equal(fileOnlyCtx.bankId, null);
   console.log("OK — filename alone ≠ TEB");
 
-  // TEB+Garanti hafızasız → confirmation
-  const ambiguousCo = resolveExcelBankWithCompanyContext(TEB_GARANTI_LIKE, {
-    companyId: "co-both",
-    bankAccounts: [
-      { bankName: "TEB", isActive: true },
-      { bankName: "Garanti", isActive: true },
-    ],
-    fileName: TEB_FILE,
-    sheetName: TEB_SHEET,
-  });
+  // Zayıf Garanti kolonları + TEB+Garanti hesap → confirmation
+  const ambiguousCo = resolveExcelBankWithCompanyContext(
+    FIXTURE_TEB_FILENAME_WEAK_DEKONT.rows,
+    {
+      companyId: "co-both",
+      bankAccounts: [
+        { bankName: "TEB", isActive: true },
+        { bankName: "Garanti", isActive: true },
+      ],
+      fileName: FIXTURE_TEB_FILENAME_WEAK_DEKONT.fileName,
+      sheetName: FIXTURE_TEB_FILENAME_WEAK_DEKONT.sheetName,
+    }
+  );
   assert.equal(ambiguousCo.status, "requires_confirmation");
-  console.log("OK — TEB+Garanti without memory → confirmation");
+  console.log("OK — weak dekont + TEB+Garanti accounts → confirmation");
 });
 
 // Brand TEB / Ziraat / Garanti / Kuveyt / Vakıf regresyon
@@ -301,6 +321,51 @@ await withMemoryStore(async () => {
   assert.equal(strong.status, "detected");
   assert.equal(strong.bankId, "TEB");
   console.log("OK — strong TEB identity preserved");
+}
+
+{
+  const teb14 = resolveExcelBankWithCompanyContext(
+    FIXTURE_TEB_FOURTEEN_COLUMN_ANON.rows,
+    {
+      companyId: "co-teb14",
+      fileName: FIXTURE_TEB_FOURTEEN_COLUMN_ANON.fileName,
+      sheetName: FIXTURE_TEB_FOURTEEN_COLUMN_ANON.sheetName,
+      bankAccounts: [],
+      formatMemoryRecords: [],
+    }
+  );
+  assert.equal(teb14.status, "detected");
+  assert.equal(teb14.bankId, "TEB");
+  assert.ok(
+    (teb14.diagnostics?.matchedSignals || []).includes(
+      "header_teb_fourteen_column"
+    )
+  );
+  assert.equal(
+    teb14.resolutionSource,
+    BANK_RESOLUTION_SOURCE.UNIQUE_FORMAT_FINGERPRINT
+  );
+  console.log("OK — TEB 14-column exclusive → detected (no confirmation)");
+}
+
+{
+  const teb7 = resolveExcelBankWithCompanyContext(FIXTURE_TEB_SEVEN_COLUMN_ANON.rows, {
+    companyId: "co-teb7",
+    fileName: "neutral-export.xlsx",
+    sheetName: FIXTURE_TEB_SEVEN_COLUMN_ANON.sheetName,
+    bankAccounts: [],
+    formatMemoryRecords: [],
+  });
+  assert.equal(teb7.status, "detected");
+  assert.equal(teb7.bankId, "TEB");
+  assert.ok(
+    (teb7.diagnostics?.matchedSignals || []).includes("header_teb_seven_column")
+  );
+  assert.equal(
+    teb7.resolutionSource,
+    BANK_RESOLUTION_SOURCE.UNIQUE_FORMAT_FINGERPRINT
+  );
+  console.log("OK — TEB 7-column exclusive → detected (no confirmation)");
 }
 
 {
@@ -363,7 +428,9 @@ if (desktopTeb) {
         fileName: "teb-local.xlsx",
         sheetName: sn,
       });
-      assert.equal(first.status, "requires_confirmation");
+      // TEB 7-kolon exclusive fingerprint → confirmation gerekmez
+      assert.equal(first.status, "detected");
+      assert.equal(first.bankId, "TEB");
 
       const store = makeServerStore();
       const persisted = await persistConfirmedStatementFormatMemory({
@@ -392,7 +459,7 @@ if (desktopTeb) {
       assert.equal(second.bankId, "TEB");
       assert.equal(second.parserBankId, "TEB");
     });
-    console.log("OK — Desktop TEB local smoke (masked) server persist→hydrate→TEB");
+    console.log("OK — Desktop TEB local smoke (masked) exclusive detect + memory");
   }
 }
 

@@ -62,13 +62,36 @@ export const FIXTURE_ZIRAAT_REAL_EXPORT_ANON = {
 };
 
 /** TEB adlı fakat Garanti kolonları (yapısal anon fixture) → UNKNOWN */
-export const FIXTURE_TEB_NAMED_GARANTI_COLUMNS = {
+/**
+ * TEB 7-kolon hesap hareketleri ihracatı (anonim yapısal fixture).
+ * Tarih | Açıklama | Unvan | Özel İşlem Açıklaması | Tutar | Bakiye | Dekont
+ * Eski ad: FIXTURE_TEB_NAMED_GARANTI_COLUMNS (yanlış Garanti lean varsayımı).
+ */
+export const FIXTURE_TEB_SEVEN_COLUMN_ANON = {
   sheetName: "Hesap Hareketleri",
-  fileName: "teb-named-garanti-columns.xlsx",
+  fileName: "hesap-hareketleri-7col-anon.xlsx",
   rows: [
     ["Tarih", "Açıklama", "Unvan", "Özel İşlem Açıklaması", "Tutar", "Bakiye", "Dekont"],
     ["01.03.2026", "EFT ANON", "ANON FIRMA", "", "1000,00", "1000", "D1"],
     ["02.03.2026", "ODEME VAKIFBANK KREDI KARTI ANON", "ANON", "", "-50,00", "950", "D2"],
+  ],
+};
+
+/** @deprecated Use FIXTURE_TEB_SEVEN_COLUMN_ANON — kolonlar TEB 7-kolon, Garanti değil */
+export const FIXTURE_TEB_NAMED_GARANTI_COLUMNS = {
+  ...FIXTURE_TEB_SEVEN_COLUMN_ANON,
+  fileName: "teb-named-garanti-columns.xlsx",
+};
+
+/**
+ * Zayıf dekont+tutar (Unvan/Özel İşlem yok) — TEB sayılmamalı; dosya adı TEB yetmez.
+ */
+export const FIXTURE_TEB_FILENAME_WEAK_DEKONT = {
+  sheetName: "Hesap Hareketleri",
+  fileName: "TEB ORNEK.xlsx",
+  rows: [
+    ["Tarih", "Açıklama", "Tutar", "Bakiye", "Dekont No"],
+    ["01.03.2026", "EFT ANON", "1000,00", "1000", "D1"],
   ],
 };
 

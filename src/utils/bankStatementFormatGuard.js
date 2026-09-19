@@ -101,6 +101,16 @@ export function isGarantiStatementHeaderText(text) {
   const t = normalizeStatementHeaderText(text);
   if (!t || isVakifbankStatementHeaderText(t)) return false;
 
+  // TEB 7/14-kolon Unvan+Özel İşlem sözleşmesi Garanti değildir
+  if (
+    t.includes("unvan") &&
+    t.includes("ozel islem") &&
+    t.includes("dekont") &&
+    !t.includes("etiket")
+  ) {
+    return false;
+  }
+
   const hasTarih = t.includes("tarih");
   const hasAciklama =
     t.includes("aciklama") || t.includes("islem aciklamasi");
