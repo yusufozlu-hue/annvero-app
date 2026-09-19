@@ -2343,6 +2343,18 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   );
   assert(defaultSnapshot.systemWarnings.length === 1, "ab voucher-less warning in system area");
   assert(
+    defaultSnapshot.summary.systemWarningCount === 1,
+    "ab summary systemWarningCount"
+  );
+  assert(
+    defaultSnapshot.summary.overallElevatedBySystemWarnings === true,
+    "ab overall elevated by system warnings"
+  );
+  assert(
+    /sistem uyarısı/.test(String(defaultSnapshot.summary.overallSonucDisplay || "")),
+    "ab overall display mentions sistem uyarısı"
+  );
+  assert(
     !defaultSnapshot.allGroups.some((group) => !String(group.fisNo || "").trim()),
     "ab no fake voucher number"
   );
@@ -2357,9 +2369,14 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
   );
   assert(/genel-muhasebe-view-findings/.test(pageSrc), "ab findings view control");
   assert(/genel-muhasebe-view-all/.test(pageSrc), "ab all vouchers control");
+  assert(/Bulgulu Fişler \(/.test(pageSrc), "ab Bulgulu Fişler label");
+  assert(/Tüm Fişler \(/.test(pageSrc), "ab Tüm Fişler label");
+  assert(/Uygun Fişler/.test(pageSrc), "ab Uygun Fişler label");
   assert(/genel-muhasebe-system-warnings/.test(pageSrc), "ab system warnings area");
+  assert(/genel-muhasebe-overall-sonuc/.test(pageSrc), "ab overall sonuc control");
   assert(/genel-muhasebe-active-filter/.test(pageSrc), "ab active filter label");
   assert(/genel-muhasebe-clear-filter/.test(pageSrc), "ab one-click filter clear");
+  assert(/Aktif filtre: «/.test(pageSrc), "ab filter shows query in quotes");
   assert(
     /const resetPresentationState = useCallback[\s\S]*setFisFilter\(""\)[\s\S]*setShowDuzeltildiOnly\(false\)[\s\S]*setVoucherDetailGroup\(null\)/.test(
       pageSrc
@@ -2370,6 +2387,29 @@ assert(accountCodeFromPlanRow({ accountCode: "102.01" }) === "102.01", "accountC
     /resetPresentationState\(\);[\s\S]*setBusy\(true\)/.test(pageSrc),
     "ab new analysis resets presentation state"
   );
+}
+
+{
+  // ac) 200k sheet sanitize — sessiz kırpma yok, fail-closed
+  const { sanitizeSheetRows, SHEET_ROW_SANITIZE_LIMIT, inspectSheetRowSanitize } =
+    await import("../src/utils/eDefterAnalyzeContract.js");
+  assert(SHEET_ROW_SANITIZE_LIMIT === 200_000, "ac limit constant");
+  const okMeta = inspectSheetRowSanitize([[1], [2]], "Muavin");
+  assert(okMeta.truncated === false, "ac small sheet not truncated");
+  const huge = Array.from({ length: SHEET_ROW_SANITIZE_LIMIT + 3 }, () => [1]);
+  const hugeMeta = inspectSheetRowSanitize(huge, "Yevmiye");
+  assert(hugeMeta.truncated === true, "ac huge marked truncated");
+  let threw = false;
+  try {
+    sanitizeSheetRows(huge, { label: "Yevmiye" });
+  } catch (err) {
+    threw = true;
+    assert(err.code === "SHEET_ROW_LIMIT_EXCEEDED", "ac throw code");
+    assert(/güvenli üst sınır/.test(String(err.message || "")), "ac throw message");
+  }
+  assert(threw, "ac sanitize throws on overflow");
+  const small = sanitizeSheetRows([["a"], ["b"]], { label: "Mizan" });
+  assert(Array.isArray(small) && small.length === 2, "ac small sanitize ok");
 }
 
 if (failed) {

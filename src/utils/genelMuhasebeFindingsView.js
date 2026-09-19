@@ -366,12 +366,24 @@ export function buildGenelMuhasebePresentationSnapshot({
     findingsCatalog,
     correctionRecords
   );
+  const baseSummary = summarizeGenelMuhasebeFindingsCatalog(unresolvedCatalog);
+  const systemWarnings = buildGenelMuhasebeSystemWarnings(correctionAwareCatalog);
+  const systemWarningCount = systemWarnings.length;
+  const overallElevatedBySystemWarnings =
+    systemWarningCount > 0 &&
+    (baseSummary.overallSonuc === E_DEFTER_SONUC_SEVIYE.UYARI ||
+      baseSummary.overallSonuc === E_DEFTER_SONUC_SEVIYE.KRITIK);
   const summary = {
-    ...summarizeGenelMuhasebeFindingsCatalog(unresolvedCatalog),
+    ...baseSummary,
     duzeltildi: correctionImpact.duzeltildi,
     exportedPending: correctionImpact.exportedPending,
     incelemeGerekliRaw:
       summarizeGenelMuhasebeFindingsCatalog(findingsCatalog).incelemeGerekli,
+    systemWarningCount,
+    overallElevatedBySystemWarnings,
+    overallSonucDisplay: overallElevatedBySystemWarnings
+      ? `${baseSummary.overallSonuc} — ${systemWarningCount} sistem uyarısı`
+      : baseSummary.overallSonuc,
   };
   const voucherSnapshot = buildVoucherResultSnapshot({
     findingsCatalog: correctionAwareCatalog,
@@ -384,7 +396,7 @@ export function buildGenelMuhasebePresentationSnapshot({
   return {
     correctionAwareCatalog,
     summary,
-    systemWarnings: buildGenelMuhasebeSystemWarnings(correctionAwareCatalog),
+    systemWarnings,
     ...voucherSnapshot,
   };
 }
