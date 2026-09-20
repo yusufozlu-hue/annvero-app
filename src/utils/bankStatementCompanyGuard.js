@@ -89,6 +89,114 @@ function flattenSheetText(sheetRows = [], maxRows = 40) {
   return lines.join("\n");
 }
 
+/** TEB/banka kolon başlığı kelime dağarcığı — çoğunluk eşleşince owner değildir */
+const STATEMENT_HEADER_VOCAB = new Set([
+  "tarih",
+  "valor",
+  "saat",
+  "aciklama",
+  "banka",
+  "unvan",
+  "ozel",
+  "islem",
+  "giren",
+  "kullanici",
+  "alici",
+  "hesap",
+  "iban",
+  "kart",
+  "no",
+  "eft",
+  "sorgu",
+  "tutar",
+  "bakiye",
+  "dekont",
+  "musteri",
+  "referans",
+  "referansi",
+  "etiket",
+  "borc",
+  "alacak",
+  "fis",
+  "muh",
+  "isl",
+  "kd",
+  "b/a",
+]);
+
+/**
+ * Owner label (normalizeCore sonrası).
+ * Çıplak "unvan" KABUL EDİLMEZ — TEB kolon başlığıdır.
+ */
+const OWNER_LABEL_CORE_RE =
+  /^(hesap sahibi|hesap unvan[i]?|musteri unvan[i]?|account holder)$/;
+
+/** Güçlü sahiplik label → value (metin yolu; çıplak Unvan yok) */
+const OWNER_LABEL_VALUE_RE =
+  /(?:Hesap\s*Sahibi|Hesap\s*[ÜU]nvan[ıi]?|M[üu][şs]teri\s*[ÜU]nvan[ıi]?|Account\s*Holder)\s*[:\-]\s*([^\n\r|;]{6,120})/gi;
+
+function isOwnerLabelCell(value = "") {
+  return OWNER_LABEL_CORE_RE.test(normalizeCore(value).toLowerCase());
+}
+
+/**
+ * Birleşik kolon başlığı mı?
+ * Kaba includes yok — token çoğunluğu header vocabulary + ≥3 header token.
+ * "TUTAR LOJISTIK A.S" (1/3) reddedilmez; TEB header birleşimi (≥0.7) reddedilir.
+ */
+function looksLikeJoinedColumnHeaders(title = "") {
+  const tokens = normalizeCore(title)
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length < 3) return false;
+  const headerish = tokens.filter((t) => STATEMENT_HEADER_VOCAB.has(t));
+  if (headerish.length < 3) return false;
+  return headerish.length / tokens.length >= 0.7;
+}
+
+function isPlausibleOwnerTitle(title = "") {
+  const t = String(title || "").trim();
+  if (t.length < 6) return false;
+  if (looksLikeJoinedColumnHeaders(t)) return false;
+  // Label'ın kendisi value olmasın
+  if (isOwnerLabelCell(t)) return false;
+  return true;
+}
+
+/**
+ * Satır yapısından owner: label hücresi → sonraki dolu hücre (kolon yapışması yok).
+ */
+function extractOwnerTitlesFromSheetRows(sheetRows = [], maxRows = 50) {
+  const titles = [];
+  const limit = Math.min(sheetRows.length, maxRows);
+  for (let r = 0; r < limit; r += 1) {
+    const row = sheetRows[r];
+    if (!Array.isArray(row)) continue;
+    for (let c = 0; c < row.length; c += 1) {
+      const cell = String(row[c] ?? "").trim();
+      if (!cell) continue;
+      // "Hesap Sahibi: FIRMA" tek hücre
+      const inline = cell.match(
+        /^(Hesap\s*Sahibi|Hesap\s*[ÜU]nvan[ıi]?|M[üu][şs]teri\s*[ÜU]nvan[ıi]?|Account\s*Holder)\s*[:\-]\s*(.+)$/i
+      );
+      if (inline) {
+        const value = String(inline[2] || "").trim();
+        if (isPlausibleOwnerTitle(value)) titles.push(value);
+        continue;
+      }
+      if (!isOwnerLabelCell(cell)) continue;
+      for (let n = c + 1; n < row.length; n += 1) {
+        const next = String(row[n] ?? "").trim();
+        if (!next) continue;
+        if (isPlausibleOwnerTitle(next)) titles.push(next);
+        break;
+      }
+    }
+  }
+  return titles;
+}
+
 /**
  * Ekstre üst bilgisinden kimlik sinyalleri (hesap sahibi, VKN, IBAN, hesap no).
  */
@@ -136,25 +244,34 @@ export function extractBankStatementCompanySignals({
   }
 
   const ownerTitles = [];
-  const ownerPatterns = [
-    /(?:Hesap\s*Sahibi|Hesap\s*Ünvan[ıi]|Müsteri\s*Unvan[ıi]|Müşteri\s*Ünvan[ıi]|Unvan|Ünvan|Account\s*Holder)\s*[:\-]?\s*([^\n\r|;]{6,120})/gi,
-  ];
-  for (const re of ownerPatterns) {
-    let om;
-    while ((om = re.exec(hay)) && ownerTitles.length < 5) {
-      const title = String(om[1] || "").trim();
-      if (title.length >= 6) ownerTitles.push(title);
+
+  // 1) Sheet satır yapısı — TEB "Unvan" kolon başlığını owner saymaz
+  if (Array.isArray(sheetRows) && sheetRows.length) {
+    for (const title of extractOwnerTitlesFromSheetRows(sheetRows, 50)) {
+      if (ownerTitles.length >= 5) break;
+      ownerTitles.push(title);
     }
   }
 
-  // Dosya adında firma sinyali (ÖRNEK / VAKIFBANK gibi gürültüyü ayıkla)
+  // 2) Metin yolu: yalnız "Label: value" (çıplak Unvan yok; [:\\-] zorunlu)
+  OWNER_LABEL_VALUE_RE.lastIndex = 0;
+  let om;
+  while ((om = OWNER_LABEL_VALUE_RE.exec(hay)) && ownerTitles.length < 5) {
+    const title = String(om[1] || "").trim();
+    if (isPlausibleOwnerTitle(title)) ownerTitles.push(title);
+  }
+
+  // Dosya adında firma sinyali (banka / ekstre gürültüsünü ayıkla)
   const fileBase = String(fileName || "")
     .replace(/\.[^.]+$/, "")
     .replace(/[_-]+/g, " ")
     .trim();
   if (
     fileBase &&
-    !/vak[iı]f|örnek|ornek|ekstre|statement|staging|e2e/i.test(fileBase)
+    !/vak[iı]f|örnek|ornek|ekstre|esktre|statement|staging|e2e|\bteb\b|garanti|ziraat|kuveyt|bbva|hesap\s*hareket/i.test(
+      fileBase
+    ) &&
+    isPlausibleOwnerTitle(fileBase)
   ) {
     ownerTitles.push(fileBase);
   }

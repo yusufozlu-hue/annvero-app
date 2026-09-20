@@ -27,6 +27,11 @@ const { resolveParserBankFromSheet } = await import(
 const { readSheetRowsFromArrayBuffer } = await import(
   "../src/utils/excelBufferUtils.js"
 );
+const {
+  extractBankStatementCompanySignals,
+  verifyBankStatementCompanyMatch,
+  BANK_COMPANY_GUARD_CODE,
+} = await import("../src/utils/bankStatementCompanyGuard.js");
 
 const buf = fs.readFileSync(desktopPath);
 const wb = XLSX.read(buf, { type: "buffer", cellDates: true, raw: true });
@@ -66,6 +71,30 @@ assert.equal(uiPath.status, "detected");
 assert.equal(uiPath.bankId, "TEB");
 assert.equal(uiPath.parserBankId, "TEB");
 
+const signals = extractBankStatementCompanySignals({
+  sheetRows: sheetRowsUi,
+  fileName,
+});
+assert.equal(signals.ownerTitles.length, 0);
+assert.equal(signals.ownerCores.length, 0);
+assert.equal(signals.hasAnySignal, false);
+
+const mare = {
+  id: "84384297-270c-47cd-ac5a-d693ba80b84a",
+  companyName: "MARE RESORT TURIZM VE OTELCILIK TICARET A.S.",
+  bankAccounts: [],
+};
+const guard = verifyBankStatementCompanyMatch({
+  sheetRows: sheetRowsUi,
+  fileName,
+  selectedCompany: mare,
+  companies: [mare],
+});
+assert.equal(guard.code, BANK_COMPANY_GUARD_CODE.VERIFICATION_REQUIRED);
+assert.ok(guard.reasons.includes("no_identity_signal"));
+assert.notEqual(guard.code, BANK_COMPANY_GUARD_CODE.MISMATCH);
+assert.equal(guard.statementOwnerLabel, "");
+
 console.log(
   JSON.stringify({
     fileBytes: buf.length,
@@ -76,6 +105,9 @@ console.log(
     direct: "TEB",
     uiCompanyPath: "TEB",
     signal: "header_teb_seven_column",
+    ownerTitles: 0,
+    companyGuard: "VERIFICATION_REQUIRED",
+    reason: "no_identity_signal",
   })
 );
 console.log("OK — TEB 7-col real-file gate (privacy-safe)");
