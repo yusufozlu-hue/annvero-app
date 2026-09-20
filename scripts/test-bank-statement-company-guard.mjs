@@ -18,6 +18,10 @@ import {
   titlesMatchForGuard,
   verifyBankStatementCompanyMatch,
 } from "@/src/utils/bankStatementCompanyGuard.js";
+import {
+  FIXTURE_TEB_SEVEN_COLUMN_ANON,
+  FIXTURE_TEB_FOURTEEN_COLUMN_ANON,
+} from "./fixtures/bank-excel/sheetRows.mjs";
 
 function test(name, fn) {
   try {
@@ -350,6 +354,126 @@ test("onay kutusu etiketi seçili firma unvanını kullanır", () => {
     COMPANY_VERIFY_CONFIRM_BUTTON_LABEL,
     "Firmayı Onayla ve Devam Et"
   );
+});
+
+function assertNoFakeHeaderOwner(signals, label) {
+  for (const title of signals.ownerTitles || []) {
+    const core = String(title || "")
+      .toLocaleLowerCase("tr-TR")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/ı/g, "i");
+    assert.equal(
+      /ozel islem/.test(core) && /tutar/.test(core) && /bakiye/.test(core),
+      false,
+      `${label}: fake header owner: ${title.slice(0, 40)}`
+    );
+    assert.equal(
+      /^ozel islem/.test(core),
+      false,
+      `${label}: owner starts with ozel islem`
+    );
+  }
+}
+
+test("TEB 7-col header → sahte owner üretmez", () => {
+  const signals = extractBankStatementCompanySignals({
+    sheetRows: FIXTURE_TEB_SEVEN_COLUMN_ANON.rows,
+    fileName: FIXTURE_TEB_SEVEN_COLUMN_ANON.fileName,
+  });
+  assertNoFakeHeaderOwner(signals, "teb7");
+  assert.equal(signals.ownerTitles.length, 0);
+  assert.equal(signals.ownerCores.length, 0);
+});
+
+test("TEB 14-col header → sahte owner üretmez", () => {
+  const signals = extractBankStatementCompanySignals({
+    sheetRows: FIXTURE_TEB_FOURTEEN_COLUMN_ANON.rows,
+    fileName: FIXTURE_TEB_FOURTEEN_COLUMN_ANON.fileName,
+  });
+  assertNoFakeHeaderOwner(signals, "teb14");
+  assert.ok(
+    !(signals.ownerTitles || []).some((t) =>
+      /alici hesap|eft sorgu|musteri referans/i.test(t)
+    )
+  );
+});
+
+test("kimliksiz TEB 7-col → VERIFICATION_REQUIRED / no_identity_signal", () => {
+  const result = verifyBankStatementCompanyMatch({
+    sheetRows: FIXTURE_TEB_SEVEN_COLUMN_ANON.rows,
+    fileName: "TEB GERCEK ESKTRE.xlsx",
+    selectedCompany: mare,
+    companies: [adh, mare],
+  });
+  assert.equal(result.code, BANK_COMPANY_GUARD_CODE.VERIFICATION_REQUIRED);
+  assert.equal(result.ok, false);
+  assert.equal(result.blockPipeline, true);
+  assert.ok(result.reasons.includes("no_identity_signal"));
+  assert.equal(result.statementOwnerLabel, "");
+  assert.equal(canAcceptManualCompanyConfirmation(result.code), true);
+});
+
+test("gerçek Hesap Sahibi satırı → owner doğru çıkar", () => {
+  const signals = extractBankStatementCompanySignals({
+    sheetRows: [
+      ["Hesap Sahibi", "MARE RESORT TURİZM VE OTELCİLİK TİCARET A.Ş"],
+      ["Tarih", "Açıklama", "Unvan", "Özel İşlem Açıklaması", "Tutar", "Bakiye", "Dekont"],
+    ],
+    fileName: "ekstre.xlsx",
+  });
+  assert.ok(signals.ownerTitles.some((t) => /MARE RESORT/i.test(t)));
+  assertNoFakeHeaderOwner(signals, "hesap-sahibi");
+});
+
+test("gerçek Hesap Ünvanı satırı → owner doğru çıkar", () => {
+  const signals = extractBankStatementCompanySignals({
+    sheetRows: [
+      ["Hesap Ünvanı", "MARE RESORT TURİZM VE OTELCİLİK TİCARET A.Ş"],
+      ["Tarih", "Unvan", "Tutar", "Bakiye", "Dekont"],
+    ],
+    fileName: "ekstre.xlsx",
+  });
+  assert.ok(signals.ownerTitles.some((t) => /MARE RESORT/i.test(t)));
+  assertNoFakeHeaderOwner(signals, "hesap-unvani");
+});
+
+test("gerçek VKN/IBAN mismatch → hâlâ BLOCK", () => {
+  const result = verifyBankStatementCompanyMatch({
+    sheetRows: [
+      ["Hesap Sahibi", "MARE RESORT TURİZM"],
+      ["VKN", "9876543210"],
+      ["IBAN", "TR56 0001 0001 0000 0001 2345 67"],
+    ],
+    selectedCompany: adh,
+    companies: [adh, mare],
+  });
+  assert.equal(result.code, BANK_COMPANY_GUARD_CODE.MISMATCH);
+  assert.equal(result.blockPipeline, true);
+});
+
+test("gerçek title mismatch → hâlâ BLOCK", () => {
+  const result = verifyBankStatementCompanyMatch({
+    sheetRows: [
+      ["Hesap Sahibi", "MARE RESORT TURİZM VE OTELCİLİK TİCARET A.Ş"],
+    ],
+    fileName: "ekstre.xlsx",
+    selectedCompany: adh,
+    companies: [adh, mare],
+  });
+  assert.equal(result.code, BANK_COMPANY_GUARD_CODE.MISMATCH);
+  assert.equal(result.blockPipeline, true);
+  assert.ok(result.reasons.includes("title_mismatch"));
+  assert.match(result.message, /MARE RESORT/i);
+  assert.match(result.message, /ADH AVRASYA/i);
+});
+
+test("firma unvanında tutar kelimesi false-negative yaratmaz", () => {
+  const signals = extractBankStatementCompanySignals({
+    sheetRows: [["Hesap Sahibi", "TUTAR LOJISTIK VE TICARET A.S."]],
+    fileName: "ekstre.xlsx",
+  });
+  assert.ok(signals.ownerTitles.some((t) => /TUTAR LOJISTIK/i.test(t)));
 });
 
 console.log("All bank-statement-company-guard tests passed.");
