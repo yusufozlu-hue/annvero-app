@@ -19,6 +19,7 @@ import {
 } from "@/src/utils/companyCenter";
 import { useOptionalCompanyWorkspace } from "@/src/contexts/CompanyWorkspaceContext";
 import { DOCUMENT_TYPE_OPTIONS } from "@/src/utils/lucaDocumentTypes";
+import BankAccountEditSheet from "./BankAccountEditSheet";
 
 const GibCredentialsSection = dynamic(
   () =>
@@ -161,6 +162,9 @@ export default function CompanyManagement() {
 
   const [bankFormMode, setBankFormMode] = useState(null);
   const [bankFormDraft, setBankFormDraft] = useState(null);
+  const [bankFormSaving, setBankFormSaving] = useState(false);
+  const [bankFormError, setBankFormError] = useState("");
+  const bankFormSaveLockRef = useRef(false);
 
   const [creditCardFormMode, setCreditCardFormMode] = useState(null);
   const [creditCardFormDraft, setCreditCardFormDraft] = useState(null);
@@ -602,20 +606,26 @@ export default function CompanyManagement() {
   });
 
   const openNewBankForm = () => {
+    if (bankFormSaveLockRef.current) return;
     setBanksSectionOpen(true);
+    setBankFormError("");
     setBankFormMode("new");
     setBankFormDraft(createEmptyBankAccount());
   };
 
   const openEditBankForm = (account) => {
+    if (bankFormSaveLockRef.current) return;
     setBanksSectionOpen(true);
+    setBankFormError("");
     setBankFormMode(account.id);
     setBankFormDraft({ ...account });
   };
 
   const cancelBankForm = () => {
+    if (bankFormSaveLockRef.current) return;
     setBankFormMode(null);
     setBankFormDraft(null);
+    setBankFormError("");
   };
 
   const updateBankFormDraft = (field, value) => {
@@ -623,23 +633,36 @@ export default function CompanyManagement() {
   };
 
   const saveBankForm = () => {
-    if (!bankFormDraft) return;
+    if (!bankFormDraft || bankFormSaveLockRef.current) return;
 
-    if (bankFormMode === "new") {
-      setCompany({
-        ...company,
-        bankAccounts: [...(company.bankAccounts || []), bankFormDraft],
+    bankFormSaveLockRef.current = true;
+    setBankFormSaving(true);
+    setBankFormError("");
+
+    const draft = bankFormDraft;
+    const mode = bankFormMode;
+    let saved = false;
+
+    try {
+      setCompany((prev) => {
+        const accounts = prev.bankAccounts || [];
+        return {
+          ...prev,
+          bankAccounts:
+            mode === "new"
+              ? [...accounts, draft]
+              : accounts.map((b) => (b.id === mode ? draft : b)),
+        };
       });
-    } else {
-      setCompany({
-        ...company,
-        bankAccounts: company.bankAccounts.map((b) =>
-          b.id === bankFormMode ? bankFormDraft : b
-        ),
-      });
+      saved = true;
+    } catch (error) {
+      setBankFormError(error?.message || "Banka hesabı kaydedilemedi.");
+    } finally {
+      bankFormSaveLockRef.current = false;
+      setBankFormSaving(false);
     }
 
-    cancelBankForm();
+    if (saved) cancelBankForm();
   };
 
   const removeBankAccount = (id) => {
@@ -1786,117 +1809,129 @@ export default function CompanyManagement() {
                   onAdd={openNewBankForm}
                   addLabel="+ Banka Hesabı Ekle"
                 >
-                  <div className="space-y-3">
-                    {(company.bankAccounts || []).length === 0 ? (
-                      <EmptyListMessage text="Henüz banka hesabı eklenmedi." />
-                    ) : (
-                      (company.bankAccounts || []).map((b) => (
-                        <CompactListItem
-                          key={b.id}
-                          onEdit={() => openEditBankForm(b)}
-                          onDelete={() => removeBankAccount(b.id)}
-                          detailsOpen={!!expandedBankDetails[b.id]}
-                          onToggleDetails={() => toggleBankDetails(b.id)}
-                          primary={
-                            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                              <ListField label="Banka" value={b.bankName} />
-                              <ListField label="Hesap Adı" value={b.accountName} />
-                              <ListField label="Para Birimi" value={b.currency} />
-                              <ListField
-                                label="Hesap Tipi"
-                                value={labelText(b.accountType)}
-                              />
-                            </div>
-                          }
-                          secondary={
-                            <InfoRow>
-                              <InfoItem label="IBAN" value={b.iban} wrap />
-                              <InfoItem
-                                label="Luca Hesap Kodu"
-                                value={b.lucaAccountCode}
-                              />
-                              <InfoItem
-                                label="POS Hesabı"
-                                value={b.isPosAccount ? "Evet" : "Hayır"}
-                              />
-                              <InfoItem
-                                label="Durum"
-                                value={b.isActive ? "Aktif" : "Pasif"}
-                                active={b.isActive}
-                              />
-                            </InfoRow>
-                          }
-                        />
-                      ))
-                    )}
-                  </div>
-
-                  {bankFormDraft && (
-                    <FormPanel
-                      title={
-                        bankFormMode === "new"
-                          ? "Yeni Banka Hesabı"
-                          : "Banka Hesabını Düzenle"
-                      }
-                      onSave={saveBankForm}
-                      onCancel={cancelBankForm}
-                    >
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                        <Input
-                          label="Banka"
-                          value={bankFormDraft.bankName}
-                          onChange={(v) => updateBankFormDraft("bankName", v)}
-                        />
-                        <Input
-                          label="Hesap Adı"
-                          value={bankFormDraft.accountName}
-                          onChange={(v) => updateBankFormDraft("accountName", v)}
-                        />
-                        <Input
-                          label="IBAN"
-                          value={bankFormDraft.iban}
-                          onChange={(v) => updateBankFormDraft("iban", v)}
-                        />
-                        <Input
-                          label="Hesap Numarası"
-                          value={bankFormDraft.accountNumber || ""}
-                          onChange={(v) =>
-                            updateBankFormDraft("accountNumber", v)
-                          }
-                        />
-                        <Select
-                          label="Para Birimi"
-                          value={bankFormDraft.currency}
-                          onChange={(v) => updateBankFormDraft("currency", v)}
-                          options={["TL", "USD", "EUR"]}
-                        />
-                        <Select
-                          label="Hesap Tipi"
-                          value={bankFormDraft.accountType}
-                          onChange={(v) => updateBankFormDraft("accountType", v)}
-                          options={["VADESIZ", "VADELI", "POS", "KREDI"]}
-                        />
-                        <Input
-                          label="Luca Hesap Kodu"
-                          value={bankFormDraft.lucaAccountCode}
-                          onChange={(v) =>
-                            updateBankFormDraft("lucaAccountCode", v)
-                          }
-                        />
-                        <Checkbox
-                          label="POS Hesabı"
-                          checked={bankFormDraft.isPosAccount}
-                          onChange={(v) => updateBankFormDraft("isPosAccount", v)}
-                        />
-                        <Checkbox
-                          label="Aktif"
-                          checked={bankFormDraft.isActive}
-                          onChange={(v) => updateBankFormDraft("isActive", v)}
-                        />
+                  {(company.bankAccounts || []).length === 0 ? (
+                    <EmptyListMessage text="Henüz banka hesabı eklenmedi." />
+                  ) : (
+                    <div data-testid="bank-account-list">
+                      <div
+                        aria-hidden="true"
+                        className={`hidden gap-x-4 px-3 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-slate-500 md:grid ${BANK_ROW_GRID}`}
+                      >
+                        <span>Banka</span>
+                        <span>Hesap Adı</span>
+                        <span>Para Birimi</span>
+                        <span>Hesap Tipi</span>
+                        <span className="text-right">İşlemler</span>
                       </div>
-                    </FormPanel>
+                      <ul className="space-y-1.5">
+                        {(company.bankAccounts || []).map((b) => (
+                          <BankAccountRow
+                            key={b.id}
+                            account={b}
+                            selected={bankFormMode === b.id}
+                            onEdit={() => openEditBankForm(b)}
+                            onDelete={() => removeBankAccount(b.id)}
+                            detailsOpen={!!expandedBankDetails[b.id]}
+                            onToggleDetails={() => toggleBankDetails(b.id)}
+                            secondary={
+                              <InfoRow>
+                                <InfoItem label="IBAN" value={b.iban} wrap />
+                                <InfoItem
+                                  label="Luca Hesap Kodu"
+                                  value={b.lucaAccountCode}
+                                />
+                                <InfoItem
+                                  label="POS Hesabı"
+                                  value={b.isPosAccount ? "Evet" : "Hayır"}
+                                />
+                                <InfoItem
+                                  label="Durum"
+                                  value={b.isActive ? "Aktif" : "Pasif"}
+                                  active={b.isActive}
+                                />
+                              </InfoRow>
+                            }
+                          />
+                        ))}
+                      </ul>
+                    </div>
                   )}
                 </CollapsibleSection>
+
+                <BankAccountEditSheet
+                  open={!!bankFormDraft}
+                  title={
+                    bankFormMode === "new"
+                      ? "Yeni Banka Hesabı"
+                      : "Banka Hesabını Düzenle"
+                  }
+                  description={bankAccountSummary(
+                    (company.bankAccounts || []).find((b) => b.id === bankFormMode)
+                  )}
+                  saving={bankFormSaving}
+                  error={bankFormError}
+                  onSave={saveBankForm}
+                  onCancel={cancelBankForm}
+                >
+                  {bankFormDraft && (
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      <Input
+                        label="Banka"
+                        value={bankFormDraft.bankName}
+                        onChange={(v) => updateBankFormDraft("bankName", v)}
+                      />
+                      <Input
+                        label="Hesap Adı"
+                        value={bankFormDraft.accountName}
+                        onChange={(v) => updateBankFormDraft("accountName", v)}
+                      />
+                      <Input
+                        label="IBAN"
+                        value={bankFormDraft.iban}
+                        onChange={(v) => updateBankFormDraft("iban", v)}
+                      />
+                      <Input
+                        label="Hesap Numarası"
+                        value={bankFormDraft.accountNumber || ""}
+                        onChange={(v) =>
+                          updateBankFormDraft("accountNumber", v)
+                        }
+                      />
+                      <Select
+                        label="Para Birimi"
+                        value={bankFormDraft.currency}
+                        onChange={(v) => updateBankFormDraft("currency", v)}
+                        options={["TL", "USD", "EUR"]}
+                      />
+                      <Select
+                        label="Hesap Tipi"
+                        value={bankFormDraft.accountType}
+                        onChange={(v) => updateBankFormDraft("accountType", v)}
+                        options={["VADESIZ", "VADELI", "POS", "KREDI"]}
+                      />
+                      <Input
+                        label="Luca Hesap Kodu"
+                        value={bankFormDraft.lucaAccountCode}
+                        onChange={(v) =>
+                          updateBankFormDraft("lucaAccountCode", v)
+                        }
+                      />
+                      <Checkbox
+                        label="POS Hesabı"
+                        checked={bankFormDraft.isPosAccount}
+                        onChange={(v) => updateBankFormDraft("isPosAccount", v)}
+                      />
+                      <Checkbox
+                        label="Aktif"
+                        checked={bankFormDraft.isActive}
+                        onChange={(v) => updateBankFormDraft("isActive", v)}
+                      />
+                    </div>
+                  )}
+                  <p className="mt-3 text-xs text-slate-500">
+                    Değişiklikler firma kaydı için sayfanın altındaki Kaydet düğmesiyle kalıcı olur.
+                  </p>
+                </BankAccountEditSheet>
 
                 <CollapsibleSection
                   title="Kredi Kartları"
@@ -2926,6 +2961,78 @@ export default function CompanyManagement() {
     );
   }
 
+  const BANK_ROW_GRID =
+    "md:grid-cols-[minmax(0,1.2fr)_minmax(0,1.8fr)_4.5rem_5.5rem_12rem]";
+
+  function bankAccountSummary(account) {
+    if (!account) return undefined;
+    return [account.bankName, account.accountName].filter(Boolean).join(" · ") || undefined;
+  }
+
+  function BankAccountRow({
+    account,
+    selected,
+    secondary,
+    onEdit,
+    onDelete,
+    detailsOpen,
+    onToggleDetails,
+  }) {
+    const summary = bankAccountSummary(account) || "banka hesabı";
+    return (
+      <li
+        data-testid="bank-account-row"
+        data-selected={selected ? "true" : undefined}
+        aria-current={selected ? "true" : undefined}
+        className={`rounded-lg border transition-colors ${
+          selected
+            ? "border-indigo-500/80 bg-indigo-500/10 ring-1 ring-indigo-500/40"
+            : "border-slate-800 bg-slate-950/60 hover:border-slate-700"
+        }`}
+      >
+        <div
+          className={`grid grid-cols-2 items-center gap-x-4 gap-y-1.5 px-3 py-2 ${BANK_ROW_GRID}`}
+        >
+          <BankCell label="Banka" value={account.bankName} strong />
+          <BankCell label="Hesap Adı" value={account.accountName} />
+          <BankCell label="Para Birimi" value={account.currency} />
+          <BankCell label="Hesap Tipi" value={labelText(account.accountType)} />
+          <div className="col-span-2 flex flex-wrap items-center justify-end gap-1.5 md:col-span-1">
+            <DetailButton open={detailsOpen} onClick={onToggleDetails} compact />
+            <EditButton
+              onClick={onEdit}
+              compact
+              ariaLabel={`${summary} düzenle`}
+            />
+            <DeleteButton onClick={onDelete} compact ariaLabel={`${summary} sil`} />
+          </div>
+        </div>
+        {detailsOpen && secondary && (
+          <div className="border-t border-slate-800/80 px-3 py-3">{secondary}</div>
+        )}
+      </li>
+    );
+  }
+
+  function BankCell({ label, value, strong }) {
+    const text = value || "—";
+    return (
+      <div className="min-w-0">
+        <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500 md:sr-only">
+          {label}
+        </div>
+        <div
+          title={value ? String(value) : undefined}
+          className={`truncate text-sm leading-6 ${
+            strong ? "font-semibold text-slate-100" : "text-slate-200"
+          }`}
+        >
+          {text}
+        </div>
+      </div>
+    );
+  }
+
   function ListField({ label, value }) {
     return (
       <div className="min-w-0 space-y-1.5">
@@ -2971,33 +3078,43 @@ export default function CompanyManagement() {
     );
   }
 
-  function DetailButton({ open, onClick }) {
+  function actionButtonSize(compact) {
+    return compact ? "px-2.5 py-1 text-xs" : "px-4 py-2 text-sm";
+  }
+
+  function DetailButton({ open, onClick, compact }) {
     return (
       <button
+        type={compact ? "button" : undefined}
         onClick={onClick}
-        className="whitespace-nowrap rounded-lg border border-slate-600 bg-slate-800/80 px-4 py-2 text-sm font-medium hover:bg-slate-700"
+        aria-expanded={compact ? !!open : undefined}
+        className={`whitespace-nowrap rounded-lg border border-slate-600 bg-slate-800/80 font-medium hover:bg-slate-700 ${actionButtonSize(compact)}`}
       >
         {open ? "Detay Kapat" : "Detay"}
       </button>
     );
   }
 
-  function DeleteButton({ onClick }) {
+  function DeleteButton({ onClick, compact, ariaLabel }) {
     return (
       <button
+        type={compact ? "button" : undefined}
         onClick={onClick}
-        className="whitespace-nowrap rounded-lg bg-red-600/90 px-4 py-2 text-sm font-medium hover:bg-red-600"
+        aria-label={ariaLabel}
+        className={`whitespace-nowrap rounded-lg bg-red-600/90 font-medium hover:bg-red-600 ${actionButtonSize(compact)}`}
       >
         Sil
       </button>
     );
   }
 
-  function EditButton({ onClick }) {
+  function EditButton({ onClick, compact, ariaLabel }) {
     return (
       <button
+        type={compact ? "button" : undefined}
         onClick={onClick}
-        className="whitespace-nowrap rounded-lg bg-indigo-600/90 px-4 py-2 text-sm font-medium hover:bg-indigo-600"
+        aria-label={ariaLabel}
+        className={`whitespace-nowrap rounded-lg bg-indigo-600/90 font-medium hover:bg-indigo-600 ${actionButtonSize(compact)}`}
       >
         Düzenle
       </button>
