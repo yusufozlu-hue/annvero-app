@@ -1860,21 +1860,23 @@ export default function CompanyManagement() {
 
                 <BankAccountEditSheet
                   open={!!bankFormDraft}
+                  eyebrow={bankFormMode === "new" ? "Yeni kayıt" : "Düzenleme"}
                   title={
                     bankFormMode === "new"
                       ? "Yeni Banka Hesabı"
-                      : "Banka Hesabını Düzenle"
+                      : "Banka Hesabı Düzenle"
                   }
                   description={bankAccountSummary(
                     (company.bankAccounts || []).find((b) => b.id === bankFormMode)
                   )}
+                  notice="Paneldeki Kaydet yalnız firma taslağını günceller. Kalıcı kayıt için sayfanın altındaki Kaydet düğmesiyle firmayı kaydedin."
                   saving={bankFormSaving}
                   error={bankFormError}
                   onSave={saveBankForm}
                   onCancel={cancelBankForm}
                 >
                   {bankFormDraft && (
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <div className="grid grid-cols-1 gap-x-4 gap-y-3.5 sm:grid-cols-2">
                       <Input
                         label="Banka"
                         value={bankFormDraft.bankName}
@@ -1916,21 +1918,20 @@ export default function CompanyManagement() {
                           updateBankFormDraft("lucaAccountCode", v)
                         }
                       />
-                      <Checkbox
-                        label="POS Hesabı"
-                        checked={bankFormDraft.isPosAccount}
-                        onChange={(v) => updateBankFormDraft("isPosAccount", v)}
-                      />
-                      <Checkbox
-                        label="Aktif"
-                        checked={bankFormDraft.isActive}
-                        onChange={(v) => updateBankFormDraft("isActive", v)}
-                      />
+                      <div className="grid grid-cols-2 gap-3 sm:self-end">
+                        <Checkbox
+                          label="POS Hesabı"
+                          checked={bankFormDraft.isPosAccount}
+                          onChange={(v) => updateBankFormDraft("isPosAccount", v)}
+                        />
+                        <Checkbox
+                          label="Aktif"
+                          checked={bankFormDraft.isActive}
+                          onChange={(v) => updateBankFormDraft("isActive", v)}
+                        />
+                      </div>
                     </div>
                   )}
-                  <p className="mt-3 text-xs text-slate-500">
-                    Değişiklikler firma kaydı için sayfanın altındaki Kaydet düğmesiyle kalıcı olur.
-                  </p>
                 </BankAccountEditSheet>
 
                 <CollapsibleSection
