@@ -81,6 +81,7 @@
     "test:google-drive-reconcile-auth": "node --import ./scripts/_alias-loader.mjs ./scripts/test-google-drive-reconcile-auth.mjs",
     "test:edefter-analyze-worker": "node ./scripts/bundle-edefter-analyze-worker.mjs && node --import ./scripts/_alias-loader.mjs ./scripts/test-edefter-analyze-worker.mjs",
     "test:v1-job-persist-idempotency": "node --import ./scripts/_alias-loader.mjs ./scripts/test-v1-job-persist-idempotency.mjs",
+    "test:ik-personel-company-panel": "node ./scripts/test-ik-personel-company-panel.mjs",
     "test:mare-staging-22": "node --import ./scripts/_alias-loader.mjs --test ./scripts/test-mare-staging-runtime-22-fix.mjs"
   },
   "dependencies": {
