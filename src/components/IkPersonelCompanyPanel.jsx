@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { IK_MOVEMENT_TYPES, IK_WORK_TYPES } from "@/src/config/ikPersonelDefaults";
 import { downloadIkPersonelTemplate, parseIkPersonelExcelFile } from "@/src/utils/ikPersonelExcel";
 import {
   buildIkDashboardStats,
@@ -26,22 +27,33 @@ import {
 const inputClassName =
   "w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-violet-500";
 
+const EMPTY_COMPANY = Object.freeze({});
+
+/** localStorage veya eski kayıtlardan dizi olmayan / null eleman gelirse sekme çökmesin. */
+function toRecordList(value) {
+  return Array.isArray(value)
+    ? value.filter((item) => item && typeof item === "object")
+    : [];
+}
+
 export default function IkPersonelCompanyPanel({
-  company = {},
+  company: companyProp,
   setCompany,
   view = "personnel",
 }) {
-  const [movements, setMovements] = useState(() => loadIkMovements());
-  const [leaves, setLeaves] = useState(() => loadIkLeaves());
+  const company = companyProp || EMPTY_COMPANY;
+  const [movements, setMovements] = useState(() => toRecordList(loadIkMovements()));
+  const [leaves, setLeaves] = useState(() => toRecordList(loadIkLeaves()));
   const [toast, setToast] = useState("");
   const [importReport, setImportReport] = useState(null);
   const [movementType, setMovementType] = useState(IK_MOVEMENT_TYPES[0]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
 
   const companyId = company.id || "";
+  const employees = useMemo(() => toRecordList(company.employees), [company.employees]);
   const cards = useMemo(
-    () => (company.employees || []).map((employee) => mergeEmployeeCard(company, employee)),
-    [company]
+    () => employees.map((employee) => mergeEmployeeCard(company, employee)),
+    [company, employees]
   );
   const companyMovements = useMemo(
     () => movements.filter((item) => item.companyId === companyId),
@@ -69,10 +81,10 @@ export default function IkPersonelCompanyPanel({
   };
 
   const updateEmployee = (employeeId, employeePatch, profilePatch) => {
-    const employees = (company.employees || []).map((employee) =>
+    const nextEmployees = employees.map((employee) =>
       employee.id === employeeId ? { ...employee, ...employeePatch } : employee
     );
-    setCompany({ ...company, employees });
+    setCompany({ ...company, employees: nextEmployees });
     if (profilePatch) saveIkProfile(companyId, employeeId, profilePatch);
   };
 
@@ -88,7 +100,7 @@ export default function IkPersonelCompanyPanel({
         return;
       }
       const records = importRowsToEmployeeRecords(rows, companyId);
-      const newEmployees = [...(company.employees || [])];
+      const newEmployees = [...employees];
       records.forEach(({ employee, profile }) => {
         const id = employee.id;
         profile.employeeId = id;

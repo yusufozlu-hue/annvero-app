@@ -51,7 +51,8 @@ export function parseTrDateToIso(value = "") {
 
 export function loadIkProfiles() {
   if (typeof window === "undefined") return {};
-  return safeParseJson(localStorage.getItem(IK_PERSONEL_PROFILES_STORAGE_KEY) || "{}", {});
+  const profiles = safeParseJson(localStorage.getItem(IK_PERSONEL_PROFILES_STORAGE_KEY) || "{}", {});
+  return profiles && typeof profiles === "object" && !Array.isArray(profiles) ? profiles : {};
 }
 
 export function saveIkProfiles(profiles = {}) {
